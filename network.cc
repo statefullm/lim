@@ -74,7 +74,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
     if (pid == 0) {
         freopen("searxng.log", "w", stdout);
         freopen("searxng.log", "w", stderr);
-        string python=HOME+"/venv/bin/python";
+        string python="/usr/bin/python";
         string searxng=HOME+"/searxng/searx/webapp.py";
 
         execl(python.c_str(),
