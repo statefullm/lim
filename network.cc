@@ -1,4 +1,5 @@
 #include "network.h"
+#include "filesystem.h"  // For log_diagnostic
 #include <curl/curl.h>
 #include <iostream>
 #include <fstream>
@@ -15,6 +16,9 @@
 
 using json = nlohmann::json;
 using namespace std;
+
+// --- Consolidated SearxNG Log Path (DRY principle) ---
+const string SEARXNG_LOG_PATH = "log/searxng.log";
 
 string HOME;
 
@@ -67,13 +71,13 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         }
     }
 
-    printf("\n\033[90m[System: Spinning up local SearxNG instance...]\033[0m\n");
-    fflush(stdout);
+    // Use consolidated logging for SearxNG startup
+    log_diagnostic("Spinning up local SearxNG instance...", false, false, "[System]");
 
     pid_t pid = fork();
     if (pid == 0) {
-        freopen("searxng.log", "w", stdout);
-        freopen("searxng.log", "w", stderr);
+        freopen(SEARXNG_LOG_PATH.c_str(), "w", stdout);
+        freopen(SEARXNG_LOG_PATH.c_str(), "w", stderr);
         string python="/usr/bin/python";
         string searxng=HOME+"/searxng/searx/webapp.py";
 
@@ -114,8 +118,8 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         }
 
         if (!server_ready) {
-            printf("\n\033[1;31m[System: SearxNG failed to start or bind to port! Check searxng.log]\033[0m\n");
-            fflush(stdout);
+            // Use consolidated logging for SearxNG startup failure
+            log_diagnostic("SearxNG failed to start or bind to port! Check " + SEARXNG_LOG_PATH, false, false, "[System]");
         }
     }
 }
@@ -136,8 +140,8 @@ string NetworkTools::web_search(const string& query) {
     ifstream cache_file(cache_filepath);
     if (cache_file.is_open()) {
         string cached_content((istreambuf_iterator<char>(cache_file)), istreambuf_iterator<char>());
-        printf("\n\033[36m[System: Local file cache hit. Bypassing network & cooldown.]\033[0m\n");
-        fflush(stdout);
+        // Use consolidated logging for cache hit
+        log_diagnostic("Local file cache hit. Bypassing network & cooldown.", false, false, "[System]");
         return cached_content;
     }
 
@@ -148,8 +152,8 @@ string NetworkTools::web_search(const string& query) {
     auto elapsed = chrono::duration_cast<chrono::seconds>(now - g_last_network_request).count();
     if (elapsed < SEARCH_COOLDOWN_SECONDS) {
         int sleep_time = SEARCH_COOLDOWN_SECONDS - elapsed;
-        printf("\n\033[90m[System: Pacing network requests. Sleeping %d seconds to prevent IP ban...]\033[0m\n", sleep_time);
-        fflush(stdout);
+        // Use consolidated logging for pacing
+        log_diagnostic("Pacing network requests. Sleeping " + to_string(sleep_time) + " seconds to prevent IP ban...", false, false, "[System]");
         this_thread::sleep_for(chrono::seconds(sleep_time));
     }
 
@@ -237,7 +241,7 @@ string NetworkTools::web_search(const string& query) {
         }
 
         // Append LLM-readable search text into the global log
-        ofstream log_file("searxng.log", ios_base::app);
+        ofstream log_file(SEARXNG_LOG_PATH, ios_base::app);
         if (log_file.is_open()) {
             log_file << "\n[LLM INGESTED RESULTS] =====================\n";
             log_file << "QUERY: " << query << "\n";

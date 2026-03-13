@@ -1,6 +1,6 @@
 #include "llama.h"
-#include "parsers.h"
 #include "common.h"
+#include "parsers.h"
 #include "filesystem.h"
 #include "network.h"
 #include <iostream>
@@ -91,12 +91,13 @@ void sigint_handler(int sig) {
 }
 
 // --- Dummy Log Callback to Silence Llama.cpp ---
-bool is_debug_enabled() {
-    const char* debug_env = getenv("LLM_DEBUG");
-    return debug_env != nullptr && (strcmp(debug_env, "1") == 0 || strcasecmp(debug_env, "true") == 0);
-}
-
 bool first_prompt_displayed = false;
+
+// Global debug flag - accessible across all modules
+bool is_debug = false;
+
+// Chat log file stream - accessible across all modules for tool diagnostics
+std::ofstream chat_log;
 
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
   // Suppress llama.cpp terminal output
@@ -369,7 +370,12 @@ int main(int argc, char ** argv) {
   }
 
 // Set up log callback that suppresses GGML diagnostics after first prompt
-if (!is_debug_enabled()) {
+const char* debug_env = getenv("LLM_DEBUG");
+if (debug_env != nullptr && (strcmp(debug_env, "1") == 0 || strcasecmp(debug_env, "true") == 0)) {
+  is_debug = true;
+}
+
+if (!is_debug) {
   llama_log_set(dummy_log_callback, nullptr);
 } else {
   // In debug mode, use custom callback that suppresses all output after first prompt
@@ -390,7 +396,7 @@ if (!is_debug_enabled()) {
       }
       log_index++;
   }
-  ofstream chat_log(log_file_name, ios::app);
+  chat_log.open(log_file_name, ios::app);
 
   // --- Sanitized Logging Lambda ---
   auto log_entry = [&](const string& role, const string& text) {
@@ -580,9 +586,9 @@ if (!is_debug_enabled()) {
         }
       }
     } else {
-if (is_debug_enabled()) {
-      printf("\n\033[90m[Agent processing tool results...]\033[0m\n");
-      fflush(stdout);
+// Use consolidated logging for agent processing message
+if (is_debug) {
+      log_diagnostic("Agent processing tool results...");
     }
     }
 
@@ -894,10 +900,14 @@ execute_tool:
               display_call = "write_file(path=\"" + path + "\")";
           }
 
+          // Log tool call directly without header for cleaner output
           string clean_log = preamble;
           if (!clean_log.empty() && clean_log.back() != '\n') clean_log += "\n";
           clean_log += display_call;
-          log_entry("ASSISTANT (Tool Call)", clean_log);
+          if (chat_log.is_open()) {
+              chat_log << clean_log << "\n\n";
+              chat_log.flush();
+          }
 
           printf("%s\n", display_call.c_str());
           fflush(stdout);
@@ -1030,9 +1040,16 @@ execute_tool:
             }
           }
 
-          // Print tool result to terminal - show full result only in debug mode
-          // but always show match count for edit_file operations and errors
-          if (is_debug_enabled()) {
+          // Use consolidated logging for tool results
+          // In debug mode, show full result; in non-debug mode, only show errors/match counts
+          bool has_error = (display_result.find("Error:") != string::npos);
+          bool has_match_count = (display_result.find("Match count:") != string::npos);
+
+          // Build the log message for diagnostic output
+          string log_message = "Tool Result:\n" + display_result;
+
+          // Output to terminal based on debug mode and content type
+          if (is_debug) {
             // In debug mode, show full tool result with header
             printf("\033[92m[Tool Result]\033[0m\n");
             string result_to_print = display_result;
@@ -1046,9 +1063,6 @@ execute_tool:
             }
           } else {
             // In non-debug mode, only show errors or match count
-            bool has_error = (display_result.find("Error:") != string::npos);
-            bool has_match_count = (display_result.find("Match count:") != string::npos);
-
             if (has_error || has_match_count) {
               printf("\033[92m[Tool Result]\033[0m\n");
               if (tool_name == "edit_file") {
@@ -1073,6 +1087,7 @@ execute_tool:
           }
           fflush(stdout);
 
+          // Simplified TOOL RESULT logging - just the display_result without redundant "Tool Result:" prefix
           log_entry("TOOL RESULT", display_result);
 
           generated_text = ""; unprinted_text = "";

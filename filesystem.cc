@@ -16,6 +16,39 @@
 
 using namespace std;
 
+// --- Consolidated Diagnostic Logging Function ---
+// This function handles all diagnostic output to both terminal and log file
+// Parameters:
+//   - message: The diagnostic message to output
+//   - logOnly: If true, only write to log file (not to terminal)
+//   - debugOnly: If true, only output when LLM_DEBUG=1 environment variable is set
+//   - tag: Optional tag to prepend to the message (e.g., "[Edit]")
+void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
+                    const string& tag /* = "" */) {
+    if (!chat_log.is_open()) {
+        cerr << "[ERROR] chat_log is not open - cannot write diagnostic message\n";
+        return;
+    }
+
+    // Build the full message with optional tag
+    string full_message = message;
+    if (!tag.empty()) {
+        full_message = tag + " " + message;
+    }
+
+    // Write to terminal (unless logOnly is true)
+    // When debugOnly is true, only show on terminal if in debug mode
+    if (!logOnly) {
+        if (!debugOnly || is_debug) {
+            cout << full_message << endl;
+            fflush(stdout);
+        }
+    }
+
+    chat_log << full_message << "\n";
+    chat_log.flush();
+}
+
 // Static constant definition
 const string FileSystemTools::HOME = "/home/ai";
 
@@ -161,8 +194,14 @@ string FileSystemTools::search_file(const string& path, const string& text) {
   }
 
   if (match_count == 0) {
+    // Log search failure for debugging
+    log_diagnostic("No occurrences found for text: " + text, true, false, "[Search]");
     return "No occurrences found for text: " + text;
   }
+
+  // Log successful search with match count
+  log_diagnostic("Found " + to_string(match_count) + " occurrence(s) for text: " + text, true, false, "[Search]");
+
   return result;
 }
 
@@ -287,8 +326,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   }
 
   int changes_count = 0;
-  string snippets = "";
-
   // Find all occurrences first to avoid infinite loops when new_str contains old_str
   vector<size_t> match_positions;
   size_t search_pos = 0;
@@ -298,24 +335,24 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     search_pos += old_str.length();
   }
 
+  // Log old and new strings once (before replacements)
+  size_t truncation = 150;
+  string old_truncated = old_str;
+  if (old_truncated.length() > truncation) {
+    old_truncated = old_truncated.substr(0, truncation);
+  }
+  string new_truncated = new_str;
+  if (new_truncated.length() > truncation) {
+    new_truncated = new_truncated.substr(0, truncation);
+  }
+
+  // Log to file always, show on terminal only in debug mode
+  string edit_message = "Replacing " + to_string(match_positions.size()) + " occurrence(s):\n---OLD---\n" + old_truncated + "\n---NEW---\n" + new_truncated;
+  log_diagnostic(edit_message, false, true, "[Edit]");
+
   // Replace in reverse order to avoid position shifting issues
   for (int i = match_positions.size() - 1; i >= 0; --i) {
     size_t pos = match_positions[i];
-
-    // --- GENERATE CONTEXT SNIPPET ---
-    size_t window = 150; // Grab ~150 chars before and after
-    size_t context_start = (pos > window) ? pos - window : 0;
-    size_t nl_start = content.rfind('\n', context_start);
-    context_start = (nl_start == string::npos) ? 0 : nl_start + 1; // Snap to newline
-
-    size_t context_end = pos + new_str.length() + window;
-    if (context_end > content.length()) context_end = content.length();
-    size_t nl_end = content.find('\n', context_end);
-    context_end = (nl_end == string::npos) ? content.length() : nl_end; // Snap to newline
-
-    snippets += "\n\n--- Edit Occurrence " + to_string(i + 1) + " Context ---\n";
-    snippets += "...\n" + content.substr(context_start, context_end - context_start) + "\n...";
-
     content.replace(pos, old_str.length(), new_str);
     changes_count++;
   }
@@ -342,7 +379,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
 
   map<string, string> result;
   result["status"] = "updated";
-  result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified)." + snippets;
+  result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified).";
   return result;
 }
 

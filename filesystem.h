@@ -27,4 +27,22 @@ private:
   static const std::string HOME;
 };
 
+// --- Consolidated Diagnostic Logging Function ---
+// This function handles all diagnostic output to both terminal and log file
+// Parameters:
+//   - message: The diagnostic message to output
+//   - logOnly: If true, only write to log file (not to terminal)
+//   - debugOnly: If true, only output when LLM_DEBUG=1 environment variable is set
+//   - tag: Optional tag to prepend to the message (e.g., "[Edit]")
+void log_diagnostic(const std::string& message, bool logOnly = false, bool debugOnly = false,
+                    const std::string& tag = "");
+
+
+
+// Global debug flag - declared in main.cc and used by other modules
+extern bool is_debug;
+
+// Chat log file stream - declared in main.cc and used for all tool diagnostics
+extern std::ofstream chat_log;
+
 #endif // FILESYSTEM_H
