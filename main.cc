@@ -27,6 +27,11 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+std::string tokenStart = "<|im_start|>";
+std::string tokenEnd = "<|im_end|>";
+std::string toolStart = "<tool_call>";
+std::string toolEnd = "</tool_call>";
+
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
     int ret = llama_decode(ctx, batch);
     if (ret < -1) {
@@ -316,22 +321,24 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
 }
 
 string sanitize(string text) {
-    // We replace the first character with a backslash escape or a zero-width space
-    // to break the LLM's pattern matching for these specific control tokens.
-    vector<pair<string, string>> patterns = {
-        {"<tool_call>", "<\\tool_call>"},
-        {"</tool_call>", "<\\/tool_call>"},
-        {"<|im_start|>", "<\\|im_start|>"},
-        {"<|im_end|>", "<\\|im_end|>"}
+    // Insert a backslash to break the LLM's pattern matching for these
+    // specific control tokens.
+    vector<string> patterns = {
+      toolStart,
+      toolEnd,
+      tokenStart,
+      tokenEnd
     };
 
-    for (const auto& p : patterns) {
-        size_t pos = 0;
-        while ((pos = text.find(p.first, pos)) != string::npos) {
-            text.replace(pos, p.first.length(), p.second);
-            pos += p.second.length();
+    for (const auto& pattern : patterns) {
+      size_t pos = 0;
+      while ((pos = text.find(pattern, pos)) != std::string::npos) {
+            // Insert backslash after first character of the match
+            text.insert(pos + 1, "\\");
+            pos += pattern.length() + 1;
         }
     }
+
     return text;
 }
 
@@ -403,8 +410,8 @@ if (!is_debug) {
       if (chat_log.is_open()) {
           string clean_text = text;
           const vector<string> tags_to_remove = {
-              "<tool_call>", "</tool_call>",
-              "<|im_start|>", "<|im_end|>"
+              toolStart, toolEnd,
+              tokenStart, tokenEnd
           };
 
           for (const auto& tag : tags_to_remove) {
@@ -464,7 +471,7 @@ if (!is_debug) {
   const llama_vocab * vocab = llama_model_get_vocab(model);
   auto tokenize = [&](string text) { return common_tokenize(ctx, text, false, true); };
 
-  vector<llama_token> system_tokens = common_tokenize(ctx, "<|im_start|>system\n" + system_prompt+ "<|im_end|>\n", true, true);
+  vector<llama_token> system_tokens = common_tokenize(ctx, tokenStart + "system\n" + system_prompt + tokenEnd + "\n", true, true);
 
   // Sampling parameters: instruct mode for general tasks
   float temp = 0.7f;
@@ -647,7 +654,7 @@ if (is_debug) {
     if (!user_input.empty()) {
       if (!auto_continue) log_entry("USER", user_input);
 
-      vector<llama_token> tokens = tokenize("<|im_start|>user\n" + user_input + "<|im_end|>\n<|im_start|>assistant\n");
+      vector<llama_token> tokens = tokenize(tokenStart + "user\n" + user_input + tokenEnd + "\n" + tokenStart + "assistant\n");
 
       if (n_past + tokens.size() >= cparams.n_ctx) {
           printf("\n\033[31m[Context Limit Reached! Cannot process input. Type 'clear' to reset.]\033[0m\n");
@@ -735,15 +742,15 @@ if (is_debug) {
           }
 
           bool in_tool_call_stream = false;
-          size_t t_start = generated_text.rfind("<tool_call>");
-          size_t t_end = generated_text.rfind("</tool_call>");
+          size_t t_start = generated_text.rfind(toolStart);
+          size_t t_end = generated_text.rfind(toolEnd);
           if (t_start != string::npos && (t_end == string::npos || t_start > t_end)) {
               in_tool_call_stream = true;
           }
 
           bool in_reasoning_block = false;
-          size_t think_start = generated_text.rfind("<|im_start|>");
-          size_t think_end = generated_text.rfind("<|im_end|>");
+          size_t think_start = generated_text.rfind(tokenStart);
+          size_t think_end = generated_text.rfind(tokenEnd);
           if (think_start != string::npos && (think_end == string::npos || think_start > think_end)) {
               in_reasoning_block = true;
           }
@@ -772,8 +779,8 @@ if (is_debug) {
               fflush(stdout);
 
               bool in_tool = false;
-              size_t ts = generated_text.find("<tool_call>");
-              if (ts != string::npos && generated_text.find("</tool_call>", ts) == string::npos) {
+              size_t ts = generated_text.find(toolStart);
+              if (ts != string::npos && generated_text.find(toolEnd, ts) == string::npos) {
                   in_tool = true;
               }
 
@@ -786,7 +793,7 @@ if (is_debug) {
               log_entry("ASSISTANT (Interrupted Reasoning Loop)", generated_text);
 
               string active_intervention_msg = get_next_loop_message();
-              string msg = "<|im_end|>\n<|im_start|>user\n" + active_intervention_msg + "\n<|im_end|>\n<|im_start|>assistant\n";
+              string msg = tokenEnd + "\n" + tokenStart + "user\n" + active_intervention_msg + "\n" + tokenEnd + "\n" + tokenStart + "assistant\n";
               vector<llama_token> t_tokens = tokenize(msg);
 
               if (n_past + t_tokens.size() >= cparams.n_ctx) {
@@ -818,10 +825,10 @@ if (is_debug) {
           }
       }
 
-      size_t tool_start = generated_text.find("<tool_call>");
+      size_t tool_start = generated_text.find(toolStart);
       size_t tool_end = string::npos;
       if (tool_start != string::npos) {
-          tool_end = generated_text.find("</tool_call>", tool_start);
+          tool_end = generated_text.find(toolEnd, tool_start);
       }
 
 execute_tool:
@@ -874,7 +881,7 @@ execute_tool:
               preamble = generated_text.substr(0, tool_start);
           }
 
-          const vector<string> strip_tags = {"<|im_start|>", "<|im_end|>"};
+          const vector<string> strip_tags = {tokenStart, tokenEnd};
           for (const auto& tag : strip_tags) {
               size_t p;
               while ((p = tool_call.find(tag)) != string::npos) {
@@ -882,7 +889,7 @@ execute_tool:
               }
           }
 
-          size_t t_start_in_unprinted = unprinted_text.find("<tool_call>");
+          size_t t_start_in_unprinted = unprinted_text.find(toolStart);
           if (t_start_in_unprinted != string::npos && t_start_in_unprinted > 0) {
               printf("%s", unprinted_text.substr(0, t_start_in_unprinted).c_str());
           }
@@ -938,7 +945,7 @@ execute_tool:
           while ((pos = full_response.find("```", pos)) != string::npos) { bticks++; pos += 3; }
           if (bticks % 2 != 0) is_real_tool = false;
 
-          size_t global_ts = full_response.rfind("<tool_call>");
+          size_t global_ts = full_response.rfind(toolStart);
           if (global_ts != string::npos && global_ts > 0) {
             char prev_char = full_response[global_ts - 1];
             if (prev_char == '`' || prev_char == '\\') is_real_tool = false;
@@ -1093,21 +1100,21 @@ execute_tool:
           generated_text = ""; unprinted_text = "";
 
           // --- 1. ALWAYS FULFILL THE TOOL CONTRACT FIRST ---
-          string tool_msg = "<|im_end|>\n<|im_start|>user\n[Tool Result]\n" + sanitize(tool_result) + "\n<|im_end|>\n";
+          string tool_msg = tokenEnd + "\n" + tokenStart + "user\n[Tool Result]\n" + sanitize(tool_result) + "\n" + tokenEnd + "\n";
 
           // --- 2. OPEN THE ASSISTANT BLOCK (Crucial for ChatML alternating roles) ---
-          tool_msg += "<|im_start|>assistant\n";
+          tool_msg += tokenStart + "assistant\n";
 
           // --- 3. APPEND THE AUTOMATED INTERVENTION AS AN INTERRUPTION ---
           // By immediately injecting a user tag after the assistant tag, we perfectly mimic
           // the exact state of dropping to the prompt and the user typing a manual override.
           if (inject_auto_user_msg) {
-            tool_msg += "<|im_start|>user\n" + active_intervention_msg + "\n<|im_end|>";
+            tool_msg += tokenStart + "user\n" + active_intervention_msg + "\n" + tokenEnd;
               log_entry("USER (Automated)", active_intervention_msg);
           }
 
           // Open the assistant block to trigger the next response
-          tool_msg += "<|im_start|>assistant\n";
+          tool_msg += tokenStart + "assistant\n";
 
           vector<llama_token> t_tokens = tokenize(tool_msg);
 
@@ -1158,7 +1165,7 @@ execute_tool:
       }
 
       bool partial_tag = false;
-      const vector<string> hidden_tags = {"<|im_start|>", "<|im_end|>", "<tool_call>", "</tool_call>"};
+      const vector<string> hidden_tags = {tokenStart, tokenEnd, toolStart, toolEnd};
       for (const auto& tag : hidden_tags) {
         size_t pos;
         while ((pos = unprinted_text.find(tag)) != string::npos) unprinted_text.erase(pos, tag.length());
@@ -1169,7 +1176,7 @@ execute_tool:
         }
       }
 
-      bool in_tool_call_stream = (generated_text.find("<tool_call>") != string::npos);
+      bool in_tool_call_stream = (generated_text.find(toolStart) != string::npos);
 
       // --- EOG HANDLER & UNCLOSED TAG INTERCEPTOR ---
       if (llama_vocab_is_eog(vocab, next_token) || n_past >= (int)cparams.n_ctx) {
@@ -1178,18 +1185,18 @@ execute_tool:
         }
 
         bool is_eog = llama_vocab_is_eog(vocab, next_token);
-        size_t ts = generated_text.find("<tool_call>");
+        size_t ts = generated_text.find(toolStart);
         bool unclosed = false;
 
-        if (is_eog && ts != string::npos && generated_text.find("</tool_call>", ts) == string::npos) {
-            size_t global_ts = full_response.rfind("<tool_call>");
+        if (is_eog && ts != string::npos && generated_text.find(toolEnd, ts) == string::npos) {
+            size_t global_ts = full_response.rfind(toolStart);
             if (global_ts == string::npos || global_ts == 0 || (full_response[global_ts - 1] != '\\' && full_response[global_ts - 1] != '`')) {
                 unclosed = true;
             }
         }
 
         if (unclosed) {
-             string close_str = "</tool_call>";
+             string close_str = toolEnd;
              vector<llama_token> close_tokens = tokenize(close_str);
 
              batch.n_tokens = 0;
@@ -1205,7 +1212,7 @@ execute_tool:
              full_response += close_str;
              unprinted_text += close_str;
 
-             tool_end = generated_text.find("</tool_call>", ts);
+             tool_end = generated_text.find(toolEnd, ts);
              goto execute_tool;
         }
 
