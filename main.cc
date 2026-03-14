@@ -27,10 +27,72 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+// --- Token Variables for Model-Specific Formatting ---
 std::string tokenStart = "<|im_start|>";
 std::string tokenEnd = "<|im_end|>";
+std::string startHeader = "<|start_header|>";
+std::string endHeader = "<|end_header|>";
+std::string eot = "<|eot|>";
+
 std::string toolStart = "<tool_call>";
 std::string toolEnd = "</tool_call>";
+
+// --- Model Detection and Chat Template Selection ---
+enum class ModelType {
+    UNKNOWN,
+    CHATML,      // Standard ChatML format (Nemotron, Mistral, etc.)
+    LLAMA3       // Llama 3 format
+};
+
+// Function to get the appropriate chat template for a model type
+std::string get_chat_template(ModelType model_type) {
+    switch (model_type) {
+        case ModelType::CHATML:
+            return "chatml";
+        case ModelType::LLAMA3:
+            return "llama3";
+        default:
+            return "chatml";
+    }
+}
+
+// Function to detect model type based on vocabulary tokens
+ModelType detect_model_type(const llama_vocab * vocab) {
+    int32_t n_tokens = llama_vocab_n_tokens(vocab);
+
+    bool has_im_start = false;
+    bool has_im_end = false;
+    bool has_reasoning_start = false;
+    bool has_reasoning_end = false;
+
+    for (llama_token i = 0; i < n_tokens; i++) {
+        const char* token_text = llama_vocab_get_text(vocab, i);
+        if (token_text == nullptr) continue;
+
+        std::string text(token_text);
+
+        // Check for ChatML tokens
+        if (text.find(tokenStart) != std::string::npos) has_im_start = true;
+        if (text.find(tokenEnd) != std::string::npos) has_im_end = true;
+
+        // Check for special reasoning tokens (Nemotron 3 specific)
+        if (text.find("<think>") != std::string::npos) has_reasoning_start = true;
+        if (text.find("</think>") != std::string::npos) has_reasoning_end = true;
+    }
+
+    // If Nemotron reasoning tokens exist, it's a Nemotron 3 model
+    if (has_reasoning_start && has_reasoning_end) {
+        return ModelType::CHATML; // Nemotron 3 uses ChatML format with reasoning
+    }
+
+    // If standard ChatML tokens exist, it's a ChatML-based model (including older Nemotron)
+    if (has_im_start && has_im_end) {
+        return ModelType::CHATML;
+    }
+
+    // Default to ChatML as most modern models use this format
+    return ModelType::CHATML;
+}
 
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
     int ret = llama_decode(ctx, batch);
@@ -353,7 +415,7 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  // --- WRITE CURRENT DIRECTORY TO .CWD FILE ON STARTUP ---
+  // --- WRITE CURRENT DIRECTORY TO .cwd ON STARTUP ---
   char cwd[1024];
   if (getcwd(cwd, sizeof(cwd)) != nullptr) {
     ofstream cwd_file("/home/ai/.cwd");
@@ -443,6 +505,14 @@ if (!is_debug) {
   llama_model * model = llama_model_load_from_file(argv[1], mparams);
   if (!model) return 1;
 
+  // Detect model type and set appropriate chat template
+  const llama_vocab * vocab = llama_model_get_vocab(model);
+  ModelType model_type = detect_model_type(vocab);
+
+  if (is_debug) {
+      fprintf(stderr, "[DEBUG] Detected model type: %s\n", get_chat_template(model_type).c_str());
+  }
+
   auto cparams = llama_context_default_params();
   cparams.n_ctx     = 262144;
   cparams.n_batch   = 4096;
@@ -468,10 +538,18 @@ if (!is_debug) {
     prompt_file.close();
   }
 
-  const llama_vocab * vocab = llama_model_get_vocab(model);
   auto tokenize = [&](string text) { return common_tokenize(ctx, text, false, true); };
 
-  vector<llama_token> system_tokens = common_tokenize(ctx, tokenStart + "system\n" + system_prompt + tokenEnd + "\n", true, true);
+  // Use model-specific formatting for system tokens
+  std::string formatted_system_prompt;
+  if (model_type == ModelType::CHATML) {
+      formatted_system_prompt = tokenStart + "system\n" + system_prompt + tokenEnd + "\n";
+  } else {
+      // Default to ChatML format
+      formatted_system_prompt = tokenStart + "system\n" + system_prompt + tokenEnd + "\n";
+  }
+
+  vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
 
   // Sampling parameters: instruct mode for general tasks
   float temp = 0.7f;
@@ -654,7 +732,16 @@ if (is_debug) {
     if (!user_input.empty()) {
       if (!auto_continue) log_entry("USER", user_input);
 
-      vector<llama_token> tokens = tokenize(tokenStart + "user\n" + user_input + tokenEnd + "\n" + tokenStart + "assistant\n");
+      // Use model-specific formatting for user messages
+      std::string user_message;
+      if (model_type == ModelType::CHATML) {
+          user_message = tokenStart + "user\n" + user_input + tokenEnd + "\n" + tokenStart + "assistant\n";
+      } else {
+          // Default to ChatML format
+          user_message = tokenStart + "user\n" + user_input + tokenEnd + "\n" + tokenStart + "assistant\n";
+      }
+
+      vector<llama_token> tokens = tokenize(user_message);
 
       if (n_past + tokens.size() >= cparams.n_ctx) {
           printf("\n\033[31m[Context Limit Reached! Cannot process input. Type 'clear' to reset.]\033[0m\n");
@@ -1100,7 +1187,15 @@ execute_tool:
           generated_text = ""; unprinted_text = "";
 
           // --- 1. ALWAYS FULFILL THE TOOL CONTRACT FIRST ---
-          string tool_msg = tokenEnd + "\n" + tokenStart + "user\n[Tool Result]\n" + sanitize(tool_result) + "\n" + tokenEnd + "\n";
+          std::string tool_result_section;
+          if (model_type == ModelType::CHATML) {
+              tool_result_section = tokenStart + "user\n[Tool Result]\n" + sanitize(tool_result) + tokenEnd + "\n";
+          } else {
+              // Default to ChatML format
+              tool_result_section = tokenStart + "user\n[Tool Result]\n" + sanitize(tool_result) + tokenEnd + "\n";
+          }
+
+          string tool_msg = tool_result_section;
 
           // --- 2. OPEN THE ASSISTANT BLOCK (Crucial for ChatML alternating roles) ---
           tool_msg += tokenStart + "assistant\n";
@@ -1109,7 +1204,14 @@ execute_tool:
           // By immediately injecting a user tag after the assistant tag, we perfectly mimic
           // the exact state of dropping to the prompt and the user typing a manual override.
           if (inject_auto_user_msg) {
-            tool_msg += tokenStart + "user\n" + active_intervention_msg + "\n" + tokenEnd;
+              std::string intervention_msg;
+              if (model_type == ModelType::CHATML) {
+                  intervention_msg = tokenStart + "user\n" + active_intervention_msg + tokenEnd + "\n";
+              } else {
+                  // Default to ChatML format
+                  intervention_msg = tokenStart + "user\n" + active_intervention_msg + tokenEnd + "\n";
+              }
+              tool_msg += intervention_msg;
               log_entry("USER (Automated)", active_intervention_msg);
           }
 
