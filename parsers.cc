@@ -2,6 +2,7 @@
 #include "tokens.h"
 #include <cctype>
 #include <cstdlib>
+#include <sstream> // Required for stringstream
 
 using namespace std;
 
@@ -25,7 +26,7 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
     return val.substr(first, last - first + 1);
 }
 
-// Linear-time array parser for XML schema
+// Linear-time array parser for XML schema (Newline/Comma separated)
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
     string search_key = string(Tokens::PARAM_START) + arg_name + ">";
@@ -38,37 +39,25 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
 
     string val = tool_call.substr(start, end - start);
 
-    // Find the array brackets inside the parameter block
-    size_t arr_start = val.find('[');
-    if (arr_start == string::npos) return result;
+    // If the llm bleeds its schema (</<), truncate the parameter exactly at the bleed.
+    size_t bleed_pos = val.find("</<");
+    if (bleed_pos != string::npos) {
+        val = val.substr(0, bleed_pos);
+    }
 
-    bool in_string = false;
-    char quote_char = '\0';
-    string current_item = "";
-
-    // Parse standard JSON-style array items
-    for (size_t i = arr_start + 1; i < val.length(); ++i) {
-        char c = val[i];
-        if (in_string) {
-            if (c == '\\' && i + 1 < val.length()) {
-                char next = val[i+1];
-                if (next == 'n') current_item += '\n';
-                else if (next == 't') current_item += '\t';
-                else current_item += next;
-                i++;
-            } else if (c == quote_char) {
-                in_string = false;
-                result.push_back(current_item);
-                current_item = "";
-            } else {
-                current_item += c;
-            }
-        } else {
-            if (c == '"' || c == '\'') {
-                in_string = true;
-                quote_char = c;
-            } else if (c == ']') {
-                break;
+    // Split the parameter block by newlines
+    stringstream ss(val);
+    string line;
+    while (getline(ss, line)) {
+        // Also split by commas just in case the LLM outputs: file1.cc, file2.cc
+        stringstream comma_ss(line);
+        string item;
+        while (getline(comma_ss, item, ',')) {
+            // Trim leading and trailing whitespace/newlines
+            size_t first = item.find_first_not_of(" \t\r\n");
+            if (first != string::npos) {
+                size_t last = item.find_last_not_of(" \t\r\n");
+                result.push_back(item.substr(first, last - first + 1));
             }
         }
     }
@@ -86,6 +75,11 @@ int extract_int_arg_bounded(const string& tool_call, const string& arg_name) {
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);
+
+    size_t bleed_pos = val.find("</<");
+    if (bleed_pos != string::npos) {
+        val = val.substr(0, bleed_pos);
+    }
 
     size_t first = val.find_first_not_of(" \t\n\r");
     if (first == string::npos) return 0;

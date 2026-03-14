@@ -62,16 +62,13 @@ ModelType detect_model_type(const llama_vocab * vocab) {
 
         std::string text(token_text);
 
-        // Check for ChatML tokens
         if (text.find(Tokens::TURN_START) != std::string::npos) has_im_start = true;
         if (text.find(Tokens::TURN_END) != std::string::npos) has_im_end = true;
-
-        // Check for special reasoning tokens (Nemotron 3 specific)
         if (text.find("<think>") != std::string::npos) has_reasoning_start = true;
         if (text.find("</think>") != std::string::npos) has_reasoning_end = true;
     }
 
-    if (has_reasoning_start && has_reasoning_end) return ModelType::CHATML; 
+    if (has_reasoning_start && has_reasoning_end) return ModelType::CHATML;
     if (has_im_start && has_im_end) return ModelType::CHATML;
 
     return ModelType::CHATML;
@@ -91,7 +88,7 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
         printf("\n\033[31m[%s]\033[0m\n", ret == 1 ? error_msg : "Aborted");
         fflush(stdout);
         if (should_break) return false;
-        return true; 
+        return true;
     }
     return true;
 }
@@ -134,7 +131,7 @@ std::ofstream chat_log;
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {}
 
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
-    if (first_prompt_displayed) return; 
+    if (first_prompt_displayed) return;
     fprintf(stderr, "%s", text);
 }
 
@@ -193,7 +190,7 @@ public:
         for (size_t past_hash : tool_history) {
             if (past_hash == last) count++;
         }
-        return count; 
+        return count;
     }
 
     void clear_history() {
@@ -207,7 +204,7 @@ void replace_all_tags(std::string& str, const std::string& from, const std::stri
     size_t start_pos = 0;
     while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
         str.replace(start_pos, from.length(), to);
-        start_pos += to.length(); 
+        start_pos += to.length();
     }
 }
 
@@ -478,7 +475,7 @@ int main(int argc, char ** argv) {
   llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
   llama_sampler_chain_add(smpl, llama_sampler_init_temp_ext(temp, 0.0f, 1.0f));
   llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
-  
+
   llama_batch batch = llama_batch_init(cparams.n_batch, 0, 1);
   int n_past = 0;
   batch.n_tokens = 0;
@@ -496,6 +493,7 @@ int main(int argc, char ** argv) {
   LoopDetector loop_guard(15);
   int intra_loop_strikes = 0;
 
+  // --- MAIN CHAT TURN LOOP ---
   while (true) {
     string user_input = "";
     stop_generation = 0;
@@ -560,7 +558,7 @@ int main(int argc, char ** argv) {
             }
         }
         if (batch.n_tokens > 0) handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false);
-        
+
         auto_continue = false;
         clean_files.clear();
         last_grep_req = "";
@@ -632,6 +630,14 @@ int main(int argc, char ** argv) {
     string unprinted_text = "";
     string full_response = "";
 
+    // Core state tracking for the token loop
+    bool in_tool_call_stream = false;
+    bool partial_tag = false;
+    size_t tool_start = string::npos;
+    size_t tool_end = string::npos;
+    bool trigger_tool_execution = false;
+
+    // --- INNER TOKEN GENERATION LOOP ---
     while (true) {
       if (stop_generation) {
         printf("\n\033[31m[Task Interrupted by User]\033[0m\n");
@@ -652,8 +658,35 @@ int main(int argc, char ** argv) {
 
       // Stop generating if the model outputs an End-Of-Turn token
       if (llama_vocab_is_eog(vocab, next_token)) {
+          size_t active_ts = generated_text.rfind(Tokens::FUNC_START);
+          size_t active_te = generated_text.rfind(Tokens::FUNC_END);
+
+          // If the model tries to end its turn while a tool is still open...
+          if (active_ts != string::npos && (active_te == string::npos || active_ts > active_te)) {
+              printf("\n\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
+              fflush(stdout);
+
+              // Clean up a dangling "</" or "<" if the model gave up halfway
+              size_t trailing_slash = generated_text.rfind("</");
+              if (trailing_slash != string::npos && trailing_slash > active_ts) {
+                  size_t drop_len = generated_text.length() - trailing_slash;
+                  generated_text.erase(trailing_slash);
+                  full_response.erase(full_response.length() - drop_len);
+              }
+
+              // Force close
+              string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
+              generated_text += forced_close;
+              full_response += forced_close;
+
+              tool_start = active_ts;
+              tool_end = generated_text.find(Tokens::FUNC_END, active_ts);
+              trigger_tool_execution = true;
+              break; // Safely exit the generation loop to execute the tool
+          }
+
           auto_continue = false;
-          break;
+          break; // Normal EOG, break the loop
       }
 
       string token_str = common_token_to_piece(ctx, next_token).c_str();
@@ -661,7 +694,34 @@ int main(int argc, char ** argv) {
       unprinted_text += token_str;
       full_response += token_str;
 
-      // --- INTRA-TURN LOOP DETECTION ---
+      // Update basic tracking offsets
+      tool_start = generated_text.find(Tokens::FUNC_START);
+      if (tool_start != string::npos) {
+          tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
+      } else {
+          tool_end = string::npos;
+      }
+
+      // Determine if we are actively streaming inside a tool tag
+      size_t ts = generated_text.rfind(Tokens::FUNC_START);
+      size_t te = generated_text.rfind(Tokens::FUNC_END);
+      if (ts != string::npos && (te == string::npos || ts > te)) {
+          in_tool_call_stream = true;
+      } else {
+          in_tool_call_stream = false;
+      }
+
+      // Update partial tag state for terminal buffering
+      partial_tag = false;
+      size_t open_bracket = generated_text.rfind('<');
+      if (open_bracket != string::npos) {
+          if (open_bracket > te || te == string::npos) {
+              string suffix = generated_text.substr(open_bracket);
+              if (string(Tokens::FUNC_START).find(suffix) == 0 || string(Tokens::FUNC_END).find(suffix) == 0) partial_tag = true;
+          }
+      }
+
+      // --- INTRA-TURN LOOP DETECTION (Babbling Prevention) ---
       if (t_count > 0 && t_count % 10 == 0 && generated_text.length() > 100) {
           size_t n = generated_text.length();
           bool intra_loop = false;
@@ -678,13 +738,6 @@ int main(int argc, char ** argv) {
                       }
                   }
               }
-          }
-
-          bool in_tool_call_stream = false;
-          size_t t_start = generated_text.rfind(Tokens::FUNC_START);
-          size_t t_end = generated_text.rfind(Tokens::FUNC_END);
-          if (t_start != string::npos && (t_end == string::npos || t_start > t_end)) {
-              in_tool_call_stream = true;
           }
 
           bool in_reasoning_block = false;
@@ -715,8 +768,8 @@ int main(int argc, char ** argv) {
               fflush(stdout);
 
               bool in_tool = false;
-              size_t ts = generated_text.find(Tokens::FUNC_START);
-              if (ts != string::npos && generated_text.find(Tokens::FUNC_END, ts) == string::npos) in_tool = true;
+              size_t b_ts = generated_text.find(Tokens::FUNC_START);
+              if (b_ts != string::npos && generated_text.find(Tokens::FUNC_END, b_ts) == string::npos) in_tool = true;
 
               if (!unprinted_text.empty() && !in_tool) {
                   printf("%s", unprinted_text.c_str());
@@ -754,321 +807,55 @@ int main(int argc, char ** argv) {
               }
 
               auto_continue = true;
-              break;
+              break; // Exit generation loop and let outer loop handle the injection
           }
       }
 
-      size_t tool_start = generated_text.find(Tokens::FUNC_START);
-      size_t tool_end = string::npos;
-      if (tool_start != string::npos) {
-          tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
-      }
-
-execute_tool:
-      if (tool_end != string::npos) {
-          string tool_call = generated_text.substr(tool_start, tool_end - tool_start + string(Tokens::FUNC_END).length());
-          string preamble = "";
-          if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
-
-          const vector<string> strip_tags = {Tokens::TURN_START, Tokens::TURN_END};
-          for (const auto& tag : strip_tags) {
-              size_t p;
-              while ((p = tool_call.find(tag)) != string::npos) tool_call.erase(p, tag.length());
-          }
-
-          size_t t_start_in_unprinted = unprinted_text.find(Tokens::FUNC_START);
-          if (t_start_in_unprinted != string::npos && t_start_in_unprinted > 0) {
-              printf("%s", unprinted_text.substr(0, t_start_in_unprinted).c_str());
-          }
-
-          string tool_name_for_display = "";
-          size_t name_start = tool_call.find(Tokens::FUNC_START);
-          if (name_start != string::npos) {
-              name_start += string(Tokens::FUNC_START).length();
-              size_t name_end = tool_call.find('>', name_start);
-              if (name_end != string::npos) {
-                  tool_name_for_display = tool_call.substr(name_start, name_end - name_start);
-              }
-          }
-
-          string display_call = tool_call;
-          if (!tool_name_for_display.empty()) {
-              if (tool_name_for_display == "edit_file") {
-                  string path = extract_string_arg_bounded(tool_call, "path");
-                  display_call = "edit_file(path=\"" + path + "\")";
-              } else if (tool_name_for_display == "write_file") {
-                  string path = extract_string_arg_bounded(tool_call, "path");
-                  display_call = "write_file(path=\"" + path + "\")";
-              } else if (tool_name_for_display == "read_files") {
-                  display_call = "read_files(...)";
-              } else if (tool_name_for_display == "search_file") {
-                  string path = extract_string_arg_bounded(tool_call, "path");
-                  string text = extract_string_arg_bounded(tool_call, "text");
-                  display_call = "search_file(path=\"" + path + "\", text=\"" + text + "\")";
-              } else if (tool_name_for_display == "exec_shell") {
-                  string cmd = extract_string_arg_bounded(tool_call, "command");
-                  display_call = "exec_shell(command=\"" + cmd + "\")";
-              } else if (tool_name_for_display == "chmod") {
-                  string path = extract_string_arg_bounded(tool_call, "path");
-                  int mode = extract_int_arg_bounded(tool_call, "mode");
-                  display_call = "chmod(path=\"" + path + "\", mode=" + to_string(mode) + ")";
-              } else if (tool_name_for_display == "web_search") {
-                  string q = extract_string_arg_bounded(tool_call, "query");
-                  display_call = "web_search(query=\"" + q + "\")";
-              }
-          }
-
-          string clean_log = preamble;
-          if (!clean_log.empty() && clean_log.back() != '\n') clean_log += "\n";
-          clean_log += display_call;
-          if (chat_log.is_open()) {
-              chat_log << clean_log << "\n\n";
-              chat_log.flush();
-          }
-
-          printf("%s\n", display_call.c_str());
+      // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
+      // Catches Qwen's infinite `</</` loops and safely hands off to execution
+      if (unprinted_text.find("</</") != string::npos) {
+          printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
           fflush(stdout);
           unprinted_text = "";
 
-          bool is_real_tool = false;
-          vector<string> valid_tools = {
-              "read_files", "search_file", "exec_shell", "edit_file", "write_file", "chmod", "web_search"
-          };
-          for (const auto& vn : valid_tools) {
-            if (tool_name_for_display == vn) {
-              is_real_tool = true;
-              break;
-            }
-          }
-
-          int bticks = 0; size_t pos = 0;
-          while ((pos = full_response.find("```", pos)) != string::npos) { bticks++; pos += 3; }
-          if (bticks % 2 != 0) is_real_tool = false;
-
-          size_t global_ts = full_response.rfind(Tokens::FUNC_START);
-          if (global_ts != string::npos && global_ts > 0) {
-            char prev_char = full_response[global_ts - 1];
-            if (prev_char == '`' || prev_char == '\\') is_real_tool = false;
-          }
-
-          string tool_result = "";
-          string display_result = "";
-          bool was_loop = false;
-          bool abort_auto = false;
-          bool inject_auto_user_msg = false;
-          string active_intervention_msg = "";
-
-          string tool_name = tool_name_for_display;
-
-          if (!is_real_tool) {
-            tool_result = "System Error: Invalid tool format or unsupported tool. Supported tools: read_files, write_file, edit_file, chmod, exec_shell, search_file, web_search. Please try again.";
-            display_result = tool_result;
-          } else {
-            bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
-
-            was_loop = loop_guard.check_for_loop(preamble, tool_call);
-            int current_strikes = loop_guard.get_loop_strikes();
-
-            tool_result = execute_tool_call(tool_call, clean_files, last_grep_req);
-
-            if (stop_generation) {
-              printf("\n\033[31m[Tool Interrupted by User]\033[0m\n");
-              fflush(stdout);
-              stop_generation = 0;
-              abort_auto = true;
-              break;
-            }
-
-            bool tool_failed = (tool_result.find("System Error:") != string::npos || tool_result.find("Error:") != string::npos);
-
-            if (was_loop) {
-                active_intervention_msg = get_next_loop_message();
-                bool has_match_count = (tool_result.find("replacement(s)") != string::npos);
-
-                if (tool_result.find("exact grep") == string::npos) {
-                    if (!has_match_count) {
-                        tool_result = active_intervention_msg;
-                    } else {
-                        tool_result += "\n" + active_intervention_msg;
-                    }
-                }
-
-                display_result = tool_result;
-
-                int max_attempts = loopMessages.size();
-                int attempt_num = current_strikes - 2;
-
-                if (attempt_num <= max_attempts) {
-                    printf("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m\n", attempt_num, max_attempts);
-                    fflush(stdout);
-                    abort_auto = false;
-                    inject_auto_user_msg = true;
-                } else {
-                    printf("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n", max_attempts);
-                    fflush(stdout);
-                    abort_auto = true;
-                    intra_loop_strikes = 0;
-                }
-            } else {
-                if (is_mutating_tool && !tool_failed) loop_guard.clear_history();
-
-                bool is_expected_error = (tool_result.find("exact match not found") != string::npos ||
-                                         tool_result.find("contains the 'old' string") != string::npos);
-                if (is_mutating_tool && is_expected_error) loop_guard.clear_history();
-
-                if (tool_name == "read_files") {
-                    vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
-                    display_result = "Read files: ";
-                    for (const auto& p : paths) display_result += p + " ";
-                    if (tool_result.find("[Content omitted") != string::npos) display_result += "(Cache Hit)";
-                } else if (tool_name == "web_search") {
-                    string q = extract_string_arg_bounded(tool_call, "query");
-                    display_result = "Web search: " + q;
-                } else {
-                    display_result = tool_result;
-                }
-            }
-          }
-
-          bool has_error = (display_result.find("Error:") != string::npos);
-          bool has_match_count = (display_result.find("Match count:") != string::npos);
-
-          if (is_debug) {
-            printf("\033[92m[Tool Result]\033[0m\n");
-            string result_to_print = display_result;
-            size_t p = 0;
-            while ((p = result_to_print.find('\n')) != string::npos) {
-                printf("  %.*s\n", (int)p, result_to_print.c_str());
-                result_to_print.erase(0, p + 1);
-            }
-            if (!result_to_print.empty()) printf("  %s\n", result_to_print.c_str());
-          } else {
-            if (has_error || has_match_count) {
-              printf("\033[92m[Tool Result]\033[0m\n");
-              if (tool_name == "edit_file") {
-                string first_line = display_result;
-                size_t p = first_line.find('\n');
-                if (p != string::npos) first_line.erase(p);
-                printf("  %s\n", first_line.c_str());
-              } else {
-                string result_to_print = display_result;
-                size_t p = 0;
-                if ((p = result_to_print.find('\n')) != string::npos) {
-                    printf("  %.*s\n", (int)p, result_to_print.c_str());
-                } else {
-                  printf("  %s\n", result_to_print.c_str());
-                }
+          if (tool_start != string::npos && tool_end == string::npos) {
+              // Strip the malformed `</</` stutter so it isn't parsed
+              size_t bad_pos = generated_text.rfind("</</");
+              if (bad_pos != string::npos && bad_pos > tool_start) {
+                  size_t drop_len = generated_text.length() - bad_pos;
+                  generated_text.erase(bad_pos);
+                  full_response.erase(full_response.length() - drop_len);
               }
-            }
-          }
-          fflush(stdout);
 
-          log_entry("TOOL RESULT", display_result);
-          generated_text = ""; unprinted_text = "";
+              // Force-close the XML cleanly
+              string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
+              generated_text += forced_close;
+              full_response += forced_close;
 
-          std::string tool_result_section = string(Tokens::TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + Tokens::TURN_END + "\n";
-          string tool_msg = tool_result_section + Tokens::TURN_START + "assistant\n";
-
-          if (inject_auto_user_msg) {
-              tool_msg += active_intervention_msg + string(Tokens::TURN_END) + "\n" + Tokens::TURN_START + "assistant\n";
-          }
-
-          vector<llama_token> t_tokens = tokenize(tool_msg);
-          if (n_past + t_tokens.size() >= cparams.n_ctx) {
-              printf("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
+              tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
+              trigger_tool_execution = true;
+              break; // Safely exit the generation loop to execute the tool
+          } else {
               auto_continue = false;
               break;
           }
-
-          batch.n_tokens = 0;
-          for (size_t i = 0; i < t_tokens.size(); i++) {
-              common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
-              if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                  if (!handle_llama_decode_error(ctx, batch)) {
-                      abort_auto = true;
-                      break;
-                  }
-                  batch.n_tokens = 0;
-              }
-          }
-          if (abort_auto) {
-              auto_continue = false;
-              break;
-          }
-          if (batch.n_tokens > 0) {
-              if (!handle_llama_decode_error(ctx, batch)) {
-                  auto_continue = false;
-                  break;
-              }
-          }
-
-          auto_continue = true;
-          break;
       }
 
-      bool partial_tag = false;
-      bool in_tool_call_stream = false;
-
-      size_t ts = generated_text.rfind(Tokens::FUNC_START);
-      size_t te = generated_text.rfind(Tokens::FUNC_END);
-
-      if (ts != string::npos && (te == string::npos || ts > te)) {
-          in_tool_call_stream = true;
+      // --- NORMAL TOOL COMPLETION ---
+      if (tool_end != string::npos) {
+          trigger_tool_execution = true;
+          break; // The tool tag is closed. Break the loop to execute it!
       }
 
-      size_t open_bracket = generated_text.rfind('<');
-      if (open_bracket != string::npos) {
-          if (open_bracket > te || te == string::npos) {
-              string suffix = generated_text.substr(open_bracket);
-              if (string(Tokens::FUNC_START).find(suffix) == 0 || string(Tokens::FUNC_END).find(suffix) == 0) partial_tag = true;
-          }
-      }
-
-      string combined = unprinted_text + token_str;
-      size_t close_bracket = combined.find('>');
-      
-      string func_end_str = Tokens::FUNC_END;
-      string partial_func_end = func_end_str.substr(0, func_end_str.length() - 1);
-      
-      if (in_tool_call_stream && combined.find(partial_func_end) != string::npos && close_bracket != string::npos) {
-        bool unclosed = false;
-        if (combined.find(func_end_str) == string::npos) {
-             unclosed = true;
-             string close_str = func_end_str;
-             vector<llama_token> c_tokens = tokenize(close_str);
-             
-             batch.n_tokens = 0;
-             for (size_t i = 0; i < c_tokens.size(); i++) {
-                 common_batch_add(batch, c_tokens[i], n_past++, {0}, true);
-                 if (!handle_llama_decode_error(ctx, batch)) {
-                   break;
-                 }
-                 batch.n_tokens = 0;
-             }
-
-             generated_text += close_str;
-             full_response += close_str;
-             unprinted_text += close_str;
-
-             tool_end = generated_text.find(Tokens::FUNC_END, ts);
-             goto execute_tool;
-        }
-
-        if (!generated_text.empty() && !unclosed) {
-            log_entry("ASSISTANT", generated_text);
-        }
-
-        batch.n_tokens = 0;
-        common_batch_add(batch, next_token, n_past++, {0}, true);
-        if (!handle_llama_decode_error(ctx, batch)) {
-          break;
-        }
-        auto_continue = false;
-        break;
-      }
-
+      // --- SAFETY VALVE (Terminal Printing) ---
       if (!partial_tag && !in_tool_call_stream && !unprinted_text.empty()) {
-        printf("%s", unprinted_text.c_str()); fflush(stdout); unprinted_text = "";
+        printf("%s", unprinted_text.c_str());
+        fflush(stdout);
+        unprinted_text = "";
+      } else if (partial_tag && unprinted_text.length() > 50) {
+        printf("%s", unprinted_text.c_str());
+        fflush(stdout);
+        unprinted_text = "";
       }
 
       t_count++;
@@ -1077,7 +864,7 @@ execute_tool:
       if (!handle_llama_decode_error(ctx, batch)) {
         break;
       }
-    }
+    } // END INNER TOKEN LOOP
 
     auto end = chrono::high_resolution_clock::now();
     double elapsed = chrono::duration<double>(end - start).count();
@@ -1086,6 +873,223 @@ execute_tool:
     if (stop_generation) {
       stop_generation = 0;
       auto_continue = false;
+    }
+
+    // --- TOOL EXECUTION BLOCK ---
+    // If the generation loop exited and signaled a tool is ready, we process it here.
+    if (trigger_tool_execution && tool_start != string::npos && tool_end != string::npos) {
+        string tool_call = generated_text.substr(tool_start, tool_end - tool_start + string(Tokens::FUNC_END).length());
+        string preamble = "";
+        if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
+
+        const vector<string> strip_tags = {Tokens::TURN_START, Tokens::TURN_END};
+        for (const auto& tag : strip_tags) {
+            size_t p;
+            while ((p = tool_call.find(tag)) != string::npos) tool_call.erase(p, tag.length());
+        }
+
+        size_t t_start_in_unprinted = unprinted_text.find(Tokens::FUNC_START);
+        if (t_start_in_unprinted != string::npos && t_start_in_unprinted > 0) {
+            printf("%s", unprinted_text.substr(0, t_start_in_unprinted).c_str());
+        }
+
+        string tool_name_for_display = "";
+        size_t name_start = tool_call.find(Tokens::FUNC_START);
+        if (name_start != string::npos) {
+            name_start += string(Tokens::FUNC_START).length();
+            size_t name_end = tool_call.find('>', name_start);
+            if (name_end != string::npos) {
+                tool_name_for_display = tool_call.substr(name_start, name_end - name_start);
+            }
+        }
+
+        string clean_log = preamble;
+        if (!clean_log.empty() && clean_log.back() != '\n') clean_log += "\n";
+        clean_log += tool_call; // Log the RAW XML
+        if (chat_log.is_open()) {
+            chat_log << clean_log << "\n\n";
+            chat_log.flush();
+        }
+
+        printf("%s\n", tool_call.c_str()); // Print RAW XML to the terminal
+        fflush(stdout);
+        unprinted_text = "";
+
+        bool is_real_tool = false;
+        vector<string> valid_tools = {
+            "read_files", "search_file", "exec_shell", "edit_file", "write_file", "chmod", "web_search"
+        };
+        for (const auto& vn : valid_tools) {
+          if (tool_name_for_display == vn) {
+            is_real_tool = true;
+            break;
+          }
+        }
+
+        int bticks = 0; size_t pos = 0;
+        while ((pos = full_response.find("```", pos)) != string::npos) { bticks++; pos += 3; }
+        if (bticks % 2 != 0) is_real_tool = false;
+
+        size_t global_ts = full_response.rfind(Tokens::FUNC_START);
+        if (global_ts != string::npos && global_ts > 0) {
+          char prev_char = full_response[global_ts - 1];
+          if (prev_char == '`' || prev_char == '\\') is_real_tool = false;
+        }
+
+        string tool_result = "";
+        string display_result = "";
+        bool was_loop = false;
+        bool abort_auto = false;
+        bool inject_auto_user_msg = false;
+        string active_intervention_msg = "";
+
+        string tool_name = tool_name_for_display;
+
+        if (!is_real_tool) {
+          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema. Supported tools: read_files, write_file, edit_file, chmod, exec_shell, search_file, web_search. Please try again.";
+          display_result = tool_result;
+        } else {
+          bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
+
+          was_loop = loop_guard.check_for_loop(preamble, tool_call);
+          int current_strikes = loop_guard.get_loop_strikes();
+
+          tool_result = execute_tool_call(tool_call, clean_files, last_grep_req);
+
+          if (stop_generation) {
+            printf("\n\033[31m[Tool Interrupted by User]\033[0m\n");
+            fflush(stdout);
+            stop_generation = 0;
+            abort_auto = true;
+          }
+
+          if (!abort_auto) {
+              bool tool_failed = (tool_result.find("System Error:") != string::npos || tool_result.find("Error:") != string::npos);
+
+              if (was_loop) {
+                  active_intervention_msg = get_next_loop_message();
+                  bool has_match_count = (tool_result.find("replacement(s)") != string::npos);
+
+                  if (tool_result.find("exact grep") == string::npos) {
+                      if (!has_match_count) {
+                          tool_result = active_intervention_msg;
+                      } else {
+                          tool_result += "\n" + active_intervention_msg;
+                      }
+                  }
+
+                  display_result = tool_result;
+
+                  int max_attempts = loopMessages.size();
+                  int attempt_num = current_strikes - 2;
+
+                  if (attempt_num <= max_attempts) {
+                      printf("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m\n", attempt_num, max_attempts);
+                      fflush(stdout);
+                      abort_auto = false;
+                      inject_auto_user_msg = true;
+                  } else {
+                      printf("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n", max_attempts);
+                      fflush(stdout);
+                      abort_auto = true;
+                      intra_loop_strikes = 0;
+                  }
+              } else {
+                  if (is_mutating_tool && !tool_failed) loop_guard.clear_history();
+
+                  bool is_expected_error = (tool_result.find("exact match not found") != string::npos ||
+                                           tool_result.find("contains the 'old' string") != string::npos);
+                  if (is_mutating_tool && is_expected_error) loop_guard.clear_history();
+
+                  if (tool_name == "read_files") {
+                      vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
+                      display_result = "Read files: ";
+                      for (const auto& p : paths) display_result += p + " ";
+                      if (tool_result.find("[Content omitted") != string::npos) display_result += "(Cache Hit)";
+                  } else if (tool_name == "web_search") {
+                      string q = extract_string_arg_bounded(tool_call, "query");
+                      display_result = "Web search: " + q;
+                  } else {
+                      display_result = tool_result;
+                  }
+              }
+          }
+        }
+
+        if (!abort_auto) {
+            bool has_error = (display_result.find("Error:") != string::npos);
+            bool has_match_count = (display_result.find("Match count:") != string::npos);
+
+            if (is_debug) {
+              printf("\033[92m[Tool Result]\033[0m\n");
+              string result_to_print = display_result;
+              size_t p = 0;
+              while ((p = result_to_print.find('\n')) != string::npos) {
+                  printf("  %.*s\n", (int)p, result_to_print.c_str());
+                  result_to_print.erase(0, p + 1);
+              }
+              if (!result_to_print.empty()) printf("  %s\n", result_to_print.c_str());
+            } else {
+              if (has_error || has_match_count) {
+                printf("\033[92m[Tool Result]\033[0m\n");
+                if (tool_name == "edit_file") {
+                  string first_line = display_result;
+                  size_t p = first_line.find('\n');
+                  if (p != string::npos) first_line.erase(p);
+                  printf("  %s\n", first_line.c_str());
+                } else {
+                  string result_to_print = display_result;
+                  size_t p = 0;
+                  if ((p = result_to_print.find('\n')) != string::npos) {
+                      printf("  %.*s\n", (int)p, result_to_print.c_str());
+                  } else {
+                    printf("  %s\n", result_to_print.c_str());
+                  }
+                }
+              }
+            }
+            fflush(stdout);
+
+            log_entry("TOOL RESULT", display_result);
+            generated_text = ""; unprinted_text = "";
+
+            std::string tool_result_section = string(Tokens::TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + Tokens::TURN_END + "\n";
+            string tool_msg = tool_result_section + Tokens::TURN_START + "assistant\n";
+
+            if (inject_auto_user_msg) {
+                tool_msg += active_intervention_msg + string(Tokens::TURN_END) + "\n" + Tokens::TURN_START + "assistant\n";
+            }
+
+            vector<llama_token> t_tokens = tokenize(tool_msg);
+            if (n_past + t_tokens.size() >= cparams.n_ctx) {
+                printf("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
+                auto_continue = false;
+            } else {
+                batch.n_tokens = 0;
+                for (size_t i = 0; i < t_tokens.size(); i++) {
+                    common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
+                    if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
+                        if (!handle_llama_decode_error(ctx, batch)) {
+                            abort_auto = true;
+                            break;
+                        }
+                        batch.n_tokens = 0;
+                    }
+                }
+                if (!abort_auto && batch.n_tokens > 0) {
+                    if (!handle_llama_decode_error(ctx, batch)) {
+                        abort_auto = true;
+                    }
+                }
+
+                if (!abort_auto) {
+                    auto_continue = true;
+                    continue; // Skip the standard logging at the bottom and go straight to the next token generation loop
+                }
+            }
+        } else {
+            auto_continue = false;
+        }
     }
 
     if (!auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
