@@ -1,5 +1,6 @@
 #include "filesystem.h"
 #include "parsers.h"
+#include "tokens.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -16,13 +17,18 @@
 
 using namespace std;
 
+// --- Helper to escape tags from disk so they don't break the LLM's XML parser ---
+static void escape_parameter_tags(std::string& str) {
+    std::string from = Tokens::PARAM_END;
+    std::string to = Tokens::PARAM_END_ESC;
+    size_t start_pos = 0;
+    while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length(); 
+    }
+}
+
 // --- Consolidated Diagnostic Logging Function ---
-// This function handles all diagnostic output to both terminal and log file
-// Parameters:
-//   - message: The diagnostic message to output
-//   - logOnly: If true, only write to log file (not to terminal)
-//   - debugOnly: If true, only output when LLM_DEBUG=1 environment variable is set
-//   - tag: Optional tag to prepend to the message (e.g., "[Edit]")
 void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
                     const string& tag /* = "" */) {
     if (!chat_log.is_open()) {
@@ -30,14 +36,11 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
         return;
     }
 
-    // Build the full message with optional tag
     string full_message = message;
     if (!tag.empty()) {
         full_message = tag + " " + message;
     }
 
-    // Write to terminal (unless logOnly is true)
-    // When debugOnly is true, only show on terminal if in debug mode
     if (!logOnly) {
         if (!debugOnly || is_debug) {
             cout << full_message << endl;
@@ -49,44 +52,11 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
     chat_log.flush();
 }
 
-// Static constant definition
 const string FileSystemTools::HOME = "/home/ai";
 
-// Remove trailing spaces from a string (used for cleaning tool arguments)
-string remove_trailing_spaces(const string& str) {
-    string result;
-    result.reserve(str.length());
-
-    string current_line;
-    for (char c : str) {
-        if (c == '\n') {
-            // Remove trailing spaces from the current line before adding newline
-            while (!current_line.empty() && isspace(current_line.back())) {
-                current_line.pop_back();
-            }
-            result += current_line + '\n';
-            current_line.clear();
-        } else {
-            current_line += c;
-        }
-    }
-
-    // Process the last line (if any)
-    while (!current_line.empty() && isspace(current_line.back())) {
-        current_line.pop_back();
-    }
-    result += current_line;
-
-    return result;
-}
-
-FileSystemTools::FileSystemTools() {
-  // Constructor
-}
+FileSystemTools::FileSystemTools() {}
 
 string FileSystemTools::_get_fullpath(const string& path) {
-  // Get current working directory by reading ~/.cwd directly
-  // This uses ~/.cwd which is synchronized via cd() function in ~/.bashrc
   string home_cwd = HOME + "/.cwd";
   ifstream cwd_file(home_cwd);
   string cwd_str;
@@ -95,20 +65,16 @@ string FileSystemTools::_get_fullpath(const string& path) {
     getline(cwd_file, cwd_str);
     cwd_file.close();
   } else {
-    // Fallback to HOME if ~/.cwd doesn't exist
     cwd_str = HOME;
   }
 
   string fullpath;
-
-  // If path is relative, join with cwd
   if (path[0] != '/') {
     fullpath = cwd_str + "/" + path;
   } else {
     fullpath = path;
   }
 
-  // Resolve to absolute path
   char result[PATH_MAX];
   if (realpath(fullpath.c_str(), result) != nullptr) {
     return string(result);
@@ -117,7 +83,6 @@ string FileSystemTools::_get_fullpath(const string& path) {
 }
 
 string FileSystemTools::exec_shell(const string& command) {
-  // Add robust single-quote escaping so the LLM's command doesn't break the bash -c '' wrapper
   string safe_cmd = command;
   size_t pos = 0;
   while ((pos = safe_cmd.find("'", pos)) != string::npos) {
@@ -125,13 +90,6 @@ string FileSystemTools::exec_shell(const string& command) {
     pos += 4;
   }
 
-/*
-   Run the command in the cwd
-   This requires ~/.bashrc to define
-   cd() {
-     builtin cd "$@" && pwd > ~/.cwd
-   }
-*/
   string full_command = "bash -c 'cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " 2>&1'";
 
   string result;
@@ -159,49 +117,96 @@ string FileSystemTools::search_file(const string& path, const string& text) {
     return "Error: Failed to open file for reading: " + fullpath;
   }
 
-  vector<string> lines;
-  string line;
-  while (getline(in_file, line)) {
-    lines.push_back(line);
-  }
+  stringstream buffer;
+  buffer << in_file.rdbuf();
+  string content = buffer.str();
   in_file.close();
 
+  bool search_with_newlines = (text.find('\n') != string::npos);
   string result = "";
   int match_count = 0;
-  int context = 5; // Configurable number of lines before and after
+  int context = 5; 
 
-  int i = 0;
-  while (i < (int)lines.size()) {
-    if (lines[i].find(text) != string::npos) {
+  if (search_with_newlines) {
+    size_t pos = 0;
+    while ((pos = content.find(text, pos)) != string::npos) {
       match_count++;
       if (match_count > 10) {
           result += "... (Truncated after 10 matches)\n";
           break;
       }
-
-      int start = max(0, i - context);
-      int end = min((int)lines.size() - 1, i + context);
-
-      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n```\n";
-      for (int j = start; j <= end; j++) {
-        result += lines[j] + "\n";
+      
+      size_t start_pos = 0;
+      int start_line = 1, end_line = 1;
+      for (size_t i = 0; i < pos; i++) {
+        if (content[i] == '\n') start_line++;
       }
+      
+      size_t end_pos = pos + text.length();
+      for (size_t i = 0; i < end_pos && i < content.length(); i++) {
+        if (content[i] == '\n') end_line++;
+      }
+      
+      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line) + ") ---\n```\n";
+      
+      size_t ctx_start = pos;
+      size_t ctx_end = end_pos;
+      
+      int lines_before = 0;
+      while (ctx_start > 0 && lines_before < context) {
+        ctx_start--;
+        if (content[ctx_start] == '\n') lines_before++;
+      }
+      
+      int lines_after = 0;
+      while (ctx_end < content.length() && lines_after < context) {
+        if (content[ctx_end] == '\n') lines_after++;
+        ctx_end++;
+      }
+      
+      result += content.substr(ctx_start, ctx_end - ctx_start);
       result += "```\n\n";
-
-      i = end; // fast-forward to avoid overlapping context windows
+      pos = end_pos;
     }
-    i++;
+  } else {
+    vector<string> lines;
+    string line;
+    ifstream line_file(fullpath);
+    if (!line_file.is_open()) {
+      return "Error: Failed to reopen file for line-by-line reading: " + fullpath;
+    }
+    while (getline(line_file, line)) {
+      lines.push_back(line);
+    }
+    line_file.close();
+
+    int i = 0;
+    while (i < (int)lines.size()) {
+      if (lines[i].find(text) != string::npos) {
+        match_count++;
+        if (match_count > 10) {
+          result += "... (Truncated after 10 matches)\n";
+          break;
+        }
+        int start = max(0, i - context);
+        int end = min((int)lines.size() - 1, i + context);
+        result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n```\n";
+        for (int j = start; j <= end; j++) {
+          result += lines[j] + "\n";
+        }
+        result += "```\n\n";
+        i = end; 
+      }
+      i++;
+    }
   }
 
   if (match_count == 0) {
-    // Log search failure for debugging
     log_diagnostic("No occurrences found for text: " + text, true, false, "[Search]");
-    return "No occurrences found for text: " + text;
+    return "No occurrences found for text.\n";
   }
 
-  // Log successful search with match count
-  log_diagnostic("Found " + to_string(match_count) + " occurrence(s) for text: " + text, true, false, "[Search]");
-
+  escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
 }
 
@@ -209,23 +214,29 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
   vector<map<string, string>> results;
 
   for (const auto& path : paths) {
-    map<string, string> file_data;
-    file_data["path"] = path;
+    map<string, string> result;
+    result["path"] = path;
+    result["content"] = "";
+    result["error"] = "";
 
     string fullpath = _get_fullpath(path);
-    ifstream file(fullpath);
 
-    if (file.is_open()) {
-      stringstream buffer;
-      buffer << file.rdbuf();
-      file_data["content"] = buffer.str();
-      file_data["error"] = "";
-      file.close();
-    } else {
-      file_data["content"] = "";
-      file_data["error"] = "Failed to open file: " + fullpath;
+    ifstream in_file(fullpath);
+    if (!in_file.is_open()) {
+      result["error"] = "Failed to open file for reading: " + fullpath;
+      results.push_back(result);
+      continue;
     }
-    results.push_back(file_data);
+
+    stringstream buffer;
+    buffer << in_file.rdbuf();
+    string content = buffer.str();
+    
+    escape_parameter_tags(content); // Escape any literal XML tags before sending to LLM
+
+    result["status"] = "success";
+    result["content"] = content;
+    results.push_back(result);
   }
 
   return results;
@@ -234,7 +245,6 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 map<string, string> FileSystemTools::write_file(const string& path, const string& content) {
   string fullpath = _get_fullpath(path);
 
-  // Check if path is within HOME
   string normalized_fullpath = fullpath;
   if (normalized_fullpath.substr(0, HOME.size()) != HOME) {
     map<string, string> result;
@@ -243,34 +253,25 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
     return result;
   }
 
-  // CRITICAL: Verify content is not empty before writing (prevents accidental data loss)
-  if (content.empty()) {
-      map<string, string> result;
-      result["status"] = "error";
-      result["error"] = "CRITICAL ERROR: Cannot write empty content";
-      return result;
-  }
-
-  ofstream file(fullpath);
-  if (file.is_open()) {
-    file << content;
-    file.close();
-
-    map<string, string> result;
-    result["status"] = "success";
-    return result;
-  } else {
+  ofstream out_file(fullpath);
+  if (!out_file.is_open()) {
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "Failed to open file for writing: " + fullpath;
     return result;
   }
+
+  out_file << content;
+  out_file.close();
+
+  map<string, string> result;
+  result["status"] = "success";
+  return result;
 }
 
 map<string, string> FileSystemTools::edit_file(const string& path, const string& old_str, const string& new_str) {
   string fullpath = _get_fullpath(path);
 
-  // Check if path is within HOME
   string normalized_fullpath = fullpath;
   if (normalized_fullpath.substr(0, HOME.size()) != HOME) {
     map<string, string> result;
@@ -279,7 +280,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     return result;
   }
 
-  // Read current content
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
     map<string, string> result;
@@ -290,74 +290,32 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
 
   stringstream buffer;
   buffer << in_file.rdbuf();
-
-  // CRITICAL: Verify that content was actually read
-  if (buffer.fail() || buffer.bad()) {
-      map<string, string> result;
-      result["status"] = "error";
-      result["error"] = "Failed to read file content";
-      return result;
-  }
-
   string content = buffer.str();
   in_file.close();
 
-  // CRITICAL: Verify that content is not empty before proceeding
-  if (content.empty()) {
-      map<string, string> result;
-      result["status"] = "error";
-      result["error"] = "File is empty - cannot perform edit operation";
-      return result;
-  }
-
-  // --- ATOMIC PRE-FLIGHT CHECK ---
+  size_t pos = 0;
+  int changes_count = 0;
+  
   if (old_str.empty()) {
       map<string, string> result;
       result["status"] = "error";
-      result["error"] = "The 'old' search string is completely empty. You cannot replace an empty string.";
+      result["error"] = "OLD_TEXT cannot be empty";
       return result;
   }
 
-  if (content.find(old_str) == string::npos) {
-      map<string, string> result;
-      result["status"] = "error";
-      result["error"] = "Exact match not found for the following string:\n```\n" + old_str + "\n```\nEnsure your spacing, indentation, and newlines match the file exactly.";
-      return result;
-  }
-
-  int changes_count = 0;
-  // Find all occurrences first to avoid infinite loops when new_str contains old_str
-  vector<size_t> match_positions;
-  size_t search_pos = 0;
-  while ((search_pos = content.find(old_str, search_pos)) != string::npos) {
-    match_positions.push_back(search_pos);
-    // Advance by old_str.length() to find the next non-overlapping occurrence
-    search_pos += old_str.length();
-  }
-
-  // Log old and new strings once (before replacements)
-  size_t truncation = 150;
-  string old_truncated = old_str;
-  if (old_truncated.length() > truncation) {
-    old_truncated = old_truncated.substr(0, truncation);
-  }
-  string new_truncated = new_str;
-  if (new_truncated.length() > truncation) {
-    new_truncated = new_truncated.substr(0, truncation);
-  }
-
-  // Log to file always, show on terminal only in debug mode
-  string edit_message = "Replacing " + to_string(match_positions.size()) + " occurrence(s):\n---OLD---\n" + old_truncated + "\n---NEW---\n" + new_truncated;
-  log_diagnostic(edit_message, false, true, "[Edit]");
-
-  // Replace in reverse order to avoid position shifting issues
-  for (int i = match_positions.size() - 1; i >= 0; --i) {
-    size_t pos = match_positions[i];
+  while ((pos = content.find(old_str, pos)) != string::npos) {
     content.replace(pos, old_str.length(), new_str);
+    pos += new_str.length();
     changes_count++;
   }
 
-  // CRITICAL: Verify content is not empty before writing (prevents data loss)
+  if (changes_count == 0) {
+    map<string, string> result;
+    result["status"] = "error";
+    result["error"] = "String not found in file. Ensure the OLD_TEXT exactly matches the file contents, including all whitespace and newlines.";
+    return result;
+  }
+
   if (content.empty()) {
       map<string, string> result;
       result["status"] = "error";
@@ -365,7 +323,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
       return result;
   }
 
-  // Write updated content
   ofstream out_file(fullpath);
   if (!out_file.is_open()) {
     map<string, string> result;
@@ -386,7 +343,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
 map<string, string> FileSystemTools::chmod_file(const string& path, int mode) {
   string fullpath = _get_fullpath(path);
 
-  // Check if path is within HOME
   string normalized_fullpath = fullpath;
   if (normalized_fullpath.substr(0, HOME.size()) != HOME) {
     map<string, string> result;
@@ -407,7 +363,7 @@ map<string, string> FileSystemTools::chmod_file(const string& path, int mode) {
   if (::chmod(fullpath.c_str(), octal_mode) != 0) {
     map<string, string> result;
     result["status"] = "error";
-    result["error"] = "Failed to change file permissions: " + string(strerror(errno));
+    result["error"] = "Failed to change permissions";
     return result;
   }
 
