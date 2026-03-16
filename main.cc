@@ -886,6 +886,14 @@ int main(int argc, char ** argv) {
 
     auto end = chrono::high_resolution_clock::now();
     double elapsed = chrono::duration<double>(end - start).count();
+
+    // Flush any remaining unprinted text before speed info
+    if (!unprinted_text.empty()) {
+        printf("%s", unprinted_text.c_str());
+        fflush(stdout);
+        unprinted_text = "";
+    }
+
     if (t_count > 0) printf("\n\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
 
     if (stop_generation) {
