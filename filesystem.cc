@@ -324,25 +324,4 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   return result;
 }
 
-map<string, string> FileSystemTools::chmod_file(const string& path, int mode) {
-  string fullpath = _get_fullpath(path);
-  int octal_mode = 0;
-  int temp_mode = mode;
-  int multiplier = 1;
-  while (temp_mode > 0) {
-    octal_mode += (temp_mode % 10) * multiplier;
-    temp_mode /= 10;
-    multiplier *= 8;
-  }
 
-  if (::chmod(fullpath.c_str(), octal_mode) != 0) {
-    map<string, string> result;
-    result["status"] = "error";
-    result["error"] = "Failed to change permissions";
-    return result;
-  }
-
-  map<string, string> result;
-  result["status"] = "success";
-  return result;
-}

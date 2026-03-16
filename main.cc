@@ -296,19 +296,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     } else {
       result = "Error: No path provided to edit_file";
     }
-  } else if (tool_name == "chmod") {
-    string path = extract_string_arg_bounded(tool_call, "path");
-    int mode = extract_int_arg_bounded(tool_call, "mode");
-    clean_files.erase(path);
-    last_grep_req = "";
-    if (!path.empty()) {
-      FileSystemTools fs;
-      auto result_map = fs.chmod_file(path, mode);
-      result = "Status: " + result_map.at("status");
-      if (result_map.find("error") != result_map.end()) result += ", Error: " + result_map.at("error");
-    } else {
-      result = "Error: No path provided to chmod";
-    }
   } else if (tool_name == "exec_shell") {
     string command = extract_string_arg_bounded(tool_call, "command");
     clean_files.clear();
@@ -948,7 +935,7 @@ int main(int argc, char ** argv) {
 
         bool is_real_tool = false;
         vector<string> valid_tools = {
-            "read_files", "search_file", "exec_shell", "edit_file", "write_file", "chmod", "web_search"
+            "read_files", "search_file", "exec_shell", "edit_file", "write_file", "web_search"
         };
         for (const auto& vn : valid_tools) {
           if (tool_name_for_display == vn) {
@@ -977,7 +964,7 @@ int main(int argc, char ** argv) {
         string tool_name = tool_name_for_display;
 
         if (!is_real_tool) {
-          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema. Supported tools: read_files, write_file, edit_file, chmod, exec_shell, search_file, web_search. Please try again.";
+          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema. Supported tools: read_files, write_file, edit_file, exec_shell, search_file, web_search. Please try again.";
           display_result = tool_result;
         } else {
           bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
