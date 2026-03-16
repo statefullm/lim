@@ -856,24 +856,28 @@ int main(int argc, char ** argv) {
           }
       }
 
+      // Clear unprinted_text when FUNC_END is found
+      if (tool_end != string::npos && unprinted_text.find(Tokens::FUNC_END) != string::npos) {
+          unprinted_text = "";
+      }
+
       // --- NORMAL TOOL COMPLETION ---
       if (tool_end != string::npos) {
+          unprinted_text = "";
           trigger_tool_execution = true;
           break; // The tool tag is closed. Break the loop to execute it!
       }
 
       // --- PERF OPTIMIZATION: SAFETY VALVE (Terminal Printing Buffering) ---
-      if (!partial_tag && !in_tool_call_stream && !unprinted_text.empty()) {
+      if (partial_tag)
+        unprinted_text = "";
+      else if (!in_tool_call_stream && !unprinted_text.empty()) {
         // Buffer output: Only print to the terminal every 10 tokens or on a newline
         if (t_count % 10 == 0 || unprinted_text.back() == '\n') {
             printf("%s", unprinted_text.c_str());
             fflush(stdout);
             unprinted_text = "";
         }
-      } else if (partial_tag && unprinted_text.length() > 50) {
-        printf("%s", unprinted_text.c_str());
-        fflush(stdout);
-        unprinted_text = "";
       }
 
       t_count++;
@@ -937,8 +941,6 @@ int main(int argc, char ** argv) {
             chat_log.flush();
         }
 
-        printf("%s\n", tool_call.c_str()); // Print RAW XML to the terminal
-        fflush(stdout);
         unprinted_text = "";
 
         bool is_real_tool = false;
