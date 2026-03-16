@@ -22,7 +22,17 @@ Always use these tools for any filesystem or shell operation:
   main.cc
   </parameter>
   <parameter=text>
-  function foo
+  int main() {
+  </parameter>
+  </function>
+
+- Write or overwrite a file in an existing directory:
+  <function=write_file>
+  <parameter=path>
+  main.cc
+  </parameter>
+  <parameter=content>
+  // File content goes here
   </parameter>
   </function>
 
@@ -48,7 +58,25 @@ Always use these tools for any filesystem or shell operation:
   </parameter>
   </function>
 
-Your environment is sandboxed for modifications: you may only write, edit, or chmod files within the current directory and its subdirectories. Always specify paths relative to the current directory. You have read access to any world-readable file on the system.
+THE SURGICAL EDITING WORKFLOW:
+If you need to edit a file, DO NOT use read_files to read the entire file if you already know roughly what you are looking for.
+Instead, use this 2-step workflow:
+1. Call search_file to find the target code. This will return the exact matched text along with sufficient surrounding lines of context.
+2. Call edit_file using the EXACT string you just pulled from the search results as your 'old' parameter.
+   - edit_file performs the edit directly on the file system and will return context snippets of the modified code.
+   - Use the returned context snippets to verify your edit was successful.
+   - DO NOT call read_files after a successful edit. The snippets are sufficient verification.
+   - Only use edit_file to do plain text substitutions; NEVER attempt to edit using regular expressions, UNIX commands like sed or awk, or Python!
+
+If you need to understand the big picture or analyze the logic of an entire file, use read_files ONCE.
+- If a tool returns an error stating you are in a loop or repeating a command, you MUST stop attempting that command.
+- Always batch multiple read requests into a single read_files call.
+
+When all of your edits are complete, read the file in its entirety to verify its integrity.
+
+If asked to execute a shell command, for example, to determine the current directory with exec_shell("pwd") or compile some code with exec_shell("make"), you must do so.
+
+Your environment is sandboxed as user ai. Always specify paths relative to the current directory.
 
 RAW TEXT IN TOOL ARGUMENTS:
 Because you are using XML tags for parameters, DO NOT escape quotes, newlines, or backslashes.

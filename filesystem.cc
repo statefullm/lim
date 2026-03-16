@@ -24,7 +24,7 @@ static void escape_parameter_tags(std::string& str) {
     size_t start_pos = 0;
     while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
         str.replace(start_pos, from.length(), to);
-        start_pos += to.length(); 
+        start_pos += to.length();
     }
 }
 
@@ -125,7 +125,7 @@ string FileSystemTools::search_file(const string& path, const string& text) {
   bool search_with_newlines = (text.find('\n') != string::npos);
   string result = "";
   int match_count = 0;
-  int context = 5; 
+  int context = 5;
 
   if (search_with_newlines) {
     size_t pos = 0;
@@ -135,35 +135,35 @@ string FileSystemTools::search_file(const string& path, const string& text) {
           result += "... (Truncated after 10 matches)\n";
           break;
       }
-      
+
       size_t start_pos = 0;
       int start_line = 1, end_line = 1;
       for (size_t i = 0; i < pos; i++) {
         if (content[i] == '\n') start_line++;
       }
-      
+
       size_t end_pos = pos + text.length();
       for (size_t i = 0; i < end_pos && i < content.length(); i++) {
         if (content[i] == '\n') end_line++;
       }
-      
+
       result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line) + ") ---\n```\n";
-      
+
       size_t ctx_start = pos;
       size_t ctx_end = end_pos;
-      
+
       int lines_before = 0;
       while (ctx_start > 0 && lines_before < context) {
         ctx_start--;
         if (content[ctx_start] == '\n') lines_before++;
       }
-      
+
       int lines_after = 0;
       while (ctx_end < content.length() && lines_after < context) {
         if (content[ctx_end] == '\n') lines_after++;
         ctx_end++;
       }
-      
+
       result += content.substr(ctx_start, ctx_end - ctx_start);
       result += "```\n\n";
       pos = end_pos;
@@ -195,7 +195,7 @@ string FileSystemTools::search_file(const string& path, const string& text) {
           result += lines[j] + "\n";
         }
         result += "```\n\n";
-        i = end; 
+        i = end;
       }
       i++;
     }
@@ -231,7 +231,7 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
     stringstream buffer;
     buffer << in_file.rdbuf();
     string content = buffer.str();
-    
+
     escape_parameter_tags(content); // Escape any literal XML tags before sending to LLM
 
     result["status"] = "success";
@@ -244,14 +244,6 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 
 map<string, string> FileSystemTools::write_file(const string& path, const string& content) {
   string fullpath = _get_fullpath(path);
-
-  string normalized_fullpath = fullpath;
-  if (normalized_fullpath.substr(0, HOME.size()) != HOME) {
-    map<string, string> result;
-    result["status"] = "error";
-    result["error"] = "Write access denied outside " + HOME;
-    return result;
-  }
 
   ofstream out_file(fullpath);
   if (!out_file.is_open()) {
@@ -272,14 +264,6 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
 map<string, string> FileSystemTools::edit_file(const string& path, const string& old_str, const string& new_str) {
   string fullpath = _get_fullpath(path);
 
-  string normalized_fullpath = fullpath;
-  if (normalized_fullpath.substr(0, HOME.size()) != HOME) {
-    map<string, string> result;
-    result["status"] = "error";
-    result["error"] = "Edit access denied outside " + HOME;
-    return result;
-  }
-
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
     map<string, string> result;
@@ -295,7 +279,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
 
   size_t pos = 0;
   int changes_count = 0;
-  
+
   if (old_str.empty()) {
       map<string, string> result;
       result["status"] = "error";
@@ -342,15 +326,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
 
 map<string, string> FileSystemTools::chmod_file(const string& path, int mode) {
   string fullpath = _get_fullpath(path);
-
-  string normalized_fullpath = fullpath;
-  if (normalized_fullpath.substr(0, HOME.size()) != HOME) {
-    map<string, string> result;
-    result["status"] = "error";
-    result["error"] = "chmod only allowed inside " + HOME;
-    return result;
-  }
-
   int octal_mode = 0;
   int temp_mode = mode;
   int multiplier = 1;
