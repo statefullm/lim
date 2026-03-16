@@ -417,7 +417,7 @@ int main(int argc, char ** argv) {
   log_entry("SYSTEM", "Starting LLM Controller Session");
 
   llama_backend_init();
-  llama_numa_init(GGML_NUMA_STRATEGY_DISTRIBUTE);
+  llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
 
   auto mparams = llama_model_default_params();
   mparams.n_gpu_layers = 999;
@@ -460,12 +460,33 @@ int main(int argc, char ** argv) {
   std::string formatted_system_prompt = string(Tokens::TURN_START) + "system\n" + system_prompt + Tokens::TURN_END + "\n";
   vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
 
+  // Sampling parameters: instruct mode for general tasks
   float temp = 0.7f;
   float top_p = 0.8f;
   int32_t top_k = 20;
   float min_p = 0.0f;
   float penalty_present = 1.5f;
   float penalty_repeat = 1.0f;
+
+  /*
+  // Sampling parameters: instruct mode for reasoning
+  float temp = 1.0f;
+  float top_p = 1.0f;
+  int32_t top_k = 40;
+  float min_p = 0.0f;
+  float penalty_present = 2.0f;
+  float penalty_repeat = 1.0f;
+  */
+
+  /*
+  // Sampling parameters: open-webui defaults
+  float temp = 0.0f;
+  float top_p = 0.9f;
+  int32_t top_k = 40;
+  float min_p = 0.0f;
+  float penalty_present = 0.0f;
+  float penalty_repeat = 1.1f;
+  */
 
   llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
   llama_sampler * smpl = llama_sampler_chain_init(lparams);
@@ -564,6 +585,7 @@ int main(int argc, char ** argv) {
         last_grep_req = "";
         loop_guard.clear_history();
         intra_loop_strikes = 0;
+        llama_sampler_reset(smpl);
         log_entry("SYSTEM", "Context Cleared");
         printf("\033[32m[Context Cleared Successfully]\033[0m\n");
         continue;
@@ -574,6 +596,7 @@ int main(int argc, char ** argv) {
         last_grep_req = "";
         loop_guard.clear_history();
         intra_loop_strikes = 0;
+        llama_sampler_reset(smpl);
         log_entry("SYSTEM", "Loop Counter and File Cache Reset");
         printf("\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
         continue;
@@ -585,6 +608,12 @@ int main(int argc, char ** argv) {
       if (!auto_continue) log_entry("USER", user_input);
 
       std::string user_message = string(Tokens::TURN_START) + "user\n" + user_input + Tokens::TURN_END + "\n" + Tokens::TURN_START + "assistant\n";
+
+/* The "Dummy Thought" Injection
+      std::string user_message = string(Tokens::TURN_START) + "user\n" +
+                           user_input + Tokens::TURN_END + "\n" +
+                           Tokens::TURN_START + "assistant\n<think>\nThe user  wants a direct answer. I will output the requested data immediately without preamble.\n</think>\n";
+*/
       vector<llama_token> tokens = tokenize(user_message);
 
       if (n_past + tokens.size() >= cparams.n_ctx) {
@@ -630,12 +659,17 @@ int main(int argc, char ** argv) {
     string unprinted_text = "";
     string full_response = "";
 
+    generated_text.reserve(32768);
+    unprinted_text.reserve(1024);
+    full_response.reserve(32768);
+
     // Core state tracking for the token loop
     bool in_tool_call_stream = false;
     bool partial_tag = false;
     size_t tool_start = string::npos;
     size_t tool_end = string::npos;
     bool trigger_tool_execution = false;
+    size_t func_search_pos = 0; // PERF OPTIMIZATION: Cache for O(1) searches
 
     // --- INNER TOKEN GENERATION LOOP ---
     while (true) {
@@ -694,30 +728,27 @@ int main(int argc, char ** argv) {
       unprinted_text += token_str;
       full_response += token_str;
 
-      // Update basic tracking offsets
-      tool_start = generated_text.find(Tokens::FUNC_START);
-      if (tool_start != string::npos) {
+      // --- PERF OPTIMIZATION: O(1) TRACKING OFFSETS ---
+      if (tool_start == string::npos) {
+          tool_start = generated_text.find(Tokens::FUNC_START, func_search_pos);
+          if (tool_start == string::npos) {
+              // Cache the search position so we never scan the old story text again
+              func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
+          }
+      }
+      if (tool_start != string::npos && tool_end == string::npos) {
           tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
-      } else {
-          tool_end = string::npos;
       }
 
-      // Determine if we are actively streaming inside a tool tag
-      size_t ts = generated_text.rfind(Tokens::FUNC_START);
-      size_t te = generated_text.rfind(Tokens::FUNC_END);
-      if (ts != string::npos && (te == string::npos || ts > te)) {
-          in_tool_call_stream = true;
-      } else {
-          in_tool_call_stream = false;
-      }
+      in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
 
-      // Update partial tag state for terminal buffering
+      // --- PERF OPTIMIZATION: O(1) PARTIAL TAG DETECTION ---
       partial_tag = false;
-      size_t open_bracket = generated_text.rfind('<');
+      size_t open_bracket = unprinted_text.rfind('<'); // Only scan the tiny unprinted buffer!
       if (open_bracket != string::npos) {
-          if (open_bracket > te || te == string::npos) {
-              string suffix = generated_text.substr(open_bracket);
-              if (string(Tokens::FUNC_START).find(suffix) == 0 || string(Tokens::FUNC_END).find(suffix) == 0) partial_tag = true;
+          string suffix = unprinted_text.substr(open_bracket);
+          if (string(Tokens::FUNC_START).find(suffix) == 0 || string(Tokens::FUNC_END).find(suffix) == 0) {
+              partial_tag = true;
           }
       }
 
@@ -727,7 +758,8 @@ int main(int argc, char ** argv) {
           bool intra_loop = false;
           size_t max_len = min((size_t)3000, n / 2);
           char last_char = generated_text.back();
-          for (size_t len = 50; len <= max_len; ++len) {
+          // PERF OPTIMIZATION: Step by 10 to cut string comparisons by 90%
+          for (size_t len = 50; len <= max_len; len += 10) {
               if (generated_text[n - len - 1] == last_char) {
                   if (generated_text.compare(n - len, len, generated_text, n - 2 * len, len) == 0) {
                       size_t spaces = 0;
@@ -740,12 +772,8 @@ int main(int argc, char ** argv) {
               }
           }
 
+          // PERF OPTIMIZATION: Deleted O(N) reasoning search that slowed down text generation
           bool in_reasoning_block = false;
-          size_t think_start = generated_text.rfind(Tokens::TURN_START);
-          size_t think_end = generated_text.rfind(Tokens::TURN_END);
-          if (think_start != string::npos && (think_end == string::npos || think_start > think_end)) {
-              in_reasoning_block = true;
-          }
 
           if (!intra_loop && n > 300 && !in_tool_call_stream && !in_reasoning_block) {
               size_t suffix_len = 250;
@@ -847,11 +875,14 @@ int main(int argc, char ** argv) {
           break; // The tool tag is closed. Break the loop to execute it!
       }
 
-      // --- SAFETY VALVE (Terminal Printing) ---
+      // --- PERF OPTIMIZATION: SAFETY VALVE (Terminal Printing Buffering) ---
       if (!partial_tag && !in_tool_call_stream && !unprinted_text.empty()) {
-        printf("%s", unprinted_text.c_str());
-        fflush(stdout);
-        unprinted_text = "";
+        // Buffer output: Only print to the terminal every 10 tokens or on a newline
+        if (t_count % 10 == 0 || unprinted_text.back() == '\n') {
+            printf("%s", unprinted_text.c_str());
+            fflush(stdout);
+            unprinted_text = "";
+        }
       } else if (partial_tag && unprinted_text.length() > 50) {
         printf("%s", unprinted_text.c_str());
         fflush(stdout);
