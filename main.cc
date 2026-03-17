@@ -467,7 +467,7 @@ int main(int argc, char ** argv) {
 
   /*
   // Sampling parameters: open-webui defaults
-  float temp = 0.0f;
+  float temp = 0.8f;
   float top_p = 0.9f;
   int32_t top_k = 40;
   float min_p = 0.0f;
