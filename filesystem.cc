@@ -307,6 +307,7 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   }
 
   out_file << content;
+  out_file.flush(); // Ensure data is written to disk immediately
   out_file.close();
 
   map<string, string> result;
@@ -393,6 +394,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   }
 
   out_file << content;
+  out_file.flush(); // Ensure data is written to disk immediately
   out_file.close();
 
   map<string, string> result;
