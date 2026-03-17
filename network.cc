@@ -72,7 +72,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
     }
 
     // Use consolidated logging for SearxNG startup
-    log_diagnostic("Spinning up local SearxNG instance...", false, false, "[System]");
+    log_diagnostic("Spinning up local SearxNG instance...");
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -119,7 +119,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
 
         if (!server_ready) {
             // Use consolidated logging for SearxNG startup failure
-            log_diagnostic("SearxNG failed to start or bind to port! Check " + SEARXNG_LOG_PATH, false, false, "[System]");
+            log_diagnostic("SearxNG failed to start or bind to port! Check " + SEARXNG_LOG_PATH);
         }
     }
 }
@@ -131,6 +131,12 @@ string NetworkTools::web_search(const string& query) {
         return "System Error: Web search is currently disabled for this session.";
     }
 
+    // Build human-readable function call syntax (truncate for display)
+    string query_str = "\"" + (query.length() > 80 ? query.substr(0, 77) + "..." : query) + "\"";
+    
+    // Output function call to both stdout and logfile
+    log_diagnostic("web_search(" + query_str + ")");
+
     // --- 1. LOCAL FILE CACHE CHECK ---
     string cache=HOME+"/.search_cache";
     mkdir(cache.c_str(), 0777); // Ensure directory exists
@@ -141,7 +147,7 @@ string NetworkTools::web_search(const string& query) {
     if (cache_file.is_open()) {
         string cached_content((istreambuf_iterator<char>(cache_file)), istreambuf_iterator<char>());
         // Use consolidated logging for cache hit
-        log_diagnostic("Local file cache hit. Bypassing network & cooldown.", false, false, "[System]");
+        log_diagnostic("Local file cache hit. Bypassing network & cooldown.");
         return cached_content;
     }
 
@@ -153,7 +159,7 @@ string NetworkTools::web_search(const string& query) {
     if (elapsed < SEARCH_COOLDOWN_SECONDS) {
         int sleep_time = SEARCH_COOLDOWN_SECONDS - elapsed;
         // Use consolidated logging for pacing
-        log_diagnostic("Pacing network requests. Sleeping " + to_string(sleep_time) + " seconds to prevent IP ban...", false, false, "[System]");
+        log_diagnostic("Pacing network requests. Sleeping " + to_string(sleep_time) + " seconds to prevent IP ban...");
         this_thread::sleep_for(chrono::seconds(sleep_time));
     }
 

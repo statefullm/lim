@@ -17,6 +17,28 @@
 
 using namespace std;
 
+// --- Consolidated Diagnostic Logging Function ---
+void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
+                    const string& tag /* = "" */) {
+    if (!chat_log.is_open()) {
+        cerr << "[ERROR] chat_log is not open - cannot write diagnostic message\n";
+        return;
+    }
+
+    // Prepend tag if provided
+    string final_message = tag.empty() ? message : tag + " " + message;
+
+    if (!logOnly) {
+        if (!debugOnly || is_debug) {
+            cout << final_message << endl;
+            fflush(stdout);
+        }
+    }
+
+    chat_log << final_message << "\n";
+    chat_log.flush();
+}
+
 // --- Helper to escape tags from disk so they don't break the LLM's XML parser ---
 static void escape_parameter_tags(std::string& str) {
     std::string from = Tokens::PARAM_END;
@@ -26,30 +48,6 @@ static void escape_parameter_tags(std::string& str) {
         str.replace(start_pos, from.length(), to);
         start_pos += to.length();
     }
-}
-
-// --- Consolidated Diagnostic Logging Function ---
-void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
-                    const string& tag /* = "" */) {
-    if (!chat_log.is_open()) {
-        cerr << "[ERROR] chat_log is not open - cannot write diagnostic message\n";
-        return;
-    }
-
-    string full_message = message;
-    if (!tag.empty()) {
-        full_message = tag + " " + message;
-    }
-
-    if (!logOnly) {
-        if (!debugOnly || is_debug) {
-            cout << full_message << endl;
-            fflush(stdout);
-        }
-    }
-
-    chat_log << full_message << "\n";
-    chat_log.flush();
 }
 
 const string FileSystemTools::HOME = "/home/ai";
@@ -83,6 +81,12 @@ string FileSystemTools::_get_fullpath(const string& path) {
 }
 
 string FileSystemTools::exec_shell(const string& command) {
+  // Build human-readable function call syntax (truncate for display)
+  string cmd_str = "\"" + (command.length() > 80 ? command.substr(0, 77) + "..." : command) + "\"";
+
+  // Output function call to both stdout and logfile
+  log_diagnostic("exec_shell(" + cmd_str + ")");
+
   string safe_cmd = command;
   size_t pos = 0;
   while ((pos = safe_cmd.find("'", pos)) != string::npos) {
@@ -104,6 +108,22 @@ string FileSystemTools::exec_shell(const string& command) {
   }
 
   pclose(pipe);
+
+  if (!result.empty()) {
+    chat_log << result << "\n\n";
+    chat_log.flush();
+  } else {
+    chat_log << "[Command executed with no output]\n\n";
+    chat_log.flush();
+  }
+
+  // Only output a truncated version to stdout (terminal), not to log file
+  string result_preview = result.length() > 500 ? result.substr(0, 497) + "..." : result;
+  if (!result_preview.empty()) {
+    cout << result_preview << endl;
+    fflush(stdout);
+  }
+
   if (result.empty()) {
     result = "[Command executed with no output]\n";
   }
@@ -111,6 +131,21 @@ string FileSystemTools::exec_shell(const string& command) {
 }
 
 string FileSystemTools::search_file(const string& path, const string& text) {
+  // Build human-readable function call syntax (truncate for display)
+  string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
+
+  // Output function call to both stdout and logfile
+  log_diagnostic("search_file(" + path_str + ")");
+
+  // If LLM_DEBUG=1, also output full text (truncated in stdout only)
+  if (is_debug) {
+    string text_str = "\"" + (text.length() > 80 ? text.substr(0, 77) + "..." : text) + "\"";
+    log_diagnostic("TEXT: " + text_str);
+  }
+
+  // Always output full text to logfile (no truncation)
+  log_diagnostic("TEXT: \"" + text + "\"", true /* logOnly */);
+
   string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
@@ -202,15 +237,24 @@ string FileSystemTools::search_file(const string& path, const string& text) {
   }
 
   if (match_count == 0) {
-    log_diagnostic("No occurrences found for text: " + text, true, false, "[Search]");
+    log_diagnostic("No occurrences found for text", true /* logOnly */);
     return "No occurrences found for text.\n";
   }
+
+  // Log match count only to logfile
+  log_diagnostic("Found " + to_string(match_count) + " match(es)", true /* logOnly */);
 
   escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
 }
 
 vector<map<string, string>> FileSystemTools::read_files(const vector<string>& paths) {
+  // Output function call to both stdout and logfile for each file
+  for (const auto& path : paths) {
+    string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
+    log_diagnostic("read_file(" + path_str + ")");
+  }
+
   vector<map<string, string>> results;
 
   for (const auto& path : paths) {
@@ -219,11 +263,10 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
     result["content"] = "";
     result["error"] = "";
 
-    string fullpath = _get_fullpath(path);
-
-    ifstream in_file(fullpath);
+    ifstream in_file(_get_fullpath(path));
     if (!in_file.is_open()) {
-      result["error"] = "Failed to open file for reading: " + fullpath;
+      result["error"] = "Failed to open file for reading: " + path;
+      log_diagnostic("Error: Failed to open file: " + path, true /* logOnly */);
       results.push_back(result);
       continue;
     }
@@ -231,6 +274,10 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
     stringstream buffer;
     buffer << in_file.rdbuf();
     string content = buffer.str();
+
+    // Log success without content - only file size, never the actual content
+    // Use logOnly=true to ensure content is never shown on stdout or in logfile
+    log_diagnostic("Successfully read: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
 
     escape_parameter_tags(content); // Escape any literal XML tags before sending to LLM
 
@@ -243,13 +290,19 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 }
 
 map<string, string> FileSystemTools::write_file(const string& path, const string& content) {
-  string fullpath = _get_fullpath(path);
+  // Build human-readable function call syntax (truncate for display)
+  string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
+  // Output the tool function call to both stdout and logfile
+  log_diagnostic("write_file(" + path_str + ")");
+
+  string fullpath = _get_fullpath(path);
   ofstream out_file(fullpath);
   if (!out_file.is_open()) {
     map<string, string> result;
     result["status"] = "error";
-    result["error"] = "Failed to open file for writing: " + fullpath;
+    result["error"] = "Failed to open file for writing: " + path;
+    log_diagnostic("Error: Failed to open file for writing", true /* logOnly */);
     return result;
   }
 
@@ -258,17 +311,37 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
 
   map<string, string> result;
   result["status"] = "success";
+  // Log success without content - use logOnly=true to ensure content is never shown
+  log_diagnostic("Successfully written: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
   return result;
 }
 
 map<string, string> FileSystemTools::edit_file(const string& path, const string& old_str, const string& new_str) {
-  string fullpath = _get_fullpath(path);
+  // Build human-readable function call syntax (truncate for display)
+  string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
+  // Output function call to both stdout and logfile
+  log_diagnostic("edit_file(" + path_str + ")");
+
+  // If LLM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
+  if (is_debug) {
+    string old_str_trunc = "\"" + (old_str.length() > 80 ? old_str.substr(0, 77) + "..." : old_str) + "\"";
+    string new_str_trunc = "\"" + (new_str.length() > 80 ? new_str.substr(0, 77) + "..." : new_str) + "\"";
+    log_diagnostic("OLD_TEXT: " + old_str_trunc);
+    log_diagnostic("NEW_TEXT: " + new_str_trunc);
+  }
+
+  // Always output full OLD and NEW text to logfile (no truncation)
+  log_diagnostic("OLD_TEXT: \"" + old_str + "\"", true /* logOnly */);
+  log_diagnostic("NEW_TEXT: \"" + new_str + "\"", true /* logOnly */);
+
+  string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
     map<string, string> result;
     result["status"] = "error";
-    result["error"] = "Failed to open file for reading: " + fullpath;
+    result["error"] = "Failed to open file for reading: " + path;
+    log_diagnostic("Error: Failed to open file for reading", true /* logOnly */);
     return result;
   }
 
@@ -284,6 +357,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
       map<string, string> result;
       result["status"] = "error";
       result["error"] = "OLD_TEXT cannot be empty";
+      log_diagnostic("Error: OLD_TEXT is empty", true /* logOnly */);
       return result;
   }
 
@@ -297,6 +371,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "String not found in file. Ensure the OLD_TEXT exactly matches the file contents, including all whitespace and newlines.";
+    log_diagnostic("Error: String not found in file", true /* logOnly */);
     return result;
   }
 
@@ -304,6 +379,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
       map<string, string> result;
       result["status"] = "error";
       result["error"] = "CRITICAL ERROR: Content is empty - refusing to write empty file";
+      log_diagnostic("Error: Content is empty after edit", true /* logOnly */);
       return result;
   }
 
@@ -312,6 +388,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "Failed to open file for writing after edit";
+    log_diagnostic("Error: Failed to open file for writing after edit", true /* logOnly */);
     return result;
   }
 
@@ -321,7 +398,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   map<string, string> result;
   result["status"] = "updated";
   result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified).";
+  log_diagnostic("Successfully edited: " + path + " (" + to_string(changes_count) + " changes)", true /* logOnly */);
   return result;
 }
-
-

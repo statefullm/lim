@@ -17,8 +17,6 @@ public:
 
   std::map<std::string, std::string> edit_file(const std::string& path, const std::string& old_str, const std::string& new_str);
 
-  std::map<std::string, std::string> chmod_file(const std::string& path, int mode);
-
   // Updated to return a block of context instead of line numbers
   std::string search_file(const std::string& path, const std::string& text);
 
