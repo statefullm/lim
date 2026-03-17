@@ -119,7 +119,7 @@ string FileSystemTools::exec_shell(const string& command) {
 
   // Only output a truncated version to stdout (terminal), not to log file
   string result_preview = result.length() > 500 ? result.substr(0, 497) + "..." : result;
-  if (!result_preview.empty()) {
+  if (!is_debug && !result_preview.empty()) {
     cout << result_preview << endl;
     fflush(stdout);
   }
@@ -200,7 +200,7 @@ string FileSystemTools::search_file(const string& path, const string& text) {
       }
 
       result += content.substr(ctx_start, ctx_end - ctx_start);
-      result += "```\n\n";
+      result += "```\n";
       pos = end_pos;
     }
   } else {
@@ -238,7 +238,7 @@ string FileSystemTools::search_file(const string& path, const string& text) {
 
   if (match_count == 0) {
     log_diagnostic("No occurrences found for text", true /* logOnly */);
-    return "No occurrences found for text.\n";
+    return "No occurrences found for text.";
   }
 
   // Log match count only to logfile

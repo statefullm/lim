@@ -574,7 +574,7 @@ int main(int argc, char ** argv) {
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
         log_entry("SYSTEM", "Context Cleared");
-        printf("\033[32m[Context Cleared Successfully]\033[0m\n");
+        printf("\n\033[32m[Context Cleared Successfully]\033[0m\n");
         continue;
     }
 
@@ -585,7 +585,7 @@ int main(int argc, char ** argv) {
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
         log_entry("SYSTEM", "Loop Counter and File Cache Reset");
-        printf("\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
+        printf("\n\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
         continue;
     }
 
@@ -682,7 +682,7 @@ int main(int argc, char ** argv) {
           size_t active_te = generated_text.rfind(Tokens::FUNC_END);
 
           if (active_ts != string::npos && (active_te == string::npos || active_ts > active_te)) {
-              printf("\n\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m");
+              printf("\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
               fflush(stdout);
 
               size_t trailing_slash = generated_text.rfind("</");
@@ -727,7 +727,7 @@ int main(int argc, char ** argv) {
       if (in_tool_call_stream && generated_text.length() >= 4 &&
           generated_text.compare(generated_text.length() - 4, 4, "</</") == 0) {
 
-          printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m");
+          printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
           fflush(stdout);
 
           size_t bad_pos = generated_text.rfind("</</");
@@ -781,13 +781,13 @@ int main(int argc, char ** argv) {
           if (intra_loop) {
               intra_loop_strikes++;
               if (intra_loop_strikes >= 5) {
-                  printf("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m");
+                  printf("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m\n");
                   fflush(stdout);
                   auto_continue = false;
                   break;
               }
 
-              printf("\n\033[35m[System: Intra-turn Generation Loop Detected. Injecting intervention.]\033[0m");
+              printf("\n\033[35m[System: Intra-turn Generation Loop Detected. Injecting intervention.]\033[0m\n");
               fflush(stdout);
 
               if (!in_tool_call_stream && !unprinted_text.empty()) {
@@ -869,12 +869,17 @@ int main(int argc, char ** argv) {
 
     // Flush any remaining unprinted text before speed info
     if (!unprinted_text.empty()) {
-        printf("%s", unprinted_text.c_str());
+        // Ensure the text ends with a newline before printing speed info
+        if (unprinted_text.back() != '\n') {
+            printf("%s\n", unprinted_text.c_str());
+        } else {
+            printf("%s", unprinted_text.c_str());
+        }
         fflush(stdout);
         unprinted_text = "";
     }
 
-    if (t_count > 0) printf("\n\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
+    if (t_count > 0) printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
 
     if (stop_generation) {
       stop_generation = 0;
@@ -967,12 +972,12 @@ int main(int argc, char ** argv) {
                   int attempt_num = current_strikes - 2;
 
                   if (attempt_num <= max_attempts) {
-                      printf("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m", attempt_num, max_attempts);
+                      printf("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m\n", attempt_num, max_attempts);
                       fflush(stdout);
                       abort_auto = false;
                       inject_auto_user_msg = true;
                   } else {
-                      printf("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m", max_attempts);
+                      printf("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n", max_attempts);
                       fflush(stdout);
                       abort_auto = true;
                       intra_loop_strikes = 0;
@@ -1004,7 +1009,7 @@ int main(int argc, char ** argv) {
             bool has_match_count = (display_result.find("Match count:") != string::npos);
 
             if (is_debug) {
-              printf("\033[92m[Tool Result]\033[0m\n");
+              printf("\n\033[92m[Tool Result]\033[0m\n");
               string result_to_print = display_result;
               size_t p = 0;
               while ((p = result_to_print.find('\n')) != string::npos) {
@@ -1014,20 +1019,17 @@ int main(int argc, char ** argv) {
               if (!result_to_print.empty()) printf("  %s\n", result_to_print.c_str());
             } else {
               if (has_error || has_match_count) {
-                printf("\033[92m[Tool Result]\033[0m\n");
-                if (tool_name == "edit_file") {
-                  string first_line = display_result;
-                  size_t p = first_line.find('\n');
-                  if (p != string::npos) first_line.erase(p);
-                  printf("  %s\n", first_line.c_str());
+                printf("\n\033[92m[Tool Result]\033[0m\n");
+                // Remove trailing newlines from display_result to avoid extra blank lines
+                string clean_display = display_result;
+                while (!clean_display.empty() && clean_display.back() == '\n') {
+                    clean_display.pop_back();
+                }
+                size_t p = 0;
+                if ((p = clean_display.find('\n')) != string::npos) {
+                  printf("  %.*s\n", (int)p, clean_display.c_str());
                 } else {
-                  string result_to_print = display_result;
-                  size_t p = 0;
-                  if ((p = result_to_print.find('\n')) != string::npos) {
-                      printf("  %.*s\n", (int)p, result_to_print.c_str());
-                  } else {
-                    printf("  %s\n", result_to_print.c_str());
-                  }
+                  printf("  %s\n", clean_display.c_str());
                 }
               }
             }
