@@ -645,18 +645,17 @@ int main(int argc, char ** argv) {
     string generated_text = "";
     string unprinted_text = "";
     string full_response = "";
+    size_t print_pos = 0;
 
     generated_text.reserve(32768);
     unprinted_text.reserve(1024);
     full_response.reserve(32768);
 
-    // Core state tracking for the token loop
     bool in_tool_call_stream = false;
-    bool partial_tag = false;
     size_t tool_start = string::npos;
     size_t tool_end = string::npos;
     bool trigger_tool_execution = false;
-    size_t func_search_pos = 0; // PERF OPTIMIZATION: Cache for O(1) searches
+    size_t func_search_pos = 0;
 
     // --- INNER TOKEN GENERATION LOOP ---
     while (true) {
@@ -677,17 +676,15 @@ int main(int argc, char ** argv) {
 
       llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
 
-      // Stop generating if the model outputs an End-Of-Turn token
+      // --- EARLY EOG RECOVERY ---
       if (llama_vocab_is_eog(vocab, next_token)) {
           size_t active_ts = generated_text.rfind(Tokens::FUNC_START);
           size_t active_te = generated_text.rfind(Tokens::FUNC_END);
 
-          // If the model tries to end its turn while a tool is still open...
           if (active_ts != string::npos && (active_te == string::npos || active_ts > active_te)) {
               printf("\n\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
               fflush(stdout);
 
-              // Clean up a dangling "</" or "<" if the model gave up halfway
               size_t trailing_slash = generated_text.rfind("</");
               if (trailing_slash != string::npos && trailing_slash > active_ts) {
                   size_t drop_len = generated_text.length() - trailing_slash;
@@ -695,7 +692,6 @@ int main(int argc, char ** argv) {
                   full_response.erase(full_response.length() - drop_len);
               }
 
-              // Force close
               string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
               generated_text += forced_close;
               full_response += forced_close;
@@ -703,23 +699,21 @@ int main(int argc, char ** argv) {
               tool_start = active_ts;
               tool_end = generated_text.find(Tokens::FUNC_END, active_ts);
               trigger_tool_execution = true;
-              break; // Safely exit the generation loop to execute the tool
+              break;
           }
 
           auto_continue = false;
-          break; // Normal EOG, break the loop
+          break;
       }
 
       string token_str = common_token_to_piece(ctx, next_token).c_str();
       generated_text += token_str;
-      unprinted_text += token_str;
       full_response += token_str;
 
       // --- PERF OPTIMIZATION: O(1) TRACKING OFFSETS ---
       if (tool_start == string::npos) {
           tool_start = generated_text.find(Tokens::FUNC_START, func_search_pos);
           if (tool_start == string::npos) {
-              // Cache the search position so we never scan the old story text again
               func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
           }
       }
@@ -729,14 +723,33 @@ int main(int argc, char ** argv) {
 
       in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
 
-      // --- PERF OPTIMIZATION: O(1) PARTIAL TAG DETECTION ---
-      partial_tag = false;
-      size_t open_bracket = unprinted_text.rfind('<'); // Only scan the tiny unprinted buffer!
-      if (open_bracket != string::npos) {
-          string suffix = unprinted_text.substr(open_bracket);
-          if (string(Tokens::FUNC_START).find(suffix) == 0 || string(Tokens::FUNC_END).find(suffix) == 0) {
-              partial_tag = true;
+      // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
+      if (in_tool_call_stream && generated_text.length() >= 4 &&
+          generated_text.compare(generated_text.length() - 4, 4, "</</") == 0) {
+
+          printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
+          fflush(stdout);
+
+          size_t bad_pos = generated_text.rfind("</</");
+          if (bad_pos != string::npos && bad_pos > tool_start) {
+              size_t drop_len = generated_text.length() - bad_pos;
+              generated_text.erase(bad_pos);
+              full_response.erase(full_response.length() - drop_len);
           }
+
+          string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
+          generated_text += forced_close;
+          full_response += forced_close;
+
+          tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
+          trigger_tool_execution = true;
+          break;
+      }
+
+      // --- NORMAL TOOL COMPLETION ---
+      if (tool_end != string::npos) {
+          trigger_tool_execution = true;
+          break; // The tool tag is closed. Execute!
       }
 
       // --- INTRA-TURN LOOP DETECTION (Babbling Prevention) ---
@@ -745,7 +758,6 @@ int main(int argc, char ** argv) {
           bool intra_loop = false;
           size_t max_len = min((size_t)3000, n / 2);
           char last_char = generated_text.back();
-          // PERF OPTIMIZATION: Step by 10 to cut string comparisons by 90%
           for (size_t len = 50; len <= max_len; len += 10) {
               if (generated_text[n - len - 1] == last_char) {
                   if (generated_text.compare(n - len, len, generated_text, n - 2 * len, len) == 0) {
@@ -759,10 +771,7 @@ int main(int argc, char ** argv) {
               }
           }
 
-          // PERF OPTIMIZATION: Deleted O(N) reasoning search that slowed down text generation
-          bool in_reasoning_block = false;
-
-          if (!intra_loop && n > 300 && !in_tool_call_stream && !in_reasoning_block) {
+          if (!intra_loop && n > 300 && !in_tool_call_stream) {
               size_t suffix_len = 250;
               string suffix = generated_text.substr(n - suffix_len);
               size_t prev_pos = generated_text.rfind(suffix, n - suffix_len - 1);
@@ -771,7 +780,6 @@ int main(int argc, char ** argv) {
 
           if (intra_loop) {
               intra_loop_strikes++;
-
               if (intra_loop_strikes >= 5) {
                   printf("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m\n");
                   fflush(stdout);
@@ -782,11 +790,7 @@ int main(int argc, char ** argv) {
               printf("\n\033[35m[System: Intra-turn Generation Loop Detected. Injecting intervention.]\033[0m\n");
               fflush(stdout);
 
-              bool in_tool = false;
-              size_t b_ts = generated_text.find(Tokens::FUNC_START);
-              if (b_ts != string::npos && generated_text.find(Tokens::FUNC_END, b_ts) == string::npos) in_tool = true;
-
-              if (!unprinted_text.empty() && !in_tool) {
+              if (!in_tool_call_stream && !unprinted_text.empty()) {
                   printf("%s", unprinted_text.c_str());
                   fflush(stdout);
               }
@@ -807,85 +811,57 @@ int main(int argc, char ** argv) {
               for (size_t i = 0; i < t_tokens.size(); i++) {
                   common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                   if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                      if (!handle_llama_decode_error(ctx, batch)) {
-                        auto_continue = false;
-                        break;
-                      }
+                      if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
                       batch.n_tokens = 0;
                   }
               }
               if (batch.n_tokens > 0) {
-                if (!handle_llama_decode_error(ctx, batch)) {
-                  auto_continue = false;
-                  break;
-                }
+                if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
               }
 
               auto_continue = true;
-              break; // Exit generation loop and let outer loop handle the injection
-          }
-      }
-
-      // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
-      // Catches Qwen's infinite `</</` loops and safely hands off to execution
-      if (unprinted_text.find("</</") != string::npos) {
-          printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
-          fflush(stdout);
-          unprinted_text = "";
-
-          if (tool_start != string::npos && tool_end == string::npos) {
-              // Strip the malformed `</</` stutter so it isn't parsed
-              size_t bad_pos = generated_text.rfind("</</");
-              if (bad_pos != string::npos && bad_pos > tool_start) {
-                  size_t drop_len = generated_text.length() - bad_pos;
-                  generated_text.erase(bad_pos);
-                  full_response.erase(full_response.length() - drop_len);
-              }
-
-              // Force-close the XML cleanly
-              string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
-              generated_text += forced_close;
-              full_response += forced_close;
-
-              tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
-              trigger_tool_execution = true;
-              break; // Safely exit the generation loop to execute the tool
-          } else {
-              auto_continue = false;
               break;
           }
       }
 
-      // Clear unprinted_text when FUNC_END is found
-      if (tool_end != string::npos && unprinted_text.find(Tokens::FUNC_END) != string::npos) {
-          unprinted_text = "";
-      }
+      // --- SAFE TERMINAL BUFFERING ---
+      if (!in_tool_call_stream) {
+          size_t safe_len = generated_text.length();
+          string fstart(Tokens::FUNC_START);
 
-      // --- NORMAL TOOL COMPLETION ---
-      if (tool_end != string::npos) {
-          unprinted_text = "";
-          trigger_tool_execution = true;
-          break; // The tool tag is closed. Break the loop to execute it!
-      }
+          // Hold back printing if the tail end is a partial match for a tool tag
+          for (size_t len = 1; len <= fstart.length() && len <= generated_text.length(); ++len) {
+              if (generated_text.compare(generated_text.length() - len, len, fstart, 0, len) == 0) {
+                  safe_len = generated_text.length() - len;
+                  break;
+              }
+          }
 
-      // --- PERF OPTIMIZATION: SAFETY VALVE (Terminal Printing Buffering) ---
-      if (partial_tag)
-        unprinted_text = "";
-      else if (!in_tool_call_stream && !unprinted_text.empty()) {
-        // Buffer output: Only print to the terminal every 10 tokens or on a newline
-        if (t_count % 10 == 0 || unprinted_text.back() == '\n') {
-            printf("%s", unprinted_text.c_str());
-            fflush(stdout);
-            unprinted_text = "";
-        }
+          if (safe_len > print_pos) {
+              unprinted_text += generated_text.substr(print_pos, safe_len - print_pos);
+              print_pos = safe_len;
+          }
+
+          if (!unprinted_text.empty() && (t_count % 10 == 0 || unprinted_text.back() == '\n')) {
+              printf("%s", unprinted_text.c_str());
+              fflush(stdout);
+              unprinted_text = "";
+          }
+      } else {
+          // Inside a tool call: Flush safely buffered pre-tool text and mute the rest
+          if (!unprinted_text.empty()) {
+              printf("%s", unprinted_text.c_str());
+              fflush(stdout);
+              unprinted_text = "";
+          }
+          print_pos = generated_text.length(); // Advance the cursor silently
       }
 
       t_count++;
       batch.n_tokens = 0;
       common_batch_add(batch, next_token, n_past++, {0}, true);
-      if (!handle_llama_decode_error(ctx, batch)) {
-        break;
-      }
+      if (!handle_llama_decode_error(ctx, batch)) break;
+
     } // END INNER TOKEN LOOP
 
     auto end = chrono::high_resolution_clock::now();
@@ -916,11 +892,6 @@ int main(int argc, char ** argv) {
         for (const auto& tag : strip_tags) {
             size_t p;
             while ((p = tool_call.find(tag)) != string::npos) tool_call.erase(p, tag.length());
-        }
-
-        size_t t_start_in_unprinted = unprinted_text.find(Tokens::FUNC_START);
-        if (t_start_in_unprinted != string::npos && t_start_in_unprinted > 0) {
-            printf("%s", unprinted_text.substr(0, t_start_in_unprinted).c_str());
         }
 
         string tool_name_for_display = "";
