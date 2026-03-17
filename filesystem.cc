@@ -137,7 +137,7 @@ string FileSystemTools::search_file(const string& path, const string& text) {
   // Output function call to both stdout and logfile
   log_diagnostic("search_file(" + path_str + ")");
 
-  // If LLM_DEBUG=1, also output full text (truncated in stdout only)
+  // If LLLM_DEBUG=1, also output full text (truncated in stdout only)
   if (is_debug) {
     string text_str = "\"" + (text.length() > 80 ? text.substr(0, 77) + "..." : text) + "\"";
     log_diagnostic("TEXT: " + text_str);
@@ -324,7 +324,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   // Output function call to both stdout and logfile
   log_diagnostic("edit_file(" + path_str + ")");
 
-  // If LLM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
+  // If LLLM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
   if (is_debug) {
     string old_str_trunc = "\"" + (old_str.length() > 80 ? old_str.substr(0, 77) + "..." : old_str) + "\"";
     string new_str_trunc = "\"" + (new_str.length() > 80 ? new_str.substr(0, 77) + "..." : new_str) + "\"";

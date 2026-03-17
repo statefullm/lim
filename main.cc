@@ -363,8 +363,8 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  const char* debug_env = getenv("LLM_DEBUG");
-  if (debug_env != nullptr && (strcmp(debug_env, "1") == 0 || strcasecmp(debug_env, "true") == 0)) {
+  const char* debug_env = getenv("LLLM_DEBUG");
+  if (debug_env != nullptr && strcmp(debug_env, "1") == 0) {
     is_debug = true;
   }
 

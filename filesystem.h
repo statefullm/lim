@@ -30,7 +30,7 @@ private:
 // Parameters:
 //   - message: The diagnostic message to output
 //   - logOnly: If true, only write to log file (not to terminal)
-//   - debugOnly: If true, only output when LLM_DEBUG=1 environment variable is set
+//   - debugOnly: If true, only output when LLLM_DEBUG=1 environment variable is set
 //   - tag: Optional tag to prepend to the message (e.g., "[Edit]")
 void log_diagnostic(const std::string& message, bool logOnly = false, bool debugOnly = false,
                     const std::string& tag = "");
