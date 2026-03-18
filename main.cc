@@ -355,7 +355,7 @@ int main(int argc, char ** argv) {
   }
 
   umask(0002);
-  std::atexit(NetworkTools::cleanup_searxng);
+  std::atexit(NetworkTools::cleanup_services);
   signal(SIGINT, sigint_handler);
 
   float temp = 0.7f;
