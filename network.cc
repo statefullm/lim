@@ -263,3 +263,9 @@ string NetworkTools::web_search(const string& query) {
         return "Error: Failed to parse JSON. " + string(e.what()) + "\nRaw: " + readBuffer;
     }
 }
+
+void NetworkTools::reset_search() {
+    g_searxng_disabled = false;
+    g_consecutive_empty_searches = 0;
+    log_diagnostic("Web search re-enabled.");
+}

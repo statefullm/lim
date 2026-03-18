@@ -569,6 +569,7 @@ int main(int argc, char ** argv) {
         loop_guard.clear_history();
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
+        NetworkTools().reset_search();
         log_entry("SYSTEM", "Context Cleared");
         printf("\n\033[32m[Context Cleared Successfully]\033[0m\n");
         continue;
@@ -580,6 +581,7 @@ int main(int argc, char ** argv) {
         loop_guard.clear_history();
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
+        NetworkTools().reset_search();
         log_entry("SYSTEM", "Loop Counter and File Cache Reset");
         printf("\n\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
         continue;

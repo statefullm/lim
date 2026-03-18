@@ -9,6 +9,9 @@ public:
 
   std::string web_search(const std::string& query);
 
+  // Reset web search state after failures
+  void reset_search();
+
   // Cleanly shut down the background process when llm exits
   static void cleanup_searxng();
 
