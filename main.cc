@@ -358,9 +358,20 @@ int main(int argc, char ** argv) {
   std::atexit(NetworkTools::cleanup_searxng);
   signal(SIGINT, sigint_handler);
 
-  if (argc < 2) {
-    fprintf(stderr, "Usage: %s <model_path>\n", argv[0]);
+  float temp = 0.7f;
+  bool use_dummy_thought = false;
+
+  if (argc < 2 || argc > 3) {
+    fprintf(stderr, "Usage: %s <model_path> [temperature]\n", argv[0]);
     return 1;
+  }
+
+  // Parse optional temperature argument
+  if (argc >= 3) {
+    temp = atof(argv[2]);
+    if (temp == 0.0f) {
+      use_dummy_thought = true;
+    }
   }
 
   const char* debug_env = getenv("LLLM_DEBUG");
@@ -448,32 +459,17 @@ int main(int argc, char ** argv) {
   vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
 
   // Sampling parameters: instruct mode for general tasks
-  float temp = 0.7f;
   float top_p = 0.8f;
   int32_t top_k = 20;
   float min_p = 0.0f;
   float penalty_present = 1.5f;
   float penalty_repeat = 1.0f;
 
-  /*
-  // Sampling parameters: instruct mode for reasoning
-  float temp = 1.0f;
-  float top_p = 1.0f;
-  int32_t top_k = 40;
-  float min_p = 0.0f;
-  float penalty_present = 2.0f;
-  float penalty_repeat = 1.0f;
-  */
-
-  /*
-  // Sampling parameters: open-webui defaults
-  float temp = 0.8f;
-  float top_p = 0.9f;
-  int32_t top_k = 40;
-  float min_p = 0.0f;
-  float penalty_present = 0.0f;
-  float penalty_repeat = 1.1f;
-  */
+  // If temperature is 0, disable thinking (dummy thought injection mode)
+  if (use_dummy_thought) {
+    top_k = 1;
+    top_p = 1.0f;
+  }
 
   llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
   llama_sampler * smpl = llama_sampler_chain_init(lparams);
@@ -594,13 +590,17 @@ int main(int argc, char ** argv) {
     if (!user_input.empty()) {
       if (!auto_continue) log_entry("USER", user_input);
 
-      std::string user_message = string(Tokens::TURN_START) + "user\n" + user_input + Tokens::TURN_END + "\n" + Tokens::TURN_START + "assistant\n";
+      std::string user_message;
 
-/* The "Dummy Thought" Injection
-      std::string user_message = string(Tokens::TURN_START) + "user\n" +
+      if (use_dummy_thought) {
+          // Dummy Thought Injection - disable thinking mode
+          user_message = string(Tokens::TURN_START) + "user\n" +
                            user_input + Tokens::TURN_END + "\n" +
-                           Tokens::TURN_START + "assistant\n<think>\nThe user  wants a direct answer. I will output the requested data immediately without preamble.\n</think>\n";
-*/
+                           Tokens::TURN_START + "assistant\n<think>\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n</think>\n";
+      } else {
+          // Normal thinking mode
+          user_message = string(Tokens::TURN_START) + "user\n" + user_input + Tokens::TURN_END + "\n" + Tokens::TURN_START + "assistant\n";
+      }
       vector<llama_token> tokens = tokenize(user_message);
 
       if (n_past + tokens.size() >= cparams.n_ctx) {
