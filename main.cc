@@ -886,10 +886,12 @@ int main(int argc, char ** argv) {
 
     if (t_count > 0) {
         printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
+    } else {
+        printf("\n");
     }
 
     // Save state for next iteration
-    prev_stdout_ended_with_newline = stdout_ended_with_newline;
+    prev_stdout_ended_with_newline = true;
 
     if (stop_generation) {
       stop_generation = 0;
