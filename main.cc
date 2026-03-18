@@ -657,6 +657,9 @@ int main(int argc, char ** argv) {
     bool trigger_tool_execution = false;
     size_t func_search_pos = 0;
 
+    // Track if stdout ended with newline from previous iteration's tool output
+    static bool prev_stdout_ended_with_newline = false;
+
     // --- INNER TOKEN GENERATION LOOP ---
     while (true) {
       if (stop_generation) {
@@ -868,18 +871,25 @@ int main(int argc, char ** argv) {
     double elapsed = chrono::duration<double>(end - start).count();
 
     // Flush any remaining unprinted text before speed info
+    bool stdout_ended_with_newline = prev_stdout_ended_with_newline;  // Start with previous iteration's state
     if (!unprinted_text.empty()) {
-        // Ensure the text ends with a newline before printing speed info
         if (unprinted_text.back() != '\n') {
             printf("%s\n", unprinted_text.c_str());
+            stdout_ended_with_newline = true;
         } else {
             printf("%s", unprinted_text.c_str());
+            stdout_ended_with_newline = true;
         }
         fflush(stdout);
         unprinted_text = "";
     }
 
-    if (t_count > 0) printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
+    if (t_count > 0) {
+        printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
+    }
+
+    // Save state for next iteration
+    prev_stdout_ended_with_newline = stdout_ended_with_newline;
 
     if (stop_generation) {
       stop_generation = 0;
@@ -1034,6 +1044,7 @@ int main(int argc, char ** argv) {
               }
             }
             fflush(stdout);
+            prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
 
             chat_log << "\n";
             generated_text = ""; unprinted_text = "";
