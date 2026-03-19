@@ -12,6 +12,7 @@ Always use these tools for any filesystem or shell operation:
   <function=read_files>
   <parameter=paths>
   main.cc
+  main.h
   https://example.com/document.pdf
   </parameter>
   </function>
@@ -80,6 +81,8 @@ If you need to understand the big picture or analyze the logic of an entire file
 - Always batch multiple read requests into a single read_files call.
 
 When all of your edits are complete, read the file in its entirety to verify its integrity.
+
+When editing or writing a file, always trim trailing whitespace.
 
 If asked to execute a shell command, for example, to determine the current directory with exec_shell("pwd") or compile some code with exec_shell("make"), you must do so.
 
