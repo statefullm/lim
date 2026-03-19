@@ -113,13 +113,14 @@ static size_t DummyWriteCallback(void *contents, size_t size, size_t nmemb, void
 
 void NetworkTools::cleanup_services() {
     if (g_searxng_pid > 0) {
-        kill(g_searxng_pid, SIGTERM);
-        waitpid(g_searxng_pid, NULL, WNOHANG);
+        kill(-g_searxng_pid, SIGKILL);
+        waitpid(g_searxng_pid, NULL, 0); // Reap the zombie
         g_searxng_pid = -1;
     }
+
     if (g_docling_pid > 0) {
-        kill(g_docling_pid, SIGTERM);
-        waitpid(g_docling_pid, NULL, WNOHANG);
+        kill(-g_docling_pid, SIGKILL);
+        waitpid(g_docling_pid, NULL, 0); // Reap the zombie
         g_docling_pid = -1;
     }
 }
@@ -145,6 +146,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
 
     pid_t pid = fork();
     if (pid == 0) {
+        setpgid(0, 0);
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stdout);
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stderr);
 
@@ -177,6 +179,8 @@ void NetworkTools::start_docling_if_needed() {
 
     pid_t pid = fork();
     if (pid == 0) {
+         setpgid(0, 0);
+
         freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
 
@@ -202,7 +206,6 @@ void NetworkTools::start_docling_if_needed() {
                     break;
                 }
                 if (curl_easy_perform(wait_curl) == CURLE_OK) {
-                    log_diagnostic("Docling server is online and ready!");
                     break;
                 }
                 this_thread::sleep_for(chrono::seconds(1));
@@ -335,7 +338,7 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, json_str.length());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Reduced from 600s for better interrupt responsiveness
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     // Enable interrupt checking during transfer
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
@@ -385,7 +388,7 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         // ADDED: Transparent bot User-Agent
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
@@ -531,7 +534,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
         // Enable interrupt checking during transfer
@@ -633,7 +636,7 @@ string NetworkTools::web_search(const string& query) {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         // Enable interrupt checking during transfer
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
