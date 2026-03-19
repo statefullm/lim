@@ -82,8 +82,6 @@ If you need to understand the big picture or analyze the logic of an entire file
 
 When all of your edits are complete, read the file in its entirety to verify its integrity.
 
-When editing or writing a file, always trim trailing whitespace.
-
 If asked to execute a shell command, for example, to determine the current directory with exec_shell("pwd") or compile some code with exec_shell("make"), you must do so.
 
 Your environment is sandboxed as user ai. Always specify paths relative to the current directory.
