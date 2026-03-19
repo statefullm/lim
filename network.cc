@@ -73,6 +73,11 @@ static size_t HeaderCallback(char *buffer, size_t size, size_t nitems, void *use
     string header(buffer, numbytes);
     FetchState* state = (FetchState*)userdata;
 
+    // Default: assume text content unless proven otherwise
+    if (!state->is_text && !state->is_pdf) {
+        state->is_text = true;  // Safe default for unknown content types
+    }
+
     string lower_header = header;
     transform(lower_header.begin(), lower_header.end(), lower_header.begin(), [](unsigned char c){ return std::tolower(c); });
 
@@ -80,10 +85,12 @@ static size_t HeaderCallback(char *buffer, size_t size, size_t nitems, void *use
         if (lower_header.find("application/pdf") != string::npos) {
             state->is_pdf = true;
             state->is_text = false;
-        } else if (lower_header.find("text/html") == string::npos &&
-                   lower_header.find("text/plain") == string::npos) {
-            state->is_text = false; // Flag as other binary (skip)
+        } else if (lower_header.find("text/html") != string::npos ||
+                   lower_header.find("text/plain") != string::npos) {
+            // Explicitly mark as text content
+            state->is_text = true;
         }
+        // If Content-Type is present but not text/pdf, leave is_text=false (skip binary)
     }
     return numbytes;
 }
@@ -407,11 +414,21 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
 
         curl_easy_cleanup(curl);
 
+        // Check for network errors first
+        if (res != CURLE_OK) {
+            return "[Failed to fetch page content: " + string(curl_easy_strerror(res)) + "]";
+        }
+
+        // Skip non-text, non-PDF content
         if (!state.is_text && !state.is_pdf) {
             return "[Skipped non-text content early to save bandwidth.]";
         }
-        if (res != CURLE_OK && res != CURLE_WRITE_ERROR) {
-            return "[Failed to fetch page content]";
+
+        // Check if we got any content at all (buffer is empty)
+        if (state.buffer.empty()) {
+            long http_code = 0;
+            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+            return "[Failed to fetch page content - empty response]";
         }
     }
 
@@ -434,7 +451,7 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
             XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_NONET | XML_PARSE_RECOVER
         );
 
-        if (doc) {
+        if (doc && doc->children) {
             xmlChar *content = xmlNodeGetContent(doc->children);
             if (content) {
                 decoded_html = reinterpret_cast<char*>(content);
@@ -442,10 +459,19 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
             }
             xmlFreeDoc(doc);
         } else {
-            decoded_html = readBuffer;  // Fallback to original
+            // If parsing failed or no children, fall back to raw buffer
+            decoded_html = readBuffer;
+            log_diagnostic("XML parsing fallback - using raw buffer", true /* logOnly */);
         }
     } catch (...) {
-        decoded_html = readBuffer;  // Fallback to original
+        // On any exception, use the raw buffer as fallback
+        decoded_html = readBuffer;
+        log_diagnostic("XML parsing exception - using raw buffer", true /* logOnly */);
+    }
+
+    // Ensure we have content to process
+    if (decoded_html.empty()) {
+        return "[No content extracted from page]";
     }
 
     // SCRIPT & STYLE STRIPPING (on decoded content)
