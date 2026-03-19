@@ -907,6 +907,11 @@ int main(int argc, char ** argv) {
         unprinted_text = "";
     }
 
+    // Deterministic check: if stdout didn't end with newline, add one before Speed diagnostic
+    if (!stdout_ended_with_newline) {
+        printf("\n");
+    }
+
     if (t_count > 0) {
         printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
     } else {
