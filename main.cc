@@ -9,6 +9,7 @@
 #include <sstream>
 #include <vector>
 #include <string>
+#include <map>
 #include <cstdlib>
 #include <cstring>
 #include <chrono>
@@ -221,17 +222,37 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       }
   }
 
+  // Check for interrupt before starting tool execution
+  if (stop_generation) return "[Tool interrupted by user]";
+
   if (tool_name == "read_files") {
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
     if (!paths.empty()) {
       FileSystemTools fs;
+      NetworkTools net;
       result = "Files content:\n";
       for (const auto& path : paths) {
-        if (clean_files.count(path)) {
+        // Detect if this is a URL or local file
+        bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
+
+        if (!is_url && clean_files.count(path)) {
           result += "Path: " + path + "\n";
           result += "Content:\n[Content omitted: You already read this file and it has not been modified since your last read. If you need to search for specific code sections or variables, use the search_file tool instead. DO NOT call read_files on this file again.]\n";
           result += "---\n";
+        } else if (is_url) {
+          // Handle URL - fetch content from network
+          auto results = net.fetch_urls({path});
+          for (const auto& file : results) {
+            result += "Path: " + file.at("path") + "\n";
+            result += "Content:\n" + file.at("content") + "\n";
+            if (!file.at("error").empty()) result += "Error: " + file.at("error") + "\n";
+            result += "---\n";
+
+            // Cache URL results similarly to files
+            if (file.at("error").empty()) clean_files.insert(file.at("path"));
+          }
         } else {
+          // Handle local file
           auto results = fs.read_files({path});
           for (const auto& file : results) {
             result += "Path: " + file.at("path") + "\n";
@@ -966,6 +987,7 @@ int main(int argc, char ** argv) {
 
           tool_result = execute_tool_call(tool_call, clean_files, last_grep_req);
 
+          // Check for interrupt after tool execution completes
           if (stop_generation) {
             printf("\n\033[31m[Tool Interrupted by User]\033[0m\n");
             fflush(stdout);

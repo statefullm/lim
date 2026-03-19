@@ -1,6 +1,7 @@
 #include "filesystem.h"
 #include "parsers.h"
 #include "tokens.h"
+#include "network.h"  // For process_pdf_with_docling and base64_encode
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -257,32 +258,144 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 
   vector<map<string, string>> results;
 
+  // Check if any file is a PDF to determine if we need Docling
+  bool needs_pdf_processing = false;
+  for (const auto& path : paths) {
+    string ext = path;
+    size_t last_dot = path.rfind('.');
+    if (last_dot != string::npos) {
+      ext = path.substr(last_dot);
+      transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+    }
+    if (ext == ".pdf" || ext == ".PDF") {
+      needs_pdf_processing = true;
+      break;
+    }
+  }
+
+  // Only start Docling if we have PDF files to process
+  NetworkTools net;
+  if (needs_pdf_processing) {
+    net.start_and_wait_for_docling();
+  }
+
   for (const auto& path : paths) {
     map<string, string> result;
     result["path"] = path;
     result["content"] = "";
     result["error"] = "";
 
-    ifstream in_file(_get_fullpath(path));
-    if (!in_file.is_open()) {
-      result["error"] = "Failed to open file for reading: " + path;
-      log_diagnostic("Error: Failed to open file: " + path, true /* logOnly */);
-      results.push_back(result);
-      continue;
+    // Check if this is a URL
+    bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
+
+    // Check if this is a PDF file
+    string ext = path;
+    size_t last_dot = path.rfind('.');
+    if (last_dot != string::npos) {
+      ext = path.substr(last_dot);
+      transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
     }
 
-    stringstream buffer;
-    buffer << in_file.rdbuf();
-    string content = buffer.str();
+    bool is_pdf = (ext == ".pdf" || ext == ".PDF");
 
-    // Log success without content - only file size, never the actual content
-    // Use logOnly=true to ensure content is never shown on stdout or in logfile
-    log_diagnostic("Successfully read: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
+    if (is_pdf) {
+      // Unified PDF handling - local files read directly, URLs use NetworkTools
+      log_diagnostic("Processing PDF: " + path, true /* logOnly */);
 
-    escape_parameter_tags(content); // Escape any literal XML tags before sending to LLM
+      bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
-    result["status"] = "success";
-    result["content"] = content;
+      if (is_url) {
+        // Remote URL - use NetworkTools fetch mechanism
+        NetworkTools net;
+        vector<string> url_list = {path};
+        vector<map<string, string>> network_results = net.fetch_urls(url_list);
+
+        if (!network_results.empty()) {
+          result["content"] = network_results[0]["content"];
+          result["error"] = network_results[0]["error"];
+
+          if (result["error"].empty() && !result["content"].empty()) {
+            log_diagnostic("Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)", true /* logOnly */);
+          } else {
+            log_diagnostic("PDF processing failed: " + path, true /* logOnly */);
+          }
+        } else {
+          result["error"] = "[No results from network fetch]";
+          log_diagnostic("Network fetch returned empty results", true /* logOnly */);
+        }
+      } else {
+        // Local PDF file - read directly and process with Docling
+        ifstream in_file(_get_fullpath(path));
+        if (!in_file.is_open()) {
+          result["error"] = "Failed to open local PDF file for reading: " + path;
+          log_diagnostic("Error: Failed to open local PDF file", true /* logOnly */);
+          results.push_back(result);
+          continue;
+        }
+
+        stringstream buffer;
+        buffer << in_file.rdbuf();
+        string pdf_binary = buffer.str();
+        in_file.close();
+
+        // Process with Docling using existing NetworkTools member function
+        NetworkTools net;
+        string content = net.process_pdf_with_docling(pdf_binary);
+
+        if (content.find("[Docling Error") != string::npos ||
+            content.find("[Curl Init Failed]") != string::npos) {
+          result["error"] = content;
+          log_diagnostic("PDF processing failed: " + path, true /* logOnly */);
+        } else {
+          result["content"] = NetworkTools::limit_context_size(content);
+          log_diagnostic("Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)", true /* logOnly */);
+        }
+      }
+    } else if (is_url) {
+      // Remote non-PDF URL - use NetworkTools fetch_urls mechanism
+      log_diagnostic("Fetching remote URL: " + path, true /* logOnly */);
+
+      NetworkTools net;
+      vector<string> url_list = {path};
+      vector<map<string, string>> network_results = net.fetch_urls(url_list);
+
+      if (!network_results.empty()) {
+        result["content"] = network_results[0]["content"];
+        result["error"] = network_results[0]["error"];
+
+        if (result["error"].empty() && !result["content"].empty()) {
+          log_diagnostic("Successfully fetched remote URL: " + path + " (" + to_string(result["content"].length()) + " bytes)", true /* logOnly */);
+        } else {
+          log_diagnostic("Remote URL fetch failed: " + path, true /* logOnly */);
+        }
+      } else {
+        result["error"] = "[No results from network fetch]";
+        log_diagnostic("Network fetch returned empty results", true /* logOnly */);
+      }
+    } else {
+      // Regular local text file handling
+      ifstream in_file(_get_fullpath(path));
+      if (!in_file.is_open()) {
+        result["error"] = "Failed to open file for reading: " + path;
+        log_diagnostic("Error: Failed to open file: " + path, true /* logOnly */);
+        results.push_back(result);
+        continue;
+      }
+
+      stringstream buffer;
+      buffer << in_file.rdbuf();
+      string content = buffer.str();
+
+      // Log success without content - only file size, never the actual content
+      // Use logOnly=true to ensure content is never shown on stdout or in logfile
+      log_diagnostic("Successfully read: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
+
+      escape_parameter_tags(content); // Escape any literal XML tags before sending to LLM
+
+      result["status"] = "success";
+      result["content"] = content;
+    }
+
     results.push_back(result);
   }
 

@@ -14,9 +14,29 @@
 #include <functional>
 #include <algorithm>
 #include "json.hpp"
+#include <libxml/parser.h>
+#include <libxml/tree.h>
 
 using json = nlohmann::json;
 using namespace std;
+
+// --- Helper to strip trailing whitespace from each line ---
+static std::string strip_trailing_whitespace(const std::string& text) {
+    std::string result;
+    std::istringstream iss(text);
+    std::string line;
+    while (std::getline(iss, line)) {
+        // Find last non-whitespace character
+        size_t end = line.find_last_not_of(" \t\r\n");
+        if (end != std::string::npos) {
+            result += line.substr(0, end + 1) + "\n";
+        } else {
+            // Line is all whitespace or empty - keep as-is for blank lines
+            result += "\n";
+        }
+    }
+    return result;
+}
 
 // --- Global Config & State ---
 const string SEARXNG_LOG_PATH = "log/searxng.log";
@@ -24,6 +44,7 @@ const string DOCLING_LOG_PATH = "log/docling.log";
 string HOME;
 
 extern bool is_debug;
+extern volatile sig_atomic_t stop_generation;  // Forward declaration for interrupt checking
 
 static pid_t g_searxng_pid = -1;
 static pid_t g_docling_pid = -1;
@@ -32,6 +53,12 @@ static int g_consecutive_empty_searches = 0;
 
 static chrono::steady_clock::time_point g_last_network_request = chrono::steady_clock::now() - chrono::seconds(3);
 const int SEARCH_COOLDOWN_SECONDS = 3;
+
+// --- Interrupt-aware curl callback to check for SIGINT during long operations ---
+static int interrupt_check_callback(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow) {
+    // Return non-zero to abort the transfer if stop_generation is set
+    return stop_generation ? 1 : 0;
+}
 
 // --- RAG Fetcher Callbacks & State ---
 struct FetchState {
@@ -170,6 +197,10 @@ void NetworkTools::start_docling_if_needed() {
 
             int retries = 0;
             while (retries < 60) { // Give it up to 60 seconds to boot
+                if (stop_generation) {
+                    log_diagnostic("Docling startup interrupted by user");
+                    break;
+                }
                 if (curl_easy_perform(wait_curl) == CURLE_OK) {
                     log_diagnostic("Docling server is online and ready!");
                     break;
@@ -202,7 +233,7 @@ static string base64_encode(const string &in) {
 
 // --- Smart Context Truncation ---
 // Only truncates if the text exceeds max_chars (80,000 chars is ~20k tokens)
-static string limit_context_size(const string& text, size_t max_chars = 80000) {
+string NetworkTools::limit_context_size(const string& text, size_t max_chars) {
     if (text.length() <= max_chars) return text; // Returns untouched if small enough
 
     size_t head_size = (max_chars * 6) / 10; // First 60% (Abstract, Intro)
@@ -215,7 +246,55 @@ static string limit_context_size(const string& text, size_t max_chars = 80000) {
     return truncated;
 }
 
+std::string NetworkTools::process_local_pdf(const std::string& pdf_binary) {
+    // Ensure Docling is running
+    start_docling_if_needed();
+
+    // Create instance to call member function
+    NetworkTools net;
+    return net.process_pdf_with_docling(pdf_binary);
+}
+
+string NetworkTools::start_and_wait_for_docling() {
+    // Start Docling if not already running
+    start_docling_if_needed();
+
+    // Verify Docling is actually ready by checking the health endpoint
+    CURL *curl = curl_easy_init();
+    if (!curl) return "[Curl Init Failed for Docling health check]";
+
+    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:5001/docs");
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 5000L);
+
+    int retries = 30; // Give up to 15 seconds (30 * 500ms)
+    while (retries > 0) {
+        if (stop_generation) {
+            log_diagnostic("Docling health check interrupted by user");
+            curl_easy_cleanup(curl);
+            return "[Docling check interrupted]";
+        }
+        CURLcode res = curl_easy_perform(curl);
+        if (res == CURLE_OK) {
+            log_diagnostic("Docling is ready and responding!");
+            curl_easy_cleanup(curl);
+            return "success";
+        }
+        this_thread::sleep_for(chrono::milliseconds(500));
+        retries--;
+    }
+
+    curl_easy_cleanup(curl);
+    return "[Docling health check failed - service not responding]";
+}
+
 string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
+    // Ensure Docling is running and ready before attempting conversion
+    string docling_status = start_and_wait_for_docling();
+    if (docling_status != "success") {
+        return docling_status;
+    }
+
     log_diagnostic("Uploading PDF to Docling (Strict JSON Schema)...");
 
     CURL *curl = curl_easy_init();
@@ -256,10 +335,20 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, json_str.length());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L); // Generous timeout for E-cores
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L); // Reduced from 600s for better interrupt responsiveness
+    // Enable interrupt checking during transfer
+    curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 
     long http_code = 0;
     CURLcode res = curl_easy_perform(curl);
+
+    // Check for interrupt after completion
+    if (stop_generation) {
+        curl_slist_free_all(headers);
+        curl_easy_cleanup(curl);
+        return "[PDF conversion interrupted by user]";
+    }
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
     curl_slist_free_all(headers);
@@ -269,7 +358,7 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
         try {
             auto j = json::parse(readBuffer);
             string full_md = j["document"]["md_content"].get<string>();
-            return limit_context_size(full_md); // Apply smart truncation
+            return NetworkTools::limit_context_size(full_md); // Apply smart truncation
         } catch (...) { return "[Docling JSON Parse Error]"; }
     }
 
@@ -301,8 +390,18 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
         // ADDED: Transparent bot User-Agent
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
         curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+        // Enable interrupt checking during transfer
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 
         CURLcode res = curl_easy_perform(curl);
+
+        // Check for interrupt after completion
+        if (stop_generation) {
+            curl_easy_cleanup(curl);
+            return "[Fetch interrupted by user]";
+        }
+
         curl_easy_cleanup(curl);
 
         if (!state.is_text && !state.is_pdf) {
@@ -320,8 +419,34 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
 
     string& readBuffer = state.buffer;
 
-    // SCRIPT & STYLE STRIPPING
-    string lower_buf = readBuffer;
+    // DECODE HTML ENTITIES using libxml2 FIRST (before stripping tags)
+    string decoded_html = "";
+
+    try {
+        xmlDocPtr doc = xmlReadMemory(
+            readBuffer.c_str(),
+            static_cast<int>(readBuffer.length()),
+            nullptr,  // URL (not needed for memory)
+            nullptr,  // encoding (auto-detect)
+            XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_NONET | XML_PARSE_RECOVER
+        );
+
+        if (doc) {
+            xmlChar *content = xmlNodeGetContent(doc->children);
+            if (content) {
+                decoded_html = reinterpret_cast<char*>(content);
+                xmlFree(content);
+            }
+            xmlFreeDoc(doc);
+        } else {
+            decoded_html = readBuffer;  // Fallback to original
+        }
+    } catch (...) {
+        decoded_html = readBuffer;  // Fallback to original
+    }
+
+    // SCRIPT & STYLE STRIPPING (on decoded content)
+    string lower_buf = decoded_html;
     transform(lower_buf.begin(), lower_buf.end(), lower_buf.begin(), [](unsigned char c){ return std::tolower(c); });
 
     size_t pos = 0;
@@ -336,20 +461,20 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
 
         if (tag_end != string::npos) {
             tag_end += end_tag.length();
-            readBuffer.erase(next_tag, tag_end - next_tag);
+            decoded_html.erase(next_tag, tag_end - next_tag);
             lower_buf.erase(next_tag, tag_end - next_tag);
         } else {
-            readBuffer.erase(next_tag);
+            decoded_html.erase(next_tag);
             lower_buf.erase(next_tag);
             break;
         }
     }
 
-    // STRIP TAGS
+    // STRIP TAGS (from decoded content)
     string clean_text = "";
-    clean_text.reserve(readBuffer.size());
+    clean_text.reserve(decoded_html.size());
     bool in_tag = false;
-    for (char c : readBuffer) {
+    for (char c : decoded_html) {
         if (c == '<') in_tag = true;
         else if (c == '>') { in_tag = false; clean_text += " "; }
         else if (!in_tag) clean_text += c;
@@ -367,7 +492,92 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
         }
     }
 
-    return limit_context_size(final_text);
+    // Strip trailing whitespace before returning
+    final_text = strip_trailing_whitespace(final_text);
+
+    return NetworkTools::limit_context_size(final_text);
+}
+
+// --- Fetch Multiple URLs (Files, HTML, PDFs) ---
+vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls) {
+  vector<map<string, string>> results;
+
+  for (const auto& url : urls) {
+    map<string, string> result;
+    result["path"] = url;
+    result["content"] = "";
+    result["error"] = "";
+
+    log_diagnostic("fetch_url(" + url + ")");
+
+    // Check file extension to determine type
+    string ext = url;
+    size_t last_dot = url.rfind('.');
+    if (last_dot != string::npos) {
+      ext = url.substr(last_dot);
+      transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+    }
+
+    bool is_pdf = (ext == ".pdf" || ext == ".PDF");
+
+    if (is_pdf) {
+      // Fetch PDF binary and process with Docling
+      CURL *curl = curl_easy_init();
+      FetchState state;
+
+      if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, HeaderCallback);
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
+        // Enable interrupt checking during transfer
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
+
+        CURLcode res = curl_easy_perform(curl);
+
+        // Check for interrupt after completion
+        if (stop_generation) {
+          result["error"] = "[PDF fetch interrupted by user]";
+          curl_easy_cleanup(curl);
+        } else if (!state.is_pdf || res != CURLE_OK) {
+          result["error"] = "[Failed to fetch PDF]";
+          log_diagnostic("PDF fetch failed for: " + url, true /* logOnly */);
+        } else {
+          string pdf_content = process_pdf_with_docling(state.buffer);
+          if (pdf_content.find("[Docling Error") != string::npos ||
+              pdf_content.find("[Failed to") != string::npos) {
+            result["error"] = pdf_content;
+          } else {
+            result["content"] = NetworkTools::limit_context_size(pdf_content);
+          }
+        }
+
+        curl_easy_cleanup(curl);
+      } else {
+        result["error"] = "[Curl Init Failed]";
+      }
+    } else {
+      // Fetch HTML/text content
+      string content = fetch_and_clean_html(url);
+
+      if (content.find("[Failed to") != string::npos ||
+          content.find("[Skipped") != string::npos ||
+          content.find("[Binary file skipped]") != string::npos) {
+        result["error"] = content;
+      } else {
+        result["content"] = content;
+      }
+    }
+
+    results.push_back(result);
+  }
+
+  return results;
 }
 
 // --- Main Search Interface ---
@@ -425,8 +635,18 @@ string NetworkTools::web_search(const string& query) {
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        // Enable interrupt checking during transfer
+        curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
+        curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 
         res = curl_easy_perform(curl);
+
+        // Check for interrupt after completion
+        if (stop_generation) {
+            g_searxng_disabled = true;
+            curl_easy_cleanup(curl);
+            return "Error: Search interrupted by user.";
+        }
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
 
         curl_slist_free_all(headers);

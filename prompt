@@ -8,11 +8,11 @@ CRITICAL TOOL CALLING RULES:
 
 Always use these tools for any filesystem or shell operation:
 
-- Read one or more files:
+- Read one or more text or PDF files or URLs:
   <function=read_files>
   <parameter=paths>
   main.cc
-  main.h
+  https://example.com/document.pdf
   </parameter>
   </function>
 
@@ -58,7 +58,7 @@ Always use these tools for any filesystem or shell operation:
   </parameter>
   </function>
 
-- Search the web for up-to-date documentation, bugs, or forum discussions:
+- Search the web with a query for up-to-date documentation, bugs, or forum discussions:
   <function=web_search>
   <parameter=query>
   keyword1 keyword2 ...
