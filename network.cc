@@ -241,6 +241,64 @@ static string base64_encode(const string &in) {
     return out;
 }
 
+// --- SSL Certificate Initialization ---
+void NetworkTools::init_ssl_certificates() {
+    static bool initialized = false;
+    if (initialized) return;
+
+    struct stat st;
+    const string combined_ca = "/tmp/combined-ca.crt";
+
+    // Check if combined CA bundle exists, if not create it
+    if (stat(combined_ca.c_str(), &st) != 0 || st.st_size == 0) {
+        log_diagnostic("Creating combined CA bundle with Cloudflare certificates...");
+
+        // Get system CA bundle path
+        string system_ca;
+        const char* ca_paths[] = {
+            "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+            "/etc/ssl/certs/ca-certificates.crt",
+            "/etc/pki/tls/certs/ca-bundle.crt",
+            NULL
+        };
+
+        for (const char* path : ca_paths) {
+            if (stat(path, &st) == 0 && st.st_size > 0) {
+                system_ca = path;
+                break;
+            }
+        }
+
+        // Download Cloudflare certificate chain
+        string cloudflare_cmd = "openssl s_client -connect example.com:443 -showcerts 2>/dev/null | "
+                               "awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{if(/BEGIN CERTIFICATE/)p=1; if(p)print; if(/END CERTIFICATE/)p=0}' > /tmp/cloudflare-chain.pem";
+        system(cloudflare_cmd.c_str());
+
+        // Combine CA bundles
+        string combine_cmd;
+        if (!system_ca.empty()) {
+            combine_cmd = "cat " + system_ca + " /tmp/cloudflare-chain.pem > " + combined_ca;
+        } else {
+            // Download standard CA bundle and add Cloudflare certs
+            combine_cmd = "curl -s https://curl.se/ca/cacert.pem > /tmp/ca-bundle-temp.crt && "
+                         "cat /tmp/ca-bundle-temp.crt /tmp/cloudflare-chain.pem > " + combined_ca;
+        }
+
+        int result = system(combine_cmd.c_str());
+        if (result == 0 && stat(combined_ca.c_str(), &st) == 0 && st.st_size > 0) {
+            log_diagnostic("Created combined CA bundle: " + combined_ca);
+            setenv("CURL_CA_BUNDLE", combined_ca.c_str(), 1);
+        } else {
+            log_diagnostic("Failed to create combined CA bundle - using curl defaults");
+        }
+    } else {
+        log_diagnostic("Using existing combined CA bundle: " + combined_ca);
+        setenv("CURL_CA_BUNDLE", combined_ca.c_str(), 1);
+    }
+
+    initialized = true;
+}
+
 // --- Smart Context Truncation ---
 // Only truncates if the text exceeds max_chars (80,000 chars is ~20k tokens)
 string NetworkTools::limit_context_size(const string& text, size_t max_chars) {
@@ -400,6 +458,48 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
         // ADDED: Transparent bot User-Agent
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
         curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+        // SSL Certificate Support: Configure based on URL protocol
+        bool is_https = url.substr(0, 8) == "https://";
+        if (is_https) {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+            // Use the combined CA bundle that includes Cloudflare certificates
+            const string combined_ca = "/tmp/combined-ca.crt";
+            struct stat st;
+            if (stat(combined_ca.c_str(), &st) == 0 && st.st_size > 0) {
+                curl_easy_setopt(curl, CURLOPT_CAINFO, combined_ca.c_str());
+                log_diagnostic("Using combined CA bundle with Cloudflare certs: " + combined_ca);
+            } else {
+                // Fall back to system CA bundle paths
+                static const char* ca_paths[] = {
+                    "/etc/ssl/certs/ca-certificates.crt",
+                    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                    "/etc/pki/tls/certs/ca-bundle.crt",
+                    NULL
+                };
+                bool found = false;
+                for (const char* path : ca_paths) {
+                    if (stat(path, &st) == 0 && st.st_size > 0) {
+                        curl_easy_setopt(curl, CURLOPT_CAINFO, path);
+                        log_diagnostic("Using system CA bundle: " + string(path));
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    // Use curl's built-in default
+                    static const char* default_ca = "";
+                    curl_easy_setopt(curl, CURLOPT_CAINFO, default_ca);
+                    log_diagnostic("Using curl's built-in system certificate store");
+                }
+            }
+        } else {
+            // HTTP requests (localhost, http:// URLs) - disable SSL verification options
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+        }
         // Enable interrupt checking during transfer
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
@@ -563,6 +663,47 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
+
+        // SSL Certificate Support: Configure based on URL protocol
+        bool is_https = url.substr(0, 8) == "https://";
+        if (is_https) {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+            // Use the combined CA bundle that includes Cloudflare certificates
+            const string combined_ca = "/tmp/combined-ca.crt";
+            struct stat st;
+            if (stat(combined_ca.c_str(), &st) == 0 && st.st_size > 0) {
+                curl_easy_setopt(curl, CURLOPT_CAINFO, combined_ca.c_str());
+                log_diagnostic("Using combined CA bundle with Cloudflare certs: " + combined_ca);
+            } else {
+                // Fall back to system CA bundle paths
+                static const char* ca_paths[] = {
+                    "/etc/ssl/certs/ca-certificates.crt",
+                    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                    "/etc/pki/tls/certs/ca-bundle.crt",
+                    NULL
+                };
+                bool found = false;
+                for (const char* path : ca_paths) {
+                    if (stat(path, &st) == 0 && st.st_size > 0) {
+                        curl_easy_setopt(curl, CURLOPT_CAINFO, path);
+                        log_diagnostic("Using system CA bundle: " + string(path));
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    static const char* default_ca = "";
+                    curl_easy_setopt(curl, CURLOPT_CAINFO, default_ca);
+                    log_diagnostic("Using curl's built-in system certificate store");
+                }
+            }
+        } else {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+            log_diagnostic("HTTP request detected - SSL verification disabled");
+        }
         // Enable interrupt checking during transfer
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
@@ -617,6 +758,9 @@ string NetworkTools::web_search(const string& query) {
         return "System Error: Web search is currently disabled for this session.";
     }
 
+    // Initialize SSL certificates on first web search
+    init_ssl_certificates();
+
     string query_str = "\"" + (query.length() > 80 ? query.substr(0, 77) + "..." : query) + "\"";
     log_diagnostic("web_search(" + query_str + ")");
 
@@ -664,6 +808,47 @@ string NetworkTools::web_search(const string& query) {
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+
+        // SSL Certificate Support: Configure based on URL protocol
+        bool is_https = url.substr(0, 8) == "https://";
+        if (is_https) {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+
+            // Use the combined CA bundle that includes Cloudflare certificates
+            const string combined_ca = "/tmp/combined-ca.crt";
+            struct stat st;
+            if (stat(combined_ca.c_str(), &st) == 0 && st.st_size > 0) {
+                curl_easy_setopt(curl, CURLOPT_CAINFO, combined_ca.c_str());
+                log_diagnostic("Using combined CA bundle with Cloudflare certs: " + combined_ca);
+            } else {
+                // Fall back to system CA bundle paths
+                static const char* ca_paths[] = {
+                    "/etc/ssl/certs/ca-certificates.crt",
+                    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+                    "/etc/pki/tls/certs/ca-bundle.crt",
+                    NULL
+                };
+                bool found = false;
+                for (const char* path : ca_paths) {
+                    if (stat(path, &st) == 0 && st.st_size > 0) {
+                        curl_easy_setopt(curl, CURLOPT_CAINFO, path);
+                        log_diagnostic("Using system CA bundle: " + string(path));
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    static const char* default_ca = "";
+                    curl_easy_setopt(curl, CURLOPT_CAINFO, default_ca);
+                    log_diagnostic("Using curl's built-in system certificate store");
+                }
+            }
+        } else {
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+            log_diagnostic("HTTP request detected - SSL verification disabled");
+        }
         // Enable interrupt checking during transfer
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);

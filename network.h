@@ -34,6 +34,9 @@ public:
   // Context size limiting utility - used for both HTML and PDF content
   static std::string limit_context_size(const std::string& text, size_t max_chars = 80000);
 
+  // Initialize SSL certificate support (downloads CA bundle if needed)
+  static void init_ssl_certificates();
+
 private:
   std::string base_url;
 
