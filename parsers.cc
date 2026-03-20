@@ -5,15 +5,16 @@
 #include <sstream> // Required for stringstream
 
 using namespace std;
+using namespace Tokens;
 
 // Linear-time string parser for XML schema
 string extract_string_arg_bounded(const string& tool_call, const string& arg_name) {
-    string search_key = string(Tokens::PARAM_START) + arg_name + ">";
+    string search_key = string(PARAM_START) + arg_name + ">";
     size_t pos = tool_call.find(search_key);
     if (pos == string::npos) return "";
 
     size_t start = pos + search_key.length();
-    size_t end = tool_call.find(Tokens::PARAM_END, start);
+    size_t end = tool_call.find(PARAM_END, start);
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);
@@ -29,12 +30,12 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 // Linear-time array parser for XML schema (Newline/Comma separated)
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
-    string search_key = string(Tokens::PARAM_START) + arg_name + ">";
+    string search_key = string(PARAM_START) + arg_name + ">";
     size_t pos = tool_call.find(search_key);
     if (pos == string::npos) return result;
 
     size_t start = pos + search_key.length();
-    size_t end = tool_call.find(Tokens::PARAM_END, start);
+    size_t end = tool_call.find(PARAM_END, start);
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);
@@ -66,12 +67,12 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
 
 // Linear-time integer parser for XML schema
 int extract_int_arg_bounded(const string& tool_call, const string& arg_name) {
-    string search_key = string(Tokens::PARAM_START) + arg_name + ">";
+    string search_key = string(PARAM_START) + arg_name + ">";
     size_t pos = tool_call.find(search_key);
     if (pos == string::npos) return 0;
 
     size_t start = pos + search_key.length();
-    size_t end = tool_call.find(Tokens::PARAM_END, start);
+    size_t end = tool_call.find(PARAM_END, start);
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);

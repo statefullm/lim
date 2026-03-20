@@ -29,6 +29,9 @@
 #include <readline/readline.h>
 #include <readline/history.h>
 
+using namespace std;
+using namespace Tokens;
+
 // --- Model Detection and Chat Template Selection ---
 enum class ModelType {
     UNKNOWN,
@@ -65,8 +68,8 @@ ModelType detect_model_type(const llama_vocab * vocab) {
 
         if (text.find(Tokens::TURN_START) != std::string::npos) has_im_start = true;
         if (text.find(Tokens::TURN_END) != std::string::npos) has_im_end = true;
-        if (text.find("<think>") != std::string::npos) has_reasoning_start = true;
-        if (text.find("</think>") != std::string::npos) has_reasoning_end = true;
+        if (text.find(THINK_START) != std::string::npos) has_reasoning_start = true;
+        if (text.find(THINK_END) != std::string::npos) has_reasoning_end = true;
     }
 
     if (has_reasoning_start && has_reasoning_end) return ModelType::CHATML;
@@ -96,8 +99,6 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
 
 // --- Global Interrupt Flag ---
 volatile sig_atomic_t stop_generation = 0;
-
-using namespace std;
 
 // --- SEQUENTIAL INTERVENTION MESSAGES ---
 vector<string> loopMessages = {
@@ -213,9 +214,9 @@ void replace_all_tags(std::string& str, const std::string& from, const std::stri
 string execute_tool_call(const string& tool_call, set<string>& clean_files, string& last_grep_req) {
   string result = "";
   string tool_name = "";
-  size_t ns = tool_call.find(Tokens::FUNC_START);
+  size_t ns = tool_call.find(FUNC_START);
   if (ns != string::npos) {
-      ns += string(Tokens::FUNC_START).length();
+      ns += string(FUNC_START).length();
       size_t ne = tool_call.find('>', ns);
       if (ne != string::npos) {
           tool_name = tool_call.substr(ns, ne - ns);
@@ -270,7 +271,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   } else if (tool_name == "search_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
     string text = extract_string_arg_bounded(tool_call, "text");
-    replace_all_tags(text, Tokens::PARAM_END_ESC, Tokens::PARAM_END); // Unescape
+    replace_all_tags(text, PARAM_END_ESC, PARAM_END); // Unescape
     if (!path.empty()) {
       string current_req = path + ":" + text;
       if (current_req == last_grep_req) {
@@ -287,7 +288,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string path = extract_string_arg_bounded(tool_call, "path");
     string content = extract_string_arg_bounded(tool_call, "content");
     content = remove_trailing_spaces(content);
-    replace_all_tags(content, Tokens::PARAM_END_ESC, Tokens::PARAM_END); // Unescape
+    replace_all_tags(content, PARAM_END_ESC, PARAM_END); // Unescape
     clean_files.erase(path);
     last_grep_req = "";
     if (!path.empty()) {
@@ -304,8 +305,8 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string new_str = extract_string_arg_bounded(tool_call, "new");
     old_str = remove_trailing_spaces(old_str);
     new_str = remove_trailing_spaces(new_str);
-    replace_all_tags(old_str, Tokens::PARAM_END_ESC, Tokens::PARAM_END); // Unescape
-    replace_all_tags(new_str, Tokens::PARAM_END_ESC, Tokens::PARAM_END); // Unescape
+    replace_all_tags(old_str, PARAM_END_ESC, PARAM_END); // Unescape
+    replace_all_tags(new_str, PARAM_END_ESC, PARAM_END); // Unescape
     clean_files.erase(path);
     last_grep_req = "";
     if (!path.empty()) {
@@ -345,7 +346,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
 }
 
 string sanitize(string text) {
-    vector<string> patterns = {Tokens::FUNC_START, Tokens::FUNC_END, Tokens::TURN_START, Tokens::TURN_END};
+    vector<string> patterns = {FUNC_START, FUNC_END, TURN_START, TURN_END};
     for (const auto& pattern : patterns) {
       size_t pos = 0;
       while ((pos = text.find(pattern, pos)) != std::string::npos) {
@@ -420,7 +421,7 @@ int main(int argc, char ** argv) {
   auto log_entry = [&](const string& role, const string& text) {
       if (chat_log.is_open()) {
           string clean_text = text;
-          const vector<string> tags_to_remove = {Tokens::FUNC_START, Tokens::FUNC_END, Tokens::TURN_START, Tokens::TURN_END};
+          const vector<string> tags_to_remove = {FUNC_START, FUNC_END, TURN_START, TURN_END};
           for (const auto& tag : tags_to_remove) {
               size_t p;
               while ((p = clean_text.find(tag)) != string::npos) {
@@ -476,7 +477,7 @@ int main(int argc, char ** argv) {
 
   auto tokenize = [&](string text) { return common_tokenize(ctx, text, false, true); };
 
-  std::string formatted_system_prompt = string(Tokens::TURN_START) + "system\n" + system_prompt + Tokens::TURN_END + "\n";
+  std::string formatted_system_prompt = string(TURN_START) + "system\n" + system_prompt + TURN_END + "\n";
   vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
 
   // Sampling parameters: instruct mode for general tasks
@@ -617,12 +618,12 @@ int main(int argc, char ** argv) {
 
       if (use_dummy_thought) {
           // Dummy Thought Injection - disable thinking mode
-          user_message = string(Tokens::TURN_START) + "user\n" +
-                           user_input + Tokens::TURN_END + "\n" +
-                           Tokens::TURN_START + "assistant\n<think>\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n</think>\n";
+          user_message = string(TURN_START) + "user\n" +
+                           user_input + TURN_END + "\n" +
+                           TURN_START + "assistant\n"+THINK_START+"\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n"+THINK_END+"\n";
       } else {
           // Normal thinking mode
-          user_message = string(Tokens::TURN_START) + "user\n" + user_input + Tokens::TURN_END + "\n" + Tokens::TURN_START + "assistant\n";
+          user_message = string(TURN_START) + "user\n" + user_input + TURN_END + "\n" + TURN_START + "assistant\n";
       }
       vector<llama_token> tokens = tokenize(user_message);
 
@@ -704,8 +705,8 @@ int main(int argc, char ** argv) {
 
       // --- EARLY EOG RECOVERY ---
       if (llama_vocab_is_eog(vocab, next_token)) {
-          size_t active_ts = generated_text.rfind(Tokens::FUNC_START);
-          size_t active_te = generated_text.rfind(Tokens::FUNC_END);
+          size_t active_ts = generated_text.rfind(FUNC_START);
+          size_t active_te = generated_text.rfind(FUNC_END);
 
           if (active_ts != string::npos && (active_te == string::npos || active_ts > active_te)) {
               printf("\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
@@ -718,12 +719,12 @@ int main(int argc, char ** argv) {
                   full_response.erase(full_response.length() - drop_len);
               }
 
-              string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
+              string forced_close = "\n" + string(PARAM_END) + "\n" + string(FUNC_END) + "\n";
               generated_text += forced_close;
               full_response += forced_close;
 
               tool_start = active_ts;
-              tool_end = generated_text.find(Tokens::FUNC_END, active_ts);
+              tool_end = generated_text.find(FUNC_END, active_ts);
               trigger_tool_execution = true;
               break;
           }
@@ -738,13 +739,13 @@ int main(int argc, char ** argv) {
 
       // --- PERF OPTIMIZATION: O(1) TRACKING OFFSETS ---
       if (tool_start == string::npos) {
-          tool_start = generated_text.find(Tokens::FUNC_START, func_search_pos);
+          tool_start = generated_text.find(FUNC_START, func_search_pos);
           if (tool_start == string::npos) {
               func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
           }
       }
       if (tool_start != string::npos && tool_end == string::npos) {
-          tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
+          tool_end = generated_text.find(FUNC_END, tool_start);
       }
 
       in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
@@ -763,11 +764,11 @@ int main(int argc, char ** argv) {
               full_response.erase(full_response.length() - drop_len);
           }
 
-          string forced_close = "\n" + string(Tokens::PARAM_END) + "\n" + string(Tokens::FUNC_END) + "\n";
+          string forced_close = "\n" + string(PARAM_END) + "\n" + string(FUNC_END) + "\n";
           generated_text += forced_close;
           full_response += forced_close;
 
-          tool_end = generated_text.find(Tokens::FUNC_END, tool_start);
+          tool_end = generated_text.find(FUNC_END, tool_start);
           trigger_tool_execution = true;
           break;
       }
@@ -824,7 +825,7 @@ int main(int argc, char ** argv) {
               log_entry("ASSISTANT (Interrupted Reasoning Loop)", generated_text);
 
               string active_intervention_msg = get_next_loop_message();
-              string msg = string(Tokens::TURN_END) + "\n" + Tokens::TURN_START + "user\n" + active_intervention_msg + "\n" + Tokens::TURN_END + "\n" + Tokens::TURN_START + "assistant\n";
+              string msg = string(TURN_END) + "\n" + TURN_START + "user\n" + active_intervention_msg + "\n" + TURN_END + "\n" + TURN_START + "assistant\n";
               vector<llama_token> t_tokens = tokenize(msg);
 
               if (n_past + t_tokens.size() >= cparams.n_ctx) {
@@ -853,7 +854,7 @@ int main(int argc, char ** argv) {
       // --- SAFE TERMINAL BUFFERING ---
       if (!in_tool_call_stream) {
           size_t safe_len = generated_text.length();
-          string fstart(Tokens::FUNC_START);
+          string fstart(FUNC_START);
 
           // Hold back printing if the tail end is a partial match for a tool tag
           for (size_t len = 1; len <= fstart.length() && len <= generated_text.length(); ++len) {
@@ -929,20 +930,20 @@ int main(int argc, char ** argv) {
     // --- TOOL EXECUTION BLOCK ---
     // If the generation loop exited and signaled a tool is ready, we process it here.
     if (trigger_tool_execution && tool_start != string::npos && tool_end != string::npos) {
-        string tool_call = generated_text.substr(tool_start, tool_end - tool_start + string(Tokens::FUNC_END).length());
+        string tool_call = generated_text.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
         string preamble = "";
         if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
 
-        const vector<string> strip_tags = {Tokens::TURN_START, Tokens::TURN_END};
+        const vector<string> strip_tags = {TURN_START, TURN_END};
         for (const auto& tag : strip_tags) {
             size_t p;
             while ((p = tool_call.find(tag)) != string::npos) tool_call.erase(p, tag.length());
         }
 
         string tool_name_for_display = "";
-        size_t name_start = tool_call.find(Tokens::FUNC_START);
+        size_t name_start = tool_call.find(FUNC_START);
         if (name_start != string::npos) {
-            name_start += string(Tokens::FUNC_START).length();
+            name_start += string(FUNC_START).length();
             size_t name_end = tool_call.find('>', name_start);
             if (name_end != string::npos) {
                 tool_name_for_display = tool_call.substr(name_start, name_end - name_start);
@@ -966,7 +967,7 @@ int main(int argc, char ** argv) {
         while ((pos = full_response.find("```", pos)) != string::npos) { bticks++; pos += 3; }
         if (bticks % 2 != 0) is_real_tool = false;
 
-        size_t global_ts = full_response.rfind(Tokens::FUNC_START);
+        size_t global_ts = full_response.rfind(FUNC_START);
         if (global_ts != string::npos && global_ts > 0) {
           char prev_char = full_response[global_ts - 1];
           if (prev_char == '`' || prev_char == '\\') is_real_tool = false;
@@ -1080,11 +1081,11 @@ int main(int argc, char ** argv) {
             chat_log << "\n";
             generated_text = ""; unprinted_text = "";
 
-            std::string tool_result_section = string(Tokens::TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + Tokens::TURN_END + "\n";
-            string tool_msg = tool_result_section + Tokens::TURN_START + "assistant\n";
+            std::string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
+            string tool_msg = tool_result_section + TURN_START + "assistant\n";
 
             if (inject_auto_user_msg) {
-                tool_msg += active_intervention_msg + string(Tokens::TURN_END) + "\n" + Tokens::TURN_START + "assistant\n";
+                tool_msg += active_intervention_msg + string(TURN_END) + "\n" + TURN_START + "assistant\n";
             }
 
             vector<llama_token> t_tokens = tokenize(tool_msg);

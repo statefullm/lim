@@ -17,6 +17,7 @@
 #include <limits.h>
 
 using namespace std;
+using namespace Tokens;
 
 // --- Consolidated Diagnostic Logging Function ---
 void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
@@ -42,8 +43,8 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
 
 // --- Helper to escape tags from disk so they don't break the LLM's XML parser ---
 static void escape_parameter_tags(std::string& str) {
-    std::string from = Tokens::PARAM_END;
-    std::string to = Tokens::PARAM_END_ESC;
+    std::string from = PARAM_END;
+    std::string to = PARAM_END_ESC;
     size_t start_pos = 0;
     while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
         str.replace(start_pos, from.length(), to);
