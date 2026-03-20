@@ -16,6 +16,7 @@
 #include "json.hpp"
 #include <libxml/parser.h>
 #include <libxml/tree.h>
+#include <cstring>  // For strlen
 
 using json = nlohmann::json;
 using namespace std;
@@ -301,17 +302,42 @@ void NetworkTools::init_ssl_certificates() {
 
 // --- Smart Context Truncation ---
 // Only truncates if the text exceeds max_chars (80,000 chars is ~20k tokens)
+// Also strips base64 image data to prevent cache corruption
 string NetworkTools::limit_context_size(const string& text, size_t max_chars) {
-    if (text.length() <= max_chars) return text; // Returns untouched if small enough
+    // First, strip embedded base64 images to avoid corrupting them during truncation
+    string cleaned_text = NetworkTools::strip_base64_images(text);
+
+    if (cleaned_text.length() <= max_chars) return cleaned_text; // Returns untouched if small enough
 
     size_t head_size = (max_chars * 6) / 10; // First 60% (Abstract, Intro)
     size_t tail_size = (max_chars * 4) / 10; // Last 40% (Conclusion, Summary)
 
-    string truncated = text.substr(0, head_size);
+    string truncated = cleaned_text.substr(0, head_size);
     truncated += "\n\n... [MASSIVE CONTENT OMITTED TO PRESERVE LLM CONTEXT MEMORY] ...\n\n";
-    truncated += text.substr(text.length() - tail_size);
+    truncated += cleaned_text.substr(cleaned_text.length() - tail_size);
 
     return truncated;
+}
+
+// --- Strip Base64 Images from Text ---
+// Removes data:image/*;base64,... patterns to prevent cache corruption
+string NetworkTools::strip_base64_images(const string& text) {
+    string result = text;
+
+    // Pattern: ![Image](data:image/...;base64,.......)
+    size_t pos = 0;
+    while ((pos = result.find("![Image](data:image/", pos)) != string::npos) {
+        size_t end_pos = result.find(")", pos);
+        if (end_pos != string::npos) {
+            // Replace with placeholder instead of removing entirely to preserve structure
+            result.replace(pos, end_pos - pos + 1, "[IMAGE OMITTED]");
+            pos += strlen("[IMAGE OMITTED]");
+        } else {
+            break;
+        }
+    }
+
+    return result;
 }
 
 std::string NetworkTools::process_local_pdf(const std::string& pdf_binary) {
