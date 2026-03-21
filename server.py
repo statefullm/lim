@@ -47,7 +47,7 @@ async def handler(websocket):
 
 async def main():
     # Start the websocket server on port 8765
-    server = await websockets.serve(handler, "localhost", 8765)
+    server = await websockets.serve(handler, "0.0.0.0", 8765)
     print("WebSocket Server running on ws://localhost:8765")
 
     # Run the pipe reader concurrently

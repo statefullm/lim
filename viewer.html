@@ -78,7 +78,7 @@
         let rawContent = '';
 
         function connect() {
-            const ws = new WebSocket('ws://localhost:8765');
+            const ws = new WebSocket('ws://cascade:8765');
 
             ws.onopen = () => {
                 statusDiv.textContent = 'Connected';
