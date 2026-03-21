@@ -683,6 +683,7 @@ int main(int argc, char ** argv) {
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
         NetworkTools().reset_search();
+        NetworkTools::reset_context_usage();
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
         safe_printf("\n\033[32m[Context Cleared Successfully]\033[0m\n");

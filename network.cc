@@ -55,6 +55,18 @@ static int g_consecutive_empty_searches = 0;
 static chrono::steady_clock::time_point g_last_network_request = chrono::steady_clock::now() - chrono::seconds(3);
 const int SEARCH_COOLDOWN_SECONDS = 3;
 
+// Stateful Context Budget for Agentic Sessions
+size_t NetworkTools::g_cumulative_context_chars = 0;
+const size_t NetworkTools::SESSION_MAX_CHARS = 800000; // Total safe limit for RTX 5090
+
+void NetworkTools::reset_context_usage() {
+    g_cumulative_context_chars = 0;
+}
+
+size_t NetworkTools::get_context_usage() {
+    return g_cumulative_context_chars;
+}
+
 // --- Interrupt-aware curl callback to check for SIGINT during long operations ---
 static int interrupt_check_callback(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow) {
     // Return non-zero to abort the transfer if stop_generation is set
@@ -183,7 +195,7 @@ void NetworkTools::start_docling_if_needed() {
         curl_easy_cleanup(curl);
     }
 
-    log_diagnostic("Spinning up local Docling instance on E-cores (16-23)...");
+    log_diagnostic("Spinning up local Docling instance on P-cores (0-15)...");
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -192,8 +204,8 @@ void NetworkTools::start_docling_if_needed() {
         freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
 
-        // Disable CUDA and pin to E-cores
-        string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" exec taskset -c 16-23 "+HOME+"/venv/bin/docling-serve run --enable-ui";
+        // Disable CUDA and pin to P-cores with optimized OpenMP thread count
+        string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec taskset -c 0-15 "+HOME+"/venv/bin/docling-serve run --enable-ui";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
@@ -300,21 +312,48 @@ void NetworkTools::init_ssl_certificates() {
     initialized = true;
 }
 
-// --- Smart Context Truncation ---
-// Only truncates if the text exceeds max_chars (80,000 chars is ~20k tokens)
-// Also strips base64 image data to prevent cache corruption
-string NetworkTools::limit_context_size(const string& text, size_t max_chars) {
-    // First, strip embedded base64 images to avoid corrupting them during truncation
+// --- Smart Context Truncation (Stateful) ---
+string NetworkTools::limit_context_size(const string& text, size_t per_file_max) {
+    // Strip base64 images to prevent corrupting tags
     string cleaned_text = NetworkTools::strip_base64_images(text);
 
-    if (cleaned_text.length() <= max_chars) return cleaned_text; // Returns untouched if small enough
+    // Calculate how much budget is left in the overall session
+    size_t remaining_budget = 0;
+    if (g_cumulative_context_chars < SESSION_MAX_CHARS) {
+        remaining_budget = SESSION_MAX_CHARS - g_cumulative_context_chars;
+    }
 
-    size_t head_size = (max_chars * 6) / 10; // First 60% (Abstract, Intro)
-    size_t tail_size = (max_chars * 4) / 10; // Last 40% (Conclusion, Summary)
+    // If memory budget is exhausted, forcefully stop the LLM from loading more
+    if (remaining_budget < 5000) {
+        return "[SYSTEM NOTIFICATION: Context memory budget is full. Cannot load more documents. Please rely on existing memory or ask the user to type 'clear' to reset the chat.]";
+    }
 
-    string truncated = cleaned_text.substr(0, head_size);
-    truncated += "\n\n... [MASSIVE CONTENT OMITTED TO PRESERVE LLM CONTEXT MEMORY] ...\n\n";
-    truncated += cleaned_text.substr(cleaned_text.length() - tail_size);
+    // The limit for this specific file is whichever is smaller
+    size_t active_limit = std::min(per_file_max, remaining_budget);
+
+    // If it fits within the active limit, update the tracker and return it whole
+    if (cleaned_text.length() <= active_limit) {
+        g_cumulative_context_chars += cleaned_text.length();
+        return cleaned_text;
+    }
+
+    // Otherwise, apply the middle-drop heuristic
+    size_t head_size = (active_limit * 6) / 10;
+    size_t tail_size = (active_limit * 4) / 10;
+
+    size_t head_end = cleaned_text.rfind(' ', head_size);
+    if (head_end == string::npos) head_end = head_size;
+
+    size_t tail_start = cleaned_text.length() - tail_size;
+    size_t actual_tail_start = cleaned_text.find(' ', tail_start);
+    if (actual_tail_start == string::npos) actual_tail_start = tail_start;
+
+    string truncated = cleaned_text.substr(0, head_end);
+    truncated += "\n\n... [MASSIVE CONTENT OMITTED DUE TO CONTEXT LIMITS] ...\n\n";
+    truncated += cleaned_text.substr(actual_tail_start);
+
+    // Update global usage
+    g_cumulative_context_chars += truncated.length();
 
     return truncated;
 }

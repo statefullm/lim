@@ -31,8 +31,8 @@ public:
   // Static helper to process local PDF files (used by filesystem.cc)
   static std::string process_local_pdf(const std::string& pdf_binary);
 
-  // Context size limiting utility - used for both HTML and PDF content
-  static std::string limit_context_size(const std::string& text, size_t max_chars = 80000);
+  // Context size limiting utility - defaults to ~100k chars per file (approx 25-30 pages)
+  static std::string limit_context_size(const std::string& text, size_t per_file_max = 100000);
 
   // Strip base64 images from markdown to prevent cache corruption
   static std::string strip_base64_images(const std::string& text);
@@ -40,11 +40,19 @@ public:
   // Initialize SSL certificate support (downloads CA bundle if needed)
   static void init_ssl_certificates();
 
+  // Track context usage across an agentic session
+  static void reset_context_usage();
+  static size_t get_context_usage();
+
 private:
   std::string base_url;
 
   // Process management
   static void start_searxng_if_needed(const std::string& base_url);
+
+  // Stateful Context Trackers
+  static size_t g_cumulative_context_chars;
+  static const size_t SESSION_MAX_CHARS;
 };
 
 extern std::string HOME;
