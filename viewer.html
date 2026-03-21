@@ -99,7 +99,7 @@
                 // --- SUPPRESS THINKING BLOCKS ---
                 // Strip out everything between <think> and </think>.
                 // The '|$' ensures it also hides the text while the block is still actively generating.
-                let displayContent = rawContent.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '');
+                let displayContent = rawContent.replace(/[\r\n]*<think>[\s\S]*?<\/think>/gi, '');
 
                 // Add a visual indicator if we are currently inside an unclosed <think> block
                 const isThinking = /<think>(?!.*<\/think>)/is.test(rawContent);
@@ -107,8 +107,10 @@
                     displayContent += '\n\n<div class="thinking-indicator">🤔 Thinking...</div>';
                 }
 
-                // 1. Parse Markdown
-                outputDiv.innerHTML = marked.parse(displayContent);
+                // 1. Parse Markdown - convert newlines to <br> for proper multi-line display
+                // This ensures command output and other multi-line content displays correctly
+                let preprocessedContent = displayContent.replace(/\n/g, '<br>');
+                outputDiv.innerHTML = marked.parse(preprocessedContent);
 
                 // 2. Render Math (KaTeX)
                 if (window.renderMathInElement) {

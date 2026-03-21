@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <cstdio>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <pwd.h>
@@ -32,8 +33,30 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
 
     if (!logOnly) {
         if (!debugOnly || is_debug) {
-            cout << final_message << endl;
-            fflush(stdout);
+            // Check output modes: browser and stdout can both be enabled (mode 3)
+            if (should_output_to_browser()) {
+                // Output to browser via FIFO pipe
+                if (pipe_fd < 0) {
+                    // Try to initialize the pipe if not already done
+                    const char* FIFO_PATH = "/tmp/lllm.fifo";
+                    pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+                }
+                if (pipe_fd >= 0) {
+                  string browser_msg = final_message + "\n";
+                    ssize_t res = write(pipe_fd, browser_msg.c_str(), browser_msg.length());
+
+                    // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is full
+                    if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        close(pipe_fd);
+                        pipe_fd = -1;
+                    }
+                }
+            }
+            if (should_output_to_stdout()) {
+                // Output to stdout (when browser mode is off, or in combined mode 3)
+                cout << final_message << endl;
+                fflush(stdout);
+            }
         }
     }
 
@@ -122,8 +145,7 @@ string FileSystemTools::exec_shell(const string& command) {
   // Only output a truncated version to stdout (terminal), not to log file
   string result_preview = result.length() > 500 ? result.substr(0, 497) + "..." : result;
   if (!is_debug && !result_preview.empty()) {
-    cout << result_preview << endl;
-    fflush(stdout);
+    log_diagnostic(result_preview);
   }
 
   if (result.empty()) {

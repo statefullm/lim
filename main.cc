@@ -127,12 +127,12 @@ static void cleanup_lllm_server() {
 // Forward declaration for log_diagnostic from filesystem.h
 void log_diagnostic(const std::string& msg, bool logOnly = false);
 
-static bool should_output_to_stdout() {
+bool should_output_to_stdout() {
     int mode = get_output_mode();
     return mode == 1 || mode == 3;
 }
 
-static bool should_output_to_browser() {
+bool should_output_to_browser() {
     int mode = get_output_mode();
     return mode == 2 || mode == 3;
 }

@@ -1024,5 +1024,6 @@ string NetworkTools::web_search(const string& query) {
 void NetworkTools::reset_search() {
     g_searxng_disabled = false;
     g_consecutive_empty_searches = 0;
-    log_diagnostic("Web search re-enabled.");
+    if (g_searxng_disabled)
+      log_diagnostic("Web search re-enabled.");
 }
