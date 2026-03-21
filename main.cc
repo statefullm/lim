@@ -24,6 +24,59 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
+#include <fcntl.h>
+
+
+// --- Web Viewer Output Support ---
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <errno.h>
+
+int pipe_fd = -1;
+const char* FIFO_PATH = "/tmp/llm_stream.fifo";
+
+void init_output_stream() {
+    // Create FIFO if it doesn't exist (ignores error if it already exists)
+    mkfifo(FIFO_PATH, 0666);
+
+    // TRICK: Open as O_RDWR | O_NONBLOCK.
+    // This succeeds immediately even if the Python server isn't running yet,
+    // and prevents SIGPIPE crashes if the Python server disconnects.
+    pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+}
+
+void stream_to_viewer(const std::string& raw_token) {
+    if (pipe_fd < 0) {
+        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+    }
+    if (pipe_fd >= 0) {
+        ssize_t res = write(pipe_fd, raw_token.c_str(), raw_token.length());
+
+        // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is just full
+        // (Python is reading too slowly). We just drop the token but keep the pipe open.
+        // If it's a real structural error, we close it to try again later.
+        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(pipe_fd);
+            pipe_fd = -1;
+        }
+    }
+}
+
+void clear_viewer() {
+    if (pipe_fd < 0) {
+        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+    }
+    if (pipe_fd >= 0) {
+        const char* cmd = "[[CLEAR]]";
+        ssize_t res = write(pipe_fd, cmd, strlen(cmd));
+        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(pipe_fd);
+            pipe_fd = -1;
+        }
+    }
+}
+
 
 // --- Readline Headers ---
 #include <readline/readline.h>
@@ -380,6 +433,9 @@ int main(int argc, char ** argv) {
   std::atexit(NetworkTools::cleanup_services);
   signal(SIGINT, sigint_handler);
 
+  // Initialize the fast stream pipe
+  init_output_stream();
+
   float temp = 0.7f;
   bool use_dummy_thought = false;
 
@@ -593,6 +649,7 @@ int main(int argc, char ** argv) {
         llama_sampler_reset(smpl);
         NetworkTools().reset_search();
         log_entry("SYSTEM", "Context Cleared");
+        clear_viewer();
         printf("\n\033[32m[Context Cleared Successfully]\033[0m\n");
         continue;
     }
@@ -612,7 +669,10 @@ int main(int argc, char ** argv) {
     if (user_input.empty() && !auto_continue) continue;
 
     if (!user_input.empty()) {
-      if (!auto_continue) log_entry("USER", user_input);
+      if (!auto_continue) {
+          log_entry("USER", user_input);
+          stream_to_viewer("\n\n**You:** " + user_input + "\n\n");
+      }
 
       std::string user_message;
 
@@ -688,6 +748,7 @@ int main(int argc, char ** argv) {
     while (true) {
       if (stop_generation) {
         printf("\n\033[31m[Task Interrupted by User]\033[0m\n");
+        stream_to_viewer("\n\n*[Task Interrupted by User]*\n\n");
         fflush(stdout);
         stop_generation = 0;
         auto_continue = false;
@@ -696,7 +757,11 @@ int main(int argc, char ** argv) {
 
       if (n_past >= (int)cparams.n_ctx - 10) {
         printf("\n\033[31m[Context Window Exhausted! Type 'clear' to reset.]\033[0m\n");
-        if (!unprinted_text.empty()) { printf("%s", unprinted_text.c_str()); fflush(stdout); }
+        if (!unprinted_text.empty()) {
+            printf("%s", unprinted_text.c_str());
+            stream_to_viewer(unprinted_text);
+            fflush(stdout);
+        }
         auto_continue = false;
         break;
       }
@@ -819,6 +884,7 @@ int main(int argc, char ** argv) {
 
               if (!in_tool_call_stream && !unprinted_text.empty()) {
                   printf("%s", unprinted_text.c_str());
+                  stream_to_viewer(unprinted_text);
                   fflush(stdout);
               }
               unprinted_text = "";
@@ -871,6 +937,7 @@ int main(int argc, char ** argv) {
 
           if (!unprinted_text.empty() && (t_count % 10 == 0 || unprinted_text.back() == '\n')) {
               printf("%s", unprinted_text.c_str());
+              stream_to_viewer(unprinted_text);
               fflush(stdout);
               unprinted_text = "";
           }
@@ -878,6 +945,7 @@ int main(int argc, char ** argv) {
           // Inside a tool call: Flush safely buffered pre-tool text and mute the rest
           if (!unprinted_text.empty()) {
               printf("%s", unprinted_text.c_str());
+              stream_to_viewer(unprinted_text);
               fflush(stdout);
               unprinted_text = "";
           }
@@ -899,9 +967,11 @@ int main(int argc, char ** argv) {
     if (!unprinted_text.empty()) {
         if (unprinted_text.back() != '\n') {
             printf("%s\n", unprinted_text.c_str());
+            stream_to_viewer(unprinted_text + "\n");
             stdout_ended_with_newline = true;
         } else {
             printf("%s", unprinted_text.c_str());
+            stream_to_viewer(unprinted_text);
             stdout_ended_with_newline = true;
         }
         fflush(stdout);
@@ -1059,6 +1129,7 @@ int main(int argc, char ** argv) {
                   result_to_print.erase(0, p + 1);
               }
               if (!result_to_print.empty()) printf("  %s\n", result_to_print.c_str());
+              stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + display_result + "\n> ```\n\n");
             } else {
               if (has_error || has_match_count) {
                 printf("\n\033[92m[Tool Result]\033[0m\n");
@@ -1073,6 +1144,7 @@ int main(int argc, char ** argv) {
                 } else {
                   printf("  %s\n", clean_display.c_str());
                 }
+                stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + clean_display + "\n> ```\n\n");
               }
             }
             fflush(stdout);
