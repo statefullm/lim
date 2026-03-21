@@ -162,7 +162,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         curl_easy_cleanup(curl);
     }
 
-    log_diagnostic("Spinning up local SearxNG instance on E-cores (16-23)...");
+    log_diagnostic("Spinning up local SearxNG instance...");
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -195,7 +195,7 @@ void NetworkTools::start_docling_if_needed() {
         curl_easy_cleanup(curl);
     }
 
-    log_diagnostic("Spinning up local Docling instance on P-cores (0-15)...");
+    log_diagnostic("Spinning up local Docling instance...");
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -204,7 +204,6 @@ void NetworkTools::start_docling_if_needed() {
         freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
 
-        // Disable CUDA and pin to P-cores with optimized OpenMP thread count
         string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec taskset -c 0-15 "+HOME+"/venv/bin/docling-serve run --enable-ui";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);

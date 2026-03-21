@@ -3,7 +3,7 @@ import asyncio
 import websockets
 import os
 
-FIFO_PATH = "/tmp/llm_stream.fifo"
+FIFO_PATH = "/tmp/lllm.fifo"
 
 # Keep track of connected browsers
 clients = set()

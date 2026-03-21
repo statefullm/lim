@@ -26,6 +26,7 @@
 #include <unistd.h>
 #include <pwd.h>
 #include <fcntl.h>
+#include <sys/wait.h>
 
 
 // --- Web Viewer Output Support ---
@@ -35,7 +36,7 @@
 #include <errno.h>
 
 int pipe_fd = -1;
-const char* FIFO_PATH = "/tmp/llm_stream.fifo";
+const char* FIFO_PATH = "/tmp/lllm.fifo";
 
 // --- LLLM_OUTPUT Environment Variable Control ---
 // Modes: 3=both stdout+browser, 2=browser only (no stdout), 1=stdout only (no browser), 0=no output (system messages still go to stdout)
@@ -46,6 +47,85 @@ static int get_output_mode() {
     if (mode < 0 || mode > 3) return 3;
     return mode;
 }
+
+// --- LLLM Server Process Management ---
+static pid_t g_lllm_server_pid = -1;
+
+// Check if lllmServer is already running on port 8765
+static bool is_lllm_server_running() {
+    // Try multiple methods to check if port 8765 is in use
+    const char* commands[] = {
+        "ss -tlnp 2>/dev/null | grep -q ':8765 '",
+        "netstat -tlnp 2>/dev/null | grep -q ':8765 '",
+        "lsof -i :8765 2>/dev/null | grep -q LISTEN",
+        "python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', 8765)); s.close(); exit(1)\" 2>/dev/null || exit 0"
+    };
+
+    for (const char* cmd : commands) {
+        FILE* fp = popen(cmd, "r");
+        if (fp != nullptr) {
+            int status = pclose(fp);
+            // If command succeeded (returned 0), port is NOT in use - server not running
+            // If command failed (returned non-zero), port IS in use - server likely running
+            if (WEXITSTATUS(status) == 1) {
+                // The Python test returned 1, meaning bind succeeded = port free
+                continue;
+            } else if (WEXITSTATUS(status) != 0) {
+                // Commands like ss/netstat/lsof returned non-zero when grep found a match
+                return true;
+            }
+        }
+    }
+
+    // Try the Python socket test directly
+    FILE* fp = popen("python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
+                     "s.bind(('0.0.0.0', 8765)); s.close();\" 2>/dev/null", "r");
+    if (fp != nullptr) {
+        int status = pclose(fp);
+        // If bind succeeded (status == 0), port is free - server not running
+        // If bind failed (status != 0), port is in use - server running
+        return status != 0;
+    }
+
+    return false;
+}
+
+static void start_lllm_server_if_needed() {
+    if (g_lllm_server_pid != -1) return;  // Already started by this instance
+
+    // Check if lllmServer is already running on port 8765
+    if (is_lllm_server_running()) {
+        log_diagnostic("lllmServer is already running on port 8765. Skipping startup.");
+        g_lllm_server_pid = -2;  // Mark as externally managed
+        return;
+    }
+
+    log_diagnostic("Spinning up local lllmServer.py...");
+
+    pid_t pid = fork();
+    if (pid == 0) {
+        setpgid(0, 0);
+        execl("/bin/sh", "sh", "-c", "exec taskset -c 16-23 /usr/bin/python lllmServer.py", (char*)NULL);
+        exit(1);
+    } else if (pid > 0) {
+        g_lllm_server_pid = pid;
+    }
+}
+
+static void cleanup_lllm_server() {
+    // Only clean up if we started the server ourselves (not externally managed)
+    if (g_lllm_server_pid > 0) {
+        kill(-g_lllm_server_pid, SIGKILL);
+        waitpid(g_lllm_server_pid, NULL, 0);
+        g_lllm_server_pid = -1;
+    }
+    // Remove the FIFO file to clean up resources
+    unlink(FIFO_PATH);
+    // If g_lllm_server_pid == -2, the server was already running externally - do not kill it
+}
+
+// Forward declaration for log_diagnostic from filesystem.h
+void log_diagnostic(const std::string& msg, bool logOnly = false);
 
 static bool should_output_to_stdout() {
     int mode = get_output_mode();
@@ -464,12 +544,14 @@ int main(int argc, char ** argv) {
     }
   }
 
-  umask(0002);
-  std::atexit(NetworkTools::cleanup_services);
-  signal(SIGINT, sigint_handler);
+  HOME=getenv("HOME");
 
-  // Initialize the fast stream pipe
-  init_output_stream();
+  umask(0002);
+  std::atexit([]() {
+      NetworkTools::cleanup_services();
+      cleanup_lllm_server();
+  });
+  signal(SIGINT, sigint_handler);
 
   float temp = 0.7f;
   bool use_dummy_thought = false;
@@ -508,6 +590,14 @@ int main(int argc, char ** argv) {
       log_index++;
   }
   chat_log.open(log_file_name, ios::app);
+
+  // Initialize the fast stream pipe
+  init_output_stream();
+
+  // Start lllmServer.py if browser output is enabled
+  if (should_output_to_browser()) {
+      start_lllm_server_if_needed();
+  }
 
   auto log_entry = [&](const string& role, const string& text) {
       if (chat_log.is_open()) {
@@ -556,7 +646,6 @@ int main(int argc, char ** argv) {
   if (!ctx) return 1;
 
   string system_prompt;
-  HOME=getenv("HOME");
 
   ifstream prompt_file(HOME+"/prompt");
   if (prompt_file.is_open()) {
