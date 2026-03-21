@@ -817,12 +817,12 @@ int main(int argc, char ** argv) {
 
       // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
       if (in_tool_call_stream && generated_text.length() >= 4 &&
-          generated_text.compare(generated_text.length() - 4, 4, "</</") == 0) {
+          generated_text.compare(generated_text.length() - 4, 4, DOUBLE_OPEN) == 0) {
 
           printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
           fflush(stdout);
 
-          size_t bad_pos = generated_text.rfind("</</");
+          size_t bad_pos = generated_text.rfind(DOUBLE_OPEN);
           if (bad_pos != string::npos && bad_pos > tool_start) {
               size_t drop_len = generated_text.length() - bad_pos;
               generated_text.erase(bad_pos);
