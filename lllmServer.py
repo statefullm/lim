@@ -2,6 +2,7 @@
 import asyncio
 import websockets
 import os
+from pathlib import Path
 
 FIFO_PATH = "/tmp/lllm.fifo"
 
@@ -14,6 +15,13 @@ async def broadcast_llm_stream():
         os.mkfifo(FIFO_PATH)
 
     print(f"Listening to {FIFO_PATH}...")
+    print()
+
+    # Get the actual path of this script (resolves symlinks)
+    script_path = Path(__file__).resolve()
+
+    viewer_html_path = script_path.parent / 'viewer.html'
+    print(f"Load {viewer_html_path} in your browser")
 
     # Open non-blocking
     fd = os.open(FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)

@@ -42,7 +42,7 @@ const char* FIFO_PATH = "/tmp/lllm.fifo";
 // Modes: 3=both stdout+browser, 2=browser only (no stdout), 1=stdout only (no browser), 0=no output (system messages still go to stdout)
 static int get_output_mode() {
     const char* env = getenv("LLLM_OUTPUT");
-    if (env == nullptr) return 3;  // Default: both stdout and browser
+    if (env == nullptr) return 2;  // Default: browser
     int mode = atoi(env);
     if (mode < 0 || mode > 3) return 3;
     return mode;
