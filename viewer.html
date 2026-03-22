@@ -101,12 +101,6 @@
                 // The '|$' ensures it also hides the text while the block is still actively generating.
                 let displayContent = rawContent.replace(/[\r\n]*<think>[\s\S]*?<\/think>/gi, '');
 
-                // Add a visual indicator if we are currently inside an unclosed <think> block
-                const isThinking = /<think>(?!.*<\/think>)/is.test(rawContent);
-                if (isThinking) {
-                    displayContent += '\n\n<div class="thinking-indicator">🤔 Thinking...</div>';
-                }
-
                 // Parse Markdown with breaks=true for regular text
                 // Protect code blocks from linebreaking by extracting them first
                 const codeBlockPlaceholders = [];
