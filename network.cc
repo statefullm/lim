@@ -346,9 +346,8 @@ void NetworkTools::init_ssl_certificates() {
             log_diagnostic("Failed to create combined CA bundle - using curl defaults");
         }
     } else {
-        printf(("Using cached SSL certificate from: " + cached_ca +
-                "\n").c_str());
-        fflush(stdout);
+        cout << "Using cached SSL certificate from: " << cached_ca << endl;
+        cout.flush();
         setenv("CURL_CA_BUNDLE", cached_ca.c_str(), 1);
     }
 

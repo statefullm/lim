@@ -141,12 +141,16 @@ static void safe_printf(const char* fmt, ...) {
     if (!should_output_to_stdout()) return;
     va_list args;
     va_start(args, fmt);
-    vprintf(fmt, args);
+    std::string result = "";
+    char buffer[4096];
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    result = buffer;
     va_end(args);
+    cout << result;
 }
 
 static void safe_fflush() {
-    if (should_output_to_stdout()) fflush(stdout);
+    if (should_output_to_stdout()) cout.flush();
 }
 
 void init_output_stream() {
@@ -302,7 +306,7 @@ void dummy_log_callback(enum ggml_log_level level, const char * text, void * use
 
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
     if (first_prompt_displayed) return;
-    fprintf(stderr, "%s", text);
+    cerr << text;
 }
 
 // --- Safe Multiline History Handlers ---
@@ -531,7 +535,7 @@ int main(int argc, char ** argv) {
   uid_t uid = getuid();
   struct passwd *pw = getpwuid(uid);
   if (pw == nullptr || strcmp(pw->pw_name, "ai") != 0) {
-    fprintf(stderr, "Error: This program must be run as user 'ai'\n");
+    cerr << "Error: This program must be run as user 'ai'" << endl;
     return 1;
   }
 
@@ -557,7 +561,7 @@ int main(int argc, char ** argv) {
   bool use_dummy_thought = false;
 
   if (argc < 2 || argc > 3) {
-    fprintf(stderr, "Usage: %s <model_path> [temperature]\n", argv[0]);
+    cerr << "Usage: " << argv[0] << " <model_path> [temperature]" << endl;
     return 1;
   }
 
@@ -1108,12 +1112,11 @@ int main(int argc, char ** argv) {
 
     // Deterministic check: if stdout didn't end with newline, add one before Speed diagnostic
     if (!stdout_ended_with_newline) {
-        printf("\n");
+        cout << "\n";
     }
 
     if (t_count > 0) {
-        printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
-        fflush(stdout);
+        cout << "\033[34m[Speed: " << fixed << setprecision(2) << (t_count / elapsed) << " t/s | Elapsed: " << elapsed << "s]\033[0m" << endl;
     }
 
     // Save state for next iteration
