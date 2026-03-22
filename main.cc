@@ -137,30 +137,42 @@ bool should_output_to_browser() {
     return mode == 2 || mode == 3;
 }
 
-static void safe_printf(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    std::string result = "";
-    char buffer[4096];
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    result = buffer;
-    va_end(args);
-    cout << result;
+// Unified variadic printf wrapper using fold expression for efficient output
+template<typename... Args>
+void format_and_print(Args&&... args) {
+    std::ostringstream oss;
+    ((oss << std::forward<Args>(args)), ...);
+    cout << oss.str();
 }
 
-static void conditional_printf(const char* fmt, ...) {
+// Variadic template with printf-style formatting, using fold expression for argument expansion
+template<typename... Args>
+void safe_printf_impl(const char* fmt, Args&&... args) {
     if (!should_output_to_stdout()) return;
-    va_list args;
-    va_start(args, fmt);
     std::string result = "";
     char buffer[4096];
-    vsnprintf(buffer, sizeof(buffer), fmt, args);
-    result = buffer;
-    va_end(args);
+    // Use fold expression to format arguments via vsnprintf
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(buffer, sizeof(buffer), fmt, ap);
+    if (len > 0) {
+        result = buffer;
+    }
+    va_end(ap);
     cout << result;
 }
 
-static void safe_fflush() {
+// Macro-like wrapper for safe_printf with variadic arguments
+#define safe_printf(...) format_and_print(__VA_ARGS__)
+
+// Conditional printf using fold expression for output streaming
+template<typename... Args>
+void conditional_printf(Args&&... args) {
+  if (should_output_to_stdout())
+    ((cout << std::forward<Args>(args)), ...);
+}
+
+static void conditional_fflush() {
     if (should_output_to_stdout()) cout.flush();
 }
 
@@ -729,7 +741,7 @@ int main(int argc, char ** argv) {
         char* input_c = readline(user_input.empty() ? main_p : cont_p);
 
         conditional_printf("\033[0m");
-        safe_fflush();
+        conditional_fflush();
 
         if (!input_c) {
           if (stop_generation) {
@@ -890,8 +902,8 @@ int main(int argc, char ** argv) {
     while (true) {
       if (stop_generation) {
         safe_printf("\n\033[31m[Task Interrupted by User]\033[0m\n");
-        stream_to_viewer("\n\n*[Task Interrupted by User]*\n\n");
         cout.flush();
+        stream_to_viewer("\n\n*[Task Interrupted by User]*\n\n");
         stop_generation = 0;
         auto_continue = false;
         break;
@@ -900,9 +912,9 @@ int main(int argc, char ** argv) {
       if (n_past >= (int)cparams.n_ctx - 10) {
         safe_printf("\n\033[31m[Context Window Exhausted! Type 'clear' to reset.]\033[0m\n");
         if (!unprinted_text.empty()) {
-            conditional_printf("%s", unprinted_text.c_str());
+            conditional_printf(unprinted_text.c_str());
+            conditional_fflush();
             stream_to_viewer(unprinted_text);
-            safe_fflush();
         }
         auto_continue = false;
         break;
@@ -1025,9 +1037,9 @@ int main(int argc, char ** argv) {
               cout.flush();
 
               if (!in_tool_call_stream && !unprinted_text.empty()) {
-                  conditional_printf("%s", unprinted_text.c_str());
+                  conditional_printf(unprinted_text.c_str());
+                  conditional_fflush();
                   stream_to_viewer(unprinted_text);
-                  safe_fflush();
               }
               unprinted_text = "";
               log_entry("ASSISTANT (Interrupted Reasoning Loop)", generated_text);
@@ -1079,17 +1091,17 @@ int main(int argc, char ** argv) {
           }
 
           if (!unprinted_text.empty() && (t_count % 10 == 0 || unprinted_text.back() == '\n')) {
-              conditional_printf("%s", unprinted_text.c_str());
+              conditional_printf(unprinted_text.c_str());
+              conditional_fflush();
               stream_to_viewer(unprinted_text);
-              safe_fflush();
               unprinted_text = "";
           }
       } else {
           // Inside a tool call: Flush safely buffered pre-tool text and mute the rest
           if (!unprinted_text.empty()) {
-              conditional_printf("%s", unprinted_text.c_str());
+              conditional_printf(unprinted_text.c_str());
+              conditional_fflush();
               stream_to_viewer(unprinted_text);
-              safe_fflush();
               unprinted_text = "";
           }
           print_pos = generated_text.length(); // Advance the cursor silently
@@ -1105,19 +1117,13 @@ int main(int argc, char ** argv) {
     auto end = chrono::high_resolution_clock::now();
     double elapsed = chrono::duration<double>(end - start).count();
 
-    // Flush any remaining unprinted text before speed info
+    // Flush any remaining unprinted text before speed info using fold expression for streaming
     bool stdout_ended_with_newline = prev_stdout_ended_with_newline;  // Start with previous iteration's state
     if (!unprinted_text.empty()) {
-        if (unprinted_text.back() != '\n') {
-            conditional_printf("%s\n", unprinted_text.c_str());
-            stream_to_viewer(unprinted_text + "\n");
-            stdout_ended_with_newline = true;
-        } else {
-            conditional_printf("%s", unprinted_text.c_str());
-            stream_to_viewer(unprinted_text);
-            stdout_ended_with_newline = true;
-        }
-        safe_fflush();
+        conditional_printf(unprinted_text.back() != '\n' ? (unprinted_text + "\n").c_str() : unprinted_text.c_str());
+        conditional_fflush();
+        stream_to_viewer(unprinted_text + (unprinted_text.back() != '\n' ? "\n" : ""));
+        stdout_ended_with_newline = true;
         unprinted_text = "";
     }
 
@@ -1272,13 +1278,13 @@ int main(int argc, char ** argv) {
               string result_to_print = truncated_display;
               size_t p = 0;
               while ((p = result_to_print.find('\n')) != string::npos) {
-                  conditional_printf("  %.*s\n", (int)p, result_to_print.c_str());
+                conditional_printf("  ", (int)p, result_to_print.c_str(),"\n");
                   result_to_print.erase(0, p + 1);
               }
-              if (!result_to_print.empty()) conditional_printf("  %s\n", result_to_print.c_str());
+              if (!result_to_print.empty()) conditional_printf("  ", result_to_print.c_str(),"\n");
               stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + truncated_display + "```\n\n");
             }
-            safe_fflush();
+            conditional_fflush();
             prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
 
             chat_log << "\n";
