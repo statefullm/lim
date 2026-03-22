@@ -555,6 +555,7 @@ int main(int argc, char ** argv) {
 
   umask(0002);
   std::atexit([]() {
+      cout << "\033[0m";  // Reset terminal colors on exit
       NetworkTools::cleanup_services();
       cleanup_lllm_server();
   });
