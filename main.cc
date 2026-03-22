@@ -802,7 +802,7 @@ int main(int argc, char ** argv) {
     if (!user_input.empty()) {
       if (!auto_continue) {
           log_entry("USER", user_input);
-          stream_to_viewer("\n\n**You:** " + user_input + "\n\n");
+          stream_to_viewer("\n\n<span style=\"color: #007bff;\">\\>\\>\\> </span> <span style=\"color: #007bff;\">" + user_input + "</span>\n\n");
       }
 
       std::string user_message;
