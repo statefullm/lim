@@ -107,9 +107,50 @@
                     displayContent += '\n\n<div class="thinking-indicator">🤔 Thinking...</div>';
                 }
 
-                // Parse Markdown with breaks=true to preserve single newlines as <br>
-                // This handles both markdown and plain multiline text correctly
-                let parsedContent = marked.parse(displayContent, { breaks: true });
+                // Parse Markdown with breaks=true for regular text
+                // Protect code blocks from linebreaking by extracting them first
+                const codeBlockPlaceholders = [];
+
+                // Extract code blocks and replace with placeholders
+                let tempContent = displayContent.replace(/```([\s\S]*?)```/g, (match, code) => {
+                    const placeholder = `%%CODEBLOCK_${codeBlockPlaceholders.length}%%`;
+                    codeBlockPlaceholders.push({
+                        placeholder: placeholder,
+                        code: code.trim(),
+                        language: '' // Could extract language from match if needed
+                    });
+                    return placeholder;
+                });
+
+                // Parse the content without code blocks (breaks only affect regular text)
+                const customRenderer = new marked.Renderer();
+
+                // Override the code block renderer to restore extracted code blocks
+                customRenderer.code = function(code, language) {
+                    const langClass = language ? ` class="language-${language}"` : '';
+                    const escapedCode = code
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;');
+                    return `<pre><code${langClass}>${escapedCode}</code></pre>`;
+                };
+
+                let parsedContent = marked.parse(tempContent, {
+                    breaks: true,
+                    renderer: customRenderer
+                });
+
+                // Restore the original code blocks (they preserve whitespace)
+                codeBlockPlaceholders.forEach((block, index) => {
+                    const escapedCode = block.code
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;');
+                    parsedContent = parsedContent.replace(
+                        block.placeholder,
+                        `<pre><code class="language-${block.language}">${escapedCode}</code></pre>`
+                    );
+                });
 
                 // Use the parsed HTML directly - no need for additional newline replacement
                 outputDiv.innerHTML = parsedContent;
