@@ -24,7 +24,7 @@ using namespace Tokens;
 void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
                     const string& tag /* = "" */) {
     if (!chat_log.is_open()) {
-        cerr << "[ERROR] chat_log is not open - cannot write diagnostic message\n";
+        cerr << "[ERROR] log file is not open; cannot write diagnostic message\n";
         return;
     }
 

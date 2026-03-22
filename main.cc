@@ -105,7 +105,8 @@ static void start_lllm_server_if_needed() {
     pid_t pid = fork();
     if (pid == 0) {
         setpgid(0, 0);
-        execl("/bin/sh", "sh", "-c", "exec taskset -c 16-23 /usr/bin/python lllmServer.py", (char*)NULL);
+        string cmd = "exec taskset -c 16-23 /usr/bin/python "+HOME+"/lllm/lllmServer.py";
+        execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
         g_lllm_server_pid = pid;
@@ -125,7 +126,7 @@ static void cleanup_lllm_server() {
 }
 
 // Forward declaration for log_diagnostic from filesystem.h
-void log_diagnostic(const std::string& msg, bool logOnly = false);
+void log_diagnostic(const string& msg, bool logOnly = false);
 
 bool should_output_to_stdout() {
     int mode = get_output_mode();
@@ -139,8 +140,8 @@ bool should_output_to_browser() {
 
 template<typename... Args>
 void format_and_print(Args&&... args) {
-    std::ostringstream oss;
-    ((oss << std::forward<Args>(args)), ...);
+    ostringstream oss;
+    ((oss << forward<Args>(args)), ...);
     cout << oss.str();
 }
 
@@ -149,7 +150,7 @@ void format_and_print(Args&&... args) {
 template<typename... Args>
 void console(Args&&... args) {
   if (should_output_to_stdout())
-    ((cout << std::forward<Args>(args)), ...);
+    ((cout << forward<Args>(args)), ...);
 }
 
 static void consoleFlush() {
@@ -166,7 +167,7 @@ void init_output_stream() {
     pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
 }
 
-void stream(const std::string& raw_token) {
+void stream(const string& raw_token) {
     if (!should_output_to_browser()) return;
     if (pipe_fd < 0) {
         pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
@@ -215,7 +216,7 @@ enum class ModelType {
 };
 
 // Function to get the appropriate chat template for a model type
-std::string get_chat_template(ModelType model_type) {
+string get_chat_template(ModelType model_type) {
     switch (model_type) {
         case ModelType::CHATML:
             return "chatml";
@@ -239,12 +240,12 @@ ModelType detect_model_type(const llama_vocab * vocab) {
         const char* token_text = llama_vocab_get_text(vocab, i);
         if (token_text == nullptr) continue;
 
-        std::string text(token_text);
+        string text(token_text);
 
-        if (text.find(Tokens::TURN_START) != std::string::npos) has_im_start = true;
-        if (text.find(Tokens::TURN_END) != std::string::npos) has_im_end = true;
-        if (text.find(THINK_START) != std::string::npos) has_reasoning_start = true;
-        if (text.find(THINK_END) != std::string::npos) has_reasoning_end = true;
+        if (text.find(Tokens::TURN_START) != string::npos) has_im_start = true;
+        if (text.find(Tokens::TURN_END) != string::npos) has_im_end = true;
+        if (text.find(THINK_START) != string::npos) has_reasoning_start = true;
+        if (text.find(THINK_END) != string::npos) has_reasoning_end = true;
     }
 
     if (has_reasoning_start && has_reasoning_end) return ModelType::CHATML;
@@ -303,7 +304,7 @@ void sigint_handler(int sig) {
 // --- Dummy Log Callback to Silence Llama.cpp ---
 bool first_prompt_displayed = false;
 bool is_debug = false;
-std::ofstream chat_log;
+ofstream chat_log;
 
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {}
 
@@ -376,10 +377,10 @@ public:
 };
 
 // --- Helper to unescape tags passed by the LLM ---
-void replace_all_tags(std::string& str, const std::string& from, const std::string& to) {
+void replace_all_tags(string& str, const string& from, const string& to) {
     if (from.empty()) return;
     size_t start_pos = 0;
-    while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+    while ((start_pos = str.find(from, start_pos)) != string::npos) {
         str.replace(start_pos, from.length(), to);
         start_pos += to.length();
     }
@@ -524,7 +525,7 @@ string sanitize(string text) {
     vector<string> patterns = {FUNC_START, FUNC_END, TURN_START, TURN_END};
     for (const auto& pattern : patterns) {
       size_t pos = 0;
-      while ((pos = text.find(pattern, pos)) != std::string::npos) {
+      while ((pos = text.find(pattern, pos)) != string::npos) {
             text.insert(pos + 1, "\\");
             pos += pattern.length() + 1;
         }
@@ -542,19 +543,19 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
+  HOME=getenv("HOME");
+
   char cwd[1024];
   if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-    ofstream cwd_file("/home/ai/.cwd");
+    ofstream cwd_file(HOME+"/.cwd");
     if (cwd_file.is_open()) {
       cwd_file << cwd << endl;
       cwd_file.close();
     }
   }
 
-  HOME=getenv("HOME");
-
   umask(0002);
-  std::atexit([]() {
+  atexit([]() {
       cout << "\033[0m";  // Reset terminal colors on exit
       NetworkTools::cleanup_services();
       cleanup_lllm_server();
@@ -588,7 +589,7 @@ int main(int argc, char ** argv) {
     llama_log_set(custom_log_callback, nullptr);
   }
 
-  mkdir("log", 0755);
+  mkdir("log", 0775);
   int log_index = 1;
   string log_file_name;
   while (true) {
@@ -598,6 +599,10 @@ int main(int argc, char ** argv) {
       log_index++;
   }
   chat_log.open(log_file_name, ios::app);
+  if (!chat_log.is_open()) {
+    cerr << "Error: Failed to open log file. The directory isn't writeable by user ai." << endl;
+    return 1;
+  }
 
   // Initialize the fast stream pipe
   init_output_stream();
@@ -665,7 +670,7 @@ int main(int argc, char ** argv) {
 
   auto tokenize = [&](string text) { return common_tokenize(ctx, text, false, true); };
 
-  std::string formatted_system_prompt = string(TURN_START) + "system\n" + system_prompt + TURN_END + "\n";
+  string formatted_system_prompt = string(TURN_START) + "system\n" + system_prompt + TURN_END + "\n";
   vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
 
   // Sampling parameters: instruct mode for general tasks
@@ -809,7 +814,7 @@ int main(int argc, char ** argv) {
           stream("\n\n<span style=\"color: #007bff;\">\\>\\>\\> </span> <span style=\"color: #007bff;\">" + user_input + "</span>\n\n");
       }
 
-      std::string user_message;
+      string user_message;
 
       if (use_dummy_thought) {
           // Dummy Thought Injection - disable thinking mode
@@ -1271,7 +1276,7 @@ int main(int argc, char ** argv) {
             chat_log << "\n";
             generated_text = ""; unprinted_text = "";
 
-            std::string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
+            string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
             string tool_msg = tool_result_section + TURN_START + "assistant\n";
 
             if (inject_auto_user_msg) {
