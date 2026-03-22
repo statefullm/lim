@@ -137,7 +137,6 @@ bool should_output_to_browser() {
     return mode == 2 || mode == 3;
 }
 
-// Unified variadic printf wrapper using fold expression for efficient output
 template<typename... Args>
 void format_and_print(Args&&... args) {
     std::ostringstream oss;
@@ -145,34 +144,15 @@ void format_and_print(Args&&... args) {
     cout << oss.str();
 }
 
-// Variadic template with printf-style formatting, using fold expression for argument expansion
-template<typename... Args>
-void safe_printf_impl(const char* fmt, Args&&... args) {
-    if (!should_output_to_stdout()) return;
-    std::string result = "";
-    char buffer[4096];
-    // Use fold expression to format arguments via vsnprintf
-    va_list ap;
-    va_start(ap, fmt);
-    int len = vsnprintf(buffer, sizeof(buffer), fmt, ap);
-    if (len > 0) {
-        result = buffer;
-    }
-    va_end(ap);
-    cout << result;
-}
+#define message(...) format_and_print(__VA_ARGS__)
 
-// Macro-like wrapper for safe_printf with variadic arguments
-#define safe_printf(...) format_and_print(__VA_ARGS__)
-
-// Conditional printf using fold expression for output streaming
 template<typename... Args>
-void conditional_printf(Args&&... args) {
+void console(Args&&... args) {
   if (should_output_to_stdout())
     ((cout << std::forward<Args>(args)), ...);
 }
 
-static void conditional_fflush() {
+static void consoleFlush() {
     if (should_output_to_stdout()) cout.flush();
 }
 
@@ -186,7 +166,7 @@ void init_output_stream() {
     pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
 }
 
-void stream_to_viewer(const std::string& raw_token) {
+void stream(const std::string& raw_token) {
     if (!should_output_to_browser()) return;
     if (pipe_fd < 0) {
         pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
@@ -276,15 +256,15 @@ ModelType detect_model_type(const llama_vocab * vocab) {
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
     int ret = llama_decode(ctx, batch);
     if (ret < -1) {
-        safe_printf("\n\033[31m[%s]\033[0m\n", error_msg);
+        message("\n\033[31m[%s]\033[0m\n", error_msg);
         cout.flush();
         return false;
     } else if (ret == -1) {
-        safe_printf("\n\033[31m[Invalid input batch: %s]\033[0m\n", error_msg);
+        message("\n\033[31m[Invalid input batch: %s]\033[0m\n", error_msg);
         cout.flush();
         return false;
     } else if (ret == 1 || ret == 2) {
-        safe_printf("\n\033[31m[%s]\033[0m\n", ret == 1 ? error_msg : "Aborted");
+        message("\n\033[31m[%s]\033[0m\n", ret == 1 ? error_msg : "Aborted");
         cout.flush();
         if (should_break) return false;
         return true;
@@ -316,7 +296,7 @@ string get_next_loop_message() {
 // --- Signal Handler for Task Interruption ---
 void sigint_handler(int sig) {
   stop_generation = 1;
-  safe_printf("\033[0m\n");
+  message("\033[0m\n");
   cout.flush();
 }
 
@@ -737,11 +717,11 @@ int main(int argc, char ** argv) {
         const char* cont_p = "\001\033[1;34m\002... \001\033[34m\002";
         if (!first_prompt_displayed) first_prompt_displayed = true;
 
-        if (user_input.empty()) conditional_printf("\n");
+        if (user_input.empty()) console("\n");
         char* input_c = readline(user_input.empty() ? main_p : cont_p);
 
-        conditional_printf("\033[0m");
-        conditional_fflush();
+        console("\033[0m");
+        consoleFlush();
 
         if (!input_c) {
           if (stop_generation) {
@@ -802,7 +782,7 @@ int main(int argc, char ** argv) {
         NetworkTools::reset_context_usage();
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
-        safe_printf("\n\033[32m[Context Cleared Successfully]\033[0m\n");
+        message("\n\033[32m[Context Cleared Successfully]\033[0m\n");
         cout.flush();
         continue;
     }
@@ -815,7 +795,7 @@ int main(int argc, char ** argv) {
         llama_sampler_reset(smpl);
         NetworkTools().reset_search();
         log_entry("SYSTEM", "Loop Counter and File Cache Reset");
-        safe_printf("\n\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
+        message("\n\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
         cout.flush();
         continue;
     }
@@ -825,7 +805,7 @@ int main(int argc, char ** argv) {
     if (!user_input.empty()) {
       if (!auto_continue) {
           log_entry("USER", user_input);
-          stream_to_viewer("\n\n<span style=\"color: #007bff;\">\\>\\>\\> </span> <span style=\"color: #007bff;\">" + user_input + "</span>\n\n");
+          stream("\n\n<span style=\"color: #007bff;\">\\>\\>\\> </span> <span style=\"color: #007bff;\">" + user_input + "</span>\n\n");
       }
 
       std::string user_message;
@@ -842,7 +822,7 @@ int main(int argc, char ** argv) {
       vector<llama_token> tokens = tokenize(user_message);
 
       if (n_past + tokens.size() >= cparams.n_ctx) {
-          safe_printf("\n\033[31m[Context Limit Reached! Cannot process input. Type 'clear' to reset.]\033[0m\n");
+          message("\n\033[31m[Context Limit Reached! Cannot process input. Type 'clear' to reset.]\033[0m\n");
           continue;
       }
 
@@ -851,7 +831,7 @@ int main(int argc, char ** argv) {
 
       for (size_t i = 0; i < (int)tokens.size(); i++) {
         if (stop_generation) {
-          safe_printf("\n\033[31m[Input Evaluation Interrupted]\033[0m\n");
+          message("\n\033[31m[Input Evaluation Interrupted]\033[0m\n");
           cout.flush();
           stop_generation = 0;
           input_interrupted = true;
@@ -901,20 +881,20 @@ int main(int argc, char ** argv) {
     // --- INNER TOKEN GENERATION LOOP ---
     while (true) {
       if (stop_generation) {
-        safe_printf("\n\033[31m[Task Interrupted by User]\033[0m\n");
+        message("\n\033[31m[Task Interrupted by User]\033[0m\n");
         cout.flush();
-        stream_to_viewer("\n\n*[Task Interrupted by User]*\n\n");
+        stream("\n\n*[Task Interrupted by User]*\n\n");
         stop_generation = 0;
         auto_continue = false;
         break;
       }
 
       if (n_past >= (int)cparams.n_ctx - 10) {
-        safe_printf("\n\033[31m[Context Window Exhausted! Type 'clear' to reset.]\033[0m\n");
+        message("\n\033[31m[Context Window Exhausted! Type 'clear' to reset.]\033[0m\n");
         if (!unprinted_text.empty()) {
-            conditional_printf(unprinted_text.c_str());
-            conditional_fflush();
-            stream_to_viewer(unprinted_text);
+            console(unprinted_text.c_str());
+            consoleFlush();
+            stream(unprinted_text);
         }
         auto_continue = false;
         break;
@@ -928,7 +908,7 @@ int main(int argc, char ** argv) {
           size_t active_te = generated_text.rfind(FUNC_END);
 
           if (active_ts != string::npos && (active_te == string::npos || active_ts > active_te)) {
-              safe_printf("\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
+              message("\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
               cout.flush();
 
               size_t trailing_slash = generated_text.rfind("</");
@@ -973,7 +953,7 @@ int main(int argc, char ** argv) {
       if (in_tool_call_stream && generated_text.length() >= 4 &&
           generated_text.compare(generated_text.length() - 4, 4, DOUBLE_OPEN) == 0) {
 
-          safe_printf("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
+          message("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
           cout.flush();
 
           size_t bad_pos = generated_text.rfind(DOUBLE_OPEN);
@@ -1027,19 +1007,19 @@ int main(int argc, char ** argv) {
           if (intra_loop) {
               intra_loop_strikes++;
               if (intra_loop_strikes >= 5) {
-                  safe_printf("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m\n");
+                  message("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m\n");
                   cout.flush();
                   auto_continue = false;
                   break;
               }
 
-              safe_printf("\n\033[35m[System: Intra-turn Generation Loop Detected. Injecting intervention.]\033[0m\n");
+              message("\n\033[35m[System: Intra-turn Generation Loop Detected. Injecting intervention.]\033[0m\n");
               cout.flush();
 
               if (!in_tool_call_stream && !unprinted_text.empty()) {
-                  conditional_printf(unprinted_text.c_str());
-                  conditional_fflush();
-                  stream_to_viewer(unprinted_text);
+                  console(unprinted_text.c_str());
+                  consoleFlush();
+                  stream(unprinted_text);
               }
               unprinted_text = "";
               log_entry("ASSISTANT (Interrupted Reasoning Loop)", generated_text);
@@ -1049,7 +1029,7 @@ int main(int argc, char ** argv) {
               vector<llama_token> t_tokens = tokenize(msg);
 
               if (n_past + t_tokens.size() >= cparams.n_ctx) {
-                  safe_printf("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
+                  message("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
                   cout.flush();
                   auto_continue = false;
                   break;
@@ -1091,17 +1071,17 @@ int main(int argc, char ** argv) {
           }
 
           if (!unprinted_text.empty() && (t_count % 10 == 0 || unprinted_text.back() == '\n')) {
-              conditional_printf(unprinted_text.c_str());
-              conditional_fflush();
-              stream_to_viewer(unprinted_text);
+              console(unprinted_text.c_str());
+              consoleFlush();
+              stream(unprinted_text);
               unprinted_text = "";
           }
       } else {
           // Inside a tool call: Flush safely buffered pre-tool text and mute the rest
           if (!unprinted_text.empty()) {
-              conditional_printf(unprinted_text.c_str());
-              conditional_fflush();
-              stream_to_viewer(unprinted_text);
+              console(unprinted_text.c_str());
+              consoleFlush();
+              stream(unprinted_text);
               unprinted_text = "";
           }
           print_pos = generated_text.length(); // Advance the cursor silently
@@ -1120,9 +1100,9 @@ int main(int argc, char ** argv) {
     // Flush any remaining unprinted text before speed info using fold expression for streaming
     bool stdout_ended_with_newline = prev_stdout_ended_with_newline;  // Start with previous iteration's state
     if (!unprinted_text.empty()) {
-        conditional_printf(unprinted_text.back() != '\n' ? (unprinted_text + "\n").c_str() : unprinted_text.c_str());
-        conditional_fflush();
-        stream_to_viewer(unprinted_text + (unprinted_text.back() != '\n' ? "\n" : ""));
+        console(unprinted_text.back() != '\n' ? (unprinted_text + "\n").c_str() : unprinted_text.c_str());
+        consoleFlush();
+        stream(unprinted_text + (unprinted_text.back() != '\n' ? "\n" : ""));
         stdout_ended_with_newline = true;
         unprinted_text = "";
     }
@@ -1212,7 +1192,7 @@ int main(int argc, char ** argv) {
 
           // Check for interrupt after tool execution completes
           if (stop_generation) {
-            safe_printf("\n\033[31m[Tool Interrupted by User]\033[0m\n");
+            message("\n\033[31m[Tool Interrupted by User]\033[0m\n");
             cout.flush();
             stop_generation = 0;
             abort_auto = true;
@@ -1231,12 +1211,12 @@ int main(int argc, char ** argv) {
                   int attempt_num = current_strikes - 2;
 
                   if (attempt_num <= max_attempts) {
-                      safe_printf("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m\n", attempt_num, max_attempts);
+                      message("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m\n", attempt_num, max_attempts);
                       cout.flush();
                       abort_auto = false;
                       inject_auto_user_msg = true;
                   } else {
-                      safe_printf("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n", max_attempts);
+                      message("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n", max_attempts);
                       cout.flush();
                       abort_auto = true;
                       intra_loop_strikes = 0;
@@ -1274,17 +1254,17 @@ int main(int argc, char ** argv) {
                   truncated_display = truncated_display.substr(0, 497) + "...";
               }
 
-              conditional_printf("\n\033[92m[Tool Result]\033[0m\n");
+              console("\n\033[92m[Tool Result]\033[0m\n");
               string result_to_print = truncated_display;
               size_t p = 0;
               while ((p = result_to_print.find('\n')) != string::npos) {
-                conditional_printf("  ", (int)p, result_to_print.c_str(),"\n");
+                console("  ", (int)p, result_to_print.c_str(),"\n");
                   result_to_print.erase(0, p + 1);
               }
-              if (!result_to_print.empty()) conditional_printf("  ", result_to_print.c_str(),"\n");
-              stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + truncated_display + "```\n\n");
+              if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
+              stream("\n\n> **Tool Result:**\n> ```text\n> " + truncated_display + "```\n\n");
             }
-            conditional_fflush();
+            consoleFlush();
             prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
 
             chat_log << "\n";
@@ -1299,7 +1279,7 @@ int main(int argc, char ** argv) {
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
             if (n_past + t_tokens.size() >= cparams.n_ctx) {
-                safe_printf("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
+                message("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
                 cout.flush();
                 auto_continue = false;
             } else {
