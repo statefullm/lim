@@ -99,7 +99,7 @@
                 // --- SUPPRESS THINKING BLOCKS ---
                 // Strip out everything between <think> and </think>.
                 // The '|$' ensures it also hides the text while the block is still actively generating.
-                let displayContent = rawContent.replace(/[\r\n]*<think>[\s\S]*?<\/think>/gi, '');
+                let displayContent = rawContent.replace(/<think>(?:[\s\S]*?<\/think>|[\s\S]*)/gi, '');
 
                 // Parse Markdown with breaks=true for regular text
                 // Protect code blocks from linebreaking by extracting them first
