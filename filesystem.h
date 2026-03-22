@@ -26,10 +26,10 @@ private:
 };
 
 // --- Consolidated Diagnostic Logging Function ---
-// This function handles all diagnostic output to both terminal and log file
+// This function handles all diagnostic output to both session and log file
 // Parameters:
 //   - message: The diagnostic message to output
-//   - logOnly: If true, only write to log file (not to terminal)
+//   - logOnly: If true, only write to log file (not to session)
 //   - debugOnly: If true, only output when LLLM_DEBUG=1 environment variable is set
 //   - tag: Optional tag to prepend to the message (e.g., "[Edit]")
 void log_diagnostic(const std::string& message, bool logOnly = false, bool debugOnly = false,

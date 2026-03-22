@@ -1108,13 +1108,12 @@ int main(int argc, char ** argv) {
 
     // Deterministic check: if stdout didn't end with newline, add one before Speed diagnostic
     if (!stdout_ended_with_newline) {
-        safe_printf("\n");
+        printf("\n");
     }
 
     if (t_count > 0) {
         printf("\033[34m[Speed: %.2f t/s | Elapsed: %.2fs]\033[0m\n", t_count / elapsed, elapsed);
-    } else {
-        safe_printf("\n");
+        fflush(stdout);
     }
 
     // Save state for next iteration
