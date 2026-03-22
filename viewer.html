@@ -78,7 +78,13 @@
         let rawContent = '';
 
         function connect() {
-            const ws = new WebSocket('ws://cascade:8765');
+            // Get the WebSocket URL from URL parameters
+            // Priority: url > host + port, with sensible defaults
+            const urlParams = new URLSearchParams(window.location.search);
+            const wsUrl = urlParams.get('url') ||
+                          `ws://${urlParams.get('host') || 'localhost'}:${urlParams.get('port') || 8765}`;
+
+            const ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
                 statusDiv.textContent = 'Connected';
