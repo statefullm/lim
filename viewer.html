@@ -76,6 +76,7 @@
         const outputDiv = document.getElementById('output');
         const statusDiv = document.getElementById('status');
         let rawContent = '';
+        let isFirstConnect = true;
 
         function connect() {
             // Get the WebSocket URL from URL parameters
@@ -89,6 +90,7 @@
             ws.onopen = () => {
                 statusDiv.textContent = 'Connected';
                 statusDiv.className = 'status connected';
+                isFirstConnect = false; // Mark that we've successfully connected once
             };
 
             ws.onmessage = (event) => {
@@ -173,9 +175,16 @@
             };
 
             ws.onclose = () => {
-                statusDiv.textContent = 'Disconnected - Reconnecting...';
-                statusDiv.className = 'status disconnected';
-                setTimeout(connect, 2000); // Auto-reconnect
+                if (isFirstConnect) {
+                    // First time connecting - keep trying until successful
+                    statusDiv.textContent = 'Connecting...';
+                    setTimeout(connect, 2000);
+                } else {
+                    // Already connected before, now disconnected - just show status
+                    statusDiv.textContent = 'Disconnected';
+                    statusDiv.className = 'status disconnected';
+                    // No auto-reconnect after being connected
+                }
             };
         }
 
