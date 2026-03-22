@@ -175,6 +175,30 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         exit(1);
     } else if (pid > 0) {
         g_searxng_pid = pid;
+
+        // --- Wait for SearxNG to actually wake up! ---
+        log_diagnostic("Waiting for SearxNG to become ready...");
+        CURL *wait_curl = curl_easy_init();
+        if (wait_curl) {
+            curl_easy_setopt(wait_curl, CURLOPT_URL, base_url.c_str());
+            curl_easy_setopt(wait_curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
+            curl_easy_setopt(wait_curl, CURLOPT_TIMEOUT_MS, 500L);
+
+            int retries = 0;
+            while (retries < 40) {
+                if (stop_generation) {
+                    log_diagnostic("SearxNG startup interrupted by user");
+                    break;
+                }
+                if (curl_easy_perform(wait_curl) == CURLE_OK) {
+                    log_diagnostic("SearxNG is ready and responding!");
+                    break;
+                }
+                this_thread::sleep_for(chrono::milliseconds(500));
+                retries++;
+            }
+            curl_easy_cleanup(wait_curl);
+        }
     }
 }
 
@@ -199,8 +223,7 @@ void NetworkTools::start_docling_if_needed() {
 
     pid_t pid = fork();
     if (pid == 0) {
-         setpgid(0, 0);
-
+        setpgid(0, 0);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
 
@@ -216,10 +239,10 @@ void NetworkTools::start_docling_if_needed() {
         if (wait_curl) {
             curl_easy_setopt(wait_curl, CURLOPT_URL, "http://127.0.0.1:5001/docs");
             curl_easy_setopt(wait_curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
-            curl_easy_setopt(wait_curl, CURLOPT_TIMEOUT_MS, 1000L);
+            curl_easy_setopt(wait_curl, CURLOPT_TIMEOUT_MS,  500L);
 
             int retries = 0;
-            while (retries < 60) { // Give it up to 60 seconds to boot
+            while (retries < 40) {
                 if (stop_generation) {
                     log_diagnostic("Docling startup interrupted by user");
                     break;
@@ -227,7 +250,7 @@ void NetworkTools::start_docling_if_needed() {
                 if (curl_easy_perform(wait_curl) == CURLE_OK) {
                     break;
                 }
-                this_thread::sleep_for(chrono::seconds(1));
+                this_thread::sleep_for(chrono::milliseconds(500));
                 retries++;
             }
             curl_easy_cleanup(wait_curl);
@@ -387,45 +410,8 @@ std::string NetworkTools::process_local_pdf(const std::string& pdf_binary) {
     return net.process_pdf_with_docling(pdf_binary);
 }
 
-string NetworkTools::start_and_wait_for_docling() {
-    // Start Docling if not already running
-    start_docling_if_needed();
-
-    // Verify Docling is actually ready by checking the health endpoint
-    CURL *curl = curl_easy_init();
-    if (!curl) return "[Curl Init Failed for Docling health check]";
-
-    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:5001/docs");
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 5000L);
-
-    int retries = 30; // Give up to 15 seconds (30 * 500ms)
-    while (retries > 0) {
-        if (stop_generation) {
-            log_diagnostic("Docling health check interrupted by user");
-            curl_easy_cleanup(curl);
-            return "[Docling check interrupted]";
-        }
-        CURLcode res = curl_easy_perform(curl);
-        if (res == CURLE_OK) {
-            log_diagnostic("Docling is ready and responding!");
-            curl_easy_cleanup(curl);
-            return "success";
-        }
-        this_thread::sleep_for(chrono::milliseconds(500));
-        retries--;
-    }
-
-    curl_easy_cleanup(curl);
-    return "[Docling health check failed - service not responding]";
-}
-
 string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
-    // Ensure Docling is running and ready before attempting conversion
-    string docling_status = start_and_wait_for_docling();
-    if (docling_status != "success") {
-        return docling_status;
-    }
+    start_docling_if_needed();
 
     log_diagnostic("Uploading PDF to Docling (Strict JSON Schema)...");
 

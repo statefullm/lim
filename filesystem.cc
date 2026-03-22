@@ -299,7 +299,7 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
   // Only start Docling if we have PDF files to process
   NetworkTools net;
   if (needs_pdf_processing) {
-    net.start_and_wait_for_docling();
+    net.start_docling_if_needed();
   }
 
   for (const auto& path : paths) {

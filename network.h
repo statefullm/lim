@@ -23,7 +23,6 @@ public:
 
   // PDF processing utilities - made public for filesystem.cc access
   std::string process_pdf_with_docling(const std::string& pdf_binary);
-  std::string start_and_wait_for_docling();
 
   // Start Docling service if not already running
   static void start_docling_if_needed();
