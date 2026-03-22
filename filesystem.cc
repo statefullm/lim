@@ -323,7 +323,7 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 
     if (is_pdf) {
       // Unified PDF handling - local files read directly, URLs use NetworkTools
-      log_diagnostic("Processing PDF: " + path, true /* logOnly */);
+      cerr << "Processing PDF: " + path << endl;
 
       bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
@@ -338,20 +338,20 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
           result["error"] = network_results[0]["error"];
 
           if (result["error"].empty() && !result["content"].empty()) {
-            log_diagnostic("Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)", true /* logOnly */);
+            cerr << "Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
           } else {
-            log_diagnostic("PDF processing failed: " + path, true /* logOnly */);
+            cerr << "PDF processing failed: " + path << endl;
           }
         } else {
           result["error"] = "[No results from network fetch]";
-          log_diagnostic("Network fetch returned empty results", true /* logOnly */);
+          cerr << "Network fetch returned empty results" << endl;
         }
       } else {
         // Local PDF file - read directly and process with Docling
         ifstream in_file(_get_fullpath(path));
         if (!in_file.is_open()) {
           result["error"] = "Failed to open local PDF file for reading: " + path;
-          log_diagnostic("Error: Failed to open local PDF file", true /* logOnly */);
+          cerr << "Error: Failed to open local PDF file" << endl;
           results.push_back(result);
           continue;
         }
@@ -368,10 +368,10 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
         if (content.find("[Docling Error") != string::npos ||
             content.find("[Curl Init Failed]") != string::npos) {
           result["error"] = content;
-          log_diagnostic("PDF processing failed: " + path, true /* logOnly */);
+          cerr << "PDF processing failed: " + path << endl;
         } else {
           result["content"] = NetworkTools::limit_context_size(content);
-          log_diagnostic("Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)", true /* logOnly */);
+          cerr << "Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
         }
       }
     } else if (is_url) {
@@ -387,20 +387,20 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
         result["error"] = network_results[0]["error"];
 
         if (result["error"].empty() && !result["content"].empty()) {
-          log_diagnostic("Successfully fetched remote URL: " + path + " (" + to_string(result["content"].length()) + " bytes)", true /* logOnly */);
+          cerr <<  "Successfully fetched remote URL: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
         } else {
-          log_diagnostic("Remote URL fetch failed: " + path, true /* logOnly */);
+          cerr << "Remote URL fetch failed: " + path << endl;
         }
       } else {
         result["error"] = "[No results from network fetch]";
-        log_diagnostic("Network fetch returned empty results", true /* logOnly */);
+        cerr << "Network fetch returned empty results" << endl;
       }
     } else {
       // Regular local text file handling
       ifstream in_file(_get_fullpath(path));
       if (!in_file.is_open()) {
         result["error"] = "Failed to open file for reading: " + path;
-        log_diagnostic("Error: Failed to open file: " + path, true /* logOnly */);
+        cerr << "Error: Failed to open file: " << endl;
         results.push_back(result);
         continue;
       }
