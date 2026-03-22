@@ -33,7 +33,6 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
 
     if (!logOnly) {
         if (!debugOnly || is_debug) {
-            // Check output modes: browser and stdout can both be enabled (mode 3)
             if (should_output_to_browser()) {
                 // Output to browser via FIFO pipe
                 if (pipe_fd < 0) {
@@ -77,6 +76,7 @@ static void escape_parameter_tags(std::string& str) {
 
 const string FileSystemTools::HOME = "/home/ai";
 
+// Test edit - filesystem tools verification
 FileSystemTools::FileSystemTools() {}
 
 string FileSystemTools::_get_fullpath(const string& path) {

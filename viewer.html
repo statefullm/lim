@@ -107,10 +107,12 @@
                     displayContent += '\n\n<div class="thinking-indicator">🤔 Thinking...</div>';
                 }
 
-                // 1. Parse Markdown - convert newlines to <br> for proper multi-line display
-                // This ensures command output and other multi-line content displays correctly
-                let preprocessedContent = displayContent.replace(/\n/g, '<br>');
-                outputDiv.innerHTML = marked.parse(preprocessedContent);
+                // Parse Markdown with breaks=true to preserve single newlines as <br>
+                // This handles both markdown and plain multiline text correctly
+                let parsedContent = marked.parse(displayContent, { breaks: true });
+
+                // Use the parsed HTML directly - no need for additional newline replacement
+                outputDiv.innerHTML = parsedContent;
 
                 // 2. Render Math (KaTeX)
                 if (window.renderMathInElement) {

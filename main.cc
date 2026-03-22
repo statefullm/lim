@@ -1249,31 +1249,21 @@ int main(int argc, char ** argv) {
             bool has_match_count = (display_result.find("Match count:") != string::npos);
 
             if (is_debug) {
+              // Truncate display_result to first 500 chars for debug output
+              string truncated_display = display_result;
+              if (truncated_display.length() > 500) {
+                  truncated_display = truncated_display.substr(0, 497) + "...";
+              }
+
               safe_printf("\n\033[92m[Tool Result]\033[0m\n");
-              string result_to_print = display_result;
+              string result_to_print = truncated_display;
               size_t p = 0;
               while ((p = result_to_print.find('\n')) != string::npos) {
                   safe_printf("  %.*s\n", (int)p, result_to_print.c_str());
                   result_to_print.erase(0, p + 1);
               }
               if (!result_to_print.empty()) safe_printf("  %s\n", result_to_print.c_str());
-              stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + display_result + "\n> ```\n\n");
-            } else {
-              if (has_error || has_match_count) {
-                safe_printf("\n\033[92m[Tool Result]\033[0m\n");
-                // Remove trailing newlines from display_result to avoid extra blank lines
-                string clean_display = display_result;
-                while (!clean_display.empty() && clean_display.back() == '\n') {
-                    clean_display.pop_back();
-                }
-                size_t p = 0;
-                if ((p = clean_display.find('\n')) != string::npos) {
-                  safe_printf("  %.*s\n", (int)p, clean_display.c_str());
-                } else {
-                  safe_printf("  %s\n", clean_display.c_str());
-                }
-                stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + clean_display + "\n> ```\n\n");
-              }
+              stream_to_viewer("\n\n> **Tool Result:**\n> ```text\n> " + truncated_display + "\n> ```\n\n");
             }
             safe_fflush();
             prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
