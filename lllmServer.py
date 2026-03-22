@@ -15,7 +15,6 @@ async def broadcast_llm_stream():
         os.mkfifo(FIFO_PATH)
 
     print(f"Listening to {FIFO_PATH}...")
-    print()
 
     # Get the actual path of this script (resolves symlinks)
     script_path = Path(__file__).resolve()
