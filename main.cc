@@ -811,7 +811,7 @@ int main(int argc, char ** argv) {
     if (!user_input.empty()) {
       if (!auto_continue) {
           log_entry("USER", user_input);
-          stream("\n\n<span style=\"color: #007bff;\">\\>\\>\\> </span> <span style=\"color: #007bff;\">" + user_input + "</span>\n\n");
+          stream("\n\n <span style=\"color: #007bff;\">\n\n```" + user_input + "\n```\n\n</span>\n\n");
       }
 
       string user_message;

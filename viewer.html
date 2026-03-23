@@ -127,10 +127,13 @@
                 // Parse the content without code blocks (breaks only affect regular text)
                 const customRenderer = new marked.Renderer();
 
-                // Override the code block renderer to restore extracted code blocks
-                customRenderer.code = function(code, language) {
-                    const langClass = language ? ` class="language-${language}"` : '';
-                    const escapedCode = code
+                // Override the code block renderer to restore extracted code blocks safely
+                customRenderer.code = function(token) {
+                    const codeText = typeof token === 'string' ? token : token.text;
+                    const lang = typeof token === 'string' ? arguments[1] : token.lang;
+
+                    const langClass = lang ? ` class="language-${lang}"` : '';
+                    const escapedCode = codeText
                         .replace(/&/g, '&amp;')
                         .replace(/</g, '&lt;')
                         .replace(/>/g, '&gt;');
@@ -148,9 +151,11 @@
                         .replace(/&/g, '&amp;')
                         .replace(/</g, '&lt;')
                         .replace(/>/g, '&gt;');
+
+                    // Use a callback function () => to prevent '$' character interpolation
                     parsedContent = parsedContent.replace(
                         block.placeholder,
-                        `<pre><code class="language-${block.language}">${escapedCode}</code></pre>`
+                        () => `<pre><code class="language-${block.language}">${escapedCode}</code></pre>`
                     );
                 });
 
