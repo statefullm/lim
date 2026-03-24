@@ -45,7 +45,7 @@ async def broadcast_llm_stream():
 async def handler(websocket):
     """Handles new browser connections."""
     clients.add(websocket)
-    print("Browser connected!")
+    print("\nBrowser connected!")
     try:
         await websocket.wait_closed()
     finally:

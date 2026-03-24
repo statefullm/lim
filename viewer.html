@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LLM Live Viewer</title>
+    <title>LLLM Viewer</title>
 
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
@@ -108,6 +108,7 @@
                 // Strip out everything between <think> and </think>.
                 // The '|$' ensures it also hides the text while the block is still actively generating.
                 let displayContent = rawContent.replace(/<think>(?:[\s\S]*?<\/think>|[\s\S]*)/gi, '');
+                displayContent = displayContent.replace(/(\$\$?)([\s\S]+?)\1/g, (match) => {return match.replace(/\\(?=[^\w\s])/g, '\\\\');});
 
                 // Parse Markdown with breaks=true for regular text
                 // Protect code blocks from linebreaking by extracting them first
@@ -161,6 +162,10 @@
 
                 // Use the parsed HTML directly - no need for additional newline replacement
                 outputDiv.innerHTML = parsedContent;
+
+                outputDiv.querySelectorAll('p').forEach(p => {
+                  p.innerHTML = p.innerHTML.replace(/(\$\$?)([\s\S]+?)\1/g, (match) => { return match.replace(/<br\s*\/?>/gi, ' '); });
+                });
 
                 // 2. Render Math (KaTeX)
                 if (window.renderMathInElement) {
