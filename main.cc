@@ -257,15 +257,15 @@ ModelType detect_model_type(const llama_vocab * vocab) {
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
     int ret = llama_decode(ctx, batch);
     if (ret < -1) {
-        message("\n\033[31m[%s]\033[0m\n", error_msg);
+        message("\n\033[31m[" + std::string(error_msg) + "]\033[0m\n");
         cout.flush();
         return false;
     } else if (ret == -1) {
-        message("\n\033[31m[Invalid input batch: %s]\033[0m\n", error_msg);
+        message("\n\033[31m[Invalid input batch: " + std::string(error_msg) + "]\033[0m\n");
         cout.flush();
         return false;
     } else if (ret == 1 || ret == 2) {
-        message("\n\033[31m[%s]\033[0m\n", ret == 1 ? error_msg : "Aborted");
+        message("\n\033[31m[" + std::string(ret == 1 ? error_msg : "Aborted") + "]\033[0m\n");
         cout.flush();
         if (should_break) return false;
         return true;
@@ -1217,12 +1217,12 @@ int main(int argc, char ** argv) {
                   int attempt_num = current_strikes - 2;
 
                   if (attempt_num <= max_attempts) {
-                      message("\n\033[35m[System: Loop Detected. Automating intervention (Attempt %d/%d).]\033[0m\n", attempt_num, max_attempts);
+                      message("\n\033[35m[System: Loop Detected. Automating intervention (Attempt " + std::to_string(attempt_num) + "/" + std::to_string(max_attempts) + ").]\033[0m\n");
                       cout.flush();
                       abort_auto = false;
                       inject_auto_user_msg = true;
                   } else {
-                      message("\n\033[1;31m[System: Intervention failed after %d attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n", max_attempts);
+                      message("\n\033[1;31m[System: Intervention failed after " + std::to_string(max_attempts) + " attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n");
                       cout.flush();
                       abort_auto = true;
                       intra_loop_strikes = 0;
