@@ -145,11 +145,13 @@ string FileSystemTools::exec_shell(const string& command) {
   // Only output a truncated version to stdout (terminal), not to log file
   string result_preview = result.length() > 500 ? result.substr(0, 497) + "..." : result;
   if (!is_debug && !result_preview.empty()) {
-    log_diagnostic(result_preview);
+    log_diagnostic("```\n" + result_preview + "```");
   }
 
   if (result.empty()) {
     result = "[Command executed with no output]\n";
+  } else {
+    result = "```\n" + result + "```";
   }
   return result;
 }

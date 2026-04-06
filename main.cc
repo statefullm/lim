@@ -1268,7 +1268,7 @@ int main(int argc, char ** argv) {
                   result_to_print.erase(0, p + 1);
               }
               if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
-              stream("\n\n> **Tool Result:**\n> ```text\n> " + truncated_display + "```\n\n");
+              stream("\n\n> **Tool Result:**\n> ```\n> " + truncated_display + "```\n\n");
             }
             consoleFlush();
             prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
