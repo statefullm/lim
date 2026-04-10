@@ -440,8 +440,9 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
     return true;
 }
 
-// --- Global Interrupt Flag ---
+// --- Global Interrupt Flags ---
 volatile sig_atomic_t stop_generation = 0;
+static volatile sig_atomic_t g_was_interrupted = 0;  // Track interrupt across loop iterations
 
 // --- SEQUENTIAL INTERVENTION MESSAGES ---
 vector<string> loopMessages = {
@@ -464,7 +465,9 @@ string get_next_loop_message() {
 // --- Signal Handler for Task Interruption ---
 void sigint_handler(int sig) {
   stop_generation = 1;
-  message("\033[0m\n");
+  g_was_interrupted = 1;  // Track that we were interrupted (persists across loop iterations)
+  // Clear any partial line and reset terminal state
+  message("\r\033[K\033[0m\n");
   cout.flush();
 }
 
@@ -892,12 +895,17 @@ int main(int argc, char ** argv) {
   while (true) {
     string user_input = "";
     stop_generation = 0;
+    g_was_interrupted = 0;  // Reset interrupt flag for this iteration
 
     if (!auto_continue) {
       while (true) {
         const char* main_p = "\001\033[1;34m\002>>> \001\033[34m\002";
         const char* cont_p = "\001\033[1;34m\002... \001\033[34m\002";
         if (!first_prompt_displayed) first_prompt_displayed = true;
+
+        // Clear any leftover terminal state from previous interrupt
+        console("\r\033[K");
+        consoleFlush();
 
         if (user_input.empty()) console("\n");
         char* input_c = readline(user_input.empty() ? main_p : cont_p);
@@ -906,11 +914,15 @@ int main(int argc, char ** argv) {
         consoleFlush();
 
         if (!input_c) {
-          if (stop_generation) {
-            stop_generation = 0;
-            user_input = "";
+          // EOF (Ctrl+D) or readline interrupted by SIGINT (Ctrl+C)
+          if (g_was_interrupted) {
+            // Interrupted by Ctrl+C - skip this iteration, ask for input again
+            g_was_interrupted = 0;
+            console("\r\033[K");
+            consoleFlush();
             break;
           } else {
+            // True EOF (Ctrl+D) or normal exit
             if (user_input.empty()) user_input = "quit";
             break;
           }
@@ -918,6 +930,11 @@ int main(int argc, char ** argv) {
 
         string line(input_c);
         free(input_c);
+
+        // Skip empty lines to avoid processing blank input
+        if (line.empty()) {
+          continue;
+        }
 
         if (line == "quit" || line == "exit" || line == "clear" || line == "reset") {
           user_input = line;
@@ -1091,7 +1108,10 @@ int main(int argc, char ** argv) {
         cout.flush();
         stream("\n\n*[Task Interrupted by User]*\n\n");
         stop_generation = 0;
+        g_was_interrupted = 0;  // Reset for next iteration
         auto_continue = false;
+        // Force readline to reset its display state after interrupt
+        rl_redisplay();
         break;
       }
 
