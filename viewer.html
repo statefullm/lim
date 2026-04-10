@@ -101,13 +101,10 @@
                     return;
                 }
 
-                // Append new tokens
+                // Append new tokens (think blocks are already filtered on C++ side)
                 rawContent += event.data;
 
-                // --- SUPPRESS THINKING BLOCKS ---
-                // Strip out everything between <think> and </think>.
-                // The '|$' ensures it also hides the text while the block is still actively generating.
-                let displayContent = rawContent.replace(/<think>(?:[\s\S]*?<\/think>|[\s\S]*)/gi, '');
+                let displayContent = rawContent;
                 displayContent = displayContent.replace(/(\$\$?)([\s\S]+?)\1/g, (match) => {return match.replace(/\\(?=[^\w\s])/g, '\\\\');});
 
                 // Parse Markdown with breaks=true for regular text

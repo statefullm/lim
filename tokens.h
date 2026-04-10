@@ -9,7 +9,7 @@ namespace Tokens {
     constexpr const char* EOT          = "<|eot|>";
 
     // --- XML Parameter Schema ---
-    constexpr const char* THINK_START = "<think=";
+    constexpr const char* THINK_START = "<think>";
     constexpr const char* THINK_END   = "</think>";
 
     // --- XML Tool Calling Schema ---

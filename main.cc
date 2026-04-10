@@ -147,14 +147,31 @@ void format_and_print(Args&&... args) {
 
 #define message(...) format_and_print(__VA_ARGS__)
 
+// Check if think blocks should be output to stdout (modes 1, 2, or 3)
+bool should_output_think_blocks() {
+    int mode = get_output_mode();
+    return mode == 1 || mode == 2 || mode == 3;
+}
+
 template<typename... Args>
 void console(Args&&... args) {
   if (should_output_to_stdout())
     ((cout << forward<Args>(args)), ...);
 }
 
+// Special function for think block output - always outputs to stdout in modes 1,2,3
+template<typename... Args>
+void console_think(Args&&... args) {
+  if (should_output_think_blocks())
+    ((cout << forward<Args>(args)), ...);
+}
+
 static void consoleFlush() {
     if (should_output_to_stdout()) cout.flush();
+}
+
+static void consoleThinkFlush() {
+    if (should_output_think_blocks()) cout.flush();
 }
 
 void init_output_stream() {
@@ -169,6 +186,8 @@ void init_output_stream() {
 
 void stream(const string& raw_token) {
     if (!should_output_to_browser()) return;
+    // Thinking blocks are already filtered at source (see SAFE TERMINAL BUFFERING)
+    // This function just sends pre-filtered text to browser
     if (pipe_fd < 0) {
         pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
     }
@@ -881,6 +900,11 @@ int main(int argc, char ** argv) {
     bool trigger_tool_execution = false;
     size_t func_search_pos = 0;
 
+    // Track thinking blocks (similar to tool calls)
+    bool in_thinking_block = false;
+    size_t think_start = string::npos;
+    size_t think_end = string::npos;
+
     // Track if stdout ended with newline from previous iteration's tool output
     static bool prev_stdout_ended_with_newline = false;
 
@@ -954,6 +978,15 @@ int main(int argc, char ** argv) {
       }
 
       in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
+
+      // --- THINKING BLOCK TRACKING ---
+      if (think_start == string::npos) {
+          think_start = generated_text.find(Tokens::THINK_START);
+      }
+      if (think_start != string::npos && think_end == string::npos) {
+          think_end = generated_text.find(Tokens::THINK_END, think_start);
+      }
+      in_thinking_block = (think_start != string::npos && think_end == string::npos);
 
       // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
       if (in_tool_call_stream && generated_text.length() >= 4 &&
@@ -1059,13 +1092,15 @@ int main(int argc, char ** argv) {
       }
 
       // --- SAFE TERMINAL BUFFERING ---
-      if (!in_tool_call_stream) {
+      if (!in_tool_call_stream && !in_thinking_block) {
           size_t safe_len = generated_text.length();
           string fstart(FUNC_START);
+          string tstart(Tokens::THINK_START);
 
-          // Hold back printing if the tail end is a partial match for a tool tag
-          for (size_t len = 1; len <= fstart.length() && len <= generated_text.length(); ++len) {
-              if (generated_text.compare(generated_text.length() - len, len, fstart, 0, len) == 0) {
+          // Hold back printing if the tail end is a partial match for a tool or thinking tag
+          for (size_t len = 1; len <= max(fstart.length(), tstart.length()) && len <= generated_text.length(); ++len) {
+              if (generated_text.compare(generated_text.length() - len, len, fstart, 0, len) == 0 ||
+                  generated_text.compare(generated_text.length() - len, len, tstart, 0, len) == 0) {
                   safe_len = generated_text.length() - len;
                   break;
               }
@@ -1082,8 +1117,46 @@ int main(int argc, char ** argv) {
               stream(unprinted_text);
               unprinted_text = "";
           }
+      } else if (in_thinking_block) {
+          // Inside a thinking block: Output to stdout only, not browser
+          size_t safe_len = generated_text.length();
+          string tstart(Tokens::THINK_START);
+          string tend(Tokens::THINK_END);
+
+          // Hold back printing if the tail end is a partial match for thinking end tag
+          for (size_t len = 1; len <= tend.length() && len <= generated_text.length(); ++len) {
+              if (generated_text.compare(generated_text.length() - len, len, tend, 0, len) == 0) {
+                  safe_len = generated_text.length() - len;
+                  break;
+              }
+          }
+
+          if (safe_len > print_pos) {
+              string think_output = generated_text.substr(print_pos, safe_len - print_pos);
+
+              // In browser-only mode (LLLM_OUTPUT=2), strip both <think> and </think> tags
+              // In combined mode (LLLM_OUTPUT=3), keep the tags visible
+              int mode = get_output_mode();
+              if (mode == 2) {
+                  // Strip opening tag from output
+                  size_t open_tag_pos = think_output.find(tstart);
+                  if (open_tag_pos != string::npos) {
+                      think_output.erase(open_tag_pos, tstart.length());
+                  }
+                  // Strip closing tag from output
+                  size_t close_tag_pos = think_output.find(tend);
+                  if (close_tag_pos != string::npos) {
+                      think_output.erase(close_tag_pos, tend.length());
+                  }
+              }
+
+              console_think(think_output.c_str());
+              consoleThinkFlush();
+              // Do NOT send thinking blocks to browser - stdout only
+              print_pos = safe_len;
+          }
       } else {
-          // Inside a tool call: Flush safely buffered pre-tool text and mute the rest
+          // Inside a tool call: Flush buffered text and mute the rest
           if (!unprinted_text.empty()) {
               console(unprinted_text.c_str());
               consoleFlush();
@@ -1275,6 +1348,10 @@ int main(int argc, char ** argv) {
 
             chat_log << "\n";
             generated_text = ""; unprinted_text = "";
+            // Reset tracking for new generation phase
+            tool_start = string::npos; tool_end = string::npos;
+            think_start = string::npos; think_end = string::npos;
+            in_tool_call_stream = false; in_thinking_block = false;
 
             string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
             string tool_msg = tool_result_section + TURN_START + "assistant\n";
