@@ -224,7 +224,7 @@ static string get_viewer_url() {
 }
 
 static bool prompt_for_browser_connection() {
-    message("\n\033[1;33m[WARNING: No browser connected!]\033[0m\n");
+    message("\n\033[1;35m[WARNING: No browser connected!]\033[0m\n");
     message("Output will be lost if you don't view it in the browser.\n");
     message("\nPlease load or reload:\n");
     message("  \033[92m" + get_viewer_url() + "\033[0m\n");
@@ -259,7 +259,7 @@ static bool prompt_for_browser_connection() {
             return true;  // Browser is connected
         }
 
-        message("\033[1;33mStill disconnected. Press Enter to check again, 'skip' or 'never'...\033[0m ");
+        message("\033[1;35mStill disconnected. Press Enter to check again, 'skip' or 'never'...\033[0m ");
         cout.flush();
 
         if (fgets(input, sizeof(input), stdin) != nullptr) {
