@@ -3,7 +3,6 @@ import asyncio
 import os
 import socket
 from pathlib import Path
-import aiohttp
 from aiohttp import web
 
 FIFO_PATH = "/tmp/lllm.fifo"
