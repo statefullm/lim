@@ -80,12 +80,25 @@
 
         function connect() {
             // Get the WebSocket URL from URL parameters
-            // Priority: url > host + port, with sensible defaults
+            // Connect to /ws endpoint on the same host/port as the HTTP page
             const urlParams = new URLSearchParams(window.location.search);
-            const wsUrl = urlParams.get('url') ||
-                          `ws://${urlParams.get('host') || 'localhost'}:${urlParams.get('port') || 8765}`;
+            if (urlParams.get('url')) {
+                const wsUrl = urlParams.get('url');
+                const ws = new WebSocket(wsUrl);
+                setupWebSocket(ws);
+                return;
+            }
+
+            // Build WebSocket URL from current page URL
+            const pageHost = window.location.host;
+            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${wsProtocol}//${pageHost}/ws`;
 
             const ws = new WebSocket(wsUrl);
+            setupWebSocket(ws);
+        }
+
+        function setupWebSocket(ws) {
 
             ws.onopen = () => {
                 statusDiv.textContent = 'Connected';

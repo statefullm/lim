@@ -27,6 +27,9 @@
 #include <pwd.h>
 #include <fcntl.h>
 #include <sys/wait.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 
 // --- Web Viewer Output Support ---
@@ -146,6 +149,140 @@ void format_and_print(Args&&... args) {
 }
 
 #define message(...) format_and_print(__VA_ARGS__)
+
+// --- Server Port Configuration ---
+static int get_server_port() {
+    // Allow custom port via environment variable (default: 8765)
+    const char* env = getenv("LLLM_PORT");
+    if (env != nullptr && strlen(env) > 0) {
+        return atoi(env);
+    }
+    return 8765;
+}
+
+// --- Browser Connection Status Checking ---
+static bool g_browser_warning_suppressed = false;  // Don't ask again this session
+
+static bool check_browser_connected() {
+    // Use raw socket to query HTTP status endpoint - no external process needed
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return false;
+
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(get_server_port());
+    inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
+
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        close(sock);
+        return false;
+    }
+
+    const char* request = "GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n";
+    write(sock, request, strlen(request));
+
+    char buffer[512];
+    bool connected = false;
+    ssize_t bytes_read = read(sock, buffer, sizeof(buffer) - 1);
+    if (bytes_read > 0) {
+        buffer[bytes_read] = '\0';
+        if (strstr(buffer, "\"connected\": true") != nullptr ||
+            strstr(buffer, "\"connected\":true") != nullptr) {
+            connected = true;
+        }
+    } else {
+        close(sock);
+        return false;
+    }
+
+    close(sock);
+    return connected;
+}
+
+static string get_hostname() {
+    char hostname[256];
+    if (gethostname(hostname, sizeof(hostname)) == 0) {
+        string h(hostname);
+        // Get short hostname by removing domain suffix after first dot
+        size_t dot_pos = h.find('.');
+        if (dot_pos != string::npos) {
+            h = h.substr(0, dot_pos);
+        }
+        return h;
+    }
+    return "localhost";
+}
+
+static string get_viewer_url() {
+    // Allow custom viewer URL via environment variable
+    const char* env = getenv("LLLM_VIEWER_URL");
+    if (env != nullptr && strlen(env) > 0) {
+        return string(env);
+    }
+    // Default to system hostname and configurable port
+    return "http://" + get_hostname() + ":" + std::to_string(get_server_port()) + "/viewer.html";
+}
+
+static bool prompt_for_browser_connection() {
+    message("\n\033[1;33m[WARNING: No browser connected!]\033[0m\n");
+    message("Output will be lost if you don't view it in the browser.\n");
+    message("\nPlease load or reload:\n");
+    message("  \033[92m" + get_viewer_url() + "\033[0m\n");
+    message("or refresh your current browser tab.\n");
+    message("\nPress Enter when ready, 'skip' to continue without browser, or 'never' to suppress this warning...\n> ");
+    cout.flush();
+
+    char input[256];
+    if (fgets(input, sizeof(input), stdin) != nullptr) {
+        string s(input);
+        // Remove trailing newline
+        if (!s.empty() && s.back() == '\n') s.pop_back();
+
+        if (s == "never" || s == "NEVER") {
+            g_browser_warning_suppressed = true;
+            message("\033[1;35m[Browser warnings suppressed for this session]\033[0m\n");
+            return false;  // User chose to suppress warnings
+        }
+        if (s == "skip" || s == "SKIP") {
+            message("\033[1;35m[Continuing without browser output]\033[0m\n");
+            setenv("LLLM_OUTPUT", "1", 1);  // Switch to stdout-only mode so output is not lost
+            return false;  // User chose to skip
+        }
+    }
+
+    // Give a few seconds for user to load the browser, then check again
+    message("Checking connection status...\n");
+    int retries = 5;
+    while (retries > 0) {
+        if (check_browser_connected()) {
+            message("\n\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
+            return true;  // Browser is connected
+        }
+
+        message("\033[1;33mStill disconnected. Press Enter to check again, 'skip' or 'never'...\033[0m ");
+        cout.flush();
+
+        if (fgets(input, sizeof(input), stdin) != nullptr) {
+            string s(input);
+            if (!s.empty() && s.back() == '\n') s.pop_back();
+            if (s == "skip" || s == "SKIP") {
+                message("\033[1;35m[Continuing without browser output]\033[0m\n");
+                setenv("LLLM_OUTPUT", "1", 1);  // Switch to stdout-only mode so output is not lost
+                return false;  // User chose to skip
+            }
+            if (s == "never" || s == "NEVER") {
+                g_browser_warning_suppressed = true;
+                message("\033[1;35m[Browser warnings suppressed for this session]\033[0m\n");
+                return false;  // User chose to suppress warnings
+            }
+        }
+        retries--;
+    }
+
+    message("\n\033[1;35m[No browser detected. Continuing without browser output.]\033[0m\n");
+    setenv("LLLM_OUTPUT", "1", 1);  // Switch to stdout-only mode so output is not lost
+    return false;  // Browser not connected after retries
+}
 
 // Check if think blocks should be output to stdout (modes 1, 2, or 3)
 bool should_output_think_blocks() {
@@ -825,6 +962,7 @@ int main(int argc, char ** argv) {
         llama_sampler_reset(smpl);
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
+        g_browser_warning_suppressed = false;  // Reset browser warning suppression on clear
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
         message("\n\033[32m[Context Cleared Successfully]\033[0m\n");
@@ -847,11 +985,22 @@ int main(int argc, char ** argv) {
 
     if (user_input.empty() && !auto_continue) continue;
 
+    // Check browser connection BEFORE processing prompt - ensures user loads browser first
+    bool browser_connected = check_browser_connected();
+    if (should_output_to_browser() && !g_browser_warning_suppressed && !browser_connected) {
+        browser_connected = prompt_for_browser_connection();
+        // If still disconnected after prompting, disable browser output for this generation
+        // Note: We do NOT close pipe_fd here - just let stream() check should_output_to_browser()
+        if (!browser_connected) {
+            message("\n\033[1;35m[Browser output disabled for this generation.]\033[0m\n");
+        }
+    }
+
     if (!user_input.empty()) {
       if (!auto_continue) {
           log_entry("USER", user_input);
           // Write user input HTML directly to pipe (bypass stream() which strips </div>)
-          if (should_output_to_browser()) {
+          if (should_output_to_browser() && pipe_fd >= 0) {
               if (pipe_fd < 0) pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
               if (pipe_fd >= 0) {
                   string user_html = "\n\n<div style=\"color: #007bff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n";
