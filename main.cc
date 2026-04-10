@@ -160,10 +160,13 @@ void console(Args&&... args) {
 }
 
 // Special function for think block output - always outputs to stdout in modes 1,2,3
+// IMPORTANT: Includes color reset at start to prevent thinking output from appearing blue
 template<typename... Args>
 void console_think(Args&&... args) {
-  if (should_output_think_blocks())
+  if (should_output_think_blocks()) {
+    cout << "\033[0m";  // Reset colors - thinking should NOT be blue
     ((cout << forward<Args>(args)), ...);
+  }
 }
 
 static void consoleFlush() {
@@ -188,11 +191,19 @@ void stream(const string& raw_token) {
     if (!should_output_to_browser()) return;
     // Thinking blocks are already filtered at source (see SAFE TERMINAL BUFFERING)
     // This function just sends pre-filtered text to browser
+
+    // Filter out HTML closing tags that might leak from model output
+    string filtered = raw_token;
+    size_t pos = 0;
+    while ((pos = filtered.find("</div>", pos)) != string::npos) {
+        filtered.erase(pos, 6);
+    }
+
     if (pipe_fd < 0) {
         pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
     }
     if (pipe_fd >= 0) {
-        ssize_t res = write(pipe_fd, raw_token.c_str(), raw_token.length());
+        ssize_t res = write(pipe_fd, filtered.c_str(), filtered.length());
 
         // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is just full
         // (Python is reading too slowly). We just drop the token but keep the pipe open.
@@ -427,18 +438,22 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       FileSystemTools fs;
       NetworkTools net;
       result = "Files content:\n";
+
+      // Separate local files from URLs for batched processing
+      vector<string> local_paths_to_read;
+
       for (const auto& path : paths) {
-        // Detect if this is a URL or local file
         bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
         if (!is_url && clean_files.count(path)) {
+          // Cache hit - already read this file
           result += "Path: " + path + "\n";
           result += "Content:\n[Content omitted: You already read this file and it has not been modified since your last read. If you need to search for specific code sections or variables, use the search_file tool instead. DO NOT call read_files on this file again.]\n";
           result += "---\n";
         } else if (is_url) {
           // Handle URL - fetch content from network
-          auto results = net.fetch_urls({path});
-          for (const auto& file : results) {
+          auto url_results = net.fetch_urls({path});
+          for (const auto& file : url_results) {
             result += "Path: " + file.at("path") + "\n";
             result += "Content:\n" + file.at("content") + "\n";
             if (!file.at("error").empty()) result += "Error: " + file.at("error") + "\n";
@@ -448,16 +463,21 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
             if (file.at("error").empty()) clean_files.insert(file.at("path"));
           }
         } else {
-          // Handle local file
-          auto results = fs.read_files({path});
-          for (const auto& file : results) {
-            result += "Path: " + file.at("path") + "\n";
-            result += "Content:\n" + file.at("content") + "\n";
-            if (!file.at("error").empty()) result += "Error: " + file.at("error") + "\n";
-            result += "---\n";
+          // Local file that needs to be read - collect for batched processing
+          local_paths_to_read.push_back(path);
+        }
+      }
 
-            if (file.at("error").empty()) clean_files.insert(file.at("path"));
-          }
+      // Batch read all local files at once (enables PDF detection across all paths)
+      if (!local_paths_to_read.empty()) {
+        auto results = fs.read_files(local_paths_to_read);
+        for (const auto& file : results) {
+          result += "Path: " + file.at("path") + "\n";
+          result += "Content:\n" + file.at("content") + "\n";
+          if (!file.at("error").empty()) result += "Error: " + file.at("error") + "\n";
+          result += "---\n";
+
+          if (file.at("error").empty()) clean_files.insert(file.at("path"));
         }
       }
     } else {
@@ -830,7 +850,14 @@ int main(int argc, char ** argv) {
     if (!user_input.empty()) {
       if (!auto_continue) {
           log_entry("USER", user_input);
-          stream("\n\n<div style=\"color: #007bff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n");
+          // Write user input HTML directly to pipe (bypass stream() which strips </div>)
+          if (should_output_to_browser()) {
+              if (pipe_fd < 0) pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+              if (pipe_fd >= 0) {
+                  string user_html = "\n\n<div style=\"color: #007bff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n";
+                  write(pipe_fd, user_html.c_str(), user_html.length());
+              }
+          }
       }
 
       string user_message;
@@ -1096,6 +1123,15 @@ int main(int argc, char ** argv) {
           size_t safe_len = generated_text.length();
           string fstart(FUNC_START);
           string tstart(Tokens::THINK_START);
+
+          // CRITICAL: If we just exited a thinking block (think_end found), skip past THINK_END
+          // to prevent it from leaking into normal text output
+          if (think_start != string::npos && think_end != string::npos) {
+              size_t think_block_end = think_end + string(Tokens::THINK_END).length();
+              if (print_pos < think_block_end) {
+                  print_pos = think_block_end;
+              }
+          }
 
           // Hold back printing if the tail end is a partial match for a tool or thinking tag
           for (size_t len = 1; len <= max(fstart.length(), tstart.length()) && len <= generated_text.length(); ++len) {
