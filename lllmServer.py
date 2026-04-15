@@ -18,13 +18,13 @@ async def broadcast_llm_stream():
     if not os.path.exists(FIFO_PATH):
         os.mkfifo(FIFO_PATH)
 
-    print(f"Listening to {FIFO_PATH}...")
+#    print(f"Listening to {FIFO_PATH}...")
 
     # Get the actual path of this script (resolves symlinks)
     script_path = Path(__file__).resolve()
     viewer_html_path = script_path.parent / 'viewer.html'
     hostname = socket.gethostname().split('.')[0]  # Use short hostname only
-    print(f"Load http://{hostname}:{LLLM_PORT}/viewer.html in your browser")
+    print(f"Load in your browser:\nhttp://{hostname}:{LLLM_PORT}/viewer.html")
 
     # Open non-blocking
     fd = os.open(FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)
@@ -68,7 +68,7 @@ async def websocket_handler(request):
         raise
     finally:
         clients.discard(ws)
-        print(f"Browser disconnected. Remaining clients: {len(clients)}")
+#        print(f"Browser disconnected. Remaining clients: {len(clients)}")
 
     return ws
 
@@ -100,8 +100,6 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', LLLM_PORT)
     await site.start()
-    print(f"Server running on http://0.0.0.0:{LLLM_PORT}")
-    print(f"Access viewer at: http://<your-host>:{LLLM_PORT}/viewer.html")
 
     # Run the pipe reader concurrently
     await broadcast_llm_stream()

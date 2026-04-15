@@ -27,6 +27,19 @@ Always use these tools for any filesystem or shell operation:
   </parameter>
   </function>
 
+- Search for exact line range within a file:
+  <function=search_file>
+  <parameter=path>
+  main.cc
+  </parameter>
+  <parameter=begin>
+  100
+  </parameter>
+  <parameter=end>
+  150
+  </parameter>
+  </function>
+
 - Write or overwrite a file in an existing directory:
   <function=write_file>
   <parameter=path>

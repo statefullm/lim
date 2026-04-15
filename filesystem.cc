@@ -156,7 +156,7 @@ string FileSystemTools::exec_shell(const string& command) {
   return result;
 }
 
-string FileSystemTools::search_file(const string& path, const string& text) {
+string FileSystemTools::search_file(const string& path, const string& text, int begin_line, int end_line) {
   // Build human-readable function call syntax (truncate for display)
   string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
@@ -182,6 +182,33 @@ string FileSystemTools::search_file(const string& path, const string& text) {
   buffer << in_file.rdbuf();
   string content = buffer.str();
   in_file.close();
+
+  // Line range reading mode: if both begin and end are provided, return those lines directly
+  if (begin_line > 0 && end_line >= begin_line) {
+    vector<string> lines;
+    string line;
+    stringstream ss(content);
+    while (getline(ss, line)) {
+      lines.push_back(line);
+    }
+
+    // Adjust to 0-based indexing and clamp to valid range
+    int start = max(0, begin_line - 1);
+    int end = min((int)lines.size() - 1, end_line - 1);
+
+    if (start >= (int)lines.size()) {
+      return "Error: Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
+    }
+
+    string result = "Lines " + to_string(begin_line) + "-" + to_string(end_line) + " of " + path + ":\n```\n";
+    for (int i = start; i <= end; i++) {
+      result += lines[i] + "\n";
+    }
+    result += "```\n";
+
+    escape_parameter_tags(result);
+    return result;
+  }
 
   bool search_with_newlines = (text.find('\n') != string::npos);
   string result = "";

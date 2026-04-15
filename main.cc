@@ -229,26 +229,11 @@ static bool prompt_for_browser_connection() {
     message("\nPlease load or reload:\n");
     message("  \033[92m" + get_viewer_url() + "\033[0m\n");
     message("or refresh your current browser tab.\n");
-    message("\nPress Enter when ready, 'skip' to continue without browser, or 'never' to suppress this warning...\n> ");
+    message("\nPress Enter when ready...\n> ");
     cout.flush();
 
     char input[256];
-    if (fgets(input, sizeof(input), stdin) != nullptr) {
-        string s(input);
-        // Remove trailing newline
-        if (!s.empty() && s.back() == '\n') s.pop_back();
-
-        if (s == "never" || s == "NEVER") {
-            g_browser_warning_suppressed = true;
-            message("\033[1;35m[Browser warnings suppressed for this session]\033[0m\n");
-            return false;  // User chose to suppress warnings
-        }
-        if (s == "skip" || s == "SKIP") {
-            message("\033[1;35m[Continuing without browser output]\033[0m\n");
-            setenv("LLLM_OUTPUT", "1", 1);  // Switch to stdout-only mode so output is not lost
-            return false;  // User chose to skip
-        }
-    }
+    fgets(input, sizeof(input), stdin);  // Wait for user to press Enter
 
     // Give a few seconds for user to load the browser, then check again
     message("Checking connection status...\n");
@@ -259,28 +244,13 @@ static bool prompt_for_browser_connection() {
             return true;  // Browser is connected
         }
 
-        message("\033[1;35mStill disconnected. Press Enter to check again, 'skip' or 'never'...\033[0m ");
+        message("\033[1;35mStill disconnected. Press Enter to check again...\033[0m ");
         cout.flush();
-
-        if (fgets(input, sizeof(input), stdin) != nullptr) {
-            string s(input);
-            if (!s.empty() && s.back() == '\n') s.pop_back();
-            if (s == "skip" || s == "SKIP") {
-                message("\033[1;35m[Continuing without browser output]\033[0m\n");
-                setenv("LLLM_OUTPUT", "1", 1);  // Switch to stdout-only mode so output is not lost
-                return false;  // User chose to skip
-            }
-            if (s == "never" || s == "NEVER") {
-                g_browser_warning_suppressed = true;
-                message("\033[1;35m[Browser warnings suppressed for this session]\033[0m\n");
-                return false;  // User chose to suppress warnings
-            }
-        }
+        fgets(input, sizeof(input), stdin);
         retries--;
     }
 
-    message("\n\033[1;35m[No browser detected. Continuing without browser output.]\033[0m\n");
-    setenv("LLLM_OUTPUT", "1", 1);  // Switch to stdout-only mode so output is not lost
+    message("\n\033[1;35m[No browser detected. Output may be lost.]\033[0m\n");
     return false;  // Browser not connected after retries
 }
 
@@ -626,18 +596,34 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   } else if (tool_name == "search_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
     string text = extract_string_arg_bounded(tool_call, "text");
+    string begin_str = extract_string_arg_bounded(tool_call, "begin");
+    string end_str = extract_string_arg_bounded(tool_call, "end");
     replace_all_tags(text, PARAM_END_ESC, PARAM_END); // Unescape
+    int begin_line = 0;
+    int end_line = 0;
+    if (!begin_str.empty() && begin_str.find_first_not_of("0123456789") == string::npos) {
+      begin_line = atoi(begin_str.c_str());
+    }
+    if (!end_str.empty() && end_str.find_first_not_of("0123456789") == string::npos) {
+      end_line = atoi(end_str.c_str());
+    }
     if (!path.empty()) {
-      string current_req = path + ":" + text;
+      // For line range mode, use path:begin:end as the request key; for text search, use path:text
+      string current_req;
+      if (begin_line > 0 && end_line >= begin_line) {
+        current_req = path + ":" + to_string(begin_line) + ":" + to_string(end_line);
+      } else {
+        current_req = path + ":" + text;
+      }
       if (current_req == last_grep_req) {
-          result = "System Error: You just ran this exact search_file. Do not repeat the same search. Try a different text.";
+          result = "System Error: You just ran this exact search_file. Do not repeat the same search.";
       } else {
           last_grep_req = current_req;
           FileSystemTools fs;
-          result = fs.search_file(path, text);
+          result = fs.search_file(path, text, begin_line, end_line);
       }
     } else {
-      result = "Error: path and text are required for search_file";
+      result = "Error: path is required for search_file";
     }
   } else if (tool_name == "write_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
@@ -883,7 +869,7 @@ int main(int argc, char ** argv) {
   if (!handle_llama_decode_error(ctx, batch)) return 1;
 
   bool auto_continue = false;
-  const char* history_file = ".llm_history";
+  const char* history_file = ".lllm_history";
   load_history_safe(history_file);
 
   set<string> clean_files;

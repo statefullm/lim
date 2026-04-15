@@ -17,8 +17,8 @@ public:
 
   std::map<std::string, std::string> edit_file(const std::string& path, const std::string& old_str, const std::string& new_str);
 
-  // Updated to return a block of context instead of line numbers
-  std::string search_file(const std::string& path, const std::string& text);
+  // Search for text with optional line range
+  std::string search_file(const std::string& path, const std::string& text, int begin_line = 0, int end_line = 0);
 
 private:
   std::string _get_fullpath(const std::string& path);
