@@ -43,7 +43,12 @@ const char* FIFO_PATH = "/tmp/lllm.fifo";
 
 // --- LLLM_OUTPUT Environment Variable Control ---
 // Modes: 3=both stdout+browser, 2=browser only (no stdout), 1=stdout only (no browser), 0=no output (system messages still go to stdout)
+static bool g_browser_warning_suppressed = false;  // Don't ask again this session
+
 static int get_output_mode() {
+    // If browser disconnected (warning suppressed), always use stdout mode 1
+    if (g_browser_warning_suppressed) return 1;
+
     const char* env = getenv("LLLM_OUTPUT");
     if (env == nullptr) return 2;  // Default: browser
     int mode = atoi(env);
@@ -161,7 +166,6 @@ static int get_server_port() {
 }
 
 // --- Browser Connection Status Checking ---
-static bool g_browser_warning_suppressed = false;  // Don't ask again this session
 
 static bool check_browser_connected() {
     // Use raw socket to query HTTP status endpoint - no external process needed
@@ -223,35 +227,54 @@ static string get_viewer_url() {
     return "http://" + get_hostname() + ":" + std::to_string(get_server_port()) + "/viewer.html";
 }
 
+// Forward declaration for interrupt flag used in browser connection check
+extern volatile sig_atomic_t stop_generation;
+
 static bool prompt_for_browser_connection() {
     message("\n\033[1;35m[WARNING: No browser connected!]\033[0m\n");
     message("Output will be lost if you don't view it in the browser.\n");
     message("\nPlease load or reload:\n");
-    message("  \033[92m" + get_viewer_url() + "\033[0m\n");
-    message("or refresh your current browser tab.\n");
-    message("\nPress Enter when ready...\n> ");
+    message("  \033[1;35m[" + get_viewer_url() + "\033[0m\n");
+    message("Press Enter when ready... ");
     cout.flush();
 
     char input[256];
-    fgets(input, sizeof(input), stdin);  // Wait for user to press Enter
+    if (!fgets(input, sizeof(input), stdin)) {
+        // fgets returned NULL - either EOF or interrupted by signal
+        if (!g_browser_warning_suppressed) {
+            message("\n\033[1;35m[Browser output disabled]\033[0m\n");
+        }
+        g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+        stop_generation = 0;
+        return false;
+    }
 
     // Give a few seconds for user to load the browser, then check again
     message("Checking connection status...\n");
     int retries = 5;
     while (retries > 0) {
         if (check_browser_connected()) {
-            message("\n\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
-            return true;  // Browser is connected
+            message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
+            return true;
         }
 
         message("\033[1;35mStill disconnected. Press Enter to check again...\033[0m ");
         cout.flush();
-        fgets(input, sizeof(input), stdin);
+
+        if (!fgets(input, sizeof(input), stdin)) {
+            if (!g_browser_warning_suppressed) {
+                message("\n\033[1;35m[Browser output disabled]\033[0m\n");
+            }
+            g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+            stop_generation = 0;
+            return false;
+        }
         retries--;
     }
 
     message("\n\033[1;35m[No browser detected. Output may be lost.]\033[0m\n");
-    return false;  // Browser not connected after retries
+    g_browser_warning_suppressed = true;  // Prevent "[Browser output disabled]" from appearing again this session
+    return false;
 }
 
 // Check if think blocks should be output to stdout (modes 1, 2, or 3)
@@ -721,7 +744,13 @@ int main(int argc, char ** argv) {
       NetworkTools::cleanup_services();
       cleanup_lllm_server();
   });
-  signal(SIGINT, sigint_handler);
+
+  // Set up SIGINT handler without SA_RESTART so it interrupts blocking syscalls (e.g., fgets)
+  struct sigaction sa{};
+  sa.sa_handler = sigint_handler;
+  sigemptyset(&sa.sa_mask);
+  sa.sa_flags = 0;  // No SA_RESTART - allows signals to interrupt syscalls
+  sigaction(SIGINT, &sa, nullptr);
 
   float temp = 0.7f;
   bool use_dummy_thought = false;
@@ -961,7 +990,7 @@ int main(int argc, char ** argv) {
         llama_sampler_reset(smpl);
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
-        g_browser_warning_suppressed = false;  // Reset browser warning suppression on clear
+        g_browser_warning_suppressed = false;  // Reset browser warning suppression and restore browser output mode on clear
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
         message("\n\033[32m[Context Cleared Successfully]\033[0m\n");
@@ -986,12 +1015,24 @@ int main(int argc, char ** argv) {
 
     // Check browser connection BEFORE processing prompt - ensures user loads browser first
     bool browser_connected = check_browser_connected();
-    if (should_output_to_browser() && !g_browser_warning_suppressed && !browser_connected) {
-        browser_connected = prompt_for_browser_connection();
-        // If still disconnected after prompting, disable browser output for this generation
-        // Note: We do NOT close pipe_fd here - just let stream() check should_output_to_browser()
-        if (!browser_connected) {
-            message("\n\033[1;35m[Browser output disabled for this generation.]\033[0m\n");
+
+    // If we were suppressed but now connected, reset the flag to restore original output mode
+    if (browser_connected && g_browser_warning_suppressed) {
+        g_browser_warning_suppressed = false;  // Restore browser output mode
+    }
+
+    if (should_output_to_browser()) {
+        // If not suppressed and not connected, prompt for browser connection
+        if (!g_browser_warning_suppressed && !browser_connected) {
+            browser_connected = prompt_for_browser_connection();
+            // If still disconnected after prompting, disable browser output for this generation
+            // Note: We do NOT close pipe_fd here - just let stream() check should_output_to_browser()
+            if (!browser_connected) {
+                if (!g_browser_warning_suppressed) {
+                    message("\n\033[1;35m[Browser output disabled]\033[0m\n");
+                }
+                g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+            }
         }
     }
 
@@ -1275,11 +1316,17 @@ int main(int argc, char ** argv) {
           string fstart(FUNC_START);
           string tstart(Tokens::THINK_START);
 
-          // CRITICAL: If we just exited a thinking block (think_end found), skip past THINK_END
-          // to prevent it from leaking into normal text output
+          // CRITICAL: If we just exited a thinking block (think_end found), handle THINK_END
           if (think_start != string::npos && think_end != string::npos) {
               size_t think_block_end = think_end + string(Tokens::THINK_END).length();
               if (print_pos < think_block_end) {
+                  // In mode 1 (stdout only, no browser), print the closing tag
+                  int mode = get_output_mode();
+                  if (mode == 1 && print_pos <= think_end) {
+                      string close_tag = generated_text.substr(print_pos, think_block_end - print_pos);
+                      console_think(close_tag.c_str());
+                      consoleThinkFlush();
+                  }
                   print_pos = think_block_end;
               }
           }
