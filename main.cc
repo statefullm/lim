@@ -233,7 +233,7 @@ extern volatile sig_atomic_t stop_generation;
 static bool prompt_for_browser_connection() {
     message("\n\033[1;35m[WARNING: No browser connected!]\033[0m\n");
     message("Output will be lost if you don't view it in the browser.\n");
-    message("\nPlease load or reload:\n");
+    message("Please load or reload:\n");
     message("  \033[1;35m[" + get_viewer_url() + "\033[0m\n");
     message("Press Enter when ready... ");
     cout.flush();
@@ -254,7 +254,7 @@ static bool prompt_for_browser_connection() {
     int retries = 5;
     while (retries > 0) {
         if (check_browser_connected()) {
-            message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
+            message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m");
             return true;
         }
 
@@ -1426,7 +1426,8 @@ int main(int argc, char ** argv) {
     }
 
     if (t_count > 0) {
-        cout << "\033[34m[Speed: " << fixed << setprecision(2) << (t_count / elapsed) << " t/s | Elapsed: " << elapsed << "s]\033[0m" << endl;
+        double context_percent = (n_past / (double)cparams.n_ctx) * 100.0;
+        cout << "\033[34m[Speed: " << fixed << setprecision(2) << (t_count / elapsed) << " t/s | Context: " << n_past << "/" << cparams.n_ctx << " (" << setprecision(1) << context_percent << "%) | Elapsed: " << elapsed << "s]\033[0m" << endl;
     }
 
     // Save state for next iteration
