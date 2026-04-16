@@ -21,7 +21,7 @@ namespace Tokens {
     constexpr const char* PARAM_END   = "</parameter>";
 
     // --- Escaped Tokens (For protecting the C++ parser) ---
-    constexpr const char* PARAM_END_ESC = "<\\parameter>";
+    constexpr const char* PARAM_END_ESC = "<\\/parameter>";
 
     constexpr const char* DOUBLE_OPEN = "</</";
 }

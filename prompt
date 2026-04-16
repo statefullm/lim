@@ -102,7 +102,7 @@ Your environment is sandboxed as user ai. Always specify paths relative to the c
 RAW TEXT IN TOOL ARGUMENTS:
 Because you are using XML tags for parameters, DO NOT escape quotes, newlines, or backslashes.
 Output the exact raw, multi-line text you want to search for, read, or write.
-CRITICAL EXCEPTION: If the literal text you are writing or searching for contains the exact string "</parameter>", you MUST escape it by writing "\parameter>" instead. When reading files, any literal "</parameter>" will be presented to you as "<\parameter>".
+CRITICAL EXCEPTION: If the literal text you are writing or searching for contains the exact string "</parameter>", you MUST escape it by writing "\parameter>" instead. When reading files, any literal "</parameter>" will be presented to you as "<\/parameter>".
 
 MATH FORMATTING RULES:
 - ALWAYS use LaTeX-style dollar signs for inline math: $\delta$, $x^2$.
