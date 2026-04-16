@@ -598,7 +598,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
-    replace_all_tags(text, PARAM_END_ESC, PARAM_END); // Unescape
     int begin_line = 0;
     int end_line = 0;
     if (!begin_str.empty() && begin_str.find_first_not_of("0123456789") == string::npos) {
@@ -629,7 +628,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string path = extract_string_arg_bounded(tool_call, "path");
     string content = extract_string_arg_bounded(tool_call, "content");
     content = remove_trailing_spaces(content);
-    replace_all_tags(content, PARAM_END_ESC, PARAM_END); // Unescape
     clean_files.erase(path);
     last_grep_req = "";
     if (!path.empty()) {
@@ -646,8 +644,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string new_str = extract_string_arg_bounded(tool_call, "new");
     old_str = remove_trailing_spaces(old_str);
     new_str = remove_trailing_spaces(new_str);
-    replace_all_tags(old_str, PARAM_END_ESC, PARAM_END); // Unescape
-    replace_all_tags(new_str, PARAM_END_ESC, PARAM_END); // Unescape
     clean_files.erase(path);
     last_grep_req = "";
     if (!path.empty()) {
