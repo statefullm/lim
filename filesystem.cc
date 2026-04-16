@@ -200,7 +200,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
       return "Error: Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
     }
 
-    string result = "Lines " + to_string(begin_line) + "-" + to_string(end_line) + " of " + path + ":\n```\n";
+    string result = "Lines " + to_string(start + 1) + "-" + to_string(end + 1) + " of " + path + ":\n```\n";
     for (int i = start; i <= end; i++) {
       result += lines[i] + "\n";
     }
