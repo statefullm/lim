@@ -74,6 +74,17 @@ static void escape_parameter_tags(std::string& str) {
     }
 }
 
+// --- Helper to unescape tags from LLM input before writing to disk ---
+static void unescape_parameter_tags(std::string& str) {
+    std::string from = PARAM_END_ESC;
+    std::string to = PARAM_END;
+    size_t start_pos = 0;
+    while ((start_pos = str.find(from, start_pos)) != std::string::npos) {
+        str.replace(start_pos, from.length(), to);
+        start_pos += to.length();
+    }
+}
+
 const string FileSystemTools::HOME = "/home/ai";
 
 // Test edit - filesystem tools verification
@@ -172,6 +183,10 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   // Always output full text to logfile (no truncation)
   log_diagnostic("TEXT: \"" + text + "\"", true /* logOnly */);
 
+  // Unescape search text (LLM provides escaped content per prompt instructions)
+  string unescaped_text = text;
+  unescape_parameter_tags(unescaped_text);
+
   string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
@@ -210,14 +225,14 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
     return result;
   }
 
-  bool search_with_newlines = (text.find('\n') != string::npos);
+  bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
   string result = "";
   int match_count = 0;
   int context = 5;
 
   if (search_with_newlines) {
     size_t pos = 0;
-    while ((pos = content.find(text, pos)) != string::npos) {
+    while ((pos = content.find(unescaped_text, pos)) != string::npos) {
       match_count++;
       if (match_count > 10) {
           result += "... (Truncated after 10 matches)\n";
@@ -230,7 +245,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
         if (content[i] == '\n') start_line++;
       }
 
-      size_t end_pos = pos + text.length();
+      size_t end_pos = pos + unescaped_text.length();
       for (size_t i = 0; i < end_pos && i < content.length(); i++) {
         if (content[i] == '\n') end_line++;
       }
@@ -270,7 +285,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
 
     int i = 0;
     while (i < (int)lines.size()) {
-      if (lines[i].find(text) != string::npos) {
+      if (lines[i].find(unescaped_text) != string::npos) {
         match_count++;
         if (match_count > 10) {
           result += "... (Truncated after 10 matches)\n";
@@ -462,6 +477,11 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   log_diagnostic("write_file(" + path_str + ")");
 
   string fullpath = _get_fullpath(path);
+
+  // Unescape PARAM_END tokens before writing to disk (LLM provides escaped content)
+  string writable_content = content;
+  unescape_parameter_tags(writable_content);
+
   ofstream out_file(fullpath);
   if (!out_file.is_open()) {
     map<string, string> result;
@@ -471,14 +491,14 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
     return result;
   }
 
-  out_file << content;
+  out_file << writable_content;
   out_file.flush(); // Ensure data is written to disk immediately
   out_file.close();
 
   map<string, string> result;
   result["status"] = "success";
   // Log success without content - use logOnly=true to ensure content is never shown
-  log_diagnostic("Successfully written: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
+  log_diagnostic("Successfully written: " + path + " (size=" + to_string(writable_content.length()) + " bytes)", true /* logOnly */);
   return result;
 }
 
@@ -501,6 +521,12 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   log_diagnostic("OLD_TEXT: \"" + old_str + "\"", true /* logOnly */);
   log_diagnostic("NEW_TEXT: \"" + new_str + "\"", true /* logOnly */);
 
+  // Unescape PARAM_END (LLM provides escaped content per prompt instructions)
+  string unescaped_old = old_str;
+  string unescaped_new = new_str;
+  unescape_parameter_tags(unescaped_old);
+  unescape_parameter_tags(unescaped_new);
+
   string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
@@ -519,7 +545,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   size_t pos = 0;
   int changes_count = 0;
 
-  if (old_str.empty()) {
+  if (unescaped_old.empty()) {
       map<string, string> result;
       result["status"] = "error";
       result["error"] = "OLD_TEXT cannot be empty";
@@ -527,9 +553,9 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
       return result;
   }
 
-  while ((pos = content.find(old_str, pos)) != string::npos) {
-    content.replace(pos, old_str.length(), new_str);
-    pos += new_str.length();
+  while ((pos = content.find(unescaped_old, pos)) != string::npos) {
+    content.replace(pos, unescaped_old.length(), unescaped_new);
+    pos += unescaped_new.length();
     changes_count++;
   }
 

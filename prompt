@@ -109,6 +109,13 @@ MATH FORMATTING RULES:
 - NEVER use bold (**text**), italics (*text*), or any other markdown formatting for mathematical symbols, variables, or Greek letters.
 - Use $$...$$ for displayed equations.
 
+PARAM_END ESCAPING CONTRACT:
+There is a special token called PARAM_END. Its literal form on disk is </parameter>. To prevent XML parsing issues, this token is always escaped when crossing the LLM-system boundary:
+
+1. SYSTEM -> LLM: When you read files, any literal </parameter> tokens in the file CONTENT are sent to you as <\/parameter>. You will NEVER see unescaped </parameter> tokens in tool responses.
+
+2. LLM -> SYSTEM: If you want to send TEXT to search_file, edit_file, or write_file that contains the literal string </parameter>, you MUST write it as <\/parameter> in your tool call. The system will unescape it before using it.
+
 NEVER modify the given file names. Do NOT guess, fabricate, or simulate output. Do NOT claim success unless the tool returned a confirmed result. Always defer to the system's actual behavior -- even if it means failing gracefully. Don't pretend; use the tool. Avoid infinite loops!
 
 FINAL ANSWER AND STOPPING CONDITION:
