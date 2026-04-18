@@ -488,15 +488,13 @@ static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, nullptr);    // Will be set by caller if needed
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
+    curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
 
     // Add common headers to avoid 403 from servers that check for browser-like requests
     struct curl_slist* headers = nullptr;
-    headers = curl_slist_append(headers, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    headers = curl_slist_append(headers, "Accept: */*");
     headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.5");
-    headers = curl_slist_append(headers, "Connection: keep-alive");
-    headers = curl_slist_append(headers, "Upgrade-Insecure-Requests: 1");
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     configure_curl_ssl(curl, url);
@@ -642,12 +640,21 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
             return "[Fetch interrupted by user]";
         }
 
+        // Check HTTP status code BEFORE cleanup
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
         curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
         // Check for network errors first
         if (res != CURLE_OK) {
             return "[Failed to fetch page content: " + string(curl_easy_strerror(res)) + "]";
+        }
+
+        // Check for HTTP error codes (4xx, 5xx)
+        if (http_code >= 400) {
+            return "[Failed to fetch page content: HTTP " + to_string(http_code) + "]";
         }
 
         // Skip non-text, non-PDF content
@@ -657,8 +664,6 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
 
         // Check if we got any content at all (buffer is empty)
         if (state.buffer.empty()) {
-            long http_code = 0;
-            curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
             return "[Failed to fetch page content - empty response]";
         }
     }
