@@ -141,6 +141,11 @@ static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *use
     size_t total_size = size * nmemb;
     size_t max_size = state->is_pdf ? 50000000 : 500000; // 50MB limit for PDFs, 500KB for HTML
 
+    // CRITICAL: If we've already exceeded the limit, skip buffering entirely
+    if (state->exceeded_limit) {
+        return total_size;  // Acknowledge receipt but don't buffer
+    }
+
     if (state->buffer.size() + total_size > max_size) {
         // Buffer would exceed limit - set flag but DON'T return 0
         // Returning 0 causes curl error 23 "Failed writing output"
@@ -796,17 +801,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
           result["error"] = "[PDF fetch interrupted by user]";
           curl_easy_cleanup(curl);
         } else if (res != CURLE_OK || http_code >= 400 || (!state.is_pdf && !is_pdf_by_magic(state.buffer)) || state.exceeded_limit) {
-          // Debug: report specific failure reason
-          cerr << "PDF fetch failed for: " + url << endl;
-          cerr << "  curl_result=" << res << " (" << curl_easy_strerror(res) << ")" << endl;
-          cerr << "  http_code=" << http_code << endl;
-          cerr << "  state.is_pdf=" << (state.is_pdf ? "true" : "false") << endl;
-          cerr << "  buffer_size=" << state.buffer.size() << endl;
-          cerr << "  exceeded_limit=" << (state.exceeded_limit ? "true" : "false") << endl;
-          if (state.buffer.size() >= 100) {
-            cerr << "  buffer_preview=" << state.buffer.substr(0, 100) << endl;
-          }
-          cerr << "  is_pdf_by_magic=" << (is_pdf_by_magic(state.buffer) ? "true" : "false") << endl;
+          cerr << "PDF fetch failed for: " + url + " - HTTP " << http_code << endl;
 
           if (state.exceeded_limit) {
             result["error"] = "[Failed to fetch PDF: file too large (exceeds 50MB)]";
