@@ -78,21 +78,43 @@ struct FetchState {
     string buffer;
     bool is_text;
     bool is_pdf;
-    FetchState() : is_text(true), is_pdf(false) {}
+    bool exceeded_limit;  // Track if content exceeded size limit (without causing curl error 23)
+    FetchState() : is_text(true), is_pdf(false), exceeded_limit(false) {}
 };
+
+// Helper to detect PDF by magic bytes (first 5 bytes should be "%PDF-")
+static bool is_pdf_by_magic(const string& buffer) {
+    if (buffer.size() >= 5 && buffer.substr(0, 5) == "%PDF-") {
+        return true;
+    }
+    return false;
+}
 
 static size_t HeaderCallback(char *buffer, size_t size, size_t nitems, void *userdata) {
     size_t numbytes = size * nitems;
     string header(buffer, numbytes);
     FetchState* state = (FetchState*)userdata;
 
-    // Default: assume text content unless proven otherwise
-    if (!state->is_text && !state->is_pdf) {
-        state->is_text = true;  // Safe default for unknown content types
-    }
-
     string lower_header = header;
     transform(lower_header.begin(), lower_header.end(), lower_header.begin(), [](unsigned char c){ return std::tolower(c); });
+
+    // Detect HTTP status line (e.g., "HTTP/1.1 301" or "HTTP/2 200")
+    // Reset state on redirects to handle intermediate responses correctly
+    if (lower_header.find("http/") == 0) {
+        size_t space_pos = lower_header.find(' ');
+        if (space_pos != string::npos) {
+            string status_code_str = lower_header.substr(space_pos + 1);
+            // Check if this is a redirect response (3xx)
+            if (status_code_str.size() >= 3) {
+                int status_code = atoi(status_code_str.c_str());
+                if (status_code >= 300 && status_code < 400) {
+                    // This is a redirect - reset state for the final response
+                    state->is_text = false;
+                    state->is_pdf = false;
+                }
+            }
+        }
+    }
 
     if (lower_header.find("content-type:") == 0) {
         if (lower_header.find("application/pdf") != string::npos) {
@@ -111,12 +133,20 @@ static size_t HeaderCallback(char *buffer, size_t size, size_t nitems, void *use
 static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *userp) {
     FetchState* state = (FetchState*)userp;
 
-    if (!state->is_text && !state->is_pdf) return 0; // Abort bad binaries
+    // If neither flag is set yet (headers not fully processed), default to text mode
+    if (!state->is_text && !state->is_pdf) {
+        state->is_text = true;  // Default assumption for unknown content
+    }
 
     size_t total_size = size * nmemb;
-    size_t max_size = state->is_pdf ? 10000000 : 500000; // 10MB limit for PDFs, 500KB for HTML
+    size_t max_size = state->is_pdf ? 50000000 : 500000; // 50MB limit for PDFs, 500KB for HTML
 
-    if (state->buffer.size() + total_size > max_size) return 0;
+    if (state->buffer.size() + total_size > max_size) {
+        // Buffer would exceed limit - set flag but DON'T return 0
+        // Returning 0 causes curl error 23 "Failed writing output"
+        state->exceeded_limit = true;
+        return total_size;  // Continue accepting data but stop buffering
+    }
 
     state->buffer.append((char*)contents, total_size);
     return total_size;
@@ -444,7 +474,8 @@ static void configure_curl_ssl(CURL* curl, const string& base_url) {
 }
 
 // --- Helper to configure common curl options for fetch operations ---
-static void configure_curl_fetch(CURL* curl, const string& url) {
+// Returns the header list that caller must free with curl_slist_free_all()
+static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, HeaderCallback);
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, nullptr);  // Will be set by caller if needed
@@ -452,14 +483,24 @@ static void configure_curl_fetch(CURL* curl, const string& url) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, nullptr);    // Will be set by caller if needed
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-    curl_easy_setopt(curl, CURLOPT_USERAGENT, "LocalResearchBot/1.0 (contact@example.com)");
+    curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
+
+    // Add common headers to avoid 403 from servers that check for browser-like requests
+    struct curl_slist* headers = nullptr;
+    headers = curl_slist_append(headers, "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
+    headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.5");
+    headers = curl_slist_append(headers, "Connection: keep-alive");
+    headers = curl_slist_append(headers, "Upgrade-Insecure-Requests: 1");
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
 
     configure_curl_ssl(curl, url);
 
     // Enable interrupt checking during transfer
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
+
+    return headers;  // Caller must free with curl_slist_free_all()
 }
 
 // --- Strip Base64 Images from Text ---
@@ -583,7 +624,7 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
     FetchState state;
 
     if (curl) {
-        configure_curl_fetch(curl, url);
+        struct curl_slist* headers = configure_curl_fetch(curl, url);
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
 
@@ -591,10 +632,12 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
 
         // Check for interrupt after completion
         if (stop_generation) {
+            curl_slist_free_all(headers);
             curl_easy_cleanup(curl);
             return "[Fetch interrupted by user]";
         }
 
+        curl_slist_free_all(headers);
         curl_easy_cleanup(curl);
 
         // Check for network errors first
@@ -738,19 +781,43 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
       FetchState state;
 
       if (curl) {
-        configure_curl_fetch(curl, url);
+        struct curl_slist* headers = configure_curl_fetch(curl, url);
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
 
         CURLcode res = curl_easy_perform(curl);
 
+        // Check HTTP response code
+        long http_code = 0;
+        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
         // Check for interrupt after completion
         if (stop_generation) {
           result["error"] = "[PDF fetch interrupted by user]";
           curl_easy_cleanup(curl);
-        } else if (!state.is_pdf || res != CURLE_OK) {
-          result["error"] = "[Failed to fetch PDF]";
+        } else if (res != CURLE_OK || http_code >= 400 || (!state.is_pdf && !is_pdf_by_magic(state.buffer)) || state.exceeded_limit) {
+          // Debug: report specific failure reason
           cerr << "PDF fetch failed for: " + url << endl;
+          cerr << "  curl_result=" << res << " (" << curl_easy_strerror(res) << ")" << endl;
+          cerr << "  http_code=" << http_code << endl;
+          cerr << "  state.is_pdf=" << (state.is_pdf ? "true" : "false") << endl;
+          cerr << "  buffer_size=" << state.buffer.size() << endl;
+          cerr << "  exceeded_limit=" << (state.exceeded_limit ? "true" : "false") << endl;
+          if (state.buffer.size() >= 100) {
+            cerr << "  buffer_preview=" << state.buffer.substr(0, 100) << endl;
+          }
+          cerr << "  is_pdf_by_magic=" << (is_pdf_by_magic(state.buffer) ? "true" : "false") << endl;
+
+          if (state.exceeded_limit) {
+            result["error"] = "[Failed to fetch PDF: file too large (exceeds 50MB)]";
+          } else if (res != CURLE_OK) {
+            result["error"] = "[Failed to fetch PDF: curl error " + to_string(res) + "]";
+          } else if (http_code >= 400) {
+            result["error"] = "[Failed to fetch PDF: HTTP " + to_string(http_code) + "]";
+          } else {
+            result["error"] = "[Failed to fetch PDF: content not recognized as PDF]";
+          }
+          curl_easy_cleanup(curl);
         } else {
           string pdf_content = process_pdf_with_docling(state.buffer);
           if (pdf_content.find("[Docling Error") != string::npos ||
@@ -761,6 +828,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
           }
         }
 
+        curl_slist_free_all(headers);  // Clean up header list (local to this block)
         curl_easy_cleanup(curl);
       } else {
         result["error"] = "[Curl Init Failed]";
