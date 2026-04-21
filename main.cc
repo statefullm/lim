@@ -969,8 +969,11 @@ int main(int argc, char ** argv) {
     if (user_input == "quit" || user_input == "exit") break;
 
     if (user_input == "clear") {
-        llama_free(ctx);
-        ctx = llama_init_from_model(model, cparams);
+        // Clear the KV cache in-place instead of freeing/recreating the context.
+        // This avoids GPU memory reallocation and fragmentation, giving us true
+        // initial-state performance (tokens/s matches cold start).
+        llama_memory_clear(llama_get_memory(ctx), true);
+
         n_past = 0;
         batch.n_tokens = 0;
         for (size_t i = 0; i < (int)system_tokens.size(); i++) {
