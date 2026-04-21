@@ -1177,8 +1177,23 @@ int main(int argc, char ** argv) {
               break;
           }
 
-          auto_continue = false;
-          break;
+          // --- SPURIOUS EOG WORKAROUND ---
+          // The model may have more tokens already prepared in its batch.
+          // Sleep briefly for GPU to finish, then re-sample from those logits.
+          bool recovered = false;
+          for (int poll_iter = 0; poll_iter < 10; ++poll_iter) {
+            usleep(10000);
+            llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
+            if (!llama_vocab_is_eog(vocab, polled)) {
+              next_token = polled;
+              recovered = true;
+              break;
+            }
+          }
+          if (!recovered) {
+            auto_continue = false;
+            break;
+          }
       }
 
       string token_str = common_token_to_piece(ctx, next_token).c_str();
