@@ -19,12 +19,15 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 
     string val = tool_call.substr(start, end - start);
 
-    // Trim leading and trailing whitespace/newlines injected by the model
-    size_t first = val.find_first_not_of(" \t\n\r");
-    if (first == string::npos) return "";
-    size_t last = val.find_last_not_of(" \t\n\r");
+    // Strip only the structural newline the LLM injects immediately after/before tags.
+    // Do NOT trim horizontal whitespace (spaces/tabs) -- those are significant for
+    // exact-match editing (edit_file old/new parameters must match file content exactly).
+    if (!val.empty() && val.front() == '\n') val.erase(val.begin());
+    if (!val.empty() && val.back() == '\n') val.pop_back();
+    // Also strip a trailing \r if present (Windows line endings)
+    if (!val.empty() && val.back() == '\r') val.pop_back();
 
-    return val.substr(first, last - first + 1);
+    return val;
 }
 
 // Linear-time array parser for XML schema (Newline/Comma separated)
