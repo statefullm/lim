@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdarg>
+#include <cstdio>
 #include <chrono>
 #include <signal.h>
 #include <cctype>
@@ -1163,42 +1164,60 @@ int main(int argc, char ** argv) {
 
           // --- SPURIOUS EOG POLLING WORKAROUND ---
           // The model may have more tokens already prepared in its batch.
-          // First try: poll up to 100ms for a non-EOG token. This handles spurious EOGs
-          // that occur before tool calls, inside tool call streams, or elsewhere.
+          // Poll up to LLLM_EOG_POLL_MS (default 200ms) for a non-EOG token.
+          // Poll interval is configurable via LLLM_EOG_POLL_INTERVAL_MS (default 10ms).
+          // This handles spurious EOGs before tool calls, inside tool call streams, etc.
+          // We use 200ms because in rare cases the model needs >200ms to produce the
+          // next non-EOG token after flushing the sampler on a spurious EOG.
+          //
+          // Each poll iteration calls llama_sampler_sample(), which advances the sampler's
+          // internal state. This is safe because discarded EOG tokens would have been lost
+          // anyway — we only consume the first non-EOG as the real next token.
 
-          // --- DIAGNOSTIC COUNTER (temporary) ---
+          // --- DIAGNOSTIC COUNTER ---
           static int eog_event_count = 0;
           static int total_poll_iters = 0;
           static int max_poll_iters = 0;
           static int last_printed = 0;
           int poll_iter_used = 0;
 
+          // Configurable timeout via LLLM_EOG_POLL_MS env var (default: 200ms)
+          const char* eog_env = getenv("LLLM_EOG_POLL_MS");
+          int max_poll_ms = (eog_env != nullptr && strlen(eog_env) > 0) ? atoi(eog_env) : 200;
+
+          // Configurable poll interval via LLLM_EOG_POLL_INTERVAL_MS env var (default: 10ms)
+          const char* eog_interval_env = getenv("LLLM_EOG_POLL_INTERVAL_MS");
+          int poll_interval_ms = (eog_interval_env != nullptr && strlen(eog_interval_env) > 0) ? atoi(eog_interval_env) : 10;
+          poll_interval_ms = std::max(1, poll_interval_ms);  // Guard against zero/negative to prevent division by zero
+          int poll_interval_us = poll_interval_ms * 1000;
+
+          int max_iterations = std::max(1, (max_poll_ms * 1000) / poll_interval_us);
+
           bool recovered = false;
-          if (!inside_unclosed_tool) {
-              // For normal (non-tool-call) EOGs, try polling first
-              for (int poll_iter = 0; poll_iter < 10; ++poll_iter) {
-                usleep(10000);
-                llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
-                if (!llama_vocab_is_eog(vocab, polled)) {
+
+          // Non-blocking first check: try sampling immediately before sleeping.
+          // If the model already has a token ready, we avoid unnecessary latency.
+          {
+              llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
+              if (!llama_vocab_is_eog(vocab, polled)) {
                   next_token = polled;
                   recovered = true;
-                  poll_iter_used = poll_iter + 1;
-                  break;
-                }
+                  poll_iter_used = 1;
               }
-          } else {
-              // Inside an unclosed tool call: also try polling first before forcing recovery.
-              // This is critical - the model often emits a spurious EOG right after starting
-              // a <\function= tag, and we need to wait for the real continuation tokens.
-              for (int poll_iter = 0; poll_iter < 10; ++poll_iter) {
-                usleep(10000);
-                llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
-                if (!llama_vocab_is_eog(vocab, polled)) {
-                  next_token = polled;
-                  recovered = true;
-                  poll_iter_used = poll_iter + 1;
-                  break;
-                }
+          }
+
+          // If first check was EOG, enter the polling loop with sleep between samples.
+          if (!recovered) {
+              for (int poll_iter = 0; poll_iter < max_iterations; ++poll_iter) {
+                  if (stop_generation) break;  // Respect user interrupt immediately
+                  usleep(poll_interval_us);
+                  llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
+                  if (!llama_vocab_is_eog(vocab, polled)) {
+                      next_token = polled;
+                      recovered = true;
+                      poll_iter_used = poll_iter + 2; // account for initial non-blocking check
+                      break;
+                  }
               }
           }
 
@@ -1208,9 +1227,11 @@ int main(int argc, char ** argv) {
               max_poll_iters = std::max(max_poll_iters, poll_iter_used);
               if (eog_event_count - last_printed >= 10) {
                   double avg = (double)total_poll_iters / eog_event_count;
+                  char avg_buf[16];
+                  snprintf(avg_buf, sizeof(avg_buf), "%.1f", avg);
                   message("\033[90m[EOG diagnostic: " + std::to_string(eog_event_count) + " spurious EOGs handled | "
-                      "avg poll iterations: " + std::to_string((int)(avg * 10.0) / 10.0) + "/"
-                      "max: " + std::to_string(max_poll_iters) + "/10]\033[0m\n");
+                      "avg poll iterations: " + string(avg_buf) + "/"
+                      "max: " + std::to_string(max_poll_iters) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
                   cout.flush();
                   last_printed = eog_event_count;
               }
@@ -1238,11 +1259,11 @@ int main(int argc, char ** argv) {
               tool_start = active_ts;
               tool_end = generated_text.find(FUNC_END, active_ts);
               trigger_tool_execution = true;
-              break;
+          } else {
+              // Genuine end of turn (no more tokens and not inside a tool call)
+              auto_continue = false;
           }
-
-          // Genuine end of turn (no more tokens and not inside a tool call)
-          auto_continue = false;
+          // All EOG paths skip the token append below by breaking out of the inner loop
           break;
       }
 
