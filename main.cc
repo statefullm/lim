@@ -1165,6 +1165,14 @@ int main(int argc, char ** argv) {
           // The model may have more tokens already prepared in its batch.
           // First try: poll up to 100ms for a non-EOG token. This handles spurious EOGs
           // that occur before tool calls, inside tool call streams, or elsewhere.
+
+          // --- DIAGNOSTIC COUNTER (temporary) ---
+          static int eog_event_count = 0;
+          static int total_poll_iters = 0;
+          static int max_poll_iters = 0;
+          static int last_printed = 0;
+          int poll_iter_used = 0;
+
           bool recovered = false;
           if (!inside_unclosed_tool) {
               // For normal (non-tool-call) EOGs, try polling first
@@ -1174,6 +1182,7 @@ int main(int argc, char ** argv) {
                 if (!llama_vocab_is_eog(vocab, polled)) {
                   next_token = polled;
                   recovered = true;
+                  poll_iter_used = poll_iter + 1;
                   break;
                 }
               }
@@ -1187,12 +1196,24 @@ int main(int argc, char ** argv) {
                 if (!llama_vocab_is_eog(vocab, polled)) {
                   next_token = polled;
                   recovered = true;
+                  poll_iter_used = poll_iter + 1;
                   break;
                 }
               }
           }
 
           if (recovered) {
+              eog_event_count++;
+              total_poll_iters += poll_iter_used;
+              max_poll_iters = std::max(max_poll_iters, poll_iter_used);
+              if (eog_event_count - last_printed >= 10) {
+                  double avg = (double)total_poll_iters / eog_event_count;
+                  message("\033[90m[EOG diagnostic: " + std::to_string(eog_event_count) + " spurious EOGs handled | "
+                      "avg poll iterations: " + std::to_string((int)(avg * 10.0) / 10.0) + "/"
+                      "max: " + std::to_string(max_poll_iters) + "/10]\033[0m\n");
+                  cout.flush();
+                  last_printed = eog_event_count;
+              }
               // Successfully waited for more tokens - continue generating
               continue;
           }
