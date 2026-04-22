@@ -1154,13 +1154,53 @@ int main(int argc, char ** argv) {
 
       llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
 
-      // --- EARLY EOG RECOVERY ---
+      // --- EARLY EOG RECOVERY / SPURIOUS EOG WORKAROUND ---
       if (llama_vocab_is_eog(vocab, next_token)) {
           size_t active_ts = generated_text.rfind(FUNC_START);
           size_t active_te = generated_text.rfind(FUNC_END);
 
-          if (active_ts != string::npos && (active_te == string::npos || active_ts > active_te)) {
-              message("\033[33m[System: Premature End-Of-Turn detected. Auto-recovering tags...]\033[0m\n");
+          bool inside_unclosed_tool = (active_ts != string::npos && (active_te == string::npos || active_ts > active_te));
+
+          // --- SPURIOUS EOG POLLING WORKAROUND ---
+          // The model may have more tokens already prepared in its batch.
+          // First try: poll up to 100ms for a non-EOG token. This handles spurious EOGs
+          // that occur before tool calls, inside tool call streams, or elsewhere.
+          bool recovered = false;
+          if (!inside_unclosed_tool) {
+              // For normal (non-tool-call) EOGs, try polling first
+              for (int poll_iter = 0; poll_iter < 10; ++poll_iter) {
+                usleep(10000);
+                llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
+                if (!llama_vocab_is_eog(vocab, polled)) {
+                  next_token = polled;
+                  recovered = true;
+                  break;
+                }
+              }
+          } else {
+              // Inside an unclosed tool call: also try polling first before forcing recovery.
+              // This is critical - the model often emits a spurious EOG right after starting
+              // a <\function= tag, and we need to wait for the real continuation tokens.
+              for (int poll_iter = 0; poll_iter < 10; ++poll_iter) {
+                usleep(10000);
+                llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
+                if (!llama_vocab_is_eog(vocab, polled)) {
+                  next_token = polled;
+                  recovered = true;
+                  break;
+                }
+              }
+          }
+
+          if (recovered) {
+              // Successfully waited for more tokens - continue generating
+              continue;
+          }
+
+          // Polling exhausted: no more tokens coming. If inside an unclosed tool call,
+          // force recovery with a premature closure so the partial tool is still executed.
+          if (inside_unclosed_tool) {
+              message("\033[33m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
               cout.flush();
 
               size_t trailing_slash = generated_text.rfind("</");
@@ -1180,23 +1220,9 @@ int main(int argc, char ** argv) {
               break;
           }
 
-          // --- SPURIOUS EOG WORKAROUND ---
-          // The model may have more tokens already prepared in its batch.
-          // Sleep briefly for GPU to finish, then re-sample from those logits.
-          bool recovered = false;
-          for (int poll_iter = 0; poll_iter < 10; ++poll_iter) {
-            usleep(10000);
-            llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
-            if (!llama_vocab_is_eog(vocab, polled)) {
-              next_token = polled;
-              recovered = true;
-              break;
-            }
-          }
-          if (!recovered) {
-            auto_continue = false;
-            break;
-          }
+          // Genuine end of turn (no more tokens and not inside a tool call)
+          auto_continue = false;
+          break;
       }
 
       string token_str = common_token_to_piece(ctx, next_token).c_str();
