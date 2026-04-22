@@ -837,7 +837,7 @@ int main(int argc, char ** argv) {
 
   auto cparams = llama_context_default_params();
   cparams.n_ctx     = 262144;
-  cparams.n_batch   = 4096;
+  cparams.n_batch   = 2048;
   cparams.n_ubatch  = 512;
   cparams.n_threads = 8;
   cparams.n_threads_batch = 8;
