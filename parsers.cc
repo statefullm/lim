@@ -28,6 +28,9 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 }
 
 // Linear-time array parser for XML schema (Newline/Comma separated)
+// Handles: newline-separated items, comma-separated items, and square-bracket lists.
+// Brackets can wrap a single line or span multiple lines. Delimiters are newlines
+// and commas. Leading/trailing whitespace is trimmed from each item.
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
     string search_key = string(PARAM_START) + arg_name + ">";
@@ -46,7 +49,17 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
         val = val.substr(0, bleed_pos);
     }
 
-    // Split the parameter block by newlines
+    // --- Strip outer square brackets if present (handles multi-line bracket lists) ---
+    // Find the first '[' and last ']' in the entire block. If they form a valid pair
+    // wrapping content, strip them so we can split by newline/commas uniformly.
+    size_t first_bracket = val.find('[');
+    size_t last_bracket  = val.rfind(']');
+    if (first_bracket != string::npos && last_bracket != string::npos && last_bracket > first_bracket) {
+        // Strip content before the first '[' and after the last ']'
+        val = val.substr(first_bracket + 1, last_bracket - first_bracket - 1);
+    }
+
+    // Split the parameter block by newlines. Each non-empty line is a candidate item.
     stringstream ss(val);
     string line;
     while (getline(ss, line)) {
@@ -56,10 +69,9 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
         while (getline(comma_ss, item, ',')) {
             // Trim leading and trailing whitespace/newlines
             size_t first = item.find_first_not_of(" \t\r\n");
-            if (first != string::npos) {
-                size_t last = item.find_last_not_of(" \t\r\n");
-                result.push_back(item.substr(first, last - first + 1));
-            }
+            if (first == string::npos) continue;
+            size_t last = item.find_last_not_of(" \t\r\n");
+            result.push_back(item.substr(first, last - first + 1));
         }
     }
     return result;
