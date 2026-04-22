@@ -1119,7 +1119,7 @@ int main(int argc, char ** argv) {
     size_t tool_end = string::npos;
     bool trigger_tool_execution = false;
     size_t func_search_pos = 0;
-    bool had_eog_recovery = false;
+    bool had_eog_recovery = false;  // If true, suppress speed diagnostic (elapsed includes wasted resampling)
 
     // Track thinking blocks (similar to tool calls)
     bool in_thinking_block = false;
@@ -1163,8 +1163,8 @@ int main(int argc, char ** argv) {
       // draw from the same logits. If we get a non-EOG token on a subsequent draw, the
       // original EOG was spurious and we continue generating seamlessly.
       //
-      // Poll every 10ms for up to 30 iterations (300ms worst case). In practice most
-      // recoveries happen on the first non-blocking check with zero latency cost.
+      // Resample up to 10 times (configurable via LLLM_EOG_RESAMPLE_MAX). In practice most
+      // recoveries succeed on the first non-blocking check with zero latency cost.
       if (llama_vocab_is_eog(vocab, next_token)) {
           size_t active_ts = generated_text.rfind(FUNC_START);
           size_t active_te = generated_text.rfind(FUNC_END);
@@ -1178,17 +1178,14 @@ int main(int argc, char ** argv) {
           static int last_printed = 0;
           int poll_iter_used = 0;
 
-          // Configurable timeout via LLLM_EOG_POLL_MS env var (default: 300ms = 30 polls * 10ms)
-          const char* eog_env = getenv("LLLM_EOG_POLL_MS");
-          int max_poll_ms = (eog_env != nullptr && strlen(eog_env) > 0) ? atoi(eog_env) : 300;
+                    // No actual sleep between resamples -- sampling from pre-computed logits is CPU-only.
+          // LLLM_EOG_RESAMPLE_MAX overrides the default (see below).
+          static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 50;
+          static constexpr int EOG_RESAMPLE_HARD_CAP    = 200;
 
-          // Configurable poll interval via LLLM_EOG_POLL_INTERVAL_MS env var (default: 10ms)
-          const char* eog_interval_env = getenv("LLLM_EOG_POLL_INTERVAL_MS");
-          int poll_interval_ms = (eog_interval_env != nullptr && strlen(eog_interval_env) > 0) ? atoi(eog_interval_env) : 10;
-          poll_interval_ms = std::max(1, poll_interval_ms);
-          int poll_interval_us = poll_interval_ms * 1000;
-
-          int max_iterations = std::max(1, (max_poll_ms * 1000) / poll_interval_us);
+          const char* eog_env = getenv("LLLM_EOG_RESAMPLE_MAX");
+          int max_iterations = (eog_env != nullptr && strlen(eog_env) > 0) ? atoi(eog_env) : DEFAULT_EOG_RESAMPLE_MAX;
+          max_iterations = std::max(1, std::min(max_iterations, EOG_RESAMPLE_HARD_CAP));
 
           bool recovered = false;
 
@@ -1239,37 +1236,56 @@ int main(int argc, char ** argv) {
                   cout.flush();
                   last_printed = eog_event_count;
               }
-              // Successfully recovered -- continue generating with the real token
+              // Successfully recovered -- fall through to process the real token normally.
               had_eog_recovery = true;
-              continue;
           }
 
           // Polling exhausted. If inside an unclosed tool call, force recovery with a
           // premature closure so the partial tool is still executed.
-          if (inside_unclosed_tool) {
-              message("\033[33m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
-              cout.flush();
+          if (!recovered) {
+              if (inside_unclosed_tool) {
+                  message("\033[33m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
+                  cout.flush();
 
-              size_t trailing_slash = generated_text.rfind("</");
-              if (trailing_slash != string::npos && trailing_slash > active_ts) {
-                  size_t drop_len = generated_text.length() - trailing_slash;
-                  generated_text.erase(trailing_slash);
-                  full_response.erase(full_response.length() - drop_len);
+                  size_t trailing_slash = generated_text.rfind("</");
+                  if (trailing_slash != string::npos && trailing_slash > active_ts) {
+                      size_t drop_len = generated_text.length() - trailing_slash;
+                      generated_text.erase(trailing_slash);
+                      full_response.erase(full_response.length() - drop_len);
+                  }
+
+                  string forced_close = "\n" + string(TURN_END) + "\n" + string(FUNC_END) + "\n";
+                  generated_text += forced_close;
+                  full_response += forced_close;
+
+                  tool_start = active_ts;
+                  tool_end = generated_text.find(FUNC_END, active_ts);
+                  trigger_tool_execution = true;
+              } else if (think_start != string::npos && think_end == string::npos) {
+                  // Polling exhausted inside an unclosed thinking block. Force close it so
+                  // the partial reasoning text is preserved and generation can continue.
+                  message("\033[33m[System: Premature End-Of-Turn detected inside thinking block. Auto-recovering...]\033[0m\n");
+                  cout.flush();
+
+                  size_t trailing_slash = generated_text.rfind("</");
+                  if (trailing_slash != string::npos && trailing_slash > think_start) {
+                      size_t drop_len = generated_text.length() - trailing_slash;
+                      generated_text.erase(trailing_slash);
+                      full_response.erase(full_response.length() - drop_len);
+                  }
+
+                  string forced_close = string(Tokens::THINK_END) + "\n";
+                  generated_text += forced_close;
+                  full_response += forced_close;
+                  think_end = generated_text.find(Tokens::THINK_END, think_start);
+              } else {
+                  // Genuine end of turn (no more tokens and not inside a tool call or think block)
+                  auto_continue = false;
               }
-
-              string forced_close = "\n" + string(PARAM_END) + "\n" + string(FUNC_END) + "\n";
-              generated_text += forced_close;
-              full_response += forced_close;
-
-              tool_start = active_ts;
-              tool_end = generated_text.find(FUNC_END, active_ts);
-              trigger_tool_execution = true;
-          } else {
-              // Genuine end of turn (no more tokens and not inside a tool call)
-              auto_continue = false;
+              // All non-recovered EOG paths break out of the inner loop
+              break;
           }
-          // All EOG paths skip the token append below by breaking out of the inner loop
-          break;
+          // Recovered: fall through to process next_token as a normal token
       }
 
       string token_str = common_token_to_piece(ctx, next_token).c_str();
@@ -1312,7 +1328,7 @@ int main(int argc, char ** argv) {
               full_response.erase(full_response.length() - drop_len);
           }
 
-          string forced_close = "\n" + string(PARAM_END) + "\n" + string(FUNC_END) + "\n";
+          string forced_close = "\n" + string(TURN_END) + "\n" + string(FUNC_END) + "\n";
           generated_text += forced_close;
           full_response += forced_close;
 
