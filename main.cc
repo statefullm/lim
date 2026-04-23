@@ -895,6 +895,10 @@ int main(int argc, char ** argv) {
   if (!handle_llama_decode_error(ctx, batch)) return 1;
 
   bool auto_continue = false;
+  bool first_turn_done = false;  // Suppress Speed diagnostic on the very first turn only
+  int last_t_count = 0;          // Cached stats printed right before >>>
+  double last_elapsed = 0.0;
+  int last_n_past = 0;
   const char* history_file = ".lllm_history";
   load_history_safe(history_file);
 
@@ -910,6 +914,12 @@ int main(int argc, char ** argv) {
     g_was_interrupted = 0;  // Reset interrupt flag for this iteration
 
     if (!auto_continue) {
+      // Print Speed from previous generation right before >>> (skip first turn)
+      if (first_turn_done && last_t_count > 0) {
+          double context_percent = (last_n_past / (double)cparams.n_ctx) * 100.0;
+          cout << "\033[34m[Speed: " << fixed << setprecision(2) << (last_t_count / last_elapsed) << " t/s | Context: " << last_n_past << "/" << cparams.n_ctx << " (" << setprecision(1) << context_percent << "%) | Elapsed: " << last_elapsed << "s]\033[0m" << endl;
+      }
+
       while (true) {
         const char* main_p = "\001\033[1;34m\002>>> \001\033[34m\002";
         const char* cont_p = "\001\033[1;34m\002... \001\033[34m\002";
@@ -1261,25 +1271,8 @@ int main(int argc, char ** argv) {
                   tool_start = active_ts;
                   tool_end = generated_text.find(FUNC_END, active_ts);
                   trigger_tool_execution = true;
-              } else if (think_start != string::npos && think_end == string::npos) {
-                  // Polling exhausted inside an unclosed thinking block. Force close it so
-                  // the partial reasoning text is preserved and generation can continue.
-                  message("\033[33m[System: Premature End-Of-Turn detected inside thinking block. Auto-recovering...]\033[0m\n");
-                  cout.flush();
-
-                  size_t trailing_slash = generated_text.rfind("</");
-                  if (trailing_slash != string::npos && trailing_slash > think_start) {
-                      size_t drop_len = generated_text.length() - trailing_slash;
-                      generated_text.erase(trailing_slash);
-                      full_response.erase(full_response.length() - drop_len);
-                  }
-
-                  string forced_close = string(Tokens::THINK_END) + "\n";
-                  generated_text += forced_close;
-                  full_response += forced_close;
-                  think_end = generated_text.find(Tokens::THINK_END, think_start);
               } else {
-                  // Genuine end of turn (no more tokens and not inside a tool call or think block)
+                  // Genuine end of turn (no more tokens and not inside a tool call)
                   auto_continue = false;
               }
               // All non-recovered EOG paths break out of the inner loop
@@ -1532,10 +1525,11 @@ int main(int argc, char ** argv) {
         cout << "\n";
     }
 
-    if (t_count > 0 && !had_eog_recovery) {
-        double context_percent = (n_past / (double)cparams.n_ctx) * 100.0;
-        cout << "\033[34m[Speed: " << fixed << setprecision(2) << (t_count / elapsed) << " t/s | Context: " << n_past << "/" << cparams.n_ctx << " (" << setprecision(1) << context_percent << "%) | Elapsed: " << elapsed << "s]\033[0m" << endl;
-    }
+    // Save stats for Speed diagnostic before next prompt
+    last_t_count = t_count;
+    last_elapsed = elapsed;
+    last_n_past = n_past;
+    first_turn_done = true;
 
     // Save state for next iteration
     prev_stdout_ended_with_newline = true;
