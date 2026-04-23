@@ -1135,6 +1135,8 @@ int main(int argc, char ** argv) {
     bool in_thinking_block = false;
     size_t think_start = string::npos;
     size_t think_end = string::npos;
+    string think_buffer;        // Buffer for initial whitespace when LLLM_OUTPUT=2
+    bool think_buffering = true;  // True while buffering (haven't found non-whitespace yet) in mode 2
 
     // Track if stdout ended with newline from previous iteration's tool output
     static bool prev_stdout_ended_with_newline = false;
@@ -1419,9 +1421,16 @@ int main(int argc, char ** argv) {
           // CRITICAL: If we just exited a thinking block (think_end found), handle THINK_END
           if (think_start != string::npos && think_end != string::npos) {
               size_t think_block_end = think_end + string(Tokens::THINK_END).length();
+
+              // In mode 2, clear the buffer (may contain trailing whitespace only if block was empty)
+              int mode = get_output_mode();
+              if (mode == 2) {
+                  think_buffer.clear();
+                  think_buffering = true;
+              }
+
               if (print_pos < think_block_end) {
                   // In mode 1 (stdout only, no browser), print the closing tag
-                  int mode = get_output_mode();
                   if (mode == 1 && print_pos <= think_end) {
                       string close_tag = generated_text.substr(print_pos, think_block_end - print_pos);
                       console_think(close_tag.c_str());
@@ -1468,24 +1477,58 @@ int main(int argc, char ** argv) {
           if (safe_len > print_pos) {
               string think_output = generated_text.substr(print_pos, safe_len - print_pos);
 
-              // In browser-only mode (LLLM_OUTPUT=2), strip both <think> and </think> tags
-              // In combined mode (LLLM_OUTPUT=3), keep the tags visible
+              // In browser-only mode (LLLM_OUTPUT=2), buffer until first non-whitespace to suppress empty blocks
               int mode = get_output_mode();
-              if (mode == 2) {
-                  // Strip opening tag from output
+              if (mode == 2 && think_buffering) {
+                  // Strip tags before checking/accumulating
                   size_t open_tag_pos = think_output.find(tstart);
                   if (open_tag_pos != string::npos) {
                       think_output.erase(open_tag_pos, tstart.length());
                   }
-                  // Strip closing tag from output
                   size_t close_tag_pos = think_output.find(tend);
                   if (close_tag_pos != string::npos) {
                       think_output.erase(close_tag_pos, tend.length());
                   }
-              }
 
-              console_think(think_output.c_str());
-              consoleThinkFlush();
+                  // Check for first non-whitespace character
+                  bool found_content = false;
+                  size_t content_start = 0;
+                  for (size_t i = 0; i < think_output.size(); ++i) {
+                      if (!isspace(think_output[i])) {
+                          found_content = true;
+                          content_start = i;
+                          break;
+                      }
+                  }
+
+                  if (found_content) {
+                      // Found non-whitespace: flush buffer, print from content_start onward, switch to streaming
+                      think_buffer.clear();
+                      think_output = think_output.substr(content_start);
+                      console_think(think_output.c_str());
+                      consoleThinkFlush();
+                      think_buffering = false;  // Switch to direct streaming
+                  } else {
+                      // Still all whitespace - buffer it (will be discarded if block ends empty)
+                      think_buffer += think_output;
+                  }
+              } else if (mode == 2 && !think_buffering) {
+                  // Already found content - stream directly, still stripping tags
+                  size_t open_tag_pos = think_output.find(tstart);
+                  if (open_tag_pos != string::npos) {
+                      think_output.erase(open_tag_pos, tstart.length());
+                  }
+                  size_t close_tag_pos = think_output.find(tend);
+                  if (close_tag_pos != string::npos) {
+                      think_output.erase(close_tag_pos, tend.length());
+                  }
+                  console_think(think_output.c_str());
+                  consoleThinkFlush();
+              } else {
+                  // Not mode 2 - print immediately as before
+                  console_think(think_output.c_str());
+                  consoleThinkFlush();
+              }
               // Do NOT send thinking blocks to browser - stdout only
               print_pos = safe_len;
           }
@@ -1688,6 +1731,8 @@ int main(int argc, char ** argv) {
             tool_start = string::npos; tool_end = string::npos;
             think_start = string::npos; think_end = string::npos;
             in_tool_call_stream = false; in_thinking_block = false;
+            think_buffer.clear();
+            think_buffering = true;
 
             string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
             string tool_msg = tool_result_section + TURN_START + "assistant\n";
