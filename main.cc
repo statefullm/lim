@@ -1362,7 +1362,7 @@ int main(int argc, char ** argv) {
               if (prev_pos != string::npos) intra_loop = true;
           }
 
-          if (intra_loop) {
+          if (intra_loop && !in_thinking_block) {
               intra_loop_strikes++;
               if (intra_loop_strikes >= 5) {
                   message("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m\n");
