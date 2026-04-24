@@ -1706,10 +1706,10 @@ int main(int argc, char ** argv) {
             bool has_match_count = (display_result.find("Match count:") != string::npos);
 
             if (is_debug) {
-              // Truncate display_result to first 500 chars for debug output
+              // Truncate display_result to last 500 chars for debug output (final lines are more useful)
               string truncated_display = display_result;
               if (truncated_display.length() > 500) {
-                  truncated_display = truncated_display.substr(0, 497) + "...";
+                  truncated_display = "..." + truncated_display.substr(truncated_display.length() - 497);
               }
 
               console("\n\033[92m[Tool Result]\033[0m\n");

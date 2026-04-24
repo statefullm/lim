@@ -74,6 +74,16 @@ static void escape_parameter_tags(std::string& str) {
     }
 }
 
+// --- Helper to strip embedded code-fence sequences from shell output ---
+static void strip_code_fences(std::string& str) {
+    std::string tag;
+    for (int i = 0; i < 3; i++) tag += '`';
+    size_t pos = 0;
+    while ((pos = str.find(tag, pos)) != std::string::npos) {
+        str.erase(pos, tag.length());
+    }
+}
+
 // --- Helper to unescape tags from LLM input before writing to disk ---
 static void unescape_parameter_tags(std::string& str) {
     std::string from = PARAM_END_ESC;
@@ -154,8 +164,10 @@ string FileSystemTools::exec_shell(const string& command) {
   }
 
   // Only output a truncated version to stdout (terminal), not to log file
-  string result_preview = result.length() > 500 ? result.substr(0, 497) + "..." : result;
+  // Show the final lines instead of initial lines for better diagnostic value
+  string result_preview = result.length() > 500 ? "..." + result.substr(result.length() - 497) : result;
   if (!is_debug && !result_preview.empty()) {
+    strip_code_fences(result_preview);
     log_diagnostic("```\n" + result_preview + "```");
   }
 
@@ -171,8 +183,12 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   // Build human-readable function call syntax (truncate for display)
   string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
-  // Output function call to both stdout and logfile
-  log_diagnostic("search_file(" + path_str + ")");
+  // Build the function call label (logged at end with match count for text searches)
+  string search_label = "search_file(" + path_str;
+  if (begin_line > 0 && end_line >= begin_line) {
+    search_label += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
+  }
+  search_label += ")";
 
   // If LLLM_DEBUG=1, also output full text (truncated in stdout only)
   if (is_debug) {
@@ -221,6 +237,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
     }
     result += "```\n";
 
+    log_diagnostic(search_label, false /* logOnly */);
     escape_parameter_tags(result);
     return result;
   }
@@ -305,12 +322,12 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   }
 
   if (match_count == 0) {
-    log_diagnostic("No occurrences found for text", true /* logOnly */);
+    log_diagnostic(search_label + ": No occurrences found", false /* logOnly */);
     return "No occurrences found for text.";
   }
 
-  // Log match count only to logfile
-  log_diagnostic("Found " + to_string(match_count) + " match(es)", true /* logOnly */);
+  // Log function call with match count on one line
+  log_diagnostic(search_label + ": " + to_string(match_count) + " match(es)", false /* logOnly */);
 
   escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
@@ -506,8 +523,8 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   // Build human-readable function call syntax (truncate for display)
   string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
-  // Output function call to both stdout and logfile
-  log_diagnostic("edit_file(" + path_str + ")");
+  // Build the function call label (logged at end with change count)
+  string edit_label = "edit_file(" + path_str + ")";
 
   // If LLLM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
   if (is_debug) {
@@ -591,6 +608,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   map<string, string> result;
   result["status"] = "updated";
   result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified).";
-  log_diagnostic("Successfully edited: " + path + " (" + to_string(changes_count) + " changes)", true /* logOnly */);
+  log_diagnostic(edit_label + ": " + to_string(changes_count) + " change(s)", false /* logOnly */);
   return result;
 }
