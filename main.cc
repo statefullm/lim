@@ -250,8 +250,6 @@ static bool prompt_for_browser_connection() {
         return false;
     }
 
-    // Give a few seconds for user to load the browser, then check again
-    message("Checking connection status...\n");
     int retries = 5;
     while (retries > 0) {
         if (check_browser_connected()) {
@@ -415,23 +413,36 @@ ModelType detect_model_type(const llama_vocab * vocab) {
     return ModelType::CHATML;
 }
 
+// Forward declarations for diagnostic helpers (defined later with chat_log)
+static void diag(const string& msg, const char* color);
+static void diag_speed(const string& msg);
+
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
     int ret = llama_decode(ctx, batch);
     if (ret < -1) {
-        message("\n\033[31m[" + std::string(error_msg) + "]\033[0m\n");
-        cout.flush();
+        diag(error_msg, "\033[31m");
         return false;
     } else if (ret == -1) {
-        message("\n\033[31m[Invalid input batch: " + std::string(error_msg) + "]\033[0m\n");
-        cout.flush();
+        diag("Invalid input batch: " + std::string(error_msg), "\033[31m");
         return false;
     } else if (ret == 1 || ret == 2) {
-        message("\n\033[31m[" + std::string(ret == 1 ? error_msg : "Aborted") + "]\033[0m\n");
-        cout.flush();
+        diag(ret == 1 ? error_msg : "Aborted", "\033[31m");
         if (should_break) return false;
         return true;
     }
     return true;
+}
+
+// Sync n_past with the actual KV cache position after a decode.
+// Per llama.cpp API: on errors/aborts, partially-decoded ubatches may remain
+// in the cache, and on ret==1 the cache is fully restored.  Blindly incrementing
+// n_past before llama_decode() therefore drifts out of sync.  This helper
+// queries the real cache position and corrects n_past accordingly.
+static void sync_n_past(llama_context *ctx, int &n_past) {
+    llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+    if (max_pos >= 0) {
+        n_past = (int)(max_pos + 1);  // next position to write
+    }
 }
 
 // --- Global Interrupt Flags ---
@@ -475,6 +486,23 @@ void dummy_log_callback(enum ggml_log_level level, const char * text, void * use
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
     if (first_prompt_displayed) return;
     cerr << text;
+}
+
+// --- Diagnostic Logging Helper Definitions ---
+static void diag(const string& msg, const char* color) {
+    cout << color << "[" << msg << "]\033[0m" << endl;
+    if (chat_log.is_open()) {
+        chat_log << "[" << msg << "]" << "\n\n";
+        chat_log.flush();
+    }
+}
+
+static void diag_speed(const string& msg) {
+    cout << "\033[0m[" << msg << "]\033[0m" << endl;
+    if (chat_log.is_open()) {
+        chat_log << "[" << msg << "]" << "\n\n";
+        chat_log.flush();
+    }
 }
 
 // --- Safe Multiline History Handlers ---
@@ -917,7 +945,11 @@ int main(int argc, char ** argv) {
       // Print Speed from previous generation right before >>> (skip first turn)
       if (first_turn_done && last_t_count > 0) {
           double context_percent = (last_n_past / (double)cparams.n_ctx) * 100.0;
-          cout << "\033[34m[Speed: " << fixed << setprecision(2) << (last_t_count / last_elapsed) << " t/s | Context: " << last_n_past << "/" << cparams.n_ctx << " (" << setprecision(1) << context_percent << "%) | Elapsed: " << last_elapsed << "s]\033[0m" << endl;
+          ostringstream oss;
+          oss << fixed << setprecision(1);
+          oss << "Speed: " << (last_t_count / last_elapsed) << " t/s | Context: " << last_n_past << "/" << cparams.n_ctx << " (" << context_percent << "%) | Elapsed: " << last_elapsed << "s";
+          string speed_line = oss.str();
+          diag_speed(speed_line);
       }
 
       while (true) {
@@ -990,11 +1022,11 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < (int)system_tokens.size(); i++) {
             common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
             if (batch.n_tokens == (int)cparams.n_batch && i != (int)system_tokens.size() - 1) {
-                if (!handle_llama_decode_error(ctx, batch)) break;
+                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); break; }
                 batch.n_tokens = 0;
             }
         }
-        if (batch.n_tokens > 0) handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false);
+        if (batch.n_tokens > 0) { handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false); sync_n_past(ctx, n_past); }
 
         auto_continue = false;
         clean_files.clear();
@@ -1007,8 +1039,7 @@ int main(int argc, char ** argv) {
         g_browser_warning_suppressed = false;  // Reset browser warning suppression and restore browser output mode on clear
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
-        message("\n\033[32m[Context Cleared Successfully]\033[0m\n");
-        cout.flush();
+        diag("Context Cleared Successfully", "\033[32m");
         continue;
     }
 
@@ -1020,8 +1051,7 @@ int main(int argc, char ** argv) {
         llama_sampler_reset(smpl);
         NetworkTools().reset_search();
         log_entry("SYSTEM", "Loop Counter and File Cache Reset");
-        message("\n\033[32m[Loop Counter and File Cache Reset Successfully]\033[0m\n");
-        cout.flush();
+        diag("Loop Counter and File Cache Reset Successfully", "\033[32m");
         continue;
     }
 
@@ -1077,7 +1107,7 @@ int main(int argc, char ** argv) {
       vector<llama_token> tokens = tokenize(user_message);
 
       if (n_past + tokens.size() >= cparams.n_ctx) {
-          message("\n\033[31m[Context Limit Reached! Cannot process input. Type 'clear' to reset.]\033[0m\n");
+          diag("Context Limit Reached! Cannot process input. Type 'clear' to reset.", "\033[31m");
           continue;
       }
 
@@ -1086,8 +1116,7 @@ int main(int argc, char ** argv) {
 
       for (size_t i = 0; i < (int)tokens.size(); i++) {
         if (stop_generation) {
-          message("\n\033[31m[Input Evaluation Interrupted]\033[0m\n");
-          cout.flush();
+          diag("Input Evaluation Interrupted", "\033[31m");
           stop_generation = 0;
           input_interrupted = true;
           break;
@@ -1097,6 +1126,7 @@ int main(int argc, char ** argv) {
 
         if (batch.n_tokens == (int)cparams.n_batch && i != (int)tokens.size() - 1) {
           if (!handle_llama_decode_error(ctx, batch)) {
+            sync_n_past(ctx, n_past);
             stop_generation = 0;
             input_interrupted = true;
             break;
@@ -1106,6 +1136,7 @@ int main(int argc, char ** argv) {
       }
       if (batch.n_tokens > 0 && !input_interrupted) {
         if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false)) {
+          sync_n_past(ctx, n_past);
           stop_generation = 0;
           input_interrupted = true;
         }
@@ -1144,9 +1175,8 @@ int main(int argc, char ** argv) {
     // --- INNER TOKEN GENERATION LOOP ---
     while (true) {
       if (stop_generation) {
-        message("\n\033[31m[Task Interrupted by User]\033[0m\n");
-        cout.flush();
-        stream("\n\n*[Task Interrupted by User]*\n\n");
+        diag("Task Interrupted by User", "\033[31m");
+        stream("\n\n[Task Interrupted by User]\n\n");
         stop_generation = 0;
         g_was_interrupted = 0;  // Reset for next iteration
         auto_continue = false;
@@ -1156,7 +1186,7 @@ int main(int argc, char ** argv) {
       }
 
       if (n_past >= (int)cparams.n_ctx - 10) {
-        message("\n\033[31m[Context Window Exhausted! Type 'clear' to reset.]\033[0m\n");
+        diag("Context Window Exhausted! Type 'clear' to reset.", "\033[31m");
         if (!unprinted_text.empty()) {
             console(unprinted_text.c_str());
             consoleFlush();
@@ -1192,7 +1222,7 @@ int main(int argc, char ** argv) {
 
                     // No actual sleep between resamples -- sampling from pre-computed logits is CPU-only.
           // LLLM_EOG_RESAMPLE_MAX overrides the default (see below).
-          static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 50;
+          static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 100;
           static constexpr int EOG_RESAMPLE_HARD_CAP    = 200;
 
           const char* eog_env = getenv("LLLM_EOG_RESAMPLE_MAX");
@@ -1235,18 +1265,20 @@ int main(int argc, char ** argv) {
               max_poll_iters = std::max(max_poll_iters, poll_iter_used);
 
               string recovered_piece = common_token_to_piece(ctx, next_token);
-              message("\033[90m[EOG recovery: token=" + recovered_piece + " | polls=" + std::to_string(poll_iter_used) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
-              cout.flush();
-
-              if (eog_event_count - last_printed >= 10) {
-                  double avg = (double)total_poll_iters / eog_event_count;
-                  char avg_buf[16];
-                  snprintf(avg_buf, sizeof(avg_buf), "%.1f", avg);
-                  message("\033[90m[EOG diagnostic: " + std::to_string(eog_event_count) + " spurious EOGs recovered | "
-                      "avg polls: " + string(avg_buf) + "/" + std::to_string(max_iterations) +
-                      " | max: " + std::to_string(max_poll_iters) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
+              if (is_debug) {
+                  message("\033[90m[EOG recovery: token=" + recovered_piece + " | polls=" + std::to_string(poll_iter_used) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
                   cout.flush();
-                  last_printed = eog_event_count;
+
+                  if (eog_event_count - last_printed >= 10) {
+                      double avg = (double)total_poll_iters / eog_event_count;
+                      char avg_buf[16];
+                      snprintf(avg_buf, sizeof(avg_buf), "%.1f", avg);
+                      message("\033[90m[EOG diagnostic: " + std::to_string(eog_event_count) + " spurious EOGs recovered | "
+                          "avg polls: " + string(avg_buf) + "/" + std::to_string(max_iterations) +
+                          " | max: " + std::to_string(max_poll_iters) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
+                      cout.flush();
+                      last_printed = eog_event_count;
+                  }
               }
               // Successfully recovered -- fall through to process the real token normally.
               had_eog_recovery = true;
@@ -1256,8 +1288,10 @@ int main(int argc, char ** argv) {
           // premature closure so the partial tool is still executed.
           if (!recovered) {
               if (inside_unclosed_tool) {
-                  message("\033[33m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
-                  cout.flush();
+                  if (is_debug) {
+                      message("\033[31m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
+                      cout.flush();
+                  }
 
                   size_t trailing_slash = generated_text.rfind("</");
                   if (trailing_slash != string::npos && trailing_slash > active_ts) {
@@ -1313,8 +1347,7 @@ int main(int argc, char ** argv) {
       if (in_tool_call_stream && generated_text.length() >= 4 &&
           generated_text.compare(generated_text.length() - 4, 4, DOUBLE_OPEN) == 0) {
 
-          message("\n\033[33m[System: Infinite slash loop detected. Auto-recovering...]\033[0m\n");
-          cout.flush();
+          diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
 
           size_t bad_pos = generated_text.rfind(DOUBLE_OPEN);
           if (bad_pos != string::npos && bad_pos > tool_start) {
@@ -1339,7 +1372,7 @@ int main(int argc, char ** argv) {
       }
 
       // --- INTRA-TURN LOOP DETECTION (Babbling Prevention) ---
-      if (t_count > 0 && t_count % 10 == 0 && generated_text.length() > 100) {
+      if (!in_thinking_block && t_count > 0 && t_count % 10 == 0 && generated_text.length() > 100) {
           size_t n = generated_text.length();
           bool intra_loop = false;
           size_t max_len = min((size_t)3000, n / 2);
@@ -1367,14 +1400,12 @@ int main(int argc, char ** argv) {
           if (intra_loop && !in_thinking_block) {
               intra_loop_strikes++;
               if (intra_loop_strikes >= 5) {
-                  message("\n\033[1;31m[System: Agent stubbornly babbling. Ejecting to manual prompt.]\033[0m\n");
-                  cout.flush();
+                  diag("System: Agent stubbornly babbling. Ejecting to manual prompt.", "\033[1;31m");
                   auto_continue = false;
                   break;
               }
 
-              message("\n\033[35m[System: Intra-turn Generation Loop Detected. Injecting intervention.]\033[0m\n");
-              cout.flush();
+              diag("System: Intra-turn Generation Loop Detected. Injecting intervention.", "\033[35m");
 
               if (!in_tool_call_stream && !unprinted_text.empty()) {
                   console(unprinted_text.c_str());
@@ -1389,8 +1420,7 @@ int main(int argc, char ** argv) {
               vector<llama_token> t_tokens = tokenize(msg);
 
               if (n_past + t_tokens.size() >= cparams.n_ctx) {
-                  message("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
-                  cout.flush();
+                  diag("Context limit exhausted. Type 'clear' to reset.", "\033[31m");
                   auto_continue = false;
                   break;
               }
@@ -1399,12 +1429,12 @@ int main(int argc, char ** argv) {
               for (size_t i = 0; i < t_tokens.size(); i++) {
                   common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                   if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                      if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
+                      if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
                       batch.n_tokens = 0;
                   }
               }
               if (batch.n_tokens > 0) {
-                if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
+                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
               }
 
               auto_continue = true;
@@ -1650,8 +1680,7 @@ int main(int argc, char ** argv) {
 
           // Check for interrupt after tool execution completes
           if (stop_generation) {
-            message("\n\033[31m[Tool Interrupted by User]\033[0m\n");
-            cout.flush();
+            diag("Tool Interrupted by User", "\033[31m");
             stop_generation = 0;
             abort_auto = true;
           }
@@ -1669,13 +1698,11 @@ int main(int argc, char ** argv) {
                   int attempt_num = current_strikes - 2;
 
                   if (attempt_num <= max_attempts) {
-                      message("\n\033[35m[System: Loop Detected. Automating intervention (Attempt " + std::to_string(attempt_num) + "/" + std::to_string(max_attempts) + ").]\033[0m\n");
-                      cout.flush();
+                      diag("System: Loop Detected. Automating intervention (Attempt " + std::to_string(attempt_num) + "/" + std::to_string(max_attempts) + ").", "\033[35m");
                       abort_auto = false;
                       inject_auto_user_msg = true;
                   } else {
-                      message("\n\033[1;31m[System: Intervention failed after " + std::to_string(max_attempts) + " attempts. Agent is stuck. Ejecting to prompt.]\033[0m\n");
-                      cout.flush();
+                      diag("System: Intervention failed after " + std::to_string(max_attempts) + " attempts. Agent is stuck. Ejecting to prompt.", "\033[1;31m");
                       abort_auto = true;
                       intra_loop_strikes = 0;
                   }
@@ -1743,8 +1770,7 @@ int main(int argc, char ** argv) {
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
             if (n_past + t_tokens.size() >= cparams.n_ctx) {
-                message("\n\033[31m[Context limit exhausted. Type 'clear' to reset.]\033[0m\n");
-                cout.flush();
+                diag("Context limit exhausted. Type 'clear' to reset.", "\033[31m");
                 auto_continue = false;
             } else {
                 batch.n_tokens = 0;
@@ -1752,6 +1778,7 @@ int main(int argc, char ** argv) {
                     common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                     if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
                         if (!handle_llama_decode_error(ctx, batch)) {
+                            sync_n_past(ctx, n_past);
                             abort_auto = true;
                             break;
                         }
@@ -1760,6 +1787,7 @@ int main(int argc, char ** argv) {
                 }
                 if (!abort_auto && batch.n_tokens > 0) {
                     if (!handle_llama_decode_error(ctx, batch)) {
+                        sync_n_past(ctx, n_past);
                         abort_auto = true;
                     }
                 }
