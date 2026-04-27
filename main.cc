@@ -964,22 +964,14 @@ int main(int argc, char ** argv) {
         if (user_input.empty()) console("\n");
         char* input_c = readline(user_input.empty() ? main_p : cont_p);
 
-        console("\033[0m");
-        consoleFlush();
+        cout << "\033[0m" << endl;
 
         if (!input_c) {
-          // EOF (Ctrl+D) or readline interrupted by SIGINT (Ctrl+C)
-          if (g_was_interrupted) {
-            // Interrupted by Ctrl+C - skip this iteration, ask for input again
-            g_was_interrupted = 0;
-            console("\r\033[K");
-            consoleFlush();
-            break;
-          } else {
-            // True EOF (Ctrl+D) or normal exit
-            if (user_input.empty()) user_input = "quit";
-            break;
-          }
+          // EOF (Ctrl+D) or readline interrupted by SIGINT (Ctrl+C) - both return to prompt
+          g_was_interrupted = 0;
+          console("\r\033[K");
+          consoleFlush();
+          break;
         }
 
         string line(input_c);
@@ -1397,7 +1389,7 @@ int main(int argc, char ** argv) {
               if (prev_pos != string::npos) intra_loop = true;
           }
 
-          if (intra_loop && !in_thinking_block) {
+          if (intra_loop && false) { // Disabled for now
               intra_loop_strikes++;
               if (intra_loop_strikes >= 5) {
                   diag("System: Agent stubbornly babbling. Ejecting to manual prompt.", "\033[1;31m");
