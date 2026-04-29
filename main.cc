@@ -417,32 +417,21 @@ ModelType detect_model_type(const llama_vocab * vocab) {
 static void diag(const string& msg, const char* color);
 static void diag_speed(const string& msg);
 
-bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
+bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, bool should_break = true) {
+    static constexpr const char* kv_msg = "KV Cache Exhausted. Type 'clear' to reset.";
     int ret = llama_decode(ctx, batch);
     if (ret < -1) {
-        diag(error_msg, "\033[31m");
+        diag(kv_msg, "\033[31m");
         return false;
     } else if (ret == -1) {
-        diag("Invalid input batch: " + std::string(error_msg), "\033[31m");
+        diag("Invalid input batch", "\033[31m");
         return false;
     } else if (ret == 1 || ret == 2) {
-        diag(ret == 1 ? error_msg : "Aborted", "\033[31m");
+        diag(ret == 1 ? kv_msg : "Aborted", "\033[31m");
         if (should_break) return false;
         return true;
     }
     return true;
-}
-
-// Sync n_past with the actual KV cache position after a decode.
-// Per llama.cpp API: on errors/aborts, partially-decoded ubatches may remain
-// in the cache, and on ret==1 the cache is fully restored.  Blindly incrementing
-// n_past before llama_decode() therefore drifts out of sync.  This helper
-// queries the real cache position and corrects n_past accordingly.
-static void sync_n_past(llama_context *ctx, int &n_past) {
-    llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
-    if (max_pos >= 0) {
-        n_past = (int)(max_pos + 1);  // next position to write
-    }
 }
 
 // --- Global Interrupt Flags ---
@@ -1014,11 +1003,11 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < (int)system_tokens.size(); i++) {
             common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
             if (batch.n_tokens == (int)cparams.n_batch && i != (int)system_tokens.size() - 1) {
-                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); break; }
+                if (!handle_llama_decode_error(ctx, batch)) break;
                 batch.n_tokens = 0;
             }
         }
-        if (batch.n_tokens > 0) { handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false); sync_n_past(ctx, n_past); }
+        if (batch.n_tokens > 0) handle_llama_decode_error(ctx, batch, false);
 
         auto_continue = false;
         clean_files.clear();
@@ -1118,7 +1107,6 @@ int main(int argc, char ** argv) {
 
         if (batch.n_tokens == (int)cparams.n_batch && i != (int)tokens.size() - 1) {
           if (!handle_llama_decode_error(ctx, batch)) {
-            sync_n_past(ctx, n_past);
             stop_generation = 0;
             input_interrupted = true;
             break;
@@ -1127,8 +1115,7 @@ int main(int argc, char ** argv) {
         }
       }
       if (batch.n_tokens > 0 && !input_interrupted) {
-        if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false)) {
-          sync_n_past(ctx, n_past);
+        if (!handle_llama_decode_error(ctx, batch, false)) {
           stop_generation = 0;
           input_interrupted = true;
         }
@@ -1313,9 +1300,31 @@ int main(int argc, char ** argv) {
       generated_text += token_str;
       full_response += token_str;
 
+      // --- THINKING BLOCK TRACKING (MUST run before tool tracking to avoid false matches) ---
+      if (think_start == string::npos) {
+          think_start = generated_text.find(Tokens::THINK_START);
+      }
+      if (think_start != string::npos && think_end == string::npos) {
+          think_end = generated_text.find(Tokens::THINK_END, think_start);
+      }
+      in_thinking_block = (think_start != string::npos && think_end == string::npos);
+
       // --- PERF OPTIMIZATION: O(1) TRACKING OFFSETS ---
       if (tool_start == string::npos) {
-          tool_start = generated_text.find(FUNC_START, func_search_pos);
+          // Determine where to search: skip any text inside an active thinking block.
+          size_t search_from = func_search_pos;
+          if (in_thinking_block && think_end == string::npos) {
+              // Inside an unclosed thinking block: don't search for tools yet.
+              // Set search position past the current end of text so we skip everything
+              // until the thinking block closes and new tokens arrive outside it.
+              search_from = generated_text.length();
+          } else if (think_end != string::npos) {
+              // Thinking block is closed: ensure we don't pick up FUNC_START from inside it.
+              size_t think_block_end = think_end + string(Tokens::THINK_END).length();
+              if (search_from < think_block_end) search_from = think_block_end;
+          }
+
+          tool_start = generated_text.find(FUNC_START, search_from);
           if (tool_start == string::npos) {
               func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
           }
@@ -1325,15 +1334,6 @@ int main(int argc, char ** argv) {
       }
 
       in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
-
-      // --- THINKING BLOCK TRACKING ---
-      if (think_start == string::npos) {
-          think_start = generated_text.find(Tokens::THINK_START);
-      }
-      if (think_start != string::npos && think_end == string::npos) {
-          think_end = generated_text.find(Tokens::THINK_END, think_start);
-      }
-      in_thinking_block = (think_start != string::npos && think_end == string::npos);
 
       // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
       if (in_tool_call_stream && generated_text.length() >= 4 &&
@@ -1421,12 +1421,12 @@ int main(int argc, char ** argv) {
               for (size_t i = 0; i < t_tokens.size(); i++) {
                   common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                   if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                      if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
+                      if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
                       batch.n_tokens = 0;
                   }
               }
               if (batch.n_tokens > 0) {
-                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
+                if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
               }
 
               auto_continue = true;
@@ -1770,7 +1770,6 @@ int main(int argc, char ** argv) {
                     common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                     if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
                         if (!handle_llama_decode_error(ctx, batch)) {
-                            sync_n_past(ctx, n_past);
                             abort_auto = true;
                             break;
                         }
@@ -1779,7 +1778,6 @@ int main(int argc, char ** argv) {
                 }
                 if (!abort_auto && batch.n_tokens > 0) {
                     if (!handle_llama_decode_error(ctx, batch)) {
-                        sync_n_past(ctx, n_past);
                         abort_auto = true;
                     }
                 }
