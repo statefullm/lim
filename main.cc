@@ -710,7 +710,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string path = extract_string_arg_bounded(tool_call, "path");
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
-    old_str = remove_trailing_spaces(old_str);
     new_str = remove_trailing_spaces(new_str);
     clean_files.erase(path);
     last_grep_req = "";
