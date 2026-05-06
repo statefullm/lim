@@ -140,12 +140,20 @@ string FileSystemTools::exec_shell(const string& command) {
     pos += 4;
   }
 
-  string full_command = "bash -c 'cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " 2>&1'";
+  // Capture exit code in a temp file to avoid collision with command output.
+  // Mixing exit-code markers into stdout/stderr breaks when commands produce
+  // text containing the marker (e.g., nested bash -c wrappers).
+  string exit_code_file = "/tmp/lllm_exitcode_XXXXXX";
+  int fd = mkstemp(const_cast<char*>(exit_code_file.c_str()));
+  if (fd >= 0) close(fd); // Close so bash can write to it
+
+  string full_command = "bash -c 'cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " ; echo \"$?\" > \"" + exit_code_file + "\"' 2>&1";
 
   string result;
   FILE* pipe = popen(full_command.c_str(), "r");
   if (!pipe) {
-    return "Error: Failed to execute command";
+    unlink(exit_code_file.c_str());
+    return "Error: Failed to spawn shell process. The exec_shell tool may be temporarily unavailable.";
   }
 
   char buffer[1024];
@@ -153,7 +161,23 @@ string FileSystemTools::exec_shell(const string& command) {
     result += buffer;
   }
 
-  pclose(pipe);
+  int pipe_status = pclose(pipe);
+
+  // Read exit code from temp file -- guaranteed to be the actual command exit code.
+  int exit_code = -1;
+  {
+    ifstream ec_in(exit_code_file.c_str());
+    string ec_str;
+    if (ec_in >> ec_str) {
+      exit_code = atoi(ec_str.c_str());
+    }
+  }
+  unlink(exit_code_file.c_str());
+
+  // Fallback: if we couldn't read the temp file, try pipe status
+  if (exit_code == -1 && WIFEXITED(pipe_status)) {
+    exit_code = WEXITSTATUS(pipe_status);
+  }
 
   if (!result.empty()) {
     chat_log << result << "\n\n";
@@ -171,10 +195,22 @@ string FileSystemTools::exec_shell(const string& command) {
     log_diagnostic("```\n" + result_preview + "```");
   }
 
+  // Build the final result with exit code information for better LLM diagnostics
   if (result.empty()) {
-    result = "[Command executed with no output]\n";
+    if (exit_code == 0) {
+      result = "[Command exited with code 0 and produced no output]\n";
+    } else if (exit_code > 0) {
+      result = "[Command exited with code " + to_string(exit_code) + " and produced no output. The command may have failed silently -- check your syntax or try a different approach.]\n";
+    } else {
+      result = "[Command produced no output; exit code could not be determined]\n";
+    }
   } else {
-    result = "```\n" + result + "```";
+    // Always include exit code so the LLM can distinguish success from failure
+    if (exit_code > 0) {
+      result = "[Exit code: " + to_string(exit_code) + "]\n```\n" + result + "```";
+    } else {
+      result = "```\n" + result + "```";
+    }
   }
   return result;
 }

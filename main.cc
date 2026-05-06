@@ -417,21 +417,32 @@ ModelType detect_model_type(const llama_vocab * vocab) {
 static void diag(const string& msg, const char* color);
 static void diag_speed(const string& msg);
 
-bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, bool should_break = true) {
-    static constexpr const char* kv_msg = "KV Cache Exhausted. Type 'clear' to reset.";
+bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true) {
     int ret = llama_decode(ctx, batch);
     if (ret < -1) {
-        diag(kv_msg, "\033[31m");
+        diag(error_msg, "\033[31m");
         return false;
     } else if (ret == -1) {
-        diag("Invalid input batch", "\033[31m");
+        diag("Invalid input batch: " + std::string(error_msg), "\033[31m");
         return false;
     } else if (ret == 1 || ret == 2) {
-        diag(ret == 1 ? kv_msg : "Aborted", "\033[31m");
+        diag(ret == 1 ? error_msg : "Aborted", "\033[31m");
         if (should_break) return false;
         return true;
     }
     return true;
+}
+
+// Sync n_past with the actual KV cache position after a decode.
+// Per llama.cpp API: on errors/aborts, partially-decoded ubatches may remain
+// in the cache, and on ret==1 the cache is fully restored.  Blindly incrementing
+// n_past before llama_decode() therefore drifts out of sync.  This helper
+// queries the real cache position and corrects n_past accordingly.
+static void sync_n_past(llama_context *ctx, int &n_past) {
+    llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+    if (max_pos >= 0) {
+        n_past = (int)(max_pos + 1);  // next position to write
+    }
 }
 
 // --- Global Interrupt Flags ---
@@ -515,45 +526,61 @@ void save_history_safe(const char* filename, const string& input) {
 class LoopDetector {
 private:
     deque<size_t> tool_history;
+    map<size_t, int> freq_map;  // O(1) occurrence counts, kept in sync with tool_history
     size_t max_window_size;
 
-    string normalize_str(const string& s) {
+    string normalize_str(const string& s) const {
         string res;
         for (char c : s) { if (!isspace(c)) res += c; }
         return res;
     }
 
+    void add_to_map(size_t h) { freq_map[h]++; }
+    void remove_from_map(size_t h) { if (--freq_map[h] == 0) freq_map.erase(h); }
+
 public:
     LoopDetector(size_t window_size = 15) : max_window_size(window_size) {}
 
-    bool check_for_loop(const string& preamble, const string& tool_call) {
+    // O(1): Block if this command has appeared >= 2 times in the window.
+    // Catches direct repeats (A->A) and cycles (A->B->C->D->E->A).
+    bool would_repeat(const string& tool_call) const {
+        string norm_tool = normalize_str(tool_call);
+        size_t tool_hash = hash<string>{}(norm_tool);
+        auto it = freq_map.find(tool_hash);
+        return (it != freq_map.end() && it->second >= 2);
+    }
+
+    // O(1): Record a tool call; return true if it now appears >= 3 times.
+    bool record_and_check(const string& tool_call) {
         string norm_tool = normalize_str(tool_call);
         size_t tool_hash = hash<string>{}(norm_tool);
 
         tool_history.push_back(tool_hash);
+        add_to_map(tool_hash);
+
         if (tool_history.size() > max_window_size) {
+            remove_from_map(tool_history.front());
             tool_history.pop_front();
         }
 
-        int occurrence_count = 0;
-        for (size_t past_hash : tool_history) {
-            if (past_hash == tool_hash) occurrence_count++;
-        }
-        return (occurrence_count >= 3);
+        return (freq_map[tool_hash] >= 3);
     }
 
+    // O(1): Count only CONSECUTIVE occurrences of the most recent hash.
     int get_loop_strikes() const {
         if (tool_history.empty()) return 0;
         size_t last = tool_history.back();
         int count = 0;
-        for (size_t past_hash : tool_history) {
-            if (past_hash == last) count++;
+        for (auto it = tool_history.rbegin(); it != tool_history.rend(); ++it) {
+            if (*it == last) count++;
+            else break;
         }
         return count;
     }
 
     void clear_history() {
         tool_history.clear();
+        freq_map.clear();
     }
 };
 
@@ -568,7 +595,7 @@ void replace_all_tags(string& str, const string& from, const string& to) {
 }
 
 // --- Tool Execution Logic ---
-string execute_tool_call(const string& tool_call, set<string>& clean_files, string& last_grep_req) {
+string execute_tool_call(const string& tool_call, set<string>& clean_files, string& last_grep_req, string& last_shell_cmd) {
   string result = "";
   string tool_name = "";
   size_t ns = tool_call.find(FUNC_START);
@@ -921,6 +948,7 @@ int main(int argc, char ** argv) {
 
   set<string> clean_files;
   string last_grep_req = "";
+  string last_shell_cmd = "";  // Track last exec_shell command to prevent blind retries
   LoopDetector loop_guard(15);
   int intra_loop_strikes = 0;
 
@@ -1003,15 +1031,16 @@ int main(int argc, char ** argv) {
         for (size_t i = 0; i < (int)system_tokens.size(); i++) {
             common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
             if (batch.n_tokens == (int)cparams.n_batch && i != (int)system_tokens.size() - 1) {
-                if (!handle_llama_decode_error(ctx, batch)) break;
+                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); break; }
                 batch.n_tokens = 0;
             }
         }
-        if (batch.n_tokens > 0) handle_llama_decode_error(ctx, batch, false);
+        if (batch.n_tokens > 0) { handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false); sync_n_past(ctx, n_past); }
 
         auto_continue = false;
         clean_files.clear();
         last_grep_req = "";
+        last_shell_cmd = "";
         loop_guard.clear_history();
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
@@ -1027,6 +1056,7 @@ int main(int argc, char ** argv) {
     if (user_input == "reset") {
         clean_files.clear();
         last_grep_req = "";
+        last_shell_cmd = "";
         loop_guard.clear_history();
         intra_loop_strikes = 0;
         llama_sampler_reset(smpl);
@@ -1107,6 +1137,7 @@ int main(int argc, char ** argv) {
 
         if (batch.n_tokens == (int)cparams.n_batch && i != (int)tokens.size() - 1) {
           if (!handle_llama_decode_error(ctx, batch)) {
+            sync_n_past(ctx, n_past);
             stop_generation = 0;
             input_interrupted = true;
             break;
@@ -1115,7 +1146,8 @@ int main(int argc, char ** argv) {
         }
       }
       if (batch.n_tokens > 0 && !input_interrupted) {
-        if (!handle_llama_decode_error(ctx, batch, false)) {
+        if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false)) {
+          sync_n_past(ctx, n_past);
           stop_generation = 0;
           input_interrupted = true;
         }
@@ -1300,31 +1332,9 @@ int main(int argc, char ** argv) {
       generated_text += token_str;
       full_response += token_str;
 
-      // --- THINKING BLOCK TRACKING (MUST run before tool tracking to avoid false matches) ---
-      if (think_start == string::npos) {
-          think_start = generated_text.find(Tokens::THINK_START);
-      }
-      if (think_start != string::npos && think_end == string::npos) {
-          think_end = generated_text.find(Tokens::THINK_END, think_start);
-      }
-      in_thinking_block = (think_start != string::npos && think_end == string::npos);
-
       // --- PERF OPTIMIZATION: O(1) TRACKING OFFSETS ---
       if (tool_start == string::npos) {
-          // Determine where to search: skip any text inside an active thinking block.
-          size_t search_from = func_search_pos;
-          if (in_thinking_block && think_end == string::npos) {
-              // Inside an unclosed thinking block: don't search for tools yet.
-              // Set search position past the current end of text so we skip everything
-              // until the thinking block closes and new tokens arrive outside it.
-              search_from = generated_text.length();
-          } else if (think_end != string::npos) {
-              // Thinking block is closed: ensure we don't pick up FUNC_START from inside it.
-              size_t think_block_end = think_end + string(Tokens::THINK_END).length();
-              if (search_from < think_block_end) search_from = think_block_end;
-          }
-
-          tool_start = generated_text.find(FUNC_START, search_from);
+          tool_start = generated_text.find(FUNC_START, func_search_pos);
           if (tool_start == string::npos) {
               func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
           }
@@ -1334,6 +1344,15 @@ int main(int argc, char ** argv) {
       }
 
       in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
+
+      // --- THINKING BLOCK TRACKING ---
+      if (think_start == string::npos) {
+          think_start = generated_text.find(Tokens::THINK_START);
+      }
+      if (think_start != string::npos && think_end == string::npos) {
+          think_end = generated_text.find(Tokens::THINK_END, think_start);
+      }
+      in_thinking_block = (think_start != string::npos && think_end == string::npos);
 
       // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
       if (in_tool_call_stream && generated_text.length() >= 4 &&
@@ -1421,12 +1440,12 @@ int main(int argc, char ** argv) {
               for (size_t i = 0; i < t_tokens.size(); i++) {
                   common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                   if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                      if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
+                      if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
                       batch.n_tokens = 0;
                   }
               }
               if (batch.n_tokens > 0) {
-                if (!handle_llama_decode_error(ctx, batch)) { auto_continue = false; break; }
+                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
               }
 
               auto_continue = true;
@@ -1665,40 +1684,59 @@ int main(int argc, char ** argv) {
         } else {
           bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
 
-          was_loop = loop_guard.check_for_loop(preamble, tool_call);
-          int current_strikes = loop_guard.get_loop_strikes();
+          // PRE-EXECUTION LOOP CHECK: Reject before running if this is a repeat.
+          // This prevents wasting time on known-repeating commands.
+          bool pre_loop = loop_guard.would_repeat(tool_call);
 
-          tool_result = execute_tool_call(tool_call, clean_files, last_grep_req);
+          if (pre_loop) {
+              // Record it to update strike count, but DON'T execute the tool.
+              was_loop = loop_guard.record_and_check(tool_call);
+              int current_strikes = loop_guard.get_loop_strikes();
 
-          // Check for interrupt after tool execution completes
-          if (stop_generation) {
-            diag("Tool Interrupted by User", "\033[31m");
-            stop_generation = 0;
-            abort_auto = true;
-          }
+              active_intervention_msg = get_next_loop_message();
+              tool_result = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg;
+              display_result = tool_result;
 
-          if (!abort_auto) {
-              bool tool_failed = (tool_result.find("System Error:") != string::npos || tool_result.find("Error:") != string::npos);
+              diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
 
-              if (was_loop) {
+              int max_attempts = loopMessages.size();
+
+              if (current_strikes <= max_attempts) {
+                  diag("System: Automating intervention (Attempt " + std::to_string(current_strikes) + "/" + std::to_string(max_attempts) + ").", "\033[35m");
+                  abort_auto = false;
+                  inject_auto_user_msg = true;
+              } else {
+                  diag("System: Circuit breaker -- intervention failed after " + std::to_string(max_attempts) + " strikes. Ejecting to prompt.", "\033[1;31m");
+                  abort_auto = true;
+                  intra_loop_strikes = 0;
+              }
+          } else {
+              // Not a repeat -- execute the tool normally.
+              tool_result = execute_tool_call(tool_call, clean_files, last_grep_req, last_shell_cmd);
+
+              // Record the execution for future loop detection.
+              was_loop = loop_guard.record_and_check(tool_call);
+
+              // Check for interrupt after tool execution completes
+              if (stop_generation) {
+                diag("Tool Interrupted by User", "\033[31m");
+                stop_generation = 0;
+                abort_auto = true;
+              }
+
+              if (!abort_auto && was_loop) {
+                  // This is the second identical call in a row. On the NEXT call,
+                  // pre-execution check will catch it. But we already executed this one.
+                  // Still send an intervention message to steer the LLM away.
                   active_intervention_msg = get_next_loop_message();
-                  tool_result = active_intervention_msg;
-
+                  tool_result = "System Warning: You just repeated a tool call. " + active_intervention_msg;
                   display_result = tool_result;
 
-                  int max_attempts = loopMessages.size();
-                  int attempt_num = current_strikes - 2;
+                  diag("System: Post-execution loop warning (Strike 2).", "\033[35m");
+                  inject_auto_user_msg = true;
+              } else if (!abort_auto) {
+                  bool tool_failed = (tool_result.find("System Error:") != string::npos || tool_result.find("Error:") != string::npos);
 
-                  if (attempt_num <= max_attempts) {
-                      diag("System: Loop Detected. Automating intervention (Attempt " + std::to_string(attempt_num) + "/" + std::to_string(max_attempts) + ").", "\033[35m");
-                      abort_auto = false;
-                      inject_auto_user_msg = true;
-                  } else {
-                      diag("System: Intervention failed after " + std::to_string(max_attempts) + " attempts. Agent is stuck. Ejecting to prompt.", "\033[1;31m");
-                      abort_auto = true;
-                      intra_loop_strikes = 0;
-                  }
-              } else {
                   if (is_mutating_tool && !tool_failed) loop_guard.clear_history();
 
                   bool is_expected_error = (tool_result.find("exact match not found") != string::npos ||
@@ -1770,6 +1808,7 @@ int main(int argc, char ** argv) {
                     common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
                     if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
                         if (!handle_llama_decode_error(ctx, batch)) {
+                            sync_n_past(ctx, n_past);
                             abort_auto = true;
                             break;
                         }
@@ -1778,6 +1817,7 @@ int main(int argc, char ** argv) {
                 }
                 if (!abort_auto && batch.n_tokens > 0) {
                     if (!handle_llama_decode_error(ctx, batch)) {
+                        sync_n_past(ctx, n_past);
                         abort_auto = true;
                     }
                 }
