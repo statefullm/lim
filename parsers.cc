@@ -45,13 +45,14 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 
     string val = tool_call.substr(start, end - start);
 
-    // Strip only the structural newline the LLM injects immediately after/before tags.
-    // Do NOT trim horizontal whitespace (spaces/tabs) -- those are significant for
-    // exact-match editing (edit_file old/new parameters must match file content exactly).
+    // Strip the structural newline the LLM injects immediately after/before tags.
     if (!val.empty() && val.front() == '\n') val.erase(val.begin());
     if (!val.empty() && val.back() == '\n') val.pop_back();
     // Also strip a trailing \r if present (Windows line endings)
     if (!val.empty() && val.back() == '\r') val.pop_back();
+    // Strip trailing horizontal whitespace (spaces/tabs) that can leak from XML formatting
+    // e.g., <path>main.cc\n  </parameter> where the two spaces before </parameter> are accidental.
+    while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
 
     return strip_quotes(val);
 }
