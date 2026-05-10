@@ -530,9 +530,50 @@ private:
     size_t max_window_size;
 
     string normalize_str(const string& s) const {
-        string res;
-        for (char c : s) { if (!isspace(c)) res += c; }
-        return res;
+        // Extract tool name from <function=TOOL_NAME> tag
+        string tool_name;
+        size_t fs = s.find(FUNC_START);
+        if (fs != string::npos) {
+            size_t gt = s.find('>', fs);
+            if (gt != string::npos) {
+                tool_name = s.substr(fs, gt - fs);
+            }
+        }
+
+        // Extract parameter values using PARAM_START / PARAM_END constants.
+        // Captures semantic intent regardless of whitespace/formatting differences.
+        string param_values;
+        string pstart(PARAM_START);
+        string pend(PARAM_END);
+        size_t ps = 0;
+        while ((ps = s.find(pstart, ps)) != string::npos) {
+            size_t pe = s.find('>', ps);
+            if (pe == string::npos) break;
+            size_t pc = s.find(pend, pe);
+            if (pc == string::npos) break;
+            string value = s.substr(pe + 1, pc - pe - 1);
+            // Collapse whitespace within each value
+            string collapsed;
+            bool last_space = true;
+            for (char c : value) {
+                if (isspace(c)) {
+                    if (!last_space) { collapsed += ' '; last_space = true; }
+                } else { collapsed += c; last_space = false; }
+            }
+            param_values += collapsed + "|";
+            ps = pc + pend.length();
+        }
+
+        // If no parameters were extracted (malformed tags), fall back to
+        // stripping whitespace from the entire tool call body to avoid
+        // hash collisions between different calls to the same tool.
+        if (param_values.empty()) {
+            string fallback;
+            for (char c : s) { if (!isspace(c)) fallback += c; }
+            return fallback;
+        }
+
+        return tool_name + ":" + param_values;
     }
 
     void add_to_map(size_t h) { freq_map[h]++; }
@@ -969,8 +1010,8 @@ int main(int argc, char ** argv) {
       }
 
       while (true) {
-        const char* main_p = "\001\033[1;34m\002>>> \001\033[34m\002";
-        const char* cont_p = "\001\033[1;34m\002... \001\033[34m\002";
+        const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
+        const char* cont_p = "\001\033[1;96m\002... \001\033[96m\002";
         if (!first_prompt_displayed) first_prompt_displayed = true;
 
         // Clear any leftover terminal state from previous interrupt
@@ -1097,7 +1138,7 @@ int main(int argc, char ** argv) {
           if (should_output_to_browser() && pipe_fd >= 0) {
               if (pipe_fd < 0) pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
               if (pipe_fd >= 0) {
-                  string user_html = "\n\n<div style=\"color: #007bff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n";
+                  string user_html = "\n\n<div style=\"color: #79c0ff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n";
                   write(pipe_fd, user_html.c_str(), user_html.length());
               }
           }
@@ -1693,7 +1734,7 @@ int main(int argc, char ** argv) {
               int current_strikes = loop_guard.get_loop_strikes();
 
               active_intervention_msg = get_next_loop_message();
-              tool_result = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg;
+              tool_result = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
               display_result = tool_result;
 
               diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
@@ -1728,7 +1769,7 @@ int main(int argc, char ** argv) {
                   // pre-execution check will catch it. But we already executed this one.
                   // Still send an intervention message to steer the LLM away.
                   active_intervention_msg = get_next_loop_message();
-                  tool_result = "System Warning: You just repeated a tool call. " + active_intervention_msg;
+                  tool_result = "System Warning: You just repeated a tool call. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
                   display_result = tool_result;
 
                   diag("System: Post-execution loop warning (Strike 2).", "\033[35m");
@@ -1827,7 +1868,28 @@ int main(int argc, char ** argv) {
                 }
             }
         } else {
+            // Circuit breaker fired: feed the error back to the LLM so it knows
+            // its tool call was blocked. Without this, the LLM sees silence and
+            // generates the same call again -> infinite loop.
             auto_continue = false;
+            generated_text = ""; unprinted_text = "";
+
+            string abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
+            string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + abort_msg + TURN_END + "\n";
+            string tool_msg = tool_result_section + TURN_START + "assistant\n";
+
+            vector<llama_token> t_tokens = tokenize(tool_msg);
+            if (n_past + t_tokens.size() < cparams.n_ctx) {
+                batch.n_tokens = 0;
+                for (size_t i = 0; i < t_tokens.size(); i++) {
+                    common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
+                    if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
+                        if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); break; }
+                        batch.n_tokens = 0;
+                    }
+                }
+                if (batch.n_tokens > 0) { handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false); sync_n_past(ctx, n_past); }
+            }
         }
     }
 
