@@ -257,6 +257,9 @@ static bool prompt_for_browser_connection() {
             return true;
         }
 
+        // When LLLM_OUTPUT=3 (stdout+browser), skip the "Still disconnected" retry loop
+        if (get_output_mode() == 3) break;
+
         message("\033[1;35mStill disconnected. Press Enter to check again...\033[0m ");
         cout.flush();
 
