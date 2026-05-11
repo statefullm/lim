@@ -34,9 +34,6 @@
 
 
 // --- Web Viewer Output Support ---
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <unistd.h>
 #include <errno.h>
 
 int pipe_fd = -1;
@@ -110,6 +107,12 @@ static void start_lllm_server_if_needed() {
     }
 
     log_diagnostic("Spinning up local lllmServer.py...");
+
+    if (HOME.empty()) {
+        log_diagnostic("ERROR: HOME is not set. Cannot start lllmServer.", true);
+        g_lllm_server_pid = -2;
+        return;
+    }
 
     pid_t pid = fork();
     if (pid == 0) {
@@ -231,6 +234,13 @@ static string get_viewer_url() {
 // Forward declaration for interrupt flag used in browser connection check
 extern volatile sig_atomic_t stop_generation;
 
+static void disable_browser_output() {
+    if (!g_browser_warning_suppressed) {
+        message("\n\033[1;35m[Browser output disabled]\033[0m\n");
+    }
+    g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+}
+
 static bool prompt_for_browser_connection() {
     message("\n\033[1;35m[WARNING: No browser connected!]\033[0m\n");
     message("Output will be lost if you don't view it in the browser.\n");
@@ -242,10 +252,7 @@ static bool prompt_for_browser_connection() {
     char input[256];
     if (!fgets(input, sizeof(input), stdin)) {
         // fgets returned NULL - either EOF or interrupted by signal
-        if (!g_browser_warning_suppressed) {
-            message("\n\033[1;35m[Browser output disabled]\033[0m\n");
-        }
-        g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+        disable_browser_output();
         stop_generation = 0;
         return false;
     }
@@ -264,10 +271,7 @@ static bool prompt_for_browser_connection() {
         cout.flush();
 
         if (!fgets(input, sizeof(input), stdin)) {
-            if (!g_browser_warning_suppressed) {
-                message("\n\033[1;35m[Browser output disabled]\033[0m\n");
-            }
-            g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+            disable_browser_output();
             stop_generation = 0;
             return false;
         }
@@ -319,6 +323,23 @@ void init_output_stream() {
     pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
 }
 
+static void ensure_pipe_open() {
+    if (pipe_fd < 0) {
+        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+    }
+}
+
+static void pipe_write(const char* data, size_t len) {
+    ensure_pipe_open();
+    if (pipe_fd >= 0) {
+        ssize_t res = write(pipe_fd, data, len);
+        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(pipe_fd);
+            pipe_fd = -1;
+        }
+    }
+}
+
 void stream(const string& raw_token) {
     if (!should_output_to_browser()) return;
     // Thinking blocks are already filtered at source (see SAFE TERMINAL BUFFERING)
@@ -331,35 +352,12 @@ void stream(const string& raw_token) {
         filtered.erase(pos, 6);
     }
 
-    if (pipe_fd < 0) {
-        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
-    }
-    if (pipe_fd >= 0) {
-        ssize_t res = write(pipe_fd, filtered.c_str(), filtered.length());
-
-        // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is just full
-        // (Python is reading too slowly). We just drop the token but keep the pipe open.
-        // If it's a real structural error, we close it to try again later.
-        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(pipe_fd);
-            pipe_fd = -1;
-        }
-    }
+    pipe_write(filtered.c_str(), filtered.length());
 }
 
 void clear_viewer() {
     if (!should_output_to_browser()) return;
-    if (pipe_fd < 0) {
-        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
-    }
-    if (pipe_fd >= 0) {
-        const char* cmd = "[[CLEAR]]";
-        ssize_t res = write(pipe_fd, cmd, strlen(cmd));
-        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(pipe_fd);
-            pipe_fd = -1;
-        }
-    }
+    pipe_write("[[CLEAR]]", 7);
 }
 
 
@@ -492,20 +490,20 @@ void custom_log_callback(enum ggml_log_level level, const char * text, void * us
 }
 
 // --- Diagnostic Logging Helper Definitions ---
-static void diag(const string& msg, const char* color) {
-    cout << color << "[" << msg << "]\033[0m" << endl;
+static void diag_impl(const string& formatted_line, const string& msg) {
+    cout << formatted_line << endl;
     if (chat_log.is_open()) {
         chat_log << "[" << msg << "]" << "\n\n";
         chat_log.flush();
     }
 }
 
+static void diag(const string& msg, const char* color) {
+    diag_impl(string(color) + "[" + msg + "]\033[0m", msg);
+}
+
 static void diag_speed(const string& msg) {
-    cout << "\033[0m[" << msg << "]\033[0m" << endl;
-    if (chat_log.is_open()) {
-        chat_log << "[" << msg << "]" << "\n\n";
-        chat_log.flush();
-    }
+    diag_impl("\033[0m[" + msg + "]\033[0m", msg);
 }
 
 // --- Safe Multiline History Handlers ---
@@ -793,6 +791,16 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   return result;
 }
 
+// --- Helper to strip all occurrences of given tags from a string ---
+static void strip_tags(string& str, const vector<string>& tags) {
+    for (const auto& tag : tags) {
+        size_t p;
+        while ((p = str.find(tag)) != string::npos) {
+            str.erase(p, tag.length());
+        }
+    }
+}
+
 string sanitize(string text) {
     vector<string> patterns = {FUNC_START, FUNC_END, TURN_START, TURN_END};
     for (const auto& pattern : patterns) {
@@ -815,7 +823,7 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
-  HOME=getenv("HOME");
+  // HOME is initialized at global scope via g_homeInit
 
   char cwd[1024];
   if (getcwd(cwd, sizeof(cwd)) != nullptr) {
@@ -832,6 +840,10 @@ int main(int argc, char ** argv) {
       NetworkTools::cleanup_services();
       cleanup_lllm_server();
   });
+
+  // Ignore SIGPIPE to prevent crashes when writing to a FIFO whose reader has disconnected.
+  // Writes will fail with EPIPE/EAGAIN instead of terminating the process.
+  signal(SIGPIPE, SIG_IGN);
 
   // Set up SIGINT handler without SA_RESTART so it interrupts blocking syscalls (e.g., fgets)
   struct sigaction sa{};
@@ -894,12 +906,7 @@ int main(int argc, char ** argv) {
       if (chat_log.is_open()) {
           string clean_text = text;
           const vector<string> tags_to_remove = {FUNC_START, FUNC_END, TURN_START, TURN_END};
-          for (const auto& tag : tags_to_remove) {
-              size_t p;
-              while ((p = clean_text.find(tag)) != string::npos) {
-                  clean_text.erase(p, tag.length());
-              }
-          }
+          strip_tags(clean_text, tags_to_remove);
           while (!clean_text.empty() && isspace(clean_text.back())) clean_text.pop_back();
           chat_log << "=== " << role << " ===\n" << clean_text << "\n\n";
           chat_log.flush();
@@ -982,6 +989,7 @@ int main(int argc, char ** argv) {
   if (!handle_llama_decode_error(ctx, batch)) return 1;
 
   bool auto_continue = false;
+  bool resume_mode = false;  // True when waiting for LLM to write nextsession.txt via resume
   bool first_turn_done = false;  // Suppress Speed diagnostic on the very first turn only
   int last_t_count = 0;          // Cached stats printed right before >>>
   double last_elapsed = 0.0;
@@ -994,6 +1002,55 @@ int main(int argc, char ** argv) {
   string last_shell_cmd = "";  // Track last exec_shell command to prevent blind retries
   LoopDetector loop_guard(15);
   int intra_loop_strikes = 0;
+
+  // --- Shared helpers to avoid duplication across clear / resume / input processing ---
+
+  // Feed a vector of tokens into the KV cache, batching as needed.
+  // Returns true on success, false on error or interrupt.
+  auto feed_tokens = [&](const vector<llama_token>& toks) -> bool {
+      batch.n_tokens = 0;
+      for (size_t i = 0; i < (int)toks.size(); i++) {
+          if (stop_generation) return false;
+          common_batch_add(batch, toks[i], n_past++, {0}, (i == (int)toks.size() - 1));
+          if (batch.n_tokens == (int)cparams.n_batch && i != (int)toks.size() - 1) {
+              if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); return false; }
+              batch.n_tokens = 0;
+          }
+      }
+      if (batch.n_tokens > 0) {
+          if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false)) {
+              sync_n_past(ctx, n_past);
+              return false;
+          }
+      }
+      return true;
+  };
+
+  // Clear the KV cache and re-encode the system prompt.
+  auto clear_context = [&]() {
+      llama_memory_clear(llama_get_memory(ctx), true);
+      n_past = 0;
+      feed_tokens(system_tokens);
+  };
+
+  // Reset only the LLM-facing state (lighter reset for mid-session recovery).
+  // Does NOT touch web search cache, context usage, or browser warning.
+  auto reset_llm_state = [&]() {
+      clean_files.clear();
+      last_grep_req = "";
+      last_shell_cmd = "";
+      loop_guard.clear_history();
+      intra_loop_strikes = 0;
+      llama_sampler_reset(smpl);
+  };
+
+  // Reset all session-level state variables (full reset for clear/resume).
+  auto reset_session_state = [&]() {
+      reset_llm_state();
+      NetworkTools().reset_search();
+      NetworkTools::reset_context_usage();
+      g_browser_warning_suppressed = false;
+  };
 
   // --- MAIN CHAT TURN LOOP ---
   while (true) {
@@ -1042,7 +1099,7 @@ int main(int argc, char ** argv) {
           continue;
         }
 
-        if (line == "quit" || line == "exit" || line == "clear" || line == "reset") {
+        if (line == "quit" || line == "exit" || line == "clear" || line == "reset" || line == "resume") {
           user_input = line;
           break;
         }
@@ -1064,32 +1121,9 @@ int main(int argc, char ** argv) {
     if (user_input == "quit" || user_input == "exit") break;
 
     if (user_input == "clear") {
-        // Clear the KV cache in-place instead of freeing/recreating the context.
-        // This avoids GPU memory reallocation and fragmentation, giving us true
-        // initial-state performance (tokens/s matches cold start).
-        llama_memory_clear(llama_get_memory(ctx), true);
-
-        n_past = 0;
-        batch.n_tokens = 0;
-        for (size_t i = 0; i < (int)system_tokens.size(); i++) {
-            common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
-            if (batch.n_tokens == (int)cparams.n_batch && i != (int)system_tokens.size() - 1) {
-                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); break; }
-                batch.n_tokens = 0;
-            }
-        }
-        if (batch.n_tokens > 0) { handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false); sync_n_past(ctx, n_past); }
-
+        clear_context();
         auto_continue = false;
-        clean_files.clear();
-        last_grep_req = "";
-        last_shell_cmd = "";
-        loop_guard.clear_history();
-        intra_loop_strikes = 0;
-        llama_sampler_reset(smpl);
-        NetworkTools().reset_search();
-        NetworkTools::reset_context_usage();
-        g_browser_warning_suppressed = false;  // Reset browser warning suppression and restore browser output mode on clear
+        reset_session_state();
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
         diag("Context Cleared Successfully", "\033[32m");
@@ -1097,15 +1131,45 @@ int main(int argc, char ** argv) {
     }
 
     if (user_input == "reset") {
-        clean_files.clear();
-        last_grep_req = "";
-        last_shell_cmd = "";
-        loop_guard.clear_history();
-        intra_loop_strikes = 0;
-        llama_sampler_reset(smpl);
-        NetworkTools().reset_search();
+        reset_llm_state();
         log_entry("SYSTEM", "Loop Counter and File Cache Reset");
         diag("Loop Counter and File Cache Reset Successfully", "\033[32m");
+        continue;
+    }
+
+    if (user_input == "resume") {
+        // Step 1: Read the resume instruction file
+        string resume_path = string(HOME) + "/resume";
+        ifstream resume_file(resume_path);
+        if (!resume_file.is_open()) {
+            diag("Resume failed: Cannot open " + resume_path, "\033[31m");
+            continue;
+        }
+        stringstream resume_buffer;
+        resume_buffer << resume_file.rdbuf();
+        string resume_text = resume_buffer.str();
+        resume_file.close();
+
+        // Step 2: Feed the resume request and let normal generation handle tool calls
+        diag("Sending resume request to LLM...", "\033[35m");
+        log_entry("USER", "[resume] " + resume_text);
+
+        string resume_message = string(TURN_START) + "user\n" + resume_text + TURN_END + "\n" + TURN_START + "assistant\n";
+        vector<llama_token> resume_tokens = tokenize(resume_message);
+
+        if (n_past + resume_tokens.size() >= cparams.n_ctx) {
+            diag("Context Limit Reached! Cannot process resume. Type 'clear' to reset.", "\033[31m");
+            continue;
+        }
+
+        if (!feed_tokens(resume_tokens)) {
+            if (stop_generation) stop_generation = 0;
+            continue;
+        }
+
+        auto_continue = true;
+        resume_mode = true;
+        reset_session_state();
         continue;
     }
 
@@ -1126,10 +1190,7 @@ int main(int argc, char ** argv) {
             // If still disconnected after prompting, disable browser output for this generation
             // Note: We do NOT close pipe_fd here - just let stream() check should_output_to_browser()
             if (!browser_connected) {
-                if (!g_browser_warning_suppressed) {
-                    message("\n\033[1;35m[Browser output disabled]\033[0m\n");
-                }
-                g_browser_warning_suppressed = true;  // Prevent this message from appearing again this session, and switch to stdout mode
+                disable_browser_output();
             }
         }
     }
@@ -1139,7 +1200,7 @@ int main(int argc, char ** argv) {
           log_entry("USER", user_input);
           // Write user input HTML directly to pipe (bypass stream() which strips </div>)
           if (should_output_to_browser() && pipe_fd >= 0) {
-              if (pipe_fd < 0) pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+              ensure_pipe_open();
               if (pipe_fd >= 0) {
                   string user_html = "\n\n<div style=\"color: #79c0ff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n";
                   write(pipe_fd, user_html.c_str(), user_html.length());
@@ -1165,37 +1226,13 @@ int main(int argc, char ** argv) {
           continue;
       }
 
-      batch.n_tokens = 0;
-      bool input_interrupted = false;
-
-      for (size_t i = 0; i < (int)tokens.size(); i++) {
+      if (!feed_tokens(tokens)) {
         if (stop_generation) {
           diag("Input Evaluation Interrupted", "\033[31m");
           stop_generation = 0;
-          input_interrupted = true;
-          break;
         }
-
-        common_batch_add(batch, tokens[i], n_past++, {0}, (i == (int)tokens.size() - 1));
-
-        if (batch.n_tokens == (int)cparams.n_batch && i != (int)tokens.size() - 1) {
-          if (!handle_llama_decode_error(ctx, batch)) {
-            sync_n_past(ctx, n_past);
-            stop_generation = 0;
-            input_interrupted = true;
-            break;
-          }
-          batch.n_tokens = 0;
-        }
+        continue;
       }
-      if (batch.n_tokens > 0 && !input_interrupted) {
-        if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false)) {
-          sync_n_past(ctx, n_past);
-          stop_generation = 0;
-          input_interrupted = true;
-        }
-      }
-      if (input_interrupted) continue;
     }
 
     auto start = chrono::high_resolution_clock::now();
@@ -1250,6 +1287,11 @@ int main(int argc, char ** argv) {
         break;
       }
 
+      if (batch.n_tokens < 1) {
+          diag("Error: no tokens in batch to sample from", "\033[31m");
+          auto_continue = false;
+          break;
+      }
       llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
 
       // --- EARLY EOG RECOVERY / SPURIOUS EOG WORKAROUND ---
@@ -1479,17 +1521,7 @@ int main(int argc, char ** argv) {
                   break;
               }
 
-              batch.n_tokens = 0;
-              for (size_t i = 0; i < t_tokens.size(); i++) {
-                  common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
-                  if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                      if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
-                      batch.n_tokens = 0;
-                  }
-              }
-              if (batch.n_tokens > 0) {
-                if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
-              }
+              if (!feed_tokens(t_tokens)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
 
               auto_continue = true;
               break;
@@ -1666,11 +1698,8 @@ int main(int argc, char ** argv) {
         string preamble = "";
         if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
 
-        const vector<string> strip_tags = {TURN_START, TURN_END};
-        for (const auto& tag : strip_tags) {
-            size_t p;
-            while ((p = tool_call.find(tag)) != string::npos) tool_call.erase(p, tag.length());
-        }
+        const vector<string> strip_tags_vec = {TURN_START, TURN_END};
+        strip_tags(tool_call, strip_tags_vec);
 
         string tool_name_for_display = "";
         size_t name_start = tool_call.find(FUNC_START);
@@ -1838,30 +1867,11 @@ int main(int argc, char ** argv) {
             if (n_past + t_tokens.size() >= cparams.n_ctx) {
                 diag("Context limit exhausted. Type 'clear' to reset.", "\033[31m");
                 auto_continue = false;
+            } else if (!feed_tokens(t_tokens)) {
+                abort_auto = true;
             } else {
-                batch.n_tokens = 0;
-                for (size_t i = 0; i < t_tokens.size(); i++) {
-                    common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
-                    if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                        if (!handle_llama_decode_error(ctx, batch)) {
-                            sync_n_past(ctx, n_past);
-                            abort_auto = true;
-                            break;
-                        }
-                        batch.n_tokens = 0;
-                    }
-                }
-                if (!abort_auto && batch.n_tokens > 0) {
-                    if (!handle_llama_decode_error(ctx, batch)) {
-                        sync_n_past(ctx, n_past);
-                        abort_auto = true;
-                    }
-                }
-
-                if (!abort_auto) {
-                    auto_continue = true;
-                    continue; // Skip the standard logging at the bottom and go straight to the next token generation loop
-                }
+                auto_continue = true;
+                continue; // Skip the standard logging at the bottom and go straight to the next token generation loop
             }
         } else {
             // Circuit breaker fired: feed the error back to the LLM so it knows
@@ -1876,20 +1886,40 @@ int main(int argc, char ** argv) {
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
             if (n_past + t_tokens.size() < cparams.n_ctx) {
-                batch.n_tokens = 0;
-                for (size_t i = 0; i < t_tokens.size(); i++) {
-                    common_batch_add(batch, t_tokens[i], n_past++, {0}, (i == t_tokens.size() - 1));
-                    if (batch.n_tokens == (int)cparams.n_batch && i != t_tokens.size() - 1) {
-                        if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); break; }
-                        batch.n_tokens = 0;
-                    }
-                }
-                if (batch.n_tokens > 0) { handle_llama_decode_error(ctx, batch, "KV Cache Exhausted. Type 'clear' to reset.", false); sync_n_past(ctx, n_past); }
+                feed_tokens(t_tokens);
             }
         }
     }
 
     if (!auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
+
+    // --- RESUME POST-GENERATION HANDLING ---
+    // After resume generation completes, clear context and auto-feed the follow prompt.
+    if (resume_mode && !auto_continue) {
+        resume_mode = false;
+
+        diag("Clearing context and starting resumed session...", "\033[35m");
+        clear_context();
+        clear_viewer();
+
+        string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";
+        log_entry("USER", "[resumed session] " + follow_prompt);
+
+        string new_session_message = string(TURN_START) + "user\n" + follow_prompt + TURN_END + "\n" + TURN_START + "assistant\n";
+        vector<llama_token> new_session_tokens = tokenize(new_session_message);
+
+        if (n_past + new_session_tokens.size() >= cparams.n_ctx) {
+            diag("Context Limit Reached! Cannot process resumed prompt.", "\033[31m");
+            continue;
+        }
+
+        feed_tokens(new_session_tokens);
+
+        auto_continue = true;
+        reset_session_state();
+        log_entry("SYSTEM", "Context Cleared and Resumed with New Prompt");
+        continue;
+    }
   }
 
   llama_free(ctx);

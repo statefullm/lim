@@ -43,6 +43,7 @@ static std::string strip_trailing_whitespace(const std::string& text) {
 const string SEARXNG_LOG_PATH = "log/searxng.log";
 const string DOCLING_LOG_PATH = "log/docling.log";
 string HOME;
+static struct HomeInit { HomeInit() { const char* h = getenv("HOME"); HOME = h ? h : ""; } } g_homeInit;
 
 extern bool is_debug;
 extern volatile sig_atomic_t stop_generation;  // Forward declaration for interrupt checking
