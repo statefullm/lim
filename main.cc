@@ -1058,6 +1058,10 @@ int main(int argc, char ** argv) {
     stop_generation = 0;
     g_was_interrupted = 0;  // Reset interrupt flag for this iteration
 
+    // Persistent across loop iterations for resume verification
+    struct stat userprompt_stat_before{};
+    bool userprompt_existed_before = false;
+
     if (!auto_continue) {
       // Print Speed from previous generation right before >>> (skip first turn)
       if (first_turn_done && last_t_count > 0) {
@@ -1149,6 +1153,10 @@ int main(int argc, char ** argv) {
         resume_buffer << resume_file.rdbuf();
         string resume_text = resume_buffer.str();
         resume_file.close();
+
+        // Record current userprompt state to verify it gets updated during resume
+        string userprompt_check_path = string(HOME) + "/userprompt";
+        userprompt_existed_before = (stat(userprompt_check_path.c_str(), &userprompt_stat_before) == 0);
 
         // Step 2: Feed the resume request and let normal generation handle tool calls
         diag("Sending resume request to LLM...", "\033[35m");
@@ -1894,9 +1902,30 @@ int main(int argc, char ** argv) {
     if (!auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
 
     // --- RESUME POST-GENERATION HANDLING ---
-    // After resume generation completes, clear context and auto-feed the follow prompt.
+    // After resume generation completes, verify userprompt was written before proceeding.
     if (resume_mode && !auto_continue) {
         resume_mode = false;
+
+        // Verify that userprompt exists and was actually modified during the resume generation.
+        // If the LLM failed to write it, we'd re-read the same old content and loop endlessly.
+        string userprompt_path = string(HOME) + "/userprompt";
+        struct stat userprompt_stat_after{};
+        bool userprompt_existed_after = (stat(userprompt_path.c_str(), &userprompt_stat_after) == 0);
+
+        if (!userprompt_existed_after) {
+            diag("Resume failed: LLM did not write " + userprompt_path + ". Session will not be resumed.", "\033[31m");
+            log_entry("SYSTEM", "Resume failed: userprompt was not written by LLM");
+            continue;
+        }
+
+        // Check if the file was actually modified (compare mtime and size against pre-resume snapshot)
+        if (userprompt_existed_before &&
+            userprompt_stat_after.st_mtime == userprompt_stat_before.st_mtime &&
+            userprompt_stat_after.st_size == userprompt_stat_before.st_size) {
+            diag("Resume failed: " + userprompt_path + " was not modified by the LLM. Same prompt would cause a loop.", "\033[31m");
+            log_entry("SYSTEM", "Resume failed: userprompt unchanged (same mtime and size)");
+            continue;
+        }
 
         diag("Clearing context and starting resumed session...", "\033[35m");
         clear_context();
