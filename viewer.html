@@ -107,8 +107,8 @@
             };
 
             ws.onmessage = (event) => {
-                // Handle clear command from C++
-                if (event.data.includes('[[CLEAR]]')) {
+                // Handle clear command from C++ (SOH control char 0x01)
+                if (event.data.includes('\x01')) {
                     rawContent = '';
                     outputDiv.innerHTML = '';
                     return;

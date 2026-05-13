@@ -357,7 +357,8 @@ void stream(const string& raw_token) {
 
 void clear_viewer() {
     if (!should_output_to_browser()) return;
-    pipe_write("[[CLEAR]]", 7);
+    const char marker = 0x01; // SOH control character, never appears in normal text
+    pipe_write(&marker, 1);
 }
 
 
@@ -530,6 +531,11 @@ private:
     map<size_t, int> freq_map;  // O(1) occurrence counts, kept in sync with tool_history
     size_t max_window_size;
 
+    // Consecutive same-tool-name tracking (secondary loop detection).
+    string last_tool_name;
+    int consecutive_count;
+    static const int CONSECUTIVE_THRESHOLD = 5;
+
     string normalize_str(const string& s) const {
         // Extract tool name from <function=TOOL_NAME> tag
         string tool_name;
@@ -623,7 +629,52 @@ public:
     void clear_history() {
         tool_history.clear();
         freq_map.clear();
+        last_tool_name.clear();
+        consecutive_count = 0;
     }
+
+    // Extract just the tool name from a tool call string (no parameters).
+    string extract_tool_name(const string& tool_call) const {
+        size_t fs = tool_call.find(FUNC_START);
+        if (fs != string::npos) {
+            size_t gt = tool_call.find('>', fs);
+            if (gt != string::npos) {
+                return tool_call.substr(fs, gt - fs);
+            }
+        }
+        return "";
+    }
+
+    // Check if calling this tool would exceed the consecutive same-tool threshold.
+    // Returns true if we should block. Call this BEFORE record_consecutive.
+    bool would_consecutive_loop(const string& tool_call) const {
+        string tname = extract_tool_name(tool_call);
+        if (tname.empty()) return false;
+        if (tname == last_tool_name && consecutive_count >= CONSECUTIVE_THRESHOLD) {
+            return true;
+        }
+        return false;
+    }
+
+    // Record a tool call for consecutive tracking. Must be called after execution.
+    // Returns the new consecutive count for this tool.
+    int record_consecutive(const string& tool_call) {
+        string tname = extract_tool_name(tool_call);
+        if (tname.empty()) return 0;
+        if (tname == last_tool_name) {
+            consecutive_count++;
+        } else {
+            last_tool_name = tname;
+            consecutive_count = 1;
+        }
+        return consecutive_count;
+    }
+
+    // Get the current consecutive count for diagnostic display.
+    int get_consecutive_count() const { return consecutive_count; }
+
+    // Get the threshold constant.
+    int get_consecutive_threshold() const { return CONSECUTIVE_THRESHOLD; }
 };
 
 // --- Helper to unescape tags passed by the LLM ---
@@ -1128,6 +1179,9 @@ int main(int argc, char ** argv) {
         clear_context();
         auto_continue = false;
         reset_session_state();
+        last_t_count = 0;
+        last_elapsed = 0.0;
+        last_n_past = 0;
         log_entry("SYSTEM", "Context Cleared");
         clear_viewer();
         diag("Context Cleared Successfully", "\033[32m");
@@ -1757,9 +1811,13 @@ int main(int argc, char ** argv) {
         } else {
           bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
 
-          // PRE-EXECUTION LOOP CHECK: Reject before running if this is a repeat.
+          // PRE-EXECUTION LOOP CHECK (1): Reject before running if this is an exact repeat.
           // This prevents wasting time on known-repeating commands.
           bool pre_loop = loop_guard.would_repeat(tool_call);
+
+          // PRE-EXECUTION LOOP CHECK (2): Block consecutive same-tool-name calls.
+          // Catches loops where the agent varies arguments slightly each time.
+          bool pre_consecutive = loop_guard.would_consecutive_loop(tool_call);
 
           if (pre_loop) {
               // Record it to update strike count, but DON'T execute the tool.
@@ -1783,12 +1841,39 @@ int main(int argc, char ** argv) {
                   abort_auto = true;
                   intra_loop_strikes = 0;
               }
+          } else if (pre_consecutive) {
+              // Same tool called too many times in a row with varying arguments.
+              // Block execution and inject an intervention message.
+              loop_guard.record_and_check(tool_call);
+              loop_guard.record_consecutive(tool_call);  // Keep incrementing so circuit breaker can eventually fire
+              int consec = loop_guard.get_consecutive_count();
+
+              active_intervention_msg = get_next_loop_message();
+              tool_result = "System Error: Consecutive Tool Loop Detected -- you have called " + tool_name + " " + std::to_string(consec) + " times in a row with varying arguments. " + active_intervention_msg + " Stop retrying and try a different approach.";
+              display_result = tool_result;
+
+              diag("System: Consecutive-tool loop blocked (" + tool_name + " x" + std::to_string(consec) + ").", "\033[35m");
+
+              int max_attempts = loopMessages.size();
+
+              if (consec <= max_attempts + loop_guard.get_consecutive_threshold()) {
+                  diag("System: Automating intervention (Attempt " + std::to_string(consec - loop_guard.get_consecutive_threshold() + 1) + ").", "\033[35m");
+                  abort_auto = false;
+                  inject_auto_user_msg = true;
+              } else {
+                  diag("System: Circuit breaker -- consecutive intervention failed. Ejecting to prompt.", "\033[1;31m");
+                  abort_auto = true;
+                  intra_loop_strikes = 0;
+              }
           } else {
               // Not a repeat -- execute the tool normally.
               tool_result = execute_tool_call(tool_call, clean_files, last_grep_req, last_shell_cmd);
 
-              // Record the execution for future loop detection.
+              // Record the execution for future loop detection (exact-match).
               was_loop = loop_guard.record_and_check(tool_call);
+
+              // Also record for consecutive same-tool-name tracking.
+              loop_guard.record_consecutive(tool_call);
 
               // Check for interrupt after tool execution completes
               if (stop_generation) {
@@ -1929,7 +2014,8 @@ int main(int argc, char ** argv) {
 
         diag("Clearing context and starting resumed session...", "\033[35m");
         clear_context();
-        clear_viewer();
+        // NOTE: Do NOT call clear_viewer() here. The explicit "clear" command clears the browser screen,
+        // but resume should preserve the visible conversation history so the user can see what happened.
 
         string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";
         log_entry("USER", "[resumed session] " + follow_prompt);
