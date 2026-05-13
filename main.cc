@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <cctype>
 #include <set>
+#include <algorithm>
 #include <deque>
 #include <functional>
 #include <iomanip>
@@ -532,7 +533,10 @@ private:
     size_t max_window_size;
 
     // Consecutive same-tool-name tracking (secondary loop detection).
+    // Only counts as "consecutive" if the normalized arguments are also similar.
+    // Different arguments = different intent, not a loop.
     string last_tool_name;
+    string last_norm_args;  // Normalized argument portion of the last tool call
     int consecutive_count;
     static const int CONSECUTIVE_THRESHOLD = 5;
 
@@ -637,6 +641,7 @@ public:
         tool_history.clear();
         freq_map.clear();
         last_tool_name.clear();
+        last_norm_args.clear();
         consecutive_count = 0;
         tool_name_history.clear();
         tool_name_freq_map.clear();
@@ -654,12 +659,88 @@ public:
         return "";
     }
 
+    // Extract the normalized argument portion from a tool call.
+    // Returns everything after "tool_name:" in the normalized string.
+    string get_norm_args(const string& tool_call) const {
+        string norm = normalize_str(tool_call);
+        size_t colon = norm.find(':');
+        if (colon != string::npos) {
+            return norm.substr(colon + 1);
+        }
+        return "";
+    }
+
+    // Check if the current normalized arguments differ significantly from the last recorded ones.
+    // Returns true if args are meaningfully different (i.e., NOT a loop).
+    // Two argument sets are considered "similar" only if they share substantial overlap.
+    bool args_differ_significantly(const string& curr_args) const {
+        // If either is empty, can't compare meaningfully -> treat as different
+        if (curr_args.empty() || last_norm_args.empty()) return true;
+
+        // Exact match after normalization = same intent (loop)
+        if (curr_args == last_norm_args) return false;
+
+        // Extract individual parameter values for comparison.
+        // Parameters are separated by "|" in the normalized string.
+        auto split_params = [](const string& s) -> vector<string> {
+            vector<string> params;
+            size_t start = 0;
+            while (start < s.size()) {
+                size_t sep = s.find('|', start);
+                if (sep == string::npos) sep = s.size();
+                string param = s.substr(start, sep - start);
+                if (!param.empty()) params.push_back(param);
+                start = sep + 1;
+            }
+            return params;
+        };
+
+        vector<string> curr_params = split_params(curr_args);
+        vector<string> last_params = split_params(last_norm_args);
+
+        // If different number of parameters, they're different
+        if (curr_params.size() != last_params.size()) return true;
+
+        // Check if all corresponding parameters are similar.
+        // Parameters are considered "similar" if they share > 60% character overlap
+        // or if one is a substring of the other with at least 4 common chars.
+        auto params_similar = [](const string& a, const string& b) -> bool {
+            if (a == b) return true;
+
+            // Check substring relationship: shorter must be at least 4 chars
+            // and must appear within the longer
+            if (a.size() >= 4 && b.find(a) != string::npos) return true;
+            if (b.size() >= 4 && a.find(b) != string::npos) return true;
+
+            // Count common characters (simple approach: count chars in both)
+            int common = 0;
+            for (char c : a) {
+                if (b.find(c) != string::npos) common++;
+            }
+            size_t max_len = max(a.size(), b.size());
+            if (max_len > 0 && (double)common / max_len >= 0.6) return true;
+
+            return false;
+        };
+
+        for (size_t i = 0; i < curr_params.size(); i++) {
+            if (!params_similar(curr_params[i], last_params[i])) {
+                return true;  // At least one parameter differs significantly
+            }
+        }
+
+        return false;  // All parameters are similar -> likely a loop/retry
+    }
+
     // Check if calling this tool would exceed the consecutive same-tool threshold.
     // Returns true if we should block. Call this BEFORE record_consecutive.
+    // Only blocks if both the tool name AND the normalized arguments match closely.
     bool would_consecutive_loop(const string& tool_call) const {
         string tname = extract_tool_name(tool_call);
         if (tname.empty()) return false;
-        if (tname == last_tool_name && consecutive_count >= CONSECUTIVE_THRESHOLD) {
+        string norm_args = get_norm_args(tool_call);
+        // Block only if same tool name, similar args, and over threshold
+        if (tname == last_tool_name && !args_differ_significantly(norm_args) && consecutive_count >= CONSECUTIVE_THRESHOLD) {
             return true;
         }
         return false;
@@ -667,15 +748,19 @@ public:
 
     // Record a tool call for consecutive tracking. Must be called after execution.
     // Returns the new consecutive count for this tool.
+    // Only increments if the normalized arguments are similar to the last call.
+    // Different arguments = different intent, reset counter to 1.
     int record_consecutive(const string& tool_call) {
         string tname = extract_tool_name(tool_call);
         if (tname.empty()) return 0;
-        if (tname == last_tool_name) {
+        string norm_args = get_norm_args(tool_call);
+        if (tname == last_tool_name && !args_differ_significantly(norm_args)) {
             consecutive_count++;
         } else {
             last_tool_name = tname;
             consecutive_count = 1;
         }
+        last_norm_args = norm_args;
         return consecutive_count;
     }
 
@@ -1104,6 +1189,12 @@ int main(int argc, char ** argv) {
   int last_t_count = 0;          // Cached stats printed right before >>>
   double last_elapsed = 0.0;
   int last_n_past = 0;
+
+  // Persistent across loop iterations for resume verification of ~/userprompt freshness.
+  // MUST be declared outside the while(true) loop so their values survive the continue
+  // that transitions from "feed resume prompt" to "generate + verify userprompt was written".
+  struct stat userprompt_stat_before{};
+  bool userprompt_existed_before = false;
   const char* history_file = ".lllm_history";
   load_history_safe(history_file);
 
@@ -1167,10 +1258,6 @@ int main(int argc, char ** argv) {
     string user_input = "";
     stop_generation = 0;
     g_was_interrupted = 0;  // Reset interrupt flag for this iteration
-
-    // Persistent across loop iterations for resume verification
-    struct stat userprompt_stat_before{};
-    bool userprompt_existed_before = false;
 
     if (!auto_continue) {
       // Print Speed from previous generation right before >>> (skip first turn)
@@ -1264,8 +1351,7 @@ int main(int argc, char ** argv) {
             continue;
         }
         stringstream resume_buffer;
-        resume_buffer <<
-          "For the next session, please write a new user prompt to "
+        resume_buffer << "Please write a new user prompt to "
                       << HOME << "/userprompt. " <<  resume_file.rdbuf();
         string resume_text = resume_buffer.str();
         resume_file.close();
