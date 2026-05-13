@@ -540,13 +540,6 @@ private:
     int consecutive_count;
     static const int CONSECUTIVE_THRESHOLD = 5;
 
-    // Same-tool-name frequency in window (tertiary loop detection).
-    // Catches loops where the agent calls the same tool many times with varying arguments,
-    // even when other tool calls are interspersed (which would reset consecutive_count).
-    deque<string> tool_name_history;  // Parallel to tool_history: stores tool names
-    map<string, int> tool_name_freq_map;  // Frequency of each tool name in the window
-    static const int TOOL_NAME_FREQ_THRESHOLD = 8;  // Block if same tool name appears >= 8 times in window
-
     string normalize_str(const string& s) const {
         // Extract tool name from <function=TOOL_NAME> tag
         string tool_name;
@@ -643,8 +636,6 @@ public:
         last_tool_name.clear();
         last_norm_args.clear();
         consecutive_count = 0;
-        tool_name_history.clear();
-        tool_name_freq_map.clear();
     }
 
     // Extract just the tool name from a tool call string (no parameters).
@@ -769,45 +760,6 @@ public:
 
     // Get the threshold constant.
     int get_consecutive_threshold() const { return CONSECUTIVE_THRESHOLD; }
-
-    // --- Same-tool-name frequency tracking (tertiary detection) ---
-    // Check if this tool name has been called too many times in the window,
-    // regardless of argument variations or interleaved different-tool calls.
-    bool would_tool_name_freq_loop(const string& tool_call) const {
-        string tname = extract_tool_name(tool_call);
-        if (tname.empty()) return false;
-        auto it = tool_name_freq_map.find(tname);
-        return (it != tool_name_freq_map.end() && it->second >= TOOL_NAME_FREQ_THRESHOLD);
-    }
-
-    // Record a tool call for same-tool-name frequency tracking.
-    void record_tool_name_freq(const string& tool_call) {
-        string tname = extract_tool_name(tool_call);
-        if (tname.empty()) return;
-
-        tool_name_history.push_back(tname);
-        tool_name_freq_map[tname]++;
-
-        if ((size_t)tool_name_history.size() > max_window_size) {
-            string old_name = tool_name_history.front();
-            if (--tool_name_freq_map[old_name] == 0) {
-                tool_name_freq_map.erase(old_name);
-            }
-            tool_name_history.pop_front();
-        }
-    }
-
-    // Get the current frequency of a tool name in the window.
-    int get_tool_name_freq(const string& tool_call) const {
-        string tname = extract_tool_name(tool_call);
-        if (tname.empty()) return 0;
-        auto it = tool_name_freq_map.find(tname);
-        if (it != tool_name_freq_map.end()) return it->second;
-        return 0;
-    }
-
-    // Get the threshold constant.
-    int get_tool_name_freq_threshold() const { return TOOL_NAME_FREQ_THRESHOLD; }
 };
 
 // --- Helper to unescape tags passed by the LLM ---
@@ -2003,15 +1955,9 @@ int main(int argc, char ** argv) {
           // Catches loops where the agent varies arguments slightly each time.
           bool pre_consecutive = loop_guard.would_consecutive_loop(tool_call);
 
-          // PRE-EXECUTION LOOP CHECK (3): Block if same tool name appears too many times
-          // in the sliding window, even when other tool calls are interspersed.
-          // This catches the pattern from bug2.txt where grep variants were called 100+ times.
-          bool pre_tool_name_freq = loop_guard.would_tool_name_freq_loop(tool_call);
-
           if (pre_loop) {
               // Record it to update strike count, but DON'T execute the tool.
               was_loop = loop_guard.record_and_check(tool_call);
-              loop_guard.record_tool_name_freq(tool_call);  // Keep frequency tracking accurate even when blocked
               int current_strikes = loop_guard.get_loop_strikes();
 
               active_intervention_msg = get_next_loop_message();
@@ -2036,7 +1982,6 @@ int main(int argc, char ** argv) {
               // Block execution and inject an intervention message.
               loop_guard.record_and_check(tool_call);
               loop_guard.record_consecutive(tool_call);  // Keep incrementing so circuit breaker can eventually fire
-              loop_guard.record_tool_name_freq(tool_call);  // Keep frequency tracking accurate even when blocked
               int consec = loop_guard.get_consecutive_count();
 
               active_intervention_msg = get_next_loop_message();
@@ -2056,33 +2001,6 @@ int main(int argc, char ** argv) {
                   abort_auto = true;
                   intra_loop_strikes = 0;
               }
-          } else if (pre_tool_name_freq) {
-              // Same tool called too many times in the window with varying arguments,
-              // even when other tool calls are interspersed. This is the primary defense
-              // against the pattern described in bug2.txt (100+ grep loop).
-              loop_guard.record_and_check(tool_call);
-              loop_guard.record_consecutive(tool_call);
-              loop_guard.record_tool_name_freq(tool_call);
-              int name_freq = loop_guard.get_tool_name_freq(tool_call);
-
-              active_intervention_msg = get_next_loop_message();
-              tool_result = "System Error: Excessive Tool Usage Detected -- you have called " + tool_name + " " + std::to_string(name_freq) + " times in the recent window with varying arguments. " + active_intervention_msg + " Stop retrying and try a fundamentally different approach.";
-              display_result = tool_result;
-
-              diag("System: Tool-name frequency loop blocked (" + tool_name + " x" + std::to_string(name_freq) + " in window).", "\033[35m");
-
-              int max_attempts = loopMessages.size();
-              int interventions_so_far = name_freq - loop_guard.get_tool_name_freq_threshold() + 1;
-
-              if (interventions_so_far <= max_attempts) {
-                  diag("System: Automating intervention (Attempt " + std::to_string(interventions_so_far) + ").", "\033[35m");
-                  abort_auto = false;
-                  inject_auto_user_msg = true;
-              } else {
-                  diag("System: Circuit breaker -- tool-name frequency intervention failed. Ejecting to prompt.", "\033[1;31m");
-                  abort_auto = true;
-                  intra_loop_strikes = 0;
-              }
           } else {
               // Not a repeat -- execute the tool normally.
               tool_result = execute_tool_call(tool_call, clean_files, last_grep_req, last_shell_cmd);
@@ -2092,9 +2010,6 @@ int main(int argc, char ** argv) {
 
               // Also record for consecutive same-tool-name tracking.
               loop_guard.record_consecutive(tool_call);
-
-              // Also record for same-tool-name frequency tracking (tertiary detection).
-              loop_guard.record_tool_name_freq(tool_call);
 
               // Check for interrupt after tool execution completes
               if (stop_generation) {
