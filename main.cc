@@ -1099,6 +1099,7 @@ int main(int argc, char ** argv) {
 
   bool auto_continue = false;
   bool resume_mode = false;  // True when waiting for LLM to write ~/userprompt via resume
+  bool prev_was_interrupted = false;  // True if the previous generation turn was interrupted by Ctrl+C
   bool first_turn_done = false;  // Suppress Speed diagnostic on the very first turn only
   int last_t_count = 0;          // Cached stats printed right before >>>
   double last_elapsed = 0.0;
@@ -1236,6 +1237,7 @@ int main(int argc, char ** argv) {
     if (user_input == "clear") {
         clear_context();
         auto_continue = false;
+        prev_was_interrupted = false;  // Context cleared, no orphaned turn
         reset_session_state();
         last_t_count = 0;
         last_elapsed = 0.0;
@@ -1262,7 +1264,9 @@ int main(int argc, char ** argv) {
             continue;
         }
         stringstream resume_buffer;
-        resume_buffer << resume_file.rdbuf();
+        resume_buffer <<
+          "For the next session, please write a new user prompt to "
+                      << HOME << "/userprompt. " <<  resume_file.rdbuf();
         string resume_text = resume_buffer.str();
         resume_file.close();
 
@@ -1274,7 +1278,16 @@ int main(int argc, char ** argv) {
         diag("Sending resume request to LLM...", "\033[35m");
         log_entry("USER", "[resume] " + resume_text);
 
-        string resume_message = string(TURN_START) + "user\n" + resume_text + TURN_END + "\n" + TURN_START + "assistant\n";
+        // If the previous turn was interrupted, the assistant's partial response is still
+        // open in the KV cache (no closing ). Close it first so the LLM sees
+        // a clean turn boundary and gives the resume instruction its undivided attention.
+        string resume_message;
+        if (prev_was_interrupted) {
+            resume_message = string(TURN_END) + "\n" + string(TURN_START) + "user\n" + resume_text + TURN_END + "\n" + TURN_START + "assistant\n";
+        } else {
+            resume_message = string(TURN_START) + "user\n" + resume_text + TURN_END + "\n" + TURN_START + "assistant\n";
+        }
+        prev_was_interrupted = false;  // Consumed
         vector<llama_token> resume_tokens = tokenize(resume_message);
 
         if (n_past + resume_tokens.size() >= cparams.n_ctx) {
@@ -1330,14 +1343,19 @@ int main(int argc, char ** argv) {
 
       string user_message;
 
+      // If the previous generation was interrupted, close the orphaned assistant turn
+      // so the LLM sees a clean boundary and gives this input its full attention.
+      string turn_close = prev_was_interrupted ? (string(TURN_END) + "\n") : "";
+      prev_was_interrupted = false;
+
       if (use_dummy_thought) {
           // Dummy Thought Injection - disable thinking mode
-          user_message = string(TURN_START) + "user\n" +
+          user_message = turn_close + string(TURN_START) + "user\n" +
                            user_input + TURN_END + "\n" +
                            TURN_START + "assistant\n"+THINK_START+"\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n"+THINK_END+"\n";
       } else {
           // Normal thinking mode
-          user_message = string(TURN_START) + "user\n" + user_input + TURN_END + "\n" + TURN_START + "assistant\n";
+          user_message = turn_close + string(TURN_START) + "user\n" + user_input + TURN_END + "\n" + TURN_START + "assistant\n";
       }
       vector<llama_token> tokens = tokenize(user_message);
 
@@ -1391,6 +1409,7 @@ int main(int argc, char ** argv) {
         stream("\n\n[Task Interrupted by User]\n\n");
         stop_generation = 0;
         g_was_interrupted = 0;  // Reset for next iteration
+        prev_was_interrupted = true;  // Mark that assistant turn was left unclosed
         auto_continue = false;
         resume_mode = false;  // Abort any in-progress resume so post-generation doesn't run on stale state
         // Force readline to reset its display state after interrupt

@@ -1,1 +1,1 @@
-For the next session, please write a new user prompt to "userprompt" in the home directory, explaining everything needed to investigate the issue without any prior knowledge, including the goal and the files to modify. Tell the llm to proceed incrementally, including how to compile.
+Explain everything needed to continue the current session without any prior knowledge, including the goal and the files to modify. Tell the llm to proceed incrementally, including how to compile.
