@@ -687,6 +687,13 @@ void replace_all_tags(string& str, const string& from, const string& to) {
     }
 }
 
+// --- Helper to validate path parameters (no embedded newlines) ---
+static bool param_has_newline(const string& s) {
+    return s.find('\n') != string::npos || s.find('\r') != string::npos;
+}
+
+static const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter must not contain newlines.";
+
 // --- Tool Execution Logic ---
 string execute_tool_call(const string& tool_call, set<string>& clean_files, string& last_grep_req, string& last_shell_cmd) {
   string result = "";
@@ -756,6 +763,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
   } else if (tool_name == "search_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
+    if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
@@ -787,6 +795,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
   } else if (tool_name == "write_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
+    if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
     string content = extract_string_arg_bounded(tool_call, "content");
     content = remove_trailing_spaces(content);
     clean_files.erase(path);
@@ -801,6 +810,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
   } else if (tool_name == "edit_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
+    if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
     new_str = remove_trailing_spaces(new_str);
@@ -1040,7 +1050,7 @@ int main(int argc, char ** argv) {
   if (!handle_llama_decode_error(ctx, batch)) return 1;
 
   bool auto_continue = false;
-  bool resume_mode = false;  // True when waiting for LLM to write nextsession.txt via resume
+  bool resume_mode = false;  // True when waiting for LLM to write ~/userprompt via resume
   bool first_turn_done = false;  // Suppress Speed diagnostic on the very first turn only
   int last_t_count = 0;          // Cached stats printed right before >>>
   double last_elapsed = 0.0;
@@ -1314,6 +1324,7 @@ int main(int argc, char ** argv) {
     bool trigger_tool_execution = false;
     size_t func_search_pos = 0;
     bool had_eog_recovery = false;  // If true, suppress speed diagnostic (elapsed includes wasted resampling)
+    bool context_warned_this_turn = false;  // Track 90% warning per generation turn
 
     // Track thinking blocks (similar to tool calls)
     bool in_thinking_block = false;
@@ -1333,9 +1344,29 @@ int main(int argc, char ** argv) {
         stop_generation = 0;
         g_was_interrupted = 0;  // Reset for next iteration
         auto_continue = false;
+        resume_mode = false;  // Abort any in-progress resume so post-generation doesn't run on stale state
         // Force readline to reset its display state after interrupt
         rl_redisplay();
         break;
+      }
+
+      // Proactive context-full warning at 90%: give the user a chance to resume or clear.
+      {
+          int context_90pct = (int)(cparams.n_ctx * 0.9);
+          if (n_past >= context_90pct && !context_warned_this_turn) {
+              context_warned_this_turn = true;
+
+              if (!unprinted_text.empty()) {
+                  console(unprinted_text.c_str());
+                  consoleFlush();
+                  stream(unprinted_text);
+                  unprinted_text = "";
+              }
+
+              diag("Context approaching limit (" + std::to_string(n_past) + "/" + std::to_string(cparams.n_ctx) + "). Type 'resume' to start a fresh session, or 'clear' to reset.", "\033[1;33m");
+              auto_continue = false;
+              break;
+          }
       }
 
       if (n_past >= (int)cparams.n_ctx - 10) {
@@ -1880,6 +1911,7 @@ int main(int argc, char ** argv) {
                 diag("Tool Interrupted by User", "\033[31m");
                 stop_generation = 0;
                 abort_auto = true;
+                resume_mode = false;  // Abort any in-progress resume so post-generation doesn't run on stale state
               }
 
               if (!abort_auto && was_loop) {
@@ -2003,9 +2035,11 @@ int main(int argc, char ** argv) {
             continue;
         }
 
-        // Check if the file was actually modified (compare mtime and size against pre-resume snapshot)
+        // Check if the file was actually modified (compare mtime at second precision and size against pre-resume snapshot).
+        // We intentionally do NOT compare tv_nsec: on some filesystems (FAT, network mounts) mtime granularity
+        // may be coarser than 1 second, causing false positives where a legitimately modified file appears unchanged.
         if (userprompt_existed_before &&
-            userprompt_stat_after.st_mtime == userprompt_stat_before.st_mtime &&
+            userprompt_stat_after.st_mtim.tv_sec == userprompt_stat_before.st_mtim.tv_sec &&
             userprompt_stat_after.st_size == userprompt_stat_before.st_size) {
             diag("Resume failed: " + userprompt_path + " was not modified by the LLM. Same prompt would cause a loop.", "\033[31m");
             log_entry("SYSTEM", "Resume failed: userprompt unchanged (same mtime and size)");
@@ -2016,6 +2050,19 @@ int main(int argc, char ** argv) {
         clear_context();
         // NOTE: Do NOT call clear_viewer() here. The explicit "clear" command clears the browser screen,
         // but resume should preserve the visible conversation history so the user can see what happened.
+
+        // Output a visual divider to the browser to mark the start of the new session
+        if (should_output_to_browser() && pipe_fd >= 0) {
+            ensure_pipe_open();
+            if (pipe_fd >= 0) {
+                const char* divider =
+                    "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
+                    "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
+                    "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session (Resumed) --</span>\n"
+                    "</div>\n\n";
+                write(pipe_fd, divider, strlen(divider));
+            }
+        }
 
         string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";
         log_entry("USER", "[resumed session] " + follow_prompt);
@@ -2028,7 +2075,11 @@ int main(int argc, char ** argv) {
             continue;
         }
 
-        feed_tokens(new_session_tokens);
+        if (!feed_tokens(new_session_tokens)) {
+            if (stop_generation) stop_generation = 0;
+            diag("Failed to feed resumed session tokens. Type 'clear' to reset.", "\033[31m");
+            continue;
+        }
 
         auto_continue = true;
         reset_session_state();
