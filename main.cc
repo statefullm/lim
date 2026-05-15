@@ -1313,6 +1313,14 @@ int main(int argc, char ** argv) {
         string userprompt_check_path = string(HOME) + "/userprompt";
         userprompt_existed_before = (stat(userprompt_check_path.c_str(), &userprompt_stat_before) == 0);
 
+        // Truncate userprompt so the LLM doesn't read a stale/old session when composing the new one.
+        {
+            ofstream userprompt_clear(userprompt_check_path, ios::trunc);
+            if (!userprompt_clear.is_open()) {
+                diag("Warning: Cannot truncate " + userprompt_check_path + " before reincarnate.", "\033[33m");
+            }
+        }
+
         // Step 2: Feed the reincarnate request and let normal generation handle tool calls
         diag("Sending reincarnate request to LLM...", "\033[35m");
         log_entry("USER", "[reincarnate] " + reincarnate_text);
