@@ -1303,8 +1303,9 @@ int main(int argc, char ** argv) {
             continue;
         }
         stringstream resume_buffer;
-        resume_buffer << "Please write a new user prompt to "
-                      << HOME << "/userprompt. " <<  resume_file.rdbuf();
+        resume_buffer << "Use the write_file tool to write a new prompt to "
+                      << HOME << "/userprompt. Read the following instructions and compose an appropriate prompt, then write it. "
+                      << resume_file.rdbuf();
         string resume_text = resume_buffer.str();
         resume_file.close();
 
