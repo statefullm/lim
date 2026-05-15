@@ -1135,16 +1135,16 @@ int main(int argc, char ** argv) {
   if (!handle_llama_decode_error(ctx, batch)) return 1;
 
   bool auto_continue = false;
-  bool resume_mode = false;  // True when waiting for LLM to write ~/userprompt via resume
+  bool reincarnate_mode = false;  // True when waiting for LLM to write ~/userprompt via reincarnate
   bool prev_was_interrupted = false;  // True if the previous generation turn was interrupted by Ctrl+C
   bool first_turn_done = false;  // Suppress Speed diagnostic on the very first turn only
   int last_t_count = 0;          // Cached stats printed right before >>>
   double last_elapsed = 0.0;
   int last_n_past = 0;
 
-  // Persistent across loop iterations for resume verification of ~/userprompt freshness.
+  // Persistent across loop iterations for reincarnate verification of ~/userprompt freshness.
   // MUST be declared outside the while(true) loop so their values survive the continue
-  // that transitions from "feed resume prompt" to "generate + verify userprompt was written".
+  // that transitions from "feed reincarnate prompt" to "generate + verify userprompt was written".
   struct stat userprompt_stat_before{};
   bool userprompt_existed_before = false;
   const char* history_file = ".lllm_history";
@@ -1156,7 +1156,7 @@ int main(int argc, char ** argv) {
   LoopDetector loop_guard(15);
   int intra_loop_strikes = 0;
 
-  // --- Shared helpers to avoid duplication across clear / resume / input processing ---
+  // --- Shared helpers to avoid duplication across clear / reincarnate / input processing ---
 
   // Feed a vector of tokens into the KV cache, batching as needed.
   // Returns true on success, false on error or interrupt.
@@ -1197,7 +1197,7 @@ int main(int argc, char ** argv) {
       llama_sampler_reset(smpl);
   };
 
-  // Reset all session-level state variables (full reset for clear/resume).
+  // Reset all session-level state variables (full reset for clear/reincarnate).
   auto reset_session_state = [&]() {
       reset_llm_state();
       NetworkTools().reset_search();
@@ -1252,7 +1252,7 @@ int main(int argc, char ** argv) {
           continue;
         }
 
-        if (line == "quit" || line == "exit" || line == "clear" || line == "reset" || line == "resume") {
+        if (line == "quit" || line == "exit" || line == "clear" || line == "reset" || line == "reincarnate") {
           user_input = line;
           break;
         }
@@ -1294,53 +1294,53 @@ int main(int argc, char ** argv) {
         continue;
     }
 
-    if (user_input == "resume") {
-        // Step 1: Read the resume instruction file
-        string resume_path = string(HOME) + "/resume";
-        ifstream resume_file(resume_path);
-        if (!resume_file.is_open()) {
-            diag("Resume failed: Cannot open " + resume_path, "\033[31m");
+    if (user_input == "reincarnate") {
+        // Step 1: Read the reincarnate instruction file
+        string reincarnate_path = string(HOME) + "/reincarnate";
+        ifstream reincarnate_file(reincarnate_path);
+        if (!reincarnate_file.is_open()) {
+            diag("Reincarnate failed: Cannot open " + reincarnate_path, "\033[31m");
             continue;
         }
-        stringstream resume_buffer;
-        resume_buffer << "Use the write_file tool to write a new prompt to "
+        stringstream reincarnate_buffer;
+        reincarnate_buffer << "Use the write_file tool to write a new prompt to "
                       << HOME << "/userprompt. Read the following instructions and compose an appropriate prompt, then write it. "
-                      << resume_file.rdbuf();
-        string resume_text = resume_buffer.str();
-        resume_file.close();
+                      << reincarnate_file.rdbuf();
+        string reincarnate_text = reincarnate_buffer.str();
+        reincarnate_file.close();
 
-        // Record current userprompt state to verify it gets updated during resume
+        // Record current userprompt state to verify it gets updated during reincarnate
         string userprompt_check_path = string(HOME) + "/userprompt";
         userprompt_existed_before = (stat(userprompt_check_path.c_str(), &userprompt_stat_before) == 0);
 
-        // Step 2: Feed the resume request and let normal generation handle tool calls
-        diag("Sending resume request to LLM...", "\033[35m");
-        log_entry("USER", "[resume] " + resume_text);
+        // Step 2: Feed the reincarnate request and let normal generation handle tool calls
+        diag("Sending reincarnate request to LLM...", "\033[35m");
+        log_entry("USER", "[reincarnate] " + reincarnate_text);
 
         // If the previous turn was interrupted, the assistant's partial response is still
         // open in the KV cache (no closing ). Close it first so the LLM sees
-        // a clean turn boundary and gives the resume instruction its undivided attention.
-        string resume_message;
+        // a clean turn boundary and gives the reincarnate instruction its undivided attention.
+        string reincarnate_message;
         if (prev_was_interrupted) {
-            resume_message = string(TURN_END) + "\n" + string(TURN_START) + "user\n" + resume_text + TURN_END + "\n" + TURN_START + "assistant\n";
+            reincarnate_message = string(TURN_END) + "\n" + string(TURN_START) + "user\n" + reincarnate_text + TURN_END + "\n" + TURN_START + "assistant\n";
         } else {
-            resume_message = string(TURN_START) + "user\n" + resume_text + TURN_END + "\n" + TURN_START + "assistant\n";
+            reincarnate_message = string(TURN_START) + "user\n" + reincarnate_text + TURN_END + "\n" + TURN_START + "assistant\n";
         }
         prev_was_interrupted = false;  // Consumed
-        vector<llama_token> resume_tokens = tokenize(resume_message);
+        vector<llama_token> reincarnate_tokens = tokenize(reincarnate_message);
 
-        if (n_past + resume_tokens.size() >= cparams.n_ctx) {
-            diag("Context Limit Reached! Cannot process resume. Type 'clear' to reset.", "\033[31m");
+        if (n_past + reincarnate_tokens.size() >= cparams.n_ctx) {
+            diag("Context Limit Reached! Cannot process reincarnate. Type 'clear' to reset.", "\033[31m");
             continue;
         }
 
-        if (!feed_tokens(resume_tokens)) {
+        if (!feed_tokens(reincarnate_tokens)) {
             if (stop_generation) stop_generation = 0;
             continue;
         }
 
         auto_continue = true;
-        resume_mode = true;
+        reincarnate_mode = true;
         reset_session_state();
         continue;
     }
@@ -1450,13 +1450,13 @@ int main(int argc, char ** argv) {
         g_was_interrupted = 0;  // Reset for next iteration
         prev_was_interrupted = true;  // Mark that assistant turn was left unclosed
         auto_continue = false;
-        resume_mode = false;  // Abort any in-progress resume so post-generation doesn't run on stale state
+        reincarnate_mode = false;  // Abort any in-progress reincarnate so post-generation doesn't run on stale state
         // Force readline to reset its display state after interrupt
         rl_redisplay();
         break;
       }
 
-      // Proactive context-full warning at 90%: give the user a chance to resume or clear.
+      // Proactive context-full warning at 90%: give the user a chance to reincarnate or clear.
       {
           int context_90pct = (int)(cparams.n_ctx * 0.9);
           if (n_past >= context_90pct && !context_warned_this_turn) {
@@ -1469,7 +1469,7 @@ int main(int argc, char ** argv) {
                   unprinted_text = "";
               }
 
-              diag("Context approaching limit (" + std::to_string(n_past) + "/" + std::to_string(cparams.n_ctx) + "). Type 'resume' to start a fresh session, or 'clear' to reset.", "\033[1;33m");
+              diag("Context approaching limit (" + std::to_string(n_past) + "/" + std::to_string(cparams.n_ctx) + "). Type 'reincarnate' to start a fresh session, or 'clear' to reset.", "\033[1;33m");
               auto_continue = false;
               break;
           }
@@ -2017,7 +2017,7 @@ int main(int argc, char ** argv) {
                 diag("Tool Interrupted by User", "\033[31m");
                 stop_generation = 0;
                 abort_auto = true;
-                resume_mode = false;  // Abort any in-progress resume so post-generation doesn't run on stale state
+                reincarnate_mode = false;  // Abort any in-progress reincarnate so post-generation doesn't run on stale state
               }
 
               if (!abort_auto && was_loop) {
@@ -2124,38 +2124,38 @@ int main(int argc, char ** argv) {
 
     if (!auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
 
-    // --- RESUME POST-GENERATION HANDLING ---
-    // After resume generation completes, verify userprompt was written before proceeding.
-    if (resume_mode && !auto_continue) {
-        resume_mode = false;
+    // --- REINCARNATE POST-GENERATION HANDLING ---
+    // After reincarnate generation completes, verify userprompt was written before proceeding.
+    if (reincarnate_mode && !auto_continue) {
+        reincarnate_mode = false;
 
-        // Verify that userprompt exists and was actually modified during the resume generation.
+        // Verify that userprompt exists and was actually modified during the reincarnate generation.
         // If the LLM failed to write it, we'd re-read the same old content and loop endlessly.
         string userprompt_path = string(HOME) + "/userprompt";
         struct stat userprompt_stat_after{};
         bool userprompt_existed_after = (stat(userprompt_path.c_str(), &userprompt_stat_after) == 0);
 
         if (!userprompt_existed_after) {
-            diag("Resume failed: LLM did not write " + userprompt_path + ". Session will not be resumed.", "\033[31m");
-            log_entry("SYSTEM", "Resume failed: userprompt was not written by LLM");
+            diag("Reincarnate failed: LLM did not write " + userprompt_path + ". Session will not be reincarnated.", "\033[31m");
+            log_entry("SYSTEM", "Reincarnate failed: userprompt was not written by LLM");
             continue;
         }
 
-        // Check if the file was actually modified (compare mtime at second precision and size against pre-resume snapshot).
+        // Check if the file was actually modified (compare mtime at second precision and size against pre-reincarnate snapshot).
         // We intentionally do NOT compare tv_nsec: on some filesystems (FAT, network mounts) mtime granularity
         // may be coarser than 1 second, causing false positives where a legitimately modified file appears unchanged.
         if (userprompt_existed_before &&
             userprompt_stat_after.st_mtim.tv_sec == userprompt_stat_before.st_mtim.tv_sec &&
             userprompt_stat_after.st_size == userprompt_stat_before.st_size) {
-            diag("Resume failed: " + userprompt_path + " was not modified by the LLM. Same prompt would cause a loop.", "\033[31m");
-            log_entry("SYSTEM", "Resume failed: userprompt unchanged (same mtime and size)");
+            diag("Reincarnate failed: " + userprompt_path + " was not modified by the LLM. Same prompt would cause a loop.", "\033[31m");
+            log_entry("SYSTEM", "Reincarnate failed: userprompt unchanged (same mtime and size)");
             continue;
         }
 
-        diag("Clearing context and starting resumed session...", "\033[35m");
+        diag("Clearing context and starting reincarnated session...", "\033[35m");
         clear_context();
         // NOTE: Do NOT call clear_viewer() here. The explicit "clear" command clears the browser screen,
-        // but resume should preserve the visible conversation history so the user can see what happened.
+        // but reincarnate should preserve the visible conversation history so the user can see what happened.
 
         // Output a visual divider to the browser to mark the start of the new session
         if (should_output_to_browser() && pipe_fd >= 0) {
@@ -2164,32 +2164,32 @@ int main(int argc, char ** argv) {
                 const char* divider =
                     "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
                     "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
-                    "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session (Resumed) --</span>\n"
+                    "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session (Reincarnated) --</span>\n"
                     "</div>\n\n";
                 write(pipe_fd, divider, strlen(divider));
             }
         }
 
         string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";
-        log_entry("USER", "[resumed session] " + follow_prompt);
+        log_entry("USER", "[reincarnated session] " + follow_prompt);
 
         string new_session_message = string(TURN_START) + "user\n" + follow_prompt + TURN_END + "\n" + TURN_START + "assistant\n";
         vector<llama_token> new_session_tokens = tokenize(new_session_message);
 
         if (n_past + new_session_tokens.size() >= cparams.n_ctx) {
-            diag("Context Limit Reached! Cannot process resumed prompt.", "\033[31m");
+            diag("Context Limit Reached! Cannot process reincarnated prompt.", "\033[31m");
             continue;
         }
 
         if (!feed_tokens(new_session_tokens)) {
             if (stop_generation) stop_generation = 0;
-            diag("Failed to feed resumed session tokens. Type 'clear' to reset.", "\033[31m");
+            diag("Failed to feed reincarnated session tokens. Type 'clear' to reset.", "\033[31m");
             continue;
         }
 
         auto_continue = true;
         reset_session_state();
-        log_entry("SYSTEM", "Context Cleared and Resumed with New Prompt");
+        log_entry("SYSTEM", "Context Cleared and Reincarnated with New Prompt");
         continue;
     }
   }
