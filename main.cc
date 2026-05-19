@@ -453,6 +453,8 @@ volatile sig_atomic_t stop_generation = 0;
 static volatile sig_atomic_t g_was_interrupted = 0;  // Track interrupt across loop iterations
 
 // --- SEQUENTIAL INTERVENTION MESSAGES ---
+static const string SYSTEM_PROMPT_REMINDER = "Follow the system prompt strictly.";
+
 vector<string> loopMessages = {
     "You are in a loop.",
     "You already have this information.",
@@ -467,7 +469,7 @@ int loopMessageIndex = 0;
 string get_next_loop_message() {
     string msg = loopMessages[loopMessageIndex];
     loopMessageIndex = (loopMessageIndex + 1) % loopMessages.size();
-    return msg;
+    return SYSTEM_PROMPT_REMINDER + " " + msg;
 }
 
 // --- Signal Handler for Task Interruption ---
@@ -1943,7 +1945,7 @@ int main(int argc, char ** argv) {
         string tool_name = tool_name_for_display;
 
         if (!is_real_tool) {
-          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema. Supported tools: read_files, write_file, edit_file, exec_shell, search_file, web_search. Please try again.";
+          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema. Supported tools: read_files, write_file, edit_file, exec_shell, search_file, web_search.";
           display_result = tool_result;
         } else {
           bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
