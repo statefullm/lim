@@ -1142,11 +1142,6 @@ int main(int argc, char ** argv) {
   double last_elapsed = 0.0;
   int last_n_past = 0;
 
-  // Persistent across loop iterations for reincarnate verification of ~/userprompt freshness.
-  // MUST be declared outside the while(true) loop so their values survive the continue
-  // that transitions from "feed reincarnate prompt" to "generate + verify userprompt was written".
-  struct stat userprompt_stat_before{};
-  bool userprompt_existed_before = false;
   const char* history_file = ".lllm_history";
   load_history_safe(history_file);
 
@@ -1309,11 +1304,8 @@ int main(int argc, char ** argv) {
         string reincarnate_text = reincarnate_buffer.str();
         reincarnate_file.close();
 
-        // Record current userprompt state to verify it gets updated during reincarnate
-        string userprompt_check_path = string(HOME) + "/userprompt";
-        userprompt_existed_before = (stat(userprompt_check_path.c_str(), &userprompt_stat_before) == 0);
-
         // Truncate userprompt so the LLM doesn't read a stale/old session when composing the new one.
+        string userprompt_check_path = string(HOME) + "/userprompt";
         {
             ofstream userprompt_clear(userprompt_check_path, ios::trunc);
             if (!userprompt_clear.is_open()) {
@@ -2133,30 +2125,35 @@ int main(int argc, char ** argv) {
     if (!auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
 
     // --- REINCARNATE POST-GENERATION HANDLING ---
-    // After reincarnate generation completes, verify userprompt was written before proceeding.
+    // After reincarnate generation completes, verify userprompt is nonempty before proceeding.
     if (reincarnate_mode && !auto_continue) {
         reincarnate_mode = false;
 
-        // Verify that userprompt exists and was actually modified during the reincarnate generation.
-        // If the LLM failed to write it, we'd re-read the same old content and loop endlessly.
         string userprompt_path = string(HOME) + "/userprompt";
-        struct stat userprompt_stat_after{};
-        bool userprompt_existed_after = (stat(userprompt_path.c_str(), &userprompt_stat_after) == 0);
 
-        if (!userprompt_existed_after) {
+        // Verify that userprompt exists and is nonempty.
+        // We truncated it before generation, so a nonempty file means the LLM wrote a new prompt.
+        ifstream userprompt_file(userprompt_path);
+        if (!userprompt_file.is_open()) {
             diag("Reincarnate failed: LLM did not write " + userprompt_path + ". Session will not be reincarnated.", "\033[31m");
             log_entry("SYSTEM", "Reincarnate failed: userprompt was not written by LLM");
             continue;
         }
 
-        // Check if the file was actually modified (compare mtime at second precision and size against pre-reincarnate snapshot).
-        // We intentionally do NOT compare tv_nsec: on some filesystems (FAT, network mounts) mtime granularity
-        // may be coarser than 1 second, causing false positives where a legitimately modified file appears unchanged.
-        if (userprompt_existed_before &&
-            userprompt_stat_after.st_mtim.tv_sec == userprompt_stat_before.st_mtim.tv_sec &&
-            userprompt_stat_after.st_size == userprompt_stat_before.st_size) {
-            diag("Reincarnate failed: " + userprompt_path + " was not modified by the LLM. Same prompt would cause a loop.", "\033[31m");
-            log_entry("SYSTEM", "Reincarnate failed: userprompt unchanged (same mtime and size)");
+        // Check that userprompt is nonempty by reading lines until we find a character.
+        bool found_content = false;
+        string line;
+        while (getline(userprompt_file, line)) {
+            for (char c : line) {
+                if (!isspace(c)) { found_content = true; break; }
+            }
+            if (found_content) break;
+        }
+        userprompt_file.close();
+
+        if (!found_content) {
+            diag("Reincarnate failed: " + userprompt_path + " is empty. Session will not be reincarnated.", "\033[31m");
+            log_entry("SYSTEM", "Reincarnate failed: userprompt is empty");
             continue;
         }
 
