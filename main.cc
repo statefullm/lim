@@ -1472,8 +1472,6 @@ int main(int argc, char ** argv) {
               }
 
               diag("Context approaching limit (" + std::to_string(n_past) + "/" + std::to_string(cparams.n_ctx) + "). Type 'reincarnate' to start a fresh session, or 'clear' to reset.", "\033[1;33m");
-              auto_continue = false;
-              break;
           }
       }
 
@@ -1485,12 +1483,14 @@ int main(int argc, char ** argv) {
             stream(unprinted_text);
         }
         auto_continue = false;
+        reincarnate_mode = false;  // Abort any in-progress reincarnate so post-generation doesn't run on stale state
         break;
       }
 
       if (batch.n_tokens < 1) {
           diag("Error: no tokens in batch to sample from", "\033[31m");
           auto_continue = false;
+          reincarnate_mode = false;  // Abort any in-progress reincarnate so post-generation doesn't run on stale state
           break;
       }
       llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
@@ -1856,7 +1856,7 @@ int main(int argc, char ** argv) {
       t_count++;
       batch.n_tokens = 0;
       common_batch_add(batch, next_token, n_past++, {0}, true);
-      if (!handle_llama_decode_error(ctx, batch)) break;
+      if (!handle_llama_decode_error(ctx, batch)) { reincarnate_mode = false; break; }
 
     } // END INNER TOKEN LOOP
 
