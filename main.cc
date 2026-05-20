@@ -1151,7 +1151,6 @@ int main(int argc, char ** argv) {
   string last_grep_req = "";
   string last_shell_cmd = "";  // Track last exec_shell command to prevent blind retries
   LoopDetector loop_guard(15);
-  int intra_loop_strikes = 0;
 
   // --- Shared helpers to avoid duplication across clear / reincarnate / input processing ---
 
@@ -1190,7 +1189,6 @@ int main(int argc, char ** argv) {
       last_grep_req = "";
       last_shell_cmd = "";
       loop_guard.clear_history();
-      intra_loop_strikes = 0;
       llama_sampler_reset(smpl);
   };
 
@@ -1668,67 +1666,6 @@ int main(int argc, char ** argv) {
           break; // The tool tag is closed. Execute!
       }
 
-      // --- INTRA-TURN LOOP DETECTION (Babbling Prevention) ---
-      if (!in_thinking_block && t_count > 0 && t_count % 10 == 0 && generated_text.length() > 100) {
-          size_t n = generated_text.length();
-          bool intra_loop = false;
-          size_t max_len = min((size_t)3000, n / 2);
-          char last_char = generated_text.back();
-          for (size_t len = 50; len <= max_len; len += 10) {
-              if (generated_text[n - len - 1] == last_char) {
-                  if (generated_text.compare(n - len, len, generated_text, n - 2 * len, len) == 0) {
-                      size_t spaces = 0;
-                      for(size_t i = n - len; i < n; ++i) { if(generated_text[i] == ' ') spaces++; }
-                      if (spaces > 5) {
-                          intra_loop = true;
-                          break;
-                      }
-                  }
-              }
-          }
-
-          if (!intra_loop && n > 300 && !in_tool_call_stream) {
-              size_t suffix_len = 250;
-              string suffix = generated_text.substr(n - suffix_len);
-              size_t prev_pos = generated_text.rfind(suffix, n - suffix_len - 1);
-              if (prev_pos != string::npos) intra_loop = true;
-          }
-
-          if (intra_loop && false) { // Disabled for now
-              intra_loop_strikes++;
-              if (intra_loop_strikes >= 5) {
-                  diag("System: Agent stubbornly babbling. Ejecting to manual prompt.", "\033[1;31m");
-                  auto_continue = false;
-                  break;
-              }
-
-              diag("System: Intra-turn Generation Loop Detected. Injecting intervention.", "\033[35m");
-
-              if (!in_tool_call_stream && !unprinted_text.empty()) {
-                  console(unprinted_text.c_str());
-                  consoleFlush();
-                  stream(unprinted_text);
-              }
-              unprinted_text = "";
-              log_entry("ASSISTANT (Interrupted Reasoning Loop)", generated_text);
-
-              string active_intervention_msg = get_next_loop_message();
-              string msg = string(TURN_END) + "\n" + TURN_START + "user\n" + active_intervention_msg + "\n" + TURN_END + "\n" + TURN_START + "assistant\n";
-              vector<llama_token> t_tokens = tokenize(msg);
-
-              if (n_past + t_tokens.size() >= cparams.n_ctx) {
-                  diag("Context limit exhausted. Type 'clear' to reset.", "\033[31m");
-                  auto_continue = false;
-                  break;
-              }
-
-              if (!feed_tokens(t_tokens)) { sync_n_past(ctx, n_past); auto_continue = false; break; }
-
-              auto_continue = true;
-              break;
-          }
-      }
-
       // --- SAFE TERMINAL BUFFERING ---
       if (!in_tool_call_stream && !in_thinking_block) {
           size_t safe_len = generated_text.length();
@@ -1938,6 +1875,7 @@ int main(int argc, char ** argv) {
         string tool_result = "";
         string display_result = "";
         bool was_loop = false;
+        bool tool_blocked_by_loop = false;
         bool abort_auto = false;
         bool inject_auto_user_msg = false;
         string active_intervention_msg = "";
@@ -1961,6 +1899,7 @@ int main(int argc, char ** argv) {
           if (pre_loop) {
               // Record it to update strike count, but DON'T execute the tool.
               was_loop = loop_guard.record_and_check(tool_call);
+              tool_blocked_by_loop = true;
               int current_strikes = loop_guard.get_loop_strikes();
 
               active_intervention_msg = get_next_loop_message();
@@ -1978,12 +1917,12 @@ int main(int argc, char ** argv) {
               } else {
                   diag("System: Circuit breaker -- intervention failed after " + std::to_string(max_attempts) + " strikes. Ejecting to prompt.", "\033[1;31m");
                   abort_auto = true;
-                  intra_loop_strikes = 0;
               }
           } else if (pre_consecutive) {
               // Same tool called too many times in a row with varying arguments.
               // Block execution and inject an intervention message.
               loop_guard.record_and_check(tool_call);
+              tool_blocked_by_loop = true;
               loop_guard.record_consecutive(tool_call);  // Keep incrementing so circuit breaker can eventually fire
               int consec = loop_guard.get_consecutive_count();
 
@@ -2002,7 +1941,6 @@ int main(int argc, char ** argv) {
               } else {
                   diag("System: Circuit breaker -- consecutive intervention failed. Ejecting to prompt.", "\033[1;31m");
                   abort_auto = true;
-                  intra_loop_strikes = 0;
               }
           } else {
               // Not a repeat -- execute the tool normally.
@@ -2090,10 +2028,23 @@ int main(int argc, char ** argv) {
             think_buffering = true;
 
             string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
-            string tool_msg = tool_result_section + TURN_START + "assistant\n";
+            string tool_msg = tool_result_section;
 
-            if (inject_auto_user_msg) {
-                tool_msg += active_intervention_msg + string(TURN_END) + "\n" + TURN_START + "assistant\n";
+            if (tool_blocked_by_loop) {
+                // Loop detected: reconstruct a clean single user turn with error + intervention,
+                // then open a fresh assistant turn. This forces the LLM to start from scratch
+                // rather than continuing its previous trajectory (which caused the loop).
+                string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result);
+                if (inject_auto_user_msg && !active_intervention_msg.empty()) {
+                    clean_user_turn += "\n" + active_intervention_msg;
+                }
+                clean_user_turn += string(TURN_END) + "\n";
+                tool_msg = clean_user_turn + string(TURN_START) + "assistant\n";
+            } else {
+                tool_msg += string(TURN_START) + "assistant\n";
+                if (inject_auto_user_msg) {
+                    tool_msg += active_intervention_msg + string(TURN_END) + "\n" + TURN_START + "assistant\n";
+                }
             }
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
@@ -2115,7 +2066,7 @@ int main(int argc, char ** argv) {
 
             string abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
             string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + abort_msg + TURN_END + "\n";
-            string tool_msg = tool_result_section + TURN_START + "assistant\n";
+            string tool_msg = tool_result_section;  // Close the turn -- do not leave open assistant tag
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
             if (n_past + t_tokens.size() < cparams.n_ctx) {
