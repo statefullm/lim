@@ -1634,9 +1634,32 @@ int main(int argc, char ** argv) {
       generated_text += token_str;
       full_response += token_str;
 
+      // --- THINKING BLOCK TRACKING ---
+      // Must run BEFORE tool call tracking so we can skip tool calls inside think blocks.
+      if (think_start == string::npos) {
+          think_start = generated_text.find(Tokens::THINK_START);
+      }
+      if (think_start != string::npos && think_end == string::npos) {
+          think_end = generated_text.find(Tokens::THINK_END, think_start);
+      }
+      in_thinking_block = (think_start != string::npos && think_end == string::npos);
+
       // --- PERF OPTIMIZATION: O(1) TRACKING OFFSETS ---
       if (tool_start == string::npos) {
-          tool_start = generated_text.find(FUNC_START, func_search_pos);
+          size_t search_from = func_search_pos;
+          while (true) {
+              tool_start = generated_text.find(FUNC_START, search_from);
+              if (tool_start == string::npos) break;
+
+              // Skip tool calls that appear inside a closed thinking block.
+              // Tool calls in <think>...</think> are internal reasoning, not actual invocations.
+              if (think_start != string::npos && think_end != string::npos &&
+                  tool_start >= think_start && tool_start < think_end) {
+                  search_from = think_end;
+                  continue;
+              }
+              break;
+          }
           if (tool_start == string::npos) {
               func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
           }
@@ -1646,15 +1669,6 @@ int main(int argc, char ** argv) {
       }
 
       in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
-
-      // --- THINKING BLOCK TRACKING ---
-      if (think_start == string::npos) {
-          think_start = generated_text.find(Tokens::THINK_START);
-      }
-      if (think_start != string::npos && think_end == string::npos) {
-          think_end = generated_text.find(Tokens::THINK_END, think_start);
-      }
-      in_thinking_block = (think_start != string::npos && think_end == string::npos);
 
       // --- TARGETED SYNTAX TRAP (Stutter Fix) ---
       if (in_tool_call_stream && generated_text.length() >= 4 &&
