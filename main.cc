@@ -1181,6 +1181,10 @@ int main(int argc, char ** argv) {
               sync_n_past(ctx, n_past);
               return false;
           }
+          // Even on apparent success, llama_decode may have returned 1 (context full)
+          // with should_break=false, leaving n_past drifted ahead of the real cache.
+          // Sync to keep our bookkeeping consistent with the actual KV cache position.
+          sync_n_past(ctx, n_past);
       }
       return true;
   };
@@ -1340,8 +1344,9 @@ int main(int argc, char ** argv) {
         prev_was_interrupted = false;  // Consumed
         vector<llama_token> reincarnate_tokens = tokenize(reincarnate_message);
 
-        if (n_past + reincarnate_tokens.size() >= cparams.n_ctx) {
-            diag("Context Limit Reached! Cannot process reincarnate. Type 'clear' to reset.", "\033[31m");
+        if (n_past + (int)reincarnate_tokens.size() >= (int)cparams.n_ctx) {
+            string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(reincarnate_tokens.size()) + ", last_n_past=" + std::to_string(last_n_past) + ")" : "";
+            diag("Context Limit Reached! Cannot process reincarnate" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
             continue;
         }
 
@@ -1409,8 +1414,9 @@ int main(int argc, char ** argv) {
       }
       vector<llama_token> tokens = tokenize(user_message);
 
-      if (n_past + tokens.size() >= cparams.n_ctx) {
-          diag("Context Limit Reached! Cannot process input. Type 'clear' to reset.", "\033[31m");
+      if (n_past + (int)tokens.size() >= (int)cparams.n_ctx) {
+          string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(tokens.size()) + ", last_n_past=" + std::to_string(last_n_past) + ")" : "";
+          diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
           continue;
       }
 
@@ -1485,7 +1491,8 @@ int main(int argc, char ** argv) {
       }
 
       if (n_past >= (int)cparams.n_ctx - 10) {
-        diag("Context Window Exhausted! Type 'clear' to reset.", "\033[31m");
+        string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + ", last_n_past=" + std::to_string(last_n_past) + ", n_ctx=" + std::to_string(cparams.n_ctx) + ")" : "";
+        diag("Context Window Exhausted!" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
         if (!unprinted_text.empty()) {
             console(unprinted_text.c_str());
             consoleFlush();
@@ -1804,7 +1811,7 @@ int main(int argc, char ** argv) {
       t_count++;
       batch.n_tokens = 0;
       common_batch_add(batch, next_token, n_past++, {0}, true);
-      if (!handle_llama_decode_error(ctx, batch)) { reincarnate_mode = false; break; }
+      if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); reincarnate_mode = false; break; }
 
     } // END INNER TOKEN LOOP
 
@@ -2090,8 +2097,9 @@ int main(int argc, char ** argv) {
             }
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
-            if (n_past + t_tokens.size() >= cparams.n_ctx) {
-                diag("Context limit exhausted. Type 'clear' to reset.", "\033[31m");
+            if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
+                string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(t_tokens.size()) + " tokens, last_n_past=" + std::to_string(last_n_past) + ", n_ctx=" + std::to_string(cparams.n_ctx) + ")" : "";
+                diag("Context limit exhausted" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 auto_continue = false;
             } else if (!feed_tokens(t_tokens)) {
                 abort_auto = true;
@@ -2181,8 +2189,9 @@ int main(int argc, char ** argv) {
         string new_session_message = string(TURN_START) + "user\n" + follow_prompt + TURN_END + "\n" + TURN_START + "assistant\n";
         vector<llama_token> new_session_tokens = tokenize(new_session_message);
 
-        if (n_past + new_session_tokens.size() >= cparams.n_ctx) {
-            diag("Context Limit Reached! Cannot process reincarnated prompt.", "\033[31m");
+        if (n_past + (int)new_session_tokens.size() >= (int)cparams.n_ctx) {
+            string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(new_session_tokens.size()) + ", last_n_past=" + std::to_string(last_n_past) + ")" : "";
+            diag("Context Limit Reached! Cannot process reincarnated prompt" + ctx_diag + ".", "\033[31m");
             continue;
         }
 

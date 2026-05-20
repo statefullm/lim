@@ -6,6 +6,7 @@ CRITICAL TOOL CALLING RULES:
 1. To invoke a tool, you MUST use the exact XML schema: "<function=tool_name><parameter=arg_name>value</parameter></function>".
 2. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag. 
 3. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
+4. You may make ONLY ONE tool call per response. Do not chain multiple tool calls in a single turn.
 
 Always use these tools for any filesystem or shell operation:
 
