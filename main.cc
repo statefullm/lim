@@ -290,6 +290,15 @@ bool should_output_think_blocks() {
     return mode == 1 || mode == 2 || mode == 3;
 }
 
+// LLLM_SHOW_TOOLS controls whether tool names are displayed in the browser.
+// Default: 1 (on). Set to 0 to suppress. Independent of LLLM_DEBUG / is_debug.
+static bool should_show_tools() {
+    const char* env = getenv("LLLM_SHOW_TOOLS");
+    if (env == nullptr) return true;
+    int val = atoi(env);
+    return val != 0;
+}
+
 template<typename... Args>
 void console(Args&&... args) {
   if (should_output_to_stdout())
@@ -1151,6 +1160,7 @@ int main(int argc, char ** argv) {
   string last_grep_req = "";
   string last_shell_cmd = "";  // Track last exec_shell command to prevent blind retries
   LoopDetector loop_guard(15);
+  int invalid_tool_strikes = 0;  // Consecutive invalid/malformed tool calls
 
   // --- Shared helpers to avoid duplication across clear / reincarnate / input processing ---
 
@@ -1189,6 +1199,7 @@ int main(int argc, char ** argv) {
       last_grep_req = "";
       last_shell_cmd = "";
       loop_guard.clear_history();
+      invalid_tool_strikes = 0;
       llama_sampler_reset(smpl);
   };
 
@@ -1849,6 +1860,12 @@ int main(int argc, char ** argv) {
             }
         }
 
+        // Show the tool name in the browser immediately so the user can see what's happening.
+        if (should_show_tools() && should_output_to_browser()) {
+            string tool_label = tool_name_for_display.empty() ? "[unknown/malformed]" : tool_name_for_display;
+            stream("\n\n> **Tool: " + tool_label + "**\n\n");
+        }
+
         unprinted_text = "";
 
         bool is_real_tool = false;
@@ -1883,9 +1900,36 @@ int main(int argc, char ** argv) {
         string tool_name = tool_name_for_display;
 
         if (!is_real_tool) {
-          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema. Supported tools: read_files, write_file, edit_file, exec_shell, search_file, web_search.";
+          invalid_tool_strikes++;
+
+          // Show the raw malformed tool call in the browser so the user can see what went wrong.
+          if (should_show_tools() && should_output_to_browser()) {
+              string raw_display = tool_call;
+              if (raw_display.length() > 500) {
+                  raw_display = raw_display.substr(0, 497) + "...";
+              }
+              stream("\n\n> **Invalid Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):**\n> ```\n> " + raw_display + "```\n\n");
+          }
+
+          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema: <\\function=tool_name><parameter=arg>value<\\/parameter><\\/function>. Supported tools: read_files, write_file, edit_file, exec_shell, search_file, web_search.";
           display_result = tool_result;
+
+          // After 2+ consecutive invalid tool calls, inject a system intervention
+          // telling the LLM to follow the system prompt strictly. This is equivalent
+          // to what the user would type manually (Ctrl+C then "Follow the system prompt strictly.")
+          // and usually causes the LLM to spot its formatting error.
+          if (invalid_tool_strikes >= 5) {
+              // Hard limit: intervention failed, eject to prompt.
+              diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+              abort_auto = true;
+          } else if (invalid_tool_strikes >= 2) {
+              diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+              inject_auto_user_msg = true;
+              active_intervention_msg = "Follow the system prompt strictly.";
+          }
         } else {
+          // Valid tool call - reset the invalid strike counter
+          invalid_tool_strikes = 0;
           bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
 
           // PRE-EXECUTION LOOP CHECK (1): Reject before running if this is an exact repeat.
@@ -2030,10 +2074,11 @@ int main(int argc, char ** argv) {
             string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
             string tool_msg = tool_result_section;
 
-            if (tool_blocked_by_loop) {
-                // Loop detected: reconstruct a clean single user turn with error + intervention,
+            if (tool_blocked_by_loop || inject_auto_user_msg) {
+                // Reconstruct a clean single user turn with error + intervention,
                 // then open a fresh assistant turn. This forces the LLM to start from scratch
-                // rather than continuing its previous trajectory (which caused the loop).
+                // rather than continuing its previous trajectory (which caused the loop or
+                // invalid tool calls). Equivalent to the user hitting Ctrl-C and typing a message.
                 string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result);
                 if (inject_auto_user_msg && !active_intervention_msg.empty()) {
                     clean_user_turn += "\n" + active_intervention_msg;
@@ -2042,9 +2087,6 @@ int main(int argc, char ** argv) {
                 tool_msg = clean_user_turn + string(TURN_START) + "assistant\n";
             } else {
                 tool_msg += string(TURN_START) + "assistant\n";
-                if (inject_auto_user_msg) {
-                    tool_msg += active_intervention_msg + string(TURN_END) + "\n" + TURN_START + "assistant\n";
-                }
             }
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
@@ -2064,7 +2106,12 @@ int main(int argc, char ** argv) {
             auto_continue = false;
             generated_text = ""; unprinted_text = "";
 
-            string abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
+            string abort_msg;
+            if (invalid_tool_strikes >= 5) {
+                abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format: <\\function=tool_name><parameter=arg>value<\\/parameter><\\/function>. Do NOT wrap tool calls in markdown code blocks or other formatting.";
+            } else {
+                abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
+            }
             string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + abort_msg + TURN_END + "\n";
             string tool_msg = tool_result_section;  // Close the turn -- do not leave open assistant tag
 
