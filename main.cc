@@ -1832,6 +1832,25 @@ int main(int argc, char ** argv) {
     auto end = chrono::high_resolution_clock::now();
     double elapsed = chrono::duration<double>(end - start).count();
 
+    // Close any orphaned markdown code fence in the browser stream.
+    // The inner loop can exit via Ctrl+C, context exhaustion, EOG, or errors.
+    // In all cases, if generated_text has an odd number of ``` fences, the
+    // last one is unclosed.  Leaving it open in rawContent causes marked.parse()
+    // to consume subsequent HTML <div> tags as code content, producing stray
+    // </div> markers in the viewer.  Close it here before any further streaming.
+    {
+        int fence_count = 0;
+        size_t pos = 0;
+        string fence_str = "```";
+        while ((pos = generated_text.find(fence_str, pos)) != string::npos) {
+            fence_count++;
+            pos += 3;
+        }
+        if (fence_count % 2 != 0) {
+            stream("```\n");
+        }
+    }
+
     // Flush any remaining unprinted text before speed info using fold expression for streaming
     bool stdout_ended_with_newline = prev_stdout_ended_with_newline;  // Start with previous iteration's state
     if (!unprinted_text.empty()) {
