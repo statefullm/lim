@@ -552,7 +552,6 @@ private:
     static const int CONSECUTIVE_THRESHOLD = 5;
 
     string normalize_str(const string& s) const {
-        // Extract tool name from <function=TOOL_NAME> tag
         string tool_name;
         size_t fs = s.find(FUNC_START);
         if (fs != string::npos) {
@@ -1951,13 +1950,11 @@ int main(int argc, char ** argv) {
               stream("\n\n> **Invalid Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):**\n> ```\n> " + raw_display + "```\n\n");
           }
 
-          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema: <\\function=tool_name><parameter=arg>value<\\/parameter><\\/function>. Supported tools: read_files, write_file, edit_file, exec_shell, search_file, web_search.";
+          tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema.";
           display_result = tool_result;
 
           // After 2+ consecutive invalid tool calls, inject a system intervention
-          // telling the LLM to follow the system prompt strictly. This is equivalent
-          // to what the user would type manually (Ctrl+C then "Follow the system prompt strictly.")
-          // and usually causes the LLM to spot its formatting error.
+          // telling the LLM to follow the system prompt strictly.
           if (invalid_tool_strikes >= 5) {
               // Hard limit: intervention failed, eject to prompt.
               diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
@@ -1965,7 +1962,7 @@ int main(int argc, char ** argv) {
           } else if (invalid_tool_strikes >= 2) {
               diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
               inject_auto_user_msg = true;
-              active_intervention_msg = "Follow the system prompt strictly.";
+              active_intervention_msg = SYSTEM_PROMPT_REMINDER;
           }
         } else {
           // Valid tool call - reset the invalid strike counter
@@ -2149,7 +2146,7 @@ int main(int argc, char ** argv) {
 
             string abort_msg;
             if (invalid_tool_strikes >= 5) {
-                abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format: <\\function=tool_name><parameter=arg>value<\\/parameter><\\/function>. Do NOT wrap tool calls in markdown code blocks or other formatting.";
+                abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
             } else {
                 abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
             }
