@@ -1918,16 +1918,6 @@ int main(int argc, char ** argv) {
           }
         }
 
-        int bticks = 0; size_t pos = 0;
-        while ((pos = full_response.find("```", pos)) != string::npos) { bticks++; pos += 3; }
-        if (bticks % 2 != 0) is_real_tool = false;
-
-        size_t global_ts = full_response.rfind(FUNC_START);
-        if (global_ts != string::npos && global_ts > 0) {
-          char prev_char = full_response[global_ts - 1];
-          if (prev_char == '`' || prev_char == '\\') is_real_tool = false;
-        }
-
         string tool_result = "";
         string display_result = "";
         bool was_loop = false;
