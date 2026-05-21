@@ -350,10 +350,17 @@ static void pipe_write(const char* data, size_t len) {
     }
 }
 
+// Segment prefix characters for viewer.html segment-based rendering.
+// Each type renders independently so markdown in one never swallows another.
+static const char SEG_LLM_TEXT   = '\x02';  // LLM-generated text (rendered through marked)
+static const char SEG_TOOL_LABEL = '\x03';  // Tool name label (raw HTML)
+static const char SEG_HTML       = '\x04';  // Any other raw HTML (tool results, user input, dividers)
+
 void stream(const string& raw_token) {
     if (!should_output_to_browser()) return;
     // Thinking blocks are already filtered at source (see SAFE TERMINAL BUFFERING)
-    // This function just sends pre-filtered text to browser
+    // This function sends LLM text to browser with a segment prefix so the viewer
+    // can render it independently from tool labels/results via marked.parse().
 
     // Filter out HTML closing tags that might leak from model output
     string filtered = raw_token;
@@ -362,7 +369,27 @@ void stream(const string& raw_token) {
         filtered.erase(pos, 6);
     }
 
+    pipe_write(&SEG_LLM_TEXT, 1);
     pipe_write(filtered.c_str(), filtered.length());
+}
+
+void stream_tool_label(const string& tool_name) {
+    if (!should_output_to_browser()) return;
+    string html = "\n\n<div class='tool-label'>Tool: <strong>" + tool_name + "</strong></div>\n\n";
+    pipe_write(&SEG_TOOL_LABEL, 1);
+    pipe_write(html.c_str(), html.length());
+}
+
+void stream_tool_result(const string& html) {
+    if (!should_output_to_browser()) return;
+    pipe_write(&SEG_HTML, 1);
+    pipe_write(html.c_str(), html.length());
+}
+
+void stream_html(const string& html) {
+    if (!should_output_to_browser()) return;
+    pipe_write(&SEG_HTML, 1);
+    pipe_write(html.c_str(), html.length());
 }
 
 void clear_viewer() {
@@ -1385,12 +1412,21 @@ int main(int argc, char ** argv) {
     if (!user_input.empty()) {
       if (!auto_continue) {
           log_entry("USER", user_input);
-          // Write user input HTML directly to pipe (bypass stream() which strips </div>)
+          // Write user input HTML directly to pipe with segment prefix
           if (should_output_to_browser() && pipe_fd >= 0) {
               ensure_pipe_open();
               if (pipe_fd >= 0) {
-                  string user_html = "\n\n<div style=\"color: #79c0ff;\">\n\n```" + user_input + "\n```\n\n</div>\n\n";
-                  write(pipe_fd, user_html.c_str(), user_html.length());
+                  // Escape HTML entities for safe display inside <pre><code>
+                  string escaped_user;
+                  for (char c : user_input) {
+                      if (c == '&') escaped_user += "&amp;";
+                      else if (c == '<') escaped_user += "&lt;";
+                      else if (c == '>') escaped_user += "&gt;";
+                      else if (c == '"') escaped_user += "&quot;";
+                      else escaped_user += c;
+                  }
+                  string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + escaped_user + "</code></pre></div>\n\n";
+                  stream_html(user_html);
               }
           }
       }
@@ -1831,24 +1867,8 @@ int main(int argc, char ** argv) {
     auto end = chrono::high_resolution_clock::now();
     double elapsed = chrono::duration<double>(end - start).count();
 
-    // Close any orphaned markdown code fence in the browser stream.
-    // The inner loop can exit via Ctrl+C, context exhaustion, EOG, or errors.
-    // In all cases, if generated_text has an odd number of ``` fences, the
-    // last one is unclosed.  Leaving it open in rawContent causes marked.parse()
-    // to consume subsequent HTML <div> tags as code content, producing stray
-    // </div> markers in the viewer.  Close it here before any further streaming.
-    {
-        int fence_count = 0;
-        size_t pos = 0;
-        string fence_str = "```";
-        while ((pos = generated_text.find(fence_str, pos)) != string::npos) {
-            fence_count++;
-            pos += 3;
-        }
-        if (fence_count % 2 != 0) {
-            stream("```\n");
-        }
-    }
+    // With segment-based rendering, each LLM text segment is parsed independently.
+    // Unclosed code fences in one segment don't affect subsequent HTML segments.
 
     // Flush any remaining unprinted text before speed info using fold expression for streaming
     bool stdout_ended_with_newline = prev_stdout_ended_with_newline;  // Start with previous iteration's state
@@ -1899,10 +1919,10 @@ int main(int argc, char ** argv) {
             }
         }
 
-        // Show the tool name in the browser immediately so the user can see what's happening.
-        if (should_show_tools() && should_output_to_browser()) {
-            string tool_label = tool_name_for_display.empty() ? "[unknown/malformed]" : tool_name_for_display;
-            stream("\n\n> **Tool: " + tool_label + "**\n\n");
+                // Show the tool name in the browser immediately (segment-based rendering).
+        if (should_show_tools()) {
+            string tool_label = tool_name_for_display.empty() ? "unknown" : tool_name_for_display;
+            stream_tool_label(tool_label);
         }
 
         unprinted_text = "";
@@ -1937,7 +1957,16 @@ int main(int argc, char ** argv) {
               if (raw_display.length() > 500) {
                   raw_display = raw_display.substr(0, 497) + "...";
               }
-              stream("\n\n> **Invalid Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):**\n> ```\n> " + raw_display + "```\n\n");
+              // Escape HTML to prevent injection from tool content
+              string safe;
+              for (char c : raw_display) {
+                  if (c == '&') safe += "&amp;";
+                  else if (c == '<') safe += "&lt;";
+                  else if (c == '>') safe += "&gt;";
+                  else safe += c;
+              }
+              string error_html = "\n\n<div class='tool-error'>Invalid Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
+              stream_tool_result(error_html);
           }
 
           tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema.";
@@ -2084,7 +2113,17 @@ int main(int argc, char ** argv) {
                   result_to_print.erase(0, p + 1);
               }
               if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
-              stream("\n\n> **Tool Result:**\n> ```\n> " + truncated_display + "```\n\n");
+              // Escape HTML in tool result for safe browser display (no markdown code fences)
+              string safe_result;
+              for (char c : truncated_display) {
+                  if (c == '&') safe_result += "&amp;";
+                  else if (c == '<') safe_result += "&lt;";
+                  else if (c == '>') safe_result += "&gt;";
+                  else safe_result += c;
+              }
+
+              string result_html = "\n\n<div class='tool-result'>Tool Result:<pre><code>" + safe_result + "</code></pre></div>\n\n";
+              stream_tool_result(result_html);
             }
             consoleFlush();
             prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
@@ -2191,16 +2230,13 @@ int main(int argc, char ** argv) {
         // but reincarnate should preserve the visible conversation history so the user can see what happened.
 
         // Output a visual divider to the browser to mark the start of the new session
-        if (should_output_to_browser() && pipe_fd >= 0) {
-            ensure_pipe_open();
-            if (pipe_fd >= 0) {
-                const char* divider =
-                    "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
-                    "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
-                    "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session (Reincarnated) --</span>\n"
-                    "</div>\n\n";
-                write(pipe_fd, divider, strlen(divider));
-            }
+        if (should_output_to_browser()) {
+            string divider =
+                "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
+                "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
+                "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session (Reincarnated) --</span>\n"
+                "</div>\n\n";
+            stream_html(divider);
         }
 
         string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";

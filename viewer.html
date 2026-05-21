@@ -19,7 +19,7 @@
             line-height: 1.6;
             margin: 0;
             padding: 20px 10%;
-            padding-bottom: 100px; /* Space for scrolling */
+            padding-bottom: 100px;
         }
         #output {
             max-width: 900px;
@@ -36,6 +36,10 @@
             background-color: #2d2d2d;
             padding: 2px 4px;
             border-radius: 4px;
+        }
+        pre code {
+            background-color: transparent;
+            padding: 0;
         }
         blockquote {
             border-left: 4px solid #569cd6;
@@ -54,16 +58,39 @@
         }
         .connected { background-color: #28a745; color: white; }
         .disconnected { background-color: #dc3545; color: white; }
-        .thinking-indicator {
-            color: #888;
-            font-style: italic;
-            margin-top: 10px;
-            animation: pulse 1.5s infinite;
+
+        /* Tool label / result styling (sent as raw HTML from C++) */
+        .tool-label {
+            color: #ce9178;
+            font-weight: bold;
+            margin: 12px 0 4px 0;
+            font-size: 0.95em;
         }
-        @keyframes pulse {
-            0% { opacity: 0.6; }
-            50% { opacity: 1; }
-            100% { opacity: 0.6; }
+        .tool-error {
+            color: #f48771;
+            margin: 12px 0;
+            padding: 10px 15px;
+            background-color: #3a1e1e;
+            border-radius: 6px;
+            border-left: 4px solid #f48771;
+        }
+        .tool-error pre {
+            margin: 8px 0 0 0;
+            font-size: 0.85em;
+        }
+        .tool-result {
+            color: #b5cea8;
+            margin: 12px 0;
+            padding: 10px 15px;
+            background-color: #1e3a1e;
+            border-radius: 6px;
+            border-left: 4px solid #888;
+        }
+        .tool-result pre {
+            margin: 8px 0 0 0;
+            font-size: 0.85em;
+            max-height: 400px;
+            overflow-y: auto;
         }
     </style>
 </head>
@@ -75,135 +102,163 @@
     <script>
         const outputDiv = document.getElementById('output');
         const statusDiv = document.getElementById('status');
-        let rawContent = '';
         let isFirstConnect = true;
 
-        function connect() {
-            // Get the WebSocket URL from URL parameters
-            // Connect to /ws endpoint on the same host/port as the HTTP page
-            const urlParams = new URLSearchParams(window.location.search);
-            if (urlParams.get('url')) {
-                const wsUrl = urlParams.get('url');
-                const ws = new WebSocket(wsUrl);
-                setupWebSocket(ws);
-                return;
+        /* ------------------------------------------------------------------ */
+        /*  Segment-based renderer                                            */
+        /* ------------------------------------------------------------------ */
+        /*  Content arrives tagged with control-character prefixes:
+        /*    \x02 = LLM text   → rendered through marked.parse()
+        /*    \x03 = Tool label → inserted as raw HTML
+        /*    \x04 = Other HTML → inserted as raw HTML (results, user input, etc.)
+        /*
+        /*  Each segment renders independently. Markdown code fences in one
+        /*  LLM segment can never swallow a tool-label div from another segment.
+        /* ------------------------------------------------------------------ */
+
+        const SEG_LLM_TEXT   = '\x02';
+        const SEG_TOOL_LABEL = '\x03';
+        const SEG_HTML       = '\x04';
+
+        // Segments: array of { type, content }
+        let segments = [];
+
+        // Merge adjacent segments of the same type into one.
+        // Critical: C++ sends \x02 before every small token; without this, each token
+        // becomes its own segment and gets independently rendered through marked.parse(),
+        // producing broken-up output with excessive block-level wrappers.
+        function coalesceSegments() {
+            let i = 1;
+            while (i < segments.length) {
+                if (segments[i].type === segments[i - 1].type && segments[i].content.length > 0) {
+                    segments[i - 1].content += segments[i].content;
+                    segments.splice(i, 1);
+                } else if (segments[i].content.length === 0) {
+                    // Drop empty segments
+                    segments.splice(i, 1);
+                } else {
+                    i++;
+                }
             }
-
-            // Build WebSocket URL from current page URL
-            const pageHost = window.location.host;
-            const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${wsProtocol}//${pageHost}/ws`;
-
-            const ws = new WebSocket(wsUrl);
-            setupWebSocket(ws);
         }
 
-        function setupWebSocket(ws) {
+        function render() {
+            let html = '';
+
+            for (const seg of segments) {
+                if (seg.type === SEG_LLM_TEXT) {
+                    // Render LLM text through marked — code fences, bold, lists, etc.
+                    if (typeof marked !== 'undefined') {
+                        html += marked.parse(seg.content, { breaks: true });
+                    } else {
+                        // Fallback if marked hasn't loaded yet
+                        const esc = seg.content
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;');
+                        html += '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
+                    }
+                } else {
+                    // Tool labels and other HTML — insert directly
+                    html += seg.content;
+                }
+            }
+
+            outputDiv.innerHTML = html;
+
+            // Render math with KaTeX
+            if (typeof renderMathInElement === 'function') {
+                renderMathInElement(outputDiv, {
+                    delimiters: [
+                        { left: '$$',  right: '$$',  display: true  },
+                        { left: '$',   right: '$',   display: false },
+                        { left: '\\(', right: '\\)', display: false },
+                        { left: '\\[', right: '\\]', display: true  }
+                    ],
+                    throwOnError: false
+                });
+            }
+
+            // Auto-scroll
+            window.scrollTo(0, document.body.scrollHeight);
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  WebSocket connection                                              */
+        /* ------------------------------------------------------------------ */
+
+        function connect() {
+            const urlParams = new URLSearchParams(window.location.search);
+            let ws;
+
+            if (urlParams.get('url')) {
+                ws = new WebSocket(urlParams.get('url'));
+            } else {
+                const pageHost = window.location.host;
+                const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                ws = new WebSocket(proto + '//' + pageHost + '/ws');
+            }
 
             ws.onopen = () => {
                 statusDiv.textContent = 'Connected';
                 statusDiv.className = 'status connected';
-                isFirstConnect = false; // Mark that we've successfully connected once
+                isFirstConnect = false;
             };
 
             ws.onmessage = (event) => {
-                // Handle clear command from C++ (SOH control char 0x01)
+                // Clear command (SOH control char 0x01)
                 if (event.data.includes('\x01')) {
-                    rawContent = '';
+                    segments = [];
                     outputDiv.innerHTML = '';
                     return;
                 }
 
-                // Append new tokens (think blocks are already filtered on C++ side)
-                rawContent += event.data;
+                // Split incoming data by segment prefix characters.
+                // Data may contain multiple segments or partial segments.
+                let data = event.data;
+                let lastIdx = 0;
 
-                let displayContent = rawContent;
-                displayContent = displayContent.replace(/(\$\$?)([\s\S]+?)\1/g, (match) => {return match.replace(/\\(?=[^\w\s])/g, '\\\\');});
-
-                // Parse Markdown with breaks=true for regular text
-                // Protect code blocks from linebreaking by extracting them first
-                const codeBlockPlaceholders = [];
-
-                // Extract code blocks and replace with placeholders
-                let tempContent = displayContent.replace(/```([\s\S]*?)```/g, (match, code) => {
-                    const placeholder = `%%CODEBLOCK_${codeBlockPlaceholders.length}%%`;
-                    codeBlockPlaceholders.push({
-                        placeholder: placeholder,
-                        code: code.trim(),
-                        language: '' // Could extract language from match if needed
-                    });
-                    return placeholder;
-                });
-
-                // Parse the content without code blocks (breaks only affect regular text)
-                const customRenderer = new marked.Renderer();
-
-                // Override the code block renderer to restore extracted code blocks safely
-                customRenderer.code = function(token) {
-                    const codeText = typeof token === 'string' ? token : token.text;
-                    const lang = typeof token === 'string' ? arguments[1] : token.lang;
-
-                    const langClass = lang ? ` class="language-${lang}"` : '';
-                    const escapedCode = codeText
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;');
-                    return `<pre><code${langClass}>${escapedCode}</code></pre>`;
-                };
-
-                let parsedContent = marked.parse(tempContent, {
-                    breaks: true,
-                    renderer: customRenderer
-                });
-
-                // Restore the original code blocks (they preserve whitespace)
-                codeBlockPlaceholders.forEach((block, index) => {
-                    const escapedCode = block.code
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;');
-
-                    // Use a callback function () => to prevent '$' character interpolation
-                    parsedContent = parsedContent.replace(
-                        block.placeholder,
-                        () => `<pre><code class="language-${block.language}">${escapedCode}</code></pre>`
-                    );
-                });
-
-                // Use the parsed HTML directly - no need for additional newline replacement
-                outputDiv.innerHTML = parsedContent;
-
-                outputDiv.querySelectorAll('p').forEach(p => {
-                  p.innerHTML = p.innerHTML.replace(/(\$\$?)([\s\S]+?)\1/g, (match) => { return match.replace(/<br\s*\/?>/gi, ' '); });
-                });
-
-                // 2. Render Math (KaTeX)
-                if (window.renderMathInElement) {
-                    renderMathInElement(outputDiv, {
-                        delimiters: [
-                            {left: '$$', right: '$$', display: true},
-                            {left: '$', right: '$', display: false},
-                            {left: '\\(', right: '\\)', display: false},
-                            {left: '\\[', right: '\\]', display: true}
-                        ],
-                        throwOnError: false
-                    });
+                for (let i = 0; i < data.length; i++) {
+                    const ch = data[i];
+                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML) {
+                        // Push any trailing untagged text before this prefix as LLM text
+                        if (i > lastIdx) {
+                            const trailing = data.substring(lastIdx, i);
+                            if (segments.length > 0 && segments[segments.length - 1].type === SEG_LLM_TEXT) {
+                                segments[segments.length - 1].content += trailing;
+                            } else if (trailing.length > 0) {
+                                segments.push({ type: SEG_LLM_TEXT, content: trailing });
+                            }
+                        }
+                        // Start a new segment
+                        segments.push({ type: ch, content: '' });
+                        lastIdx = i + 1;
+                    }
                 }
 
-                // Auto-scroll to bottom
-                window.scrollTo(0, document.body.scrollHeight);
+                // Remaining text after last prefix goes to the current segment
+                if (lastIdx < data.length) {
+                    segments[segments.length - 1].content += data.substring(lastIdx);
+                } else if (lastIdx === data.length && data.length > 0) {
+                    // Message ended exactly on a prefix with no content — shouldn't happen normally
+                    // but handle gracefully by adding empty segment
+                }
+
+                // Coalesce consecutive segments of the same type so that many small
+                // LLM-text tokens (each prefixed with \x02) merge into one block rather
+                // than each getting its own independent markdown render pass.
+                coalesceSegments();
+
+                render();
             };
 
             ws.onclose = () => {
                 if (isFirstConnect) {
-                    // First time connecting - keep trying until successful
                     statusDiv.textContent = 'Connecting...';
                     setTimeout(connect, 2000);
                 } else {
-                    // Already connected before, now disconnected - just show status
                     statusDiv.textContent = 'Disconnected';
                     statusDiv.className = 'status disconnected';
-                    // No auto-reconnect after being connected
                 }
             };
         }
