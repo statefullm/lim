@@ -2099,32 +2099,34 @@ int main(int argc, char ** argv) {
             bool has_match_count = (display_result.find("Match count:") != string::npos);
 
             if (is_debug) {
-              // Truncate display_result to last 500 chars for debug output (final lines are more useful)
-              string truncated_display = display_result;
-              if (truncated_display.length() > 500) {
-                  truncated_display = "..." + truncated_display.substr(truncated_display.length() - 497);
-              }
-
               console("\n\033[92m[Tool Result]\033[0m\n");
-              string result_to_print = truncated_display;
+              string result_to_print = display_result;
               size_t p = 0;
               while ((p = result_to_print.find('\n')) != string::npos) {
                 console("  ", (int)p, result_to_print.c_str(),"\n");
                   result_to_print.erase(0, p + 1);
               }
               if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
-              // Escape HTML in tool result for safe browser display (no markdown code fences)
-              string safe_result;
-              for (char c : truncated_display) {
-                  if (c == '&') safe_result += "&amp;";
-                  else if (c == '<') safe_result += "&lt;";
-                  else if (c == '>') safe_result += "&gt;";
-                  else safe_result += c;
-              }
-
-              string result_html = "\n\n<div class='tool-result'>Tool Result:<pre><code>" + safe_result + "</code></pre></div>\n\n";
-              stream_tool_result(result_html);
             }
+
+            // Always send tool results to the browser (independent of debug mode)
+            // Truncate to last 500 chars to avoid overwhelming the viewer (unless debug mode)
+            string display_for_browser = display_result;
+            if (!is_debug && display_for_browser.length() > 500) {
+                display_for_browser = "..." + display_for_browser.substr(display_for_browser.length() - 497);
+            }
+
+            // Escape HTML in tool result for safe browser display (no markdown code fences)
+            string safe_result;
+            for (char c : display_for_browser) {
+                if (c == '&') safe_result += "&amp;";
+                else if (c == '<') safe_result += "&lt;";
+                else if (c == '>') safe_result += "&gt;";
+                else safe_result += c;
+            }
+
+            string result_html = "\n\n<div class='tool-result'>Tool Result:<pre><code>" + safe_result + "</code></pre></div>\n\n";
+            stream_tool_result(result_html);
             consoleFlush();
             prev_stdout_ended_with_newline = true;  // Tool output printed, ends with \n
 

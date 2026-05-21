@@ -74,16 +74,6 @@ static void escape_parameter_tags(std::string& str) {
     }
 }
 
-// --- Helper to strip embedded code-fence sequences from shell output ---
-static void strip_code_fences(std::string& str) {
-    std::string tag;
-    for (int i = 0; i < 3; i++) tag += '`';
-    size_t pos = 0;
-    while ((pos = str.find(tag, pos)) != std::string::npos) {
-        str.erase(pos, tag.length());
-    }
-}
-
 // --- Helper to unescape tags from LLM input before writing to disk ---
 static void unescape_parameter_tags(std::string& str) {
     std::string from = PARAM_END_ESC;
@@ -187,14 +177,6 @@ string FileSystemTools::exec_shell(const string& command) {
     chat_log.flush();
   }
 
-  // Only output a truncated version to stdout (terminal), not to log file
-  // Show the final lines instead of initial lines for better diagnostic value
-  string result_preview = result.length() > 500 ? "..." + result.substr(result.length() - 497) : result;
-  if (!is_debug && !result_preview.empty()) {
-    strip_code_fences(result_preview);
-    log_diagnostic("```\n" + result_preview + "```");
-  }
-
   // Build the final result with exit code information for better LLM diagnostics
   if (result.empty()) {
     if (exit_code == 0) {
@@ -207,9 +189,7 @@ string FileSystemTools::exec_shell(const string& command) {
   } else {
     // Always include exit code so the LLM can distinguish success from failure
     if (exit_code > 0) {
-      result = "[Exit code: " + to_string(exit_code) + "]\n```\n" + result + "```";
-    } else {
-      result = "```\n" + result + "```";
+      result = "[Exit code: " + to_string(exit_code) + "]\n" + result;
     }
   }
   return result;
@@ -267,11 +247,10 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
       return "Error: Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
     }
 
-    string result = "Lines " + to_string(start + 1) + "-" + to_string(end + 1) + " of " + path + ":\n```\n";
+    string result = "Lines " + to_string(start + 1) + "-" + to_string(end + 1) + " of " + path + ":\n";
     for (int i = start; i <= end; i++) {
       result += lines[i] + "\n";
     }
-    result += "```\n";
 
     log_diagnostic(search_label, false /* logOnly */);
     escape_parameter_tags(result);
@@ -303,7 +282,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
         if (content[i] == '\n') end_line++;
       }
 
-      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line) + ") ---\n```\n";
+      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line) + ") ---\n";
 
       size_t ctx_start = pos;
       size_t ctx_end = end_pos;
@@ -321,7 +300,6 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
       }
 
       result += content.substr(ctx_start, ctx_end - ctx_start);
-      result += "```\n";
       pos = end_pos;
     }
   } else {
@@ -346,11 +324,11 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
         }
         int start = max(0, i - context);
         int end = min((int)lines.size() - 1, i + context);
-        result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n```\n";
+        result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n";
         for (int j = start; j <= end; j++) {
           result += lines[j] + "\n";
         }
-        result += "```\n\n";
+        result += "\n";
         i = end;
       }
       i++;
