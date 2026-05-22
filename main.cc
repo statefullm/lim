@@ -898,6 +898,23 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   return result;
 }
 
+// --- Helper to strip thinking and tool-call XML tags from a string ---
+// Used when rendering thinking block output so that internal tool-call syntax
+// (e.g., </parameter>) does not leak to stdout.
+static void _strip_think_and_tool_tags(string& str) {
+    static const vector<string> all_tags = {
+        Tokens::THINK_START, Tokens::THINK_END,
+        FUNC_START, FUNC_END,
+        PARAM_START, PARAM_END
+    };
+    for (const auto& tag : all_tags) {
+        size_t p;
+        while ((p = str.find(tag)) != string::npos) {
+            str.erase(p, tag.length());
+        }
+    }
+}
+
 // --- Helper to strip all occurrences of given tags from a string ---
 static void strip_tags(string& str, const vector<string>& tags) {
     for (const auto& tag : tags) {
@@ -1608,10 +1625,11 @@ int main(int argc, char ** argv) {
               tool_start = generated_text.find(FUNC_START, search_from);
               if (tool_start == string::npos) break;
 
-              // Skip tool calls that appear inside a closed thinking block.
+              // Skip tool calls that appear inside a thinking block (open or closed).
               // Tool calls in <think>...</think> are internal reasoning, not actual invocations.
-              if (think_start != string::npos && think_end != string::npos &&
-                  tool_start >= think_start && tool_start < think_end) {
+              if (think_start != string::npos &&
+                  tool_start >= think_start &&
+                  (think_end == string::npos || tool_start < think_end)) {
                   search_from = think_end;
                   continue;
               }
@@ -1720,15 +1738,8 @@ int main(int argc, char ** argv) {
 
               // Always buffer until first non-whitespace to suppress empty blocks regardless of LLLM_OUTPUT
               if (think_buffering) {
-                  // Strip tags before checking/accumulating
-                  size_t open_tag_pos = think_output.find(tstart);
-                  if (open_tag_pos != string::npos) {
-                      think_output.erase(open_tag_pos, tstart.length());
-                  }
-                  size_t close_tag_pos = think_output.find(tend);
-                  if (close_tag_pos != string::npos) {
-                      think_output.erase(close_tag_pos, tend.length());
-                  }
+                  // Strip thinking tags and tool call tags before checking/accumulating
+                  _strip_think_and_tool_tags(think_output);
 
                   // Check for first non-whitespace character
                   bool found_content = false;
@@ -1753,15 +1764,8 @@ int main(int argc, char ** argv) {
                       think_buffer += think_output;
                   }
               } else {
-                  // Already found content - stream directly, still stripping tags
-                  size_t open_tag_pos = think_output.find(tstart);
-                  if (open_tag_pos != string::npos) {
-                      think_output.erase(open_tag_pos, tstart.length());
-                  }
-                  size_t close_tag_pos = think_output.find(tend);
-                  if (close_tag_pos != string::npos) {
-                      think_output.erase(close_tag_pos, tend.length());
-                  }
+                  // Already found content - stream directly, stripping thinking and tool call tags
+                  _strip_think_and_tool_tags(think_output);
                   console_think(think_output.c_str());
                   consoleThinkFlush();
               }
