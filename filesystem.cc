@@ -20,6 +20,61 @@
 using namespace std;
 using namespace Tokens;
 
+// Segment prefix for raw HTML (matches main.cc SEG_HTML)
+static const char SEG_HTML = '\x04';
+
+// Helper for raw pipe writes used by log_tool_diagnostic
+static void pipe_write(const char* data, size_t len) {
+    if (pipe_fd >= 0) {
+        ssize_t res = write(pipe_fd, data, len);
+        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(pipe_fd);
+            pipe_fd = -1;
+        }
+    }
+}
+
+// Wrapper: outputs tool diagnostics with .tool-label styling in the browser.
+// Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.
+void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
+                         const string& tag /* = "" */) {
+    if (!chat_log.is_open()) return;
+
+    string final_message = tag.empty() ? message : tag + " " + message;
+
+    if (!debugOnly || is_debug) {
+        // Write to chat_log
+        chat_log << final_message << "\n";
+        chat_log.flush();
+
+        // Styled HTML to browser pipe (uses .tool-label colors from viewer.html)
+        if (should_output_to_browser()) {
+            if (pipe_fd < 0) {
+                const char* FIFO_PATH = "/tmp/lllm.fifo";
+                pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+            }
+            if (pipe_fd >= 0) {
+                string safe;
+                for (char c : final_message) {
+                    if (c == '&') safe += "&amp;";
+                    else if (c == '<') safe += "&lt;";
+                    else if (c == '>') safe += "&gt;";
+                    else safe += c;
+                }
+                string html = "<div class='tool-label'>" + safe + "</div>";
+                pipe_write(&SEG_HTML, 1);
+                pipe_write(html.c_str(), html.length());
+            }
+        }
+
+        // Plain text to stdout
+        if (should_output_to_stdout()) {
+            cout << final_message << endl;
+            fflush(stdout);
+        }
+    }
+}
+
 // --- Consolidated Diagnostic Logging Function ---
 void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
                     const string& tag /* = "" */) {
@@ -121,7 +176,7 @@ string FileSystemTools::exec_shell(const string& command) {
   string cmd_str = "\"" + (command.length() > 80 ? command.substr(0, 77) + "..." : command) + "\"";
 
   // Output function call to both stdout and logfile
-  log_diagnostic("exec_shell(" + cmd_str + ")");
+  log_tool_diagnostic("exec_shell(" + cmd_str + ")");
 
   string safe_cmd = command;
   size_t pos = 0;
@@ -252,7 +307,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
       result += lines[i] + "\n";
     }
 
-    log_diagnostic(search_label, false /* logOnly */);
+    log_tool_diagnostic(search_label);
     escape_parameter_tags(result);
     return result;
   }
@@ -336,12 +391,12 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   }
 
   if (match_count == 0) {
-    log_diagnostic(search_label + ": No occurrences found", false /* logOnly */);
+    log_tool_diagnostic(search_label + ": No occurrences found");
     return "No occurrences found for text.";
   }
 
   // Log function call with match count on one line
-  log_diagnostic(search_label + ": " + to_string(match_count) + " match(es)", false /* logOnly */);
+  log_tool_diagnostic(search_label + ": " + to_string(match_count) + " match(es)");
 
   escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
@@ -351,7 +406,7 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
   // Output function call to both stdout and logfile for each file
   for (const auto& path : paths) {
     string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
-    log_diagnostic("read_file(" + path_str + ")");
+    log_tool_diagnostic("read_file(" + path_str + ")");
   }
 
   vector<map<string, string>> results;
@@ -505,7 +560,7 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
   // Output the tool function call to both stdout and logfile
-  log_diagnostic("write_file(" + path_str + ")");
+  log_tool_diagnostic("write_file(" + path_str + ")");
 
   string fullpath = _get_fullpath(path);
 
@@ -527,6 +582,12 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   out_file.close();
 
   map<string, string> result;
+  if (!writable_content.empty() && !out_file) {
+    result["status"] = "error";
+    result["error"] = "Write failed for file: " + path;
+    log_diagnostic("Error: Write failed for file", true /* logOnly */);
+    return result;
+  }
   result["status"] = "success";
   // Log success without content - use logOnly=true to ensure content is never shown
   log_diagnostic("Successfully written: " + path + " (size=" + to_string(writable_content.length()) + " bytes)", true /* logOnly */);
@@ -620,8 +681,14 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   out_file.close();
 
   map<string, string> result;
+  if (!out_file) {
+    result["status"] = "error";
+    result["error"] = "Write failed after edit for file: " + path;
+    log_diagnostic("Error: Write failed after edit", true /* logOnly */);
+    return result;
+  }
   result["status"] = "updated";
   result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified).";
-  log_diagnostic(edit_label + ": " + to_string(changes_count) + " change(s)", false /* logOnly */);
+  log_tool_diagnostic(edit_label + ": " + to_string(changes_count) + " change(s)");
   return result;
 }

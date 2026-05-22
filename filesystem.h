@@ -35,6 +35,11 @@ private:
 void log_diagnostic(const std::string& message, bool logOnly = false, bool debugOnly = false,
                     const std::string& tag = "");
 
+// Styled wrapper: outputs tool call diagnostics with .tool-label colors in the browser.
+// Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.
+void log_tool_diagnostic(const std::string& message, bool debugOnly = false,
+                         const std::string& tag = "");
+
 
 
 // Global debug flag - declared in main.cc and used by other modules
