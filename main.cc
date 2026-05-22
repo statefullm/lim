@@ -353,7 +353,6 @@ static void pipe_write(const char* data, size_t len) {
 // Segment prefix characters for viewer.html segment-based rendering.
 // Each type renders independently so markdown in one never swallows another.
 static const char SEG_LLM_TEXT   = '\x02';  // LLM-generated text (rendered through marked)
-static const char SEG_TOOL_LABEL = '\x03';  // Tool name label (raw HTML)
 static const char SEG_HTML       = '\x04';  // Any other raw HTML (tool results, user input, dividers)
 
 void stream(const string& raw_token) {
@@ -371,13 +370,6 @@ void stream(const string& raw_token) {
 
     pipe_write(&SEG_LLM_TEXT, 1);
     pipe_write(filtered.c_str(), filtered.length());
-}
-
-void stream_tool_label(const string& tool_name) {
-    if (!should_output_to_browser()) return;
-    string html = "\n\n<div class='tool-label'><strong>" + tool_name + "</strong></div>\n\n";
-    pipe_write(&SEG_TOOL_LABEL, 1);
-    pipe_write(html.c_str(), html.length());
 }
 
 void stream_tool_result(const string& html) {
@@ -1843,12 +1835,6 @@ int main(int argc, char ** argv) {
             if (name_end != string::npos) {
                 tool_name_for_display = tool_call.substr(name_start, name_end - name_start);
             }
-        }
-
-                // Show the tool name in the browser immediately (segment-based rendering).
-        if (should_show_tools()) {
-            string tool_label = tool_name_for_display.empty() ? "unknown" : tool_name_for_display;
-            stream_tool_label(tool_label);
         }
 
         unprinted_text = "";
