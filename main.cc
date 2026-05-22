@@ -570,14 +570,6 @@ private:
     map<size_t, int> freq_map;  // O(1) occurrence counts, kept in sync with tool_history
     size_t max_window_size;
 
-    // Consecutive same-tool-name tracking (secondary loop detection).
-    // Only counts as "consecutive" if the normalized arguments are also similar.
-    // Different arguments = different intent, not a loop.
-    string last_tool_name;
-    string last_norm_args;  // Normalized argument portion of the last tool call
-    int consecutive_count;
-    static const int CONSECUTIVE_THRESHOLD = 5;
-
     string normalize_str(const string& s) const {
         string tool_name;
         size_t fs = s.find(FUNC_START);
@@ -670,133 +662,7 @@ public:
     void clear_history() {
         tool_history.clear();
         freq_map.clear();
-        last_tool_name.clear();
-        last_norm_args.clear();
-        consecutive_count = 0;
     }
-
-    // Extract just the tool name from a tool call string (no parameters).
-    string extract_tool_name(const string& tool_call) const {
-        size_t fs = tool_call.find(FUNC_START);
-        if (fs != string::npos) {
-            size_t gt = tool_call.find('>', fs);
-            if (gt != string::npos) {
-                return tool_call.substr(fs, gt - fs);
-            }
-        }
-        return "";
-    }
-
-    // Extract the normalized argument portion from a tool call.
-    // Returns everything after "tool_name:" in the normalized string.
-    string get_norm_args(const string& tool_call) const {
-        string norm = normalize_str(tool_call);
-        size_t colon = norm.find(':');
-        if (colon != string::npos) {
-            return norm.substr(colon + 1);
-        }
-        return "";
-    }
-
-    // Check if the current normalized arguments differ significantly from the last recorded ones.
-    // Returns true if args are meaningfully different (i.e., NOT a loop).
-    // Two argument sets are considered "similar" only if they share substantial overlap.
-    bool args_differ_significantly(const string& curr_args) const {
-        // If either is empty, can't compare meaningfully -> treat as different
-        if (curr_args.empty() || last_norm_args.empty()) return true;
-
-        // Exact match after normalization = same intent (loop)
-        if (curr_args == last_norm_args) return false;
-
-        // Extract individual parameter values for comparison.
-        // Parameters are separated by "|" in the normalized string.
-        auto split_params = [](const string& s) -> vector<string> {
-            vector<string> params;
-            size_t start = 0;
-            while (start < s.size()) {
-                size_t sep = s.find('|', start);
-                if (sep == string::npos) sep = s.size();
-                string param = s.substr(start, sep - start);
-                if (!param.empty()) params.push_back(param);
-                start = sep + 1;
-            }
-            return params;
-        };
-
-        vector<string> curr_params = split_params(curr_args);
-        vector<string> last_params = split_params(last_norm_args);
-
-        // If different number of parameters, they're different
-        if (curr_params.size() != last_params.size()) return true;
-
-        // Check if all corresponding parameters are similar.
-        // Parameters are considered "similar" if they share > 60% character overlap
-        // or if one is a substring of the other with at least 4 common chars.
-        auto params_similar = [](const string& a, const string& b) -> bool {
-            if (a == b) return true;
-
-            // Check substring relationship: shorter must be at least 4 chars
-            // and must appear within the longer
-            if (a.size() >= 4 && b.find(a) != string::npos) return true;
-            if (b.size() >= 4 && a.find(b) != string::npos) return true;
-
-            // Count common characters (simple approach: count chars in both)
-            int common = 0;
-            for (char c : a) {
-                if (b.find(c) != string::npos) common++;
-            }
-            size_t max_len = max(a.size(), b.size());
-            if (max_len > 0 && (double)common / max_len >= 0.6) return true;
-
-            return false;
-        };
-
-        for (size_t i = 0; i < curr_params.size(); i++) {
-            if (!params_similar(curr_params[i], last_params[i])) {
-                return true;  // At least one parameter differs significantly
-            }
-        }
-
-        return false;  // All parameters are similar -> likely a loop/retry
-    }
-
-    // Check if calling this tool would exceed the consecutive same-tool threshold.
-    // Returns true if we should block. Call this BEFORE record_consecutive.
-    // Only blocks if both the tool name AND the normalized arguments match closely.
-    bool would_consecutive_loop(const string& tool_call) const {
-        string tname = extract_tool_name(tool_call);
-        if (tname.empty()) return false;
-        string norm_args = get_norm_args(tool_call);
-        // Block only if same tool name, similar args, and over threshold
-        if (tname == last_tool_name && !args_differ_significantly(norm_args) && consecutive_count >= CONSECUTIVE_THRESHOLD) {
-            return true;
-        }
-        return false;
-    }
-
-    // Record a tool call for consecutive tracking. Must be called after execution.
-    // Returns the new consecutive count for this tool.
-    // Only increments if the normalized arguments are similar to the last call.
-    // Different arguments = different intent, reset counter to 1.
-    int record_consecutive(const string& tool_call) {
-        string tname = extract_tool_name(tool_call);
-        if (tname.empty()) return 0;
-        string norm_args = get_norm_args(tool_call);
-        if (tname == last_tool_name && !args_differ_significantly(norm_args)) {
-            consecutive_count++;
-        } else {
-            last_tool_name = tname;
-            consecutive_count = 1;
-        }
-        last_norm_args = norm_args;
-        return consecutive_count;
-    }
-
-    // Get the current consecutive count for diagnostic display.
-    int get_consecutive_count() const { return consecutive_count; }
-
-    // Get the threshold constant.
-    int get_consecutive_threshold() const { return CONSECUTIVE_THRESHOLD; }
 };
 
 // --- Helper to unescape tags passed by the LLM ---
@@ -817,7 +683,7 @@ static bool param_has_newline(const string& s) {
 static const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter must not contain newlines.";
 
 // --- Tool Execution Logic ---
-string execute_tool_call(const string& tool_call, set<string>& clean_files, string& last_grep_req, string& last_shell_cmd) {
+string execute_tool_call(const string& tool_call, set<string>& clean_files) {
   string result = "";
   string tool_name = "";
   size_t ns = tool_call.find(FUNC_START);
@@ -898,20 +764,8 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       end_line = atoi(end_str.c_str());
     }
     if (!path.empty()) {
-      // For line range mode, use path:begin:end as the request key; for text search, use path:text
-      string current_req;
-      if (begin_line > 0 && end_line >= begin_line) {
-        current_req = path + ":" + to_string(begin_line) + ":" + to_string(end_line);
-      } else {
-        current_req = path + ":" + text;
-      }
-      if (current_req == last_grep_req) {
-          result = "System Error: You just ran this exact search_file. Do not repeat the same search.";
-      } else {
-          last_grep_req = current_req;
-          FileSystemTools fs;
-          result = fs.search_file(path, text, begin_line, end_line);
-      }
+      FileSystemTools fs;
+      result = fs.search_file(path, text, begin_line, end_line);
     } else {
       result = "Error: path is required for search_file";
     }
@@ -921,7 +775,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string content = extract_string_arg_bounded(tool_call, "content");
     content = remove_trailing_spaces(content);
     clean_files.erase(path);
-    last_grep_req = "";
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
@@ -937,7 +790,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string new_str = extract_string_arg_bounded(tool_call, "new");
     new_str = remove_trailing_spaces(new_str);
     clean_files.erase(path);
-    last_grep_req = "";
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.edit_file(path, old_str, new_str);
@@ -950,7 +802,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   } else if (tool_name == "exec_shell") {
     string command = extract_string_arg_bounded(tool_call, "command");
     clean_files.clear();
-    last_grep_req = "";
     if (!command.empty()) {
       FileSystemTools fs;
       result = fs.exec_shell(command);
@@ -960,7 +811,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   } else if (tool_name == "web_search") {
     string query = extract_string_arg_bounded(tool_call, "query");
     clean_files.clear();
-    last_grep_req = "";
     if (!query.empty()) {
       NetworkTools net;
       result = net.web_search(query);
@@ -1183,8 +1033,6 @@ int main(int argc, char ** argv) {
   load_history_safe(history_file);
 
   set<string> clean_files;
-  string last_grep_req = "";
-  string last_shell_cmd = "";  // Track last exec_shell command to prevent blind retries
   LoopDetector loop_guard(15);
   int invalid_tool_strikes = 0;  // Consecutive invalid/malformed tool calls
 
@@ -1226,8 +1074,6 @@ int main(int argc, char ** argv) {
   // Does NOT touch web search cache, context usage, or browser warning.
   auto reset_llm_state = [&]() {
       clean_files.clear();
-      last_grep_req = "";
-      last_shell_cmd = "";
       loop_guard.clear_history();
       invalid_tool_strikes = 0;
       llama_sampler_reset(smpl);
@@ -1988,13 +1834,9 @@ int main(int argc, char ** argv) {
           invalid_tool_strikes = 0;
           bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
 
-          // PRE-EXECUTION LOOP CHECK (1): Reject before running if this is an exact repeat.
+          // PRE-EXECUTION LOOP CHECK: Reject before running if this is an exact repeat.
           // This prevents wasting time on known-repeating commands.
           bool pre_loop = loop_guard.would_repeat(tool_call);
-
-          // PRE-EXECUTION LOOP CHECK (2): Block consecutive same-tool-name calls.
-          // Catches loops where the agent varies arguments slightly each time.
-          bool pre_consecutive = loop_guard.would_consecutive_loop(tool_call);
 
           if (pre_loop) {
               // Record it to update strike count, but DON'T execute the tool.
@@ -2018,39 +1860,12 @@ int main(int argc, char ** argv) {
                   diag("System: Circuit breaker -- intervention failed after " + std::to_string(max_attempts) + " strikes. Ejecting to prompt.", "\033[1;31m");
                   abort_auto = true;
               }
-          } else if (pre_consecutive) {
-              // Same tool called too many times in a row with varying arguments.
-              // Block execution and inject an intervention message.
-              loop_guard.record_and_check(tool_call);
-              tool_blocked_by_loop = true;
-              loop_guard.record_consecutive(tool_call);  // Keep incrementing so circuit breaker can eventually fire
-              int consec = loop_guard.get_consecutive_count();
-
-              active_intervention_msg = get_next_loop_message();
-              tool_result = "System Error: Consecutive Tool Loop Detected -- you have called " + tool_name + " " + std::to_string(consec) + " times in a row with varying arguments. " + active_intervention_msg + " Stop retrying and try a different approach.";
-              display_result = tool_result;
-
-              diag("System: Consecutive-tool loop blocked (" + tool_name + " x" + std::to_string(consec) + ").", "\033[35m");
-
-              int max_attempts = loopMessages.size();
-
-              if (consec <= max_attempts + loop_guard.get_consecutive_threshold()) {
-                  diag("System: Automating intervention (Attempt " + std::to_string(consec - loop_guard.get_consecutive_threshold() + 1) + ").", "\033[35m");
-                  abort_auto = false;
-                  inject_auto_user_msg = true;
-              } else {
-                  diag("System: Circuit breaker -- consecutive intervention failed. Ejecting to prompt.", "\033[1;31m");
-                  abort_auto = true;
-              }
           } else {
               // Not a repeat -- execute the tool normally.
-              tool_result = execute_tool_call(tool_call, clean_files, last_grep_req, last_shell_cmd);
+              tool_result = execute_tool_call(tool_call, clean_files);
 
               // Record the execution for future loop detection (exact-match).
               was_loop = loop_guard.record_and_check(tool_call);
-
-              // Also record for consecutive same-tool-name tracking.
-              loop_guard.record_consecutive(tool_call);
 
               // Check for interrupt after tool execution completes
               if (stop_generation) {
