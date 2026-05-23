@@ -1368,6 +1368,10 @@ int main(int argc, char ** argv) {
 
     auto start = chrono::high_resolution_clock::now();
     int t_count = 0;
+
+    // Reset loop-prevention counters for each generation phase
+    static int g_auto_continue_depth = 0;  // Persists across inner-loop iterations within a user turn
+    if (!auto_continue) g_auto_continue_depth = 0;  // Reset on new user input
     string generated_text = "";
     string unprinted_text = "";
     string full_response = "";
@@ -1384,6 +1388,22 @@ int main(int argc, char ** argv) {
     size_t func_search_pos = 0;
     bool had_eog_recovery = false;  // If true, suppress speed diagnostic (elapsed includes wasted resampling)
     bool context_warned_this_turn = false;  // Track 90% warning per generation turn
+
+    // --- LOOP PREVENTION: Turn-level safeguards ---
+    // Max tokens per generation turn before we consider the LLM stuck.
+    // Prevents hallucination loops where the model generates fake tool outputs
+    // without using proper <function=...> XML schema.
+    static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 120.0;
+    const char* timeout_env = getenv("LLLM_TURN_TIMEOUT");
+    double turn_timeout_sec = (timeout_env != nullptr && strlen(timeout_env) > 0) ? atof(timeout_env) : DEFAULT_TURN_TIMEOUT_SEC;
+    if (turn_timeout_sec < 5.0) turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
+
+    // Max consecutive auto-continuations per user turn. Prevents the LLM from
+    // chaining tool calls forever without making progress.
+    static constexpr int DEFAULT_MAX_AUTO_CONTINUE = 500;
+    const char* max_auto_env = getenv("LLLM_MAX_AUTO_CONTINUE");
+    int max_auto_continue = (max_auto_env != nullptr && strlen(max_auto_env) > 0) ? atoi(max_auto_env) : DEFAULT_MAX_AUTO_CONTINUE;
+    if (max_auto_continue < 5) max_auto_continue = DEFAULT_MAX_AUTO_CONTINUE;
 
     // Track thinking blocks (similar to tool calls)
     bool in_thinking_block = false;
@@ -1763,6 +1783,20 @@ int main(int argc, char ** argv) {
       }
 
       t_count++;
+
+      // --- TURN TIMEOUT: Detect hallucination loops ---
+      // If the LLM generates for too long without a tool call or EOG, force-stop.
+      {
+          auto now = chrono::high_resolution_clock::now();
+          double elapsed_turn = chrono::duration<double>(now - start).count();
+          if (elapsed_turn >= turn_timeout_sec) {
+              diag("System: Turn timeout reached (" + std::to_string((int)elapsed_turn) + "s/" + std::to_string((int)turn_timeout_sec) + "s). LLM may be stuck in a hallucination loop. Forcing stop.", "\033[1;33m");
+              auto_continue = false;
+              reincarnate_mode = false;
+              break;
+          }
+      }
+
       batch.n_tokens = 0;
       common_batch_add(batch, next_token, n_past++, {0}, true);
       if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); reincarnate_mode = false; break; }
@@ -2033,8 +2067,14 @@ int main(int argc, char ** argv) {
             } else if (!feed_tokens(t_tokens)) {
                 abort_auto = true;
             } else {
-                auto_continue = true;
-                continue; // Skip the standard logging at the bottom and go straight to the next token generation loop
+                g_auto_continue_depth++;
+                if (g_auto_continue_depth > max_auto_continue) {
+                    diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
+                    auto_continue = false;
+                } else {
+                    auto_continue = true;
+                    continue; // Skip the standard logging at the bottom and go straight to the next token generation loop
+                }
             }
         } else {
             // Circuit breaker fired: feed the error back to the LLM so it knows
