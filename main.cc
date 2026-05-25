@@ -1369,6 +1369,14 @@ int main(int argc, char ** argv) {
     auto start = chrono::high_resolution_clock::now();
     int t_count = 0;
 
+    // --- GENERATION START BANNER ---
+    // Print a visible indicator so the user knows generation is in progress.
+    if (!auto_continue) {
+        console("\n\033[1;90m--- Generating (Ctrl+C to interrupt) ---\033[0m\n");
+        consoleFlush();
+        stream("\n\n<div class='generation-start'>-- Generating --</div>\n\n");
+    }
+
     // Reset loop-prevention counters for each generation phase
     static int g_auto_continue_depth = 0;  // Persists across inner-loop iterations within a user turn
     if (!auto_continue) g_auto_continue_depth = 0;  // Reset on new user input
@@ -1393,7 +1401,7 @@ int main(int argc, char ** argv) {
     // Max tokens per generation turn before we consider the LLM stuck.
     // Prevents hallucination loops where the model generates fake tool outputs
     // without using proper <function=...> XML schema.
-    static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 120.0;
+    static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 60.0;
     const char* timeout_env = getenv("LLLM_TURN_TIMEOUT");
     double turn_timeout_sec = (timeout_env != nullptr && strlen(timeout_env) > 0) ? atof(timeout_env) : DEFAULT_TURN_TIMEOUT_SEC;
     if (turn_timeout_sec < 5.0) turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
@@ -1492,7 +1500,7 @@ int main(int argc, char ** argv) {
 
                     // No actual sleep between resamples -- sampling from pre-computed logits is CPU-only.
           // LLLM_EOG_RESAMPLE_MAX overrides the default (see below).
-          static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 100;
+          static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 30;
           static constexpr int EOG_RESAMPLE_HARD_CAP    = 200;
 
           const char* eog_env = getenv("LLLM_EOG_RESAMPLE_MAX");
@@ -1549,6 +1557,12 @@ int main(int argc, char ** argv) {
                       cout.flush();
                       last_printed = eog_event_count;
                   }
+              }
+
+              // Log EOG recovery struggles even in non-debug mode when it takes many polls.
+              // This gives visibility into silent freezes caused by heavy resampling.
+              if (poll_iter_used > 10) {
+                  diag("System: EOG recovery struggled (" + to_string(poll_iter_used) + " polls). Model may be uncertain at this position.", "\033[1;33m");
               }
               // Successfully recovered -- fall through to process the real token normally.
               had_eog_recovery = true;
@@ -1784,6 +1798,35 @@ int main(int argc, char ** argv) {
 
       t_count++;
 
+      // --- HEARTBEAT PROGRESS INDICATOR ---
+      // Print periodic progress to stderr so the user knows generation is active.
+      // This prevents the "is it stuck or generating?" confusion during long generations.
+      if (t_count % 50 == 0 && !in_tool_call_stream && !in_thinking_block) {
+          cerr << "\r\033[K[Generating... " << t_count << " tokens]";
+          cerr.flush();
+      }
+
+      // --- TOKEN RATE STALL DETECTION ---
+      // Detect if the token generation rate drops to near-zero, indicating a stall.
+      // This catches slow-generation hallucination loops faster than the absolute timeout.
+      {
+          static int recent_token_count = 0;
+          static auto last_rate_check = chrono::high_resolution_clock::now();
+          recent_token_count++;
+
+          auto now = chrono::high_resolution_clock::now();
+          double elapsed_window = chrono::duration<double>(now - last_rate_check).count();
+          if (elapsed_window >= 10.0) {
+              double rate = recent_token_count / elapsed_window;
+              if (rate < 0.5 && t_count > 20) {
+                  diag("System: Token generation rate critically low (" +
+                       to_string((int)(rate * 10) / 10.0) + " tok/s). Possible stall detected.", "\033[1;33m");
+              }
+              recent_token_count = 0;
+              last_rate_check = now;
+          }
+      }
+
       // --- TURN TIMEOUT: Detect hallucination loops ---
       // If the LLM generates for too long without a tool call or EOG, force-stop.
       {
@@ -1802,6 +1845,9 @@ int main(int argc, char ** argv) {
       if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); reincarnate_mode = false; break; }
 
     } // END INNER TOKEN LOOP
+
+    // Clear the heartbeat progress line from stderr
+    cerr << "\r\033[K";
 
     auto end = chrono::high_resolution_clock::now();
     double elapsed = chrono::duration<double>(end - start).count();
