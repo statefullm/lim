@@ -7,6 +7,7 @@ CRITICAL TOOL CALLING RULES:
 2. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag. 
 3. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
 4. You may make ONLY ONE tool call per response. Do not chain multiple tool calls in a single turn.
+5. If a tool returns the information you need, or if a tool fails twice, stop calling tools and synthesize your final answer using the available information.
 
 Always use these tools for any filesystem or shell operation:
 
