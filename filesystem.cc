@@ -578,11 +578,12 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   }
 
   out_file << writable_content;
+  bool write_ok = !out_file.fail();  // Capture stream state BEFORE close() clears it
   out_file.flush(); // Ensure data is written to disk immediately
   out_file.close();
 
   map<string, string> result;
-  if (!writable_content.empty() && !out_file) {
+  if (!write_ok) {
     result["status"] = "error";
     result["error"] = "Write failed for file: " + path;
     log_diagnostic("Error: Write failed for file", true /* logOnly */);
