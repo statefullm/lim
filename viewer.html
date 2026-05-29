@@ -255,8 +255,14 @@
                 });
             }
 
-            // Auto-scroll
-            window.scrollTo(0, document.body.scrollHeight);
+            // Auto-scroll only when the user is already near the bottom.
+            // This lets the user scroll back to read earlier output without
+            // being forcibly pulled back to the bottom while generation continues.
+            const margin = 120;  // pixels from bottom to consider "at bottom"
+            const atBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
+            if (atBottom) {
+                window.scrollTo(0, document.body.scrollHeight);
+            }
         }
 
         /* ------------------------------------------------------------------ */
