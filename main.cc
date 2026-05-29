@@ -817,7 +817,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
-      result = "Status: " + result_map.at("status");
+      result = "Status: " + result_map.at("status") + ", Wrote " + result_map.at("bytes") + " bytes";
       if (result_map.find("error") != result_map.end()) result += ", Error: " + result_map.at("error");
     } else {
       result = "Error: No path provided to write_file";
