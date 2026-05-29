@@ -2102,8 +2102,12 @@ int main(int argc, char ** argv) {
 
             vector<llama_token> t_tokens = tokenize(tool_msg);
             if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(t_tokens.size()) + " tokens, last_n_past=" + std::to_string(last_n_past) + ", n_ctx=" + std::to_string(cparams.n_ctx) + ")" : "";
-                diag("Context limit exhausted" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
+                // The tool result is too large to fit in the remaining context window.
+                // This is not a "context exhausted" situation - it's an oversized input.
+                double pct = (double)n_past / cparams.n_ctx * 100.0;
+                char buf[32];
+                snprintf(buf, sizeof(buf), "%.1f%%", pct);
+                diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ".", "\033[1;33m");
                 auto_continue = false;
             } else if (!feed_tokens(t_tokens)) {
                 abort_auto = true;
