@@ -1559,11 +1559,6 @@ int main(int argc, char ** argv) {
                   }
               }
 
-              // Log EOG recovery struggles even in non-debug mode when it takes many polls.
-              // This gives visibility into silent freezes caused by heavy resampling.
-              if (poll_iter_used > 10) {
-                  diag("System: EOG recovery struggled (" + to_string(poll_iter_used) + " polls). Model may be uncertain at this position.", "\033[1;33m");
-              }
               // Successfully recovered -- fall through to process the real token normally.
               had_eog_recovery = true;
           }
