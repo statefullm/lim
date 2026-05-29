@@ -891,13 +891,11 @@ static void strip_tags(string& str, const vector<string>& tags) {
 }
 
 string sanitize(string text) {
-    vector<string> patterns = {FUNC_START, FUNC_END, TURN_START, TURN_END};
-    for (const auto& pattern : patterns) {
-      size_t pos = 0;
-      while ((pos = text.find(pattern, pos)) != string::npos) {
-            text.insert(pos + 1, "\\");
-            pos += pattern.length() + 1;
-        }
+    // Enforce the PARAM_END escape contract in tool results sent to the LLM.
+    size_t pos = 0;
+    while ((pos = text.find(PARAM_END, pos)) != string::npos) {
+        text.replace(pos, strlen(PARAM_END), PARAM_END_ESC);
+        pos += strlen(PARAM_END_ESC);
     }
     return text;
 }
