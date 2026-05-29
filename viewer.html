@@ -92,6 +92,31 @@
             max-height: 400px;
             overflow-y: auto;
         }
+
+        /* Copy button on code blocks */
+        pre {
+            position: relative;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            padding: 4px 10px;
+            font-size: 0.75em;
+            font-family: inherit;
+            color: #d4d4d4;
+            background-color: #3c3c3c;
+            border: 1px solid #555;
+            border-radius: 4px;
+            cursor: pointer;
+            opacity: 0.6;
+            transition: opacity 0.2s, background-color 0.2s;
+            z-index: 10;
+        }
+        .copy-btn:hover {
+            opacity: 1;
+            background-color: #505050;
+        }
     </style>
 </head>
 <body>
@@ -119,6 +144,28 @@
         const SEG_LLM_TEXT   = '\x02';
         const SEG_TOOL_LABEL = '\x03';
         const SEG_HTML       = '\x04';
+
+        /* Fallback copy for insecure (HTTP) contexts where navigator.clipboard is unavailable. */
+        function fallbackCopy(text, btn) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try {
+                const successful = document.execCommand('copy');
+                btn.textContent = successful ? 'Copied!' : 'Failed';
+            } catch (e) {
+                btn.textContent = 'Failed';
+            }
+            setTimeout(function() {
+                btn.textContent = 'Copy';
+                document.body.removeChild(ta);
+            }, 1500);
+        }
 
         // Segments: array of { type, content }
         let segments = [];
@@ -165,6 +212,35 @@
             }
 
             outputDiv.innerHTML = html;
+
+            // Inject copy buttons into every <pre><code> block
+            document.querySelectorAll('#output pre code').forEach(function(codeEl) {
+                const pre = codeEl.parentElement;
+                if (!pre || pre.classList.contains('copy-btn-host')) return;
+                pre.classList.add('copy-btn-host');
+
+                const btn = document.createElement('button');
+                btn.className = 'copy-btn';
+                btn.textContent = 'Copy';
+                btn.addEventListener('click', function() {
+                    // Capture text at click time, not at creation time,
+                    // so we always copy the current content even after re-renders.
+                    const textToCopy = codeEl.textContent;
+
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(textToCopy).then(function() {
+                            btn.textContent = 'Copied!';
+                            setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+                        }).catch(function(err) {
+                            console.warn('Clipboard API failed:', err);
+                            fallbackCopy(textToCopy, btn);
+                        });
+                    } else {
+                        fallbackCopy(textToCopy, btn);
+                    }
+                });
+                pre.appendChild(btn);
+            });
 
             // Render math with KaTeX
             if (typeof renderMathInElement === 'function') {
