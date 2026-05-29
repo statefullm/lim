@@ -112,9 +112,11 @@ subject only to the following exception.
 PARAM_END ESCAPING CONTRACT:
 There is a special token called PARAM_END. Its literal form on disk is </parameter>. To prevent XML parsing issues, this token is always escaped when crossing the LLM <-> SYSTEM boundary:
 
-1. SYSTEM -> LLM: When you read files, any literal "</parameter>" tokens in the file CONTENT are sent to you as "<\/parameter>". You will NEVER see unescaped "</parameter>" tokens in tool responses.
+1. SYSTEM -> LLM: When you read files, any </parameter> tokens in the file content are sent to you with one additional backslash before the /. You will NEVER see unescaped </parameter> tokens in tool responses.
 
-2. LLM -> SYSTEM: If you want to send TEXT to search_file, edit_file, or write_file that contains the literal string "</parameter>", you MUST write it as "<\/parameter>" in your tool call. The system will unescape it before using it.
+2. LLM -> SYSTEM: If you want to send TEXT that contains </parameter>, write it with one additional backslash before the / in your tool call. The system removes that backslash before writing to disk.
+
+The rule is simple: whatever form of </parameter> you see in a tool response, use that exact same text when writing it back for lossless round-tripping.
 
 MATH FORMATTING RULES:
 - ALWAYS use LaTeX-style dollar signs for inline math: $\delta$, $x^2$.
