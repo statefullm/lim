@@ -190,6 +190,14 @@
         }
 
         function render() {
+            // Determine whether the user is near the bottom BEFORE we update the
+            // content.  After innerHTML changes the page grows taller and the old
+            // scroll position no longer satisfies the "at bottom" check, which
+            // would incorrectly disable auto-scroll (especially noticeable when a
+            // <pre> code block appears and adds padding + copy buttons).
+            const margin = 120;  // pixels from bottom to consider "at bottom"
+            const wasAtBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
+
             let html = '';
 
             for (const seg of segments) {
@@ -255,12 +263,11 @@
                 });
             }
 
-            // Auto-scroll only when the user is already near the bottom.
-            // This lets the user scroll back to read earlier output without
-            // being forcibly pulled back to the bottom while generation continues.
-            const margin = 120;  // pixels from bottom to consider "at bottom"
-            const atBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
-            if (atBottom) {
+            // Auto-scroll only when the user was near the bottom before the new
+            // content was rendered.  This lets the user scroll back to read earlier
+            // output without being forcibly pulled back to the bottom while
+            // generation continues.
+            if (wasAtBottom) {
                 window.scrollTo(0, document.body.scrollHeight);
             }
         }
