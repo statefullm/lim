@@ -170,6 +170,10 @@
         // Segments: array of { type, content }
         let segments = [];
 
+        // Track what content was last rendered for each segment index.
+        // Used to skip re-rendering unchanged segments (incremental rendering).
+        let segRenderedContent = [];
+
         // Merge adjacent segments of the same type into one.
         // Critical: C++ sends \x02 before every small token; without this, each token
         // becomes its own segment and gets independently rendered through marked.parse(),
@@ -189,40 +193,31 @@
             }
         }
 
-        function render() {
-            // Determine whether the user is near the bottom BEFORE we update the
-            // content.  After innerHTML changes the page grows taller and the old
-            // scroll position no longer satisfies the "at bottom" check, which
-            // would incorrectly disable auto-scroll (especially noticeable when a
-            // <pre> code block appears and adds padding + copy buttons).
-            const margin = 120;  // pixels from bottom to consider "at bottom"
-            const wasAtBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
+        /* ------------------------------------------------------------------ */
+        /*  Incremental render helpers                                        */
+        /* ------------------------------------------------------------------ */
 
-            let html = '';
-
-            for (const seg of segments) {
-                if (seg.type === SEG_LLM_TEXT) {
-                    // Render LLM text through marked — code fences, bold, lists, etc.
-                    if (typeof marked !== 'undefined') {
-                        html += marked.parse(seg.content, { breaks: true });
-                    } else {
-                        // Fallback if marked hasn't loaded yet
-                        const esc = seg.content
-                            .replace(/&/g, '&amp;')
-                            .replace(/</g, '&lt;')
-                            .replace(/>/g, '&gt;');
-                        html += '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
-                    }
+        // Convert a single segment to HTML string.
+        function segToHtml(seg) {
+            if (seg.type === SEG_LLM_TEXT) {
+                if (typeof marked !== 'undefined') {
+                    return marked.parse(seg.content, { breaks: true });
                 } else {
-                    // Tool labels and other HTML — insert directly
-                    html += seg.content;
+                    const esc = seg.content
+                        .replace(/&/g, '&amp;')
+                        .replace(/</g, '&lt;')
+                        .replace(/>/g, '&gt;');
+                    return '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
+            } else {
+                // Tool labels and other HTML — insert directly
+                return seg.content;
             }
+        }
 
-            outputDiv.innerHTML = html;
-
-            // Inject copy buttons into every <pre><code> block
-            document.querySelectorAll('#output pre code').forEach(function(codeEl) {
+        // Inject copy buttons into <pre><code> blocks within a specific parent div.
+        function injectCopyButtons(parentDiv) {
+            parentDiv.querySelectorAll('pre code').forEach(function(codeEl) {
                 const pre = codeEl.parentElement;
                 if (!pre || pre.classList.contains('copy-btn-host')) return;
                 pre.classList.add('copy-btn-host');
@@ -231,8 +226,6 @@
                 btn.className = 'copy-btn';
                 btn.textContent = 'Copy';
                 btn.addEventListener('click', function() {
-                    // Capture text at click time, not at creation time,
-                    // so we always copy the current content even after re-renders.
                     const textToCopy = codeEl.textContent;
 
                     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -249,10 +242,12 @@
                 });
                 pre.appendChild(btn);
             });
+        }
 
-            // Render math with KaTeX
+        // Render math with KaTeX within a specific parent div.
+        function renderMathInDiv(parentDiv) {
             if (typeof renderMathInElement === 'function') {
-                renderMathInElement(outputDiv, {
+                renderMathInElement(parentDiv, {
                     delimiters: [
                         { left: '$$',  right: '$$',  display: true  },
                         { left: '$',   right: '$',   display: false },
@@ -262,12 +257,58 @@
                     throwOnError: false
                 });
             }
+        }
+
+        function render() {
+            // Determine whether the user is near the bottom BEFORE we update the
+            // content.  After innerHTML changes the page grows taller and the old
+            // scroll position no longer satisfies the "at bottom" check, which
+            // would incorrectly disable auto-scroll (especially noticeable when a
+            // <pre> code block appears and adds padding + copy buttons).
+            const margin = 120;  // pixels from bottom to consider "at bottom"
+            const wasAtBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
+
+            let hasChanges = false;
+
+            // Process existing segments: re-render only if content changed.
+            for (let i = 0; i < segments.length; i++) {
+                if (i < segRenderedContent.length) {
+                    // Existing segment — check if content changed
+                    if (segments[i].content !== segRenderedContent[i]) {
+                        hasChanges = true;
+                        segRenderedContent[i] = segments[i].content;
+
+                        const wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
+                        if (wrapperDiv) {
+                            wrapperDiv.innerHTML = segToHtml(segments[i]);
+                            injectCopyButtons(wrapperDiv);
+                            renderMathInDiv(wrapperDiv);
+                        }
+                    }
+                } else {
+                    // New segment — create wrapper div and append
+                    hasChanges = true;
+                    segRenderedContent[i] = segments[i].content;
+
+                    const wrapperDiv = document.createElement('div');
+                    wrapperDiv.setAttribute('data-seg', String(i));
+                    wrapperDiv.innerHTML = segToHtml(segments[i]);
+                    outputDiv.appendChild(wrapperDiv);
+                    injectCopyButtons(wrapperDiv);
+                    renderMathInDiv(wrapperDiv);
+                }
+            }
+
+            // Remove trailing wrapper divs if segments were cleared/reduced.
+            while (outputDiv.children.length > segments.length) {
+                outputDiv.removeChild(outputDiv.lastChild);
+            }
 
             // Auto-scroll only when the user was near the bottom before the new
             // content was rendered.  This lets the user scroll back to read earlier
             // output without being forcibly pulled back to the bottom while
             // generation continues.
-            if (wasAtBottom) {
+            if (hasChanges && wasAtBottom) {
                 window.scrollTo(0, document.body.scrollHeight);
             }
         }
@@ -298,6 +339,7 @@
                 // Clear command (SOH control char 0x01)
                 if (event.data.includes('\x01')) {
                     segments = [];
+                    segRenderedContent = [];
                     outputDiv.innerHTML = '';
                     return;
                 }
