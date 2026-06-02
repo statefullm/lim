@@ -225,7 +225,7 @@ string FileSystemTools::_get_fullpath(const string& path) {
   }
 
   string fullpath;
-  if (path[0] != '/') {
+  if (path.empty() || path[0] != '/') {
     fullpath = cwd_str + "/" + path;
   } else {
     fullpath = path;
