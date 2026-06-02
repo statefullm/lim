@@ -1292,6 +1292,16 @@ int main(int argc, char ** argv) {
     // Check browser connection BEFORE processing prompt - ensures user loads browser first
     bool browser_connected = check_browser_connected();
 
+    // Detect terminal reattachment (e.g., after suspend/resume with reptyr).
+    // If the controlling TTY device changed, reset the terminal once to recover
+    // from any garbled state. Runs only when the user types something, no busy loop.
+    static string prev_tty = ttyname(STDIN_FILENO) ? string(ttyname(STDIN_FILENO)) : "";
+    const char* cur_tty = ttyname(STDIN_FILENO);
+    if (cur_tty && !prev_tty.empty() && prev_tty != cur_tty) {
+        system("reset");
+    }
+    if (cur_tty) prev_tty = cur_tty;
+
     // If we were suppressed but now connected, reset the flag to restore original output mode
     if (browser_connected && g_browser_warning_suppressed) {
         g_browser_warning_suppressed = false;  // Restore browser output mode
