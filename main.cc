@@ -1292,22 +1292,6 @@ int main(int argc, char ** argv) {
     // Check browser connection BEFORE processing prompt - ensures user loads browser first
     bool browser_connected = check_browser_connected();
 
-    // Detect mid-session reconnect (e.g., after hibernation/sleep) and reset the terminal.
-    // Debounce: require the browser to be disconnected for at least 2 consecutive checks
-    // before treating a reconnection as significant, to avoid clearing on brief flickers.
-    static bool prev_browser_connected = false;
-    static int disconnect_count = 0;
-    if (!browser_connected) {
-        disconnect_count++;
-    } else if (disconnect_count > 0) {
-        // Was disconnected, now connected
-        if (disconnect_count >= 2) {
-            system("reset");
-        }
-        disconnect_count = 0;
-    }
-    prev_browser_connected = browser_connected;
-
     // If we were suppressed but now connected, reset the flag to restore original output mode
     if (browser_connected && g_browser_warning_suppressed) {
         g_browser_warning_suppressed = false;  // Restore browser output mode
