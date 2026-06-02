@@ -752,13 +752,17 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
           // Handle URL - fetch content from network
           auto url_results = net.fetch_urls({path});
           for (const auto& file : url_results) {
-            result += "Path: " + file.at("path") + "\n";
-            result += "Content:\n" + file.at("content") + "\n";
-            if (!file.at("error").empty()) result += "Error: " + file.at("error") + "\n";
+            string f_path, f_content, f_error;
+            if (file.count("path")) f_path = file.at("path");
+            if (file.count("content")) f_content = file.at("content");
+            if (file.count("error")) f_error = file.at("error");
+            result += "Path: " + f_path + "\n";
+            result += "Content:\n" + f_content + "\n";
+            if (!f_error.empty()) result += "Error: " + f_error + "\n";
             result += "---\n";
 
             // Cache URL results similarly to files
-            if (file.at("error").empty()) clean_files.insert(file.at("path"));
+            if (f_error.empty() && !f_path.empty()) clean_files.insert(f_path);
           }
         } else {
           // Local file that needs to be read - collect for batched processing
@@ -770,12 +774,16 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
       if (!local_paths_to_read.empty()) {
         auto results = fs.read_files(local_paths_to_read);
         for (const auto& file : results) {
-          result += "Path: " + file.at("path") + "\n";
-          result += "Content:\n" + file.at("content") + "\n";
-          if (!file.at("error").empty()) result += "Error: " + file.at("error") + "\n";
+          string f_path, f_content, f_error;
+          if (file.count("path")) f_path = file.at("path");
+          if (file.count("content")) f_content = file.at("content");
+          if (file.count("error")) f_error = file.at("error");
+          result += "Path: " + f_path + "\n";
+          result += "Content:\n" + f_content + "\n";
+          if (!f_error.empty()) result += "Error: " + f_error + "\n";
           result += "---\n";
 
-          if (file.at("error").empty()) clean_files.insert(file.at("path"));
+          if (f_error.empty() && !f_path.empty()) clean_files.insert(f_path);
         }
       }
     } else {
@@ -817,8 +825,12 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
-      result = "Status: " + result_map.at("status") + ", Wrote " + result_map.at("bytes") + " bytes";
-      if (result_map.find("error") != result_map.end()) result += ", Error: " + result_map.at("error");
+      string r_status, r_bytes, r_error;
+      if (result_map.count("status")) r_status = result_map.at("status");
+      if (result_map.count("bytes")) r_bytes = result_map.at("bytes");
+      if (result_map.count("error")) r_error = result_map.at("error");
+      result = "Status: " + r_status + ", Wrote " + r_bytes + " bytes";
+      if (!r_error.empty()) result += ", Error: " + r_error;
     } else {
       result = "Error: No path provided to write_file";
     }
@@ -832,9 +844,13 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.edit_file(path, old_str, new_str);
-      result = "Status: " + result_map.at("status");
-      if (result_map.find("changes") != result_map.end()) result += ", " + result_map.at("changes");
-      if (result_map.find("error") != result_map.end()) result += ", Error: " + result_map.at("error");
+      string r_status, r_changes, r_error;
+      if (result_map.count("status")) r_status = result_map.at("status");
+      if (result_map.count("changes")) r_changes = result_map.at("changes");
+      if (result_map.count("error")) r_error = result_map.at("error");
+      result = "Status: " + r_status;
+      if (!r_changes.empty()) result += ", " + r_changes;
+      if (!r_error.empty()) result += ", Error: " + r_error;
     } else {
       result = "Error: No path provided to edit_file";
     }
