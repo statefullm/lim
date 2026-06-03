@@ -5,7 +5,7 @@ CXXFLAGS = -std=c++17 -O3 -I$(LLAMA_ROOT)/include -I$(LLAMA_ROOT)/common -I$(LLA
 LDFLAGS =  -L$(LLAMA_ROOT)/build/bin -L$(LLAMA_ROOT)/build/common -L/usr/local/cuda-13.0/targets/x86_64-linux/lib -lllama -lggml-base -lggml -lcuda -lcudart $(LLAMA_ROOT)/build/common/libcommon.a -lreadline -lcurl -lxml2
 MAKEDEPEND = $(CXXFLAGS) -O0 -M -MG -DDEPEND
 
-FILES = filesystem network parsers
+FILES = output server tools filesystem network parsers signals model session
 
 TARGET = lllm
 

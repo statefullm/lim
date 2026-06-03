@@ -48,9 +48,7 @@ extern bool is_debug;
 // Chat log file stream - declared in main.cc and used for all tool diagnostics
 extern std::ofstream chat_log;
 
-// Output mode control functions - declared in main.cc
-extern bool should_output_to_browser();
-extern bool should_output_to_stdout();
-extern int pipe_fd;
+// Output mode control functions - declared in output.h
+#include "output.h"
 
 #endif // FILESYSTEM_H

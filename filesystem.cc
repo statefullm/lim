@@ -1,4 +1,5 @@
 #include "filesystem.h"
+#include "output.h"
 #include "parsers.h"
 #include "tokens.h"
 #include "network.h"  // For process_pdf_with_docling and base64_encode
@@ -19,20 +20,6 @@
 
 using namespace std;
 using namespace Tokens;
-
-// Segment prefix for raw HTML (matches main.cc SEG_HTML)
-static const char SEG_HTML = '\x04';
-
-// Helper for raw pipe writes used by log_tool_diagnostic
-static void pipe_write(const char* data, size_t len) {
-    if (pipe_fd >= 0) {
-        ssize_t res = write(pipe_fd, data, len);
-        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(pipe_fd);
-            pipe_fd = -1;
-        }
-    }
-}
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.
 // Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.
