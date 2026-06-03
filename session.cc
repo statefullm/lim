@@ -46,6 +46,36 @@ extern ofstream chat_log;
 
 // HOME is declared as extern std::string HOME in network.h
 
+// --- Helper to trim leading/trailing whitespace ---
+static string trim(const string& s) {
+    size_t start = s.find_first_not_of(" \t\r\n");
+    if (start == string::npos) return "";
+    size_t end = s.find_last_not_of(" \t\r\n");
+    return s.substr(start, end - start + 1);
+}
+
+// --- Load aliases from ~/.lllm_aliases ---
+static map<string, string> load_aliases() {
+    map<string, string> aliases;
+    string path = string(HOME) + "/.lllm_aliases";
+    ifstream in(path);
+    if (!in.is_open()) return aliases;
+    string line;
+    while (getline(in, line)) {
+        // Skip comments and blank lines
+        string trimmed = trim(line);
+        if (trimmed.empty() || trimmed[0] == '#') continue;
+        size_t eq = trimmed.find('=');
+        if (eq == string::npos) continue;
+        string key = trim(trimmed.substr(0, eq));
+        string value = trim(trimmed.substr(eq + 1));
+        if (!key.empty()) {
+            aliases[key] = value;
+        }
+    }
+    return aliases;
+}
+
 // --- Safe Multiline History Handlers ---
 static void load_history_safe(const char* filename) {
     ifstream in(filename);
@@ -223,6 +253,9 @@ bool run_chat_session(
     const char* history_file = ".lllm_history";
     load_history_safe(history_file);
 
+    // Load user-defined aliases from ~/.lllm_aliases
+    map<string, string> aliases = load_aliases();
+
     // Persistent state across loop iterations for "continue" resume feature.
     static int g_auto_continue_depth_val = 0;
     static bool g_tool_interrupt_pending = false;
@@ -288,6 +321,14 @@ bool run_chat_session(
                     }
                     break;
                 }
+            }
+        }
+
+        // Alias expansion: if user_input matches an alias key, replace with its value (single-level only).
+        {
+            auto alias_it = aliases.find(user_input);
+            if (alias_it != aliases.end()) {
+                user_input = alias_it->second;
             }
         }
 
