@@ -15,6 +15,10 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
 
 int extract_int_arg_bounded(const string& tool_call, const string& arg_name);
 
+// Validate that a tool call contains properly formed <parameter=name> tags for all
+// required parameters. Returns true if valid, false if any required parameter tag is missing.
+bool validate_tool_params(const string& tool_name, const string& tool_call);
+
 // Remove trailing spaces from a string (used for cleaning tool arguments)
 string remove_trailing_spaces(const string& str);
 

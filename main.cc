@@ -1982,15 +1982,52 @@ int main(int argc, char ** argv) {
               active_intervention_msg = SYSTEM_PROMPT_REMINDER;
           }
         } else {
-          // Valid tool call - reset the invalid strike counter
-          invalid_tool_strikes = 0;
-          bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
+          // Valid tool name -- now validate that required parameter tags are present.
+          // Catches malformed XML where the LLM omits <parameter=NAME> opening tags,
+          // causing the parser to silently return empty strings (e.g., writing 0 bytes).
+          if (!validate_tool_params(tool_name, tool_call)) {
+            invalid_tool_strikes++;
 
-          // PRE-EXECUTION LOOP CHECK: Reject before running if this is an exact repeat.
-          // This prevents wasting time on known-repeating commands.
-          bool pre_loop = loop_guard.would_repeat(tool_call);
+            if (is_debug && should_show_tools() && should_output_to_browser()) {
+                string raw_display = tool_call;
+                if (raw_display.length() > 500) {
+                    raw_display = raw_display.substr(0, 497) + "...";
+                }
+                string safe;
+                for (char c : raw_display) {
+                    if (c == '&') safe += "&amp;";
+                    else if (c == '<') safe += "&lt;";
+                    else if (c == '>') safe += "&gt;";
+                    else safe += c;
+                }
+                string error_html = "\n\n<div class='tool-error'>Malformed Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
+                stream_tool_result(error_html);
+            }
 
-          if (pre_loop) {
+            string schema_hint = string(PARAM_START) + "param_name>value</" + string(PARAM_END);
+            tool_result = "System Error: Malformed tool call. Required parameter tags are missing from your XML. You MUST use the strict schema: <function=TOOL_NAME>" + schema_hint + "...";
+            display_result = tool_result;
+
+            diag("System: Malformed tool call -- missing required parameter tags (Strike " + std::to_string(invalid_tool_strikes) + ").", "\033[1;31m");
+
+            if (invalid_tool_strikes >= 5) {
+                diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive malformed tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                abort_auto = true;
+            } else if (invalid_tool_strikes >= 2) {
+                diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive malformed tool calls. Injecting intervention.", "\033[1;31m");
+                inject_auto_user_msg = true;
+                active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+            }
+          } else {
+            // All required parameters present -- proceed with normal execution path.
+            invalid_tool_strikes = 0;
+            bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
+
+            // PRE-EXECUTION LOOP CHECK: Reject before running if this is an exact repeat.
+            // This prevents wasting time on known-repeating commands.
+            bool pre_loop = loop_guard.would_repeat(tool_call);
+
+            if (pre_loop) {
               // Record it to update strike count, but DON'T execute the tool.
               was_loop = loop_guard.record_and_check(tool_call);
               tool_blocked_by_loop = true;
@@ -2059,6 +2096,7 @@ int main(int argc, char ** argv) {
                   }
               }
           }
+          } // end of validate_tool_params else block
         }
 
         if (!abort_auto) {

@@ -134,3 +134,35 @@ string remove_trailing_spaces(const string& str) {
     size_t end = str.find_last_not_of(" \t\n\r");
     return (end == string::npos) ? "" : str.substr(0, end + 1);
 }
+
+// Validate that a tool call contains properly formed parameter tags for all
+// required parameters. Returns true if valid, false if any required parameter tag is missing.
+bool validate_tool_params(const string& tool_name, const string& tool_call) {
+    // Define required parameters for each tool.
+    // A tool call is considered malformed if it lacks the PARAM_START + NAME + ">" opening tag
+    // for any required parameter -- this catches cases where the LLM produces garbage
+    // like "<Filesystem...>" instead of proper <parameter=NAME></parameter>.
+    static const vector<pair<string, vector<string>>> tool_requirements = {
+        {"read_files",   {"paths"}},
+        {"search_file",  {"path"}},
+        {"write_file",   {"path", "content"}},
+        {"edit_file",    {"path", "old", "new"}},
+        {"exec_shell",   {"command"}},
+        {"web_search",   {"query"}}
+    };
+
+    for (const auto& req : tool_requirements) {
+        if (req.first == tool_name) {
+            for (const auto& param : req.second) {
+                string search_key = string(PARAM_START) + param + ">";
+                if (tool_call.find(search_key) == string::npos) {
+                    return false;  // Required parameter tag not found
+                }
+            }
+            return true;  // All required parameters present
+        }
+    }
+
+    // Unknown tool -- let the is_real_tool check handle it elsewhere
+    return true;
+}
