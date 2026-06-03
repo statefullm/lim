@@ -43,8 +43,23 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern bool first_prompt_displayed;
 extern ofstream chat_log;
+extern ofstream token_log;
 
 // HOME is declared as extern std::string HOME in network.h
+
+// --- Helper to escape token piece strings for token log ---
+static string escape_token_piece(const string& s) {
+    string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c == '"') out += "\\\"";
+        else out += c;
+    }
+    return out;
+}
 
 // --- Helper to trim leading/trailing whitespace ---
 static string trim(const string& s) {
@@ -404,6 +419,15 @@ bool run_chat_session(
                 continue;
             }
 
+            // Log reincarnate tokens to token_log when debug is enabled
+            if (is_debug && token_log.is_open()) {
+                for (llama_token t : reincarnate_tokens) {
+                    string piece = common_token_to_piece(ctx, t);
+                    token_log << "FEED USER_INPUT " << t << " \"" << escape_token_piece(piece) << "\"\n";
+                }
+                token_log.flush();
+            }
+
             auto_continue = true;
             reincarnate_mode = true;
             reset_session_state();
@@ -519,6 +543,15 @@ bool run_chat_session(
                     stop_generation = 0;
                 }
                 continue;
+            }
+
+            // Log user input tokens to token_log when debug is enabled
+            if (is_debug && token_log.is_open()) {
+                for (llama_token t : tokens) {
+                    string piece = common_token_to_piece(ctx, t);
+                    token_log << "FEED USER_INPUT " << t << " \"" << escape_token_piece(piece) << "\"\n";
+                }
+                token_log.flush();
             }
         }
 
@@ -742,6 +775,12 @@ bool run_chat_session(
             string token_str = common_token_to_piece(ctx, next_token).c_str();
             generated_text += token_str;
             full_response += token_str;
+
+            // Log generated token to token_log when debug is enabled
+            if (is_debug && token_log.is_open()) {
+                token_log << t_count << " " << next_token << " \"" << escape_token_piece(token_str) << "\"\n";
+                token_log.flush();
+            }
 
             if (think_start == string::npos) {
                 think_start = generated_text.find(Tokens::THINK_START);
@@ -1244,6 +1283,15 @@ bool run_chat_session(
                 } else if (!feed_tokens(t_tokens)) {
                     abort_auto = true;
                 } else {
+                    // Log tool result tokens to token_log when debug is enabled
+                    if (is_debug && token_log.is_open()) {
+                        for (llama_token t : t_tokens) {
+                            string piece = common_token_to_piece(ctx, t);
+                            token_log << "FEED TOOL_RESULT " << t << " \"" << escape_token_piece(piece) << "\"\n";
+                        }
+                        token_log.flush();
+                    }
+
                     g_auto_continue_depth++;
                     if (g_auto_continue_depth > max_auto_continue) {
                         diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
@@ -1276,6 +1324,15 @@ bool run_chat_session(
                 vector<llama_token> t_tokens = tokenize(tool_msg);
                 if (n_past + t_tokens.size() < cparams.n_ctx) {
                     feed_tokens(t_tokens);
+
+                    // Log abort tool result tokens to token_log when debug is enabled
+                    if (is_debug && token_log.is_open()) {
+                        for (llama_token t : t_tokens) {
+                            string piece = common_token_to_piece(ctx, t);
+                            token_log << "FEED TOOL_RESULT " << t << " \"" << escape_token_piece(piece) << "\"\n";
+                        }
+                        token_log.flush();
+                    }
                 }
             }
         }
@@ -1339,6 +1396,15 @@ bool run_chat_session(
                 if (stop_generation) stop_generation = 0;
                 diag("Failed to feed reincarnated session tokens. Type 'clear' to reset.", "\033[31m");
                 continue;
+            }
+
+            // Log reincarnated session tokens to token_log when debug is enabled
+            if (is_debug && token_log.is_open()) {
+                for (llama_token t : new_session_tokens) {
+                    string piece = common_token_to_piece(ctx, t);
+                    token_log << "FEED USER_INPUT " << t << " \"" << escape_token_piece(piece) << "\"\n";
+                }
+                token_log.flush();
             }
 
             auto_continue = true;
