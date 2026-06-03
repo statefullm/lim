@@ -997,7 +997,7 @@ bool run_chat_session(
             if (!is_real_tool) {
                 invalid_tool_strikes++;
 
-                if (should_show_tools() && should_output_to_browser()) {
+                if (is_debug && should_show_tools() && should_output_to_browser()) {
                     string raw_display = tool_call;
                     if (raw_display.length() > 500) {
                         raw_display = raw_display.substr(0, 497) + "...";
