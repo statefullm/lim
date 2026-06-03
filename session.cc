@@ -206,6 +206,9 @@ bool run_chat_session(
         }
     };
 
+    // Persistent state for mid-tool-call resume: saves partial tool text from KV cache.
+    static string g_partial_tool_text = "";
+
     // Feed a vector of tokens into the KV cache, batching as needed.
     auto feed_tokens = [&](const vector<llama_token>& toks) -> bool {
         batch.n_tokens = 0;
@@ -248,6 +251,7 @@ bool run_chat_session(
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
         g_browser_warning_suppressed = false;
+        g_partial_tool_text.clear();
     };
 
     const char* history_file = ".lllm_history";
@@ -410,8 +414,18 @@ bool run_chat_session(
 
         // Handle "continue" as a reserved word to resume generation after an interruption.
         if (user_input == "continue") {
-            if (prev_was_interrupted) {
-                // Interrupted during token generation -- close the partial turn and reopen it.
+            if (g_tool_interrupt_pending) {
+                // Interrupted mid-tool-call -- assistant turn is already open with partial
+                // tool XML in the KV cache. Resume without feeding any additional tokens
+                // so the LLM continues generating from exactly where it left off.
+                prev_was_interrupted = false;
+                diag("Resuming after tool interruption...", "\033[1;33m");
+
+                auto_continue = true;
+                g_auto_continue_depth_val = 0;
+                user_input = ""; // Clear so it's not processed as a regular message
+            } else if (prev_was_interrupted) {
+                // Interrupted during normal text generation -- close the partial turn and reopen it.
                 prev_was_interrupted = false;
                 diag("Resuming generation...", "\033[1;33m");
 
@@ -428,15 +442,6 @@ bool run_chat_session(
                     diag("Failed to feed resume tokens. Type 'clear' to reset.", "\033[31m");
                     continue;
                 }
-
-                auto_continue = true;
-                g_auto_continue_depth_val = 0;
-                user_input = ""; // Clear so it's not processed as a regular message
-            } else if (g_tool_interrupt_pending) {
-                // Interrupted during tool execution -- assistant turn is already open.
-                // Just resume generation without feeding additional tokens.
-                g_tool_interrupt_pending = false;
-                diag("Resuming after tool interruption...", "\033[1;33m");
 
                 auto_continue = true;
                 g_auto_continue_depth_val = 0;
@@ -538,8 +543,13 @@ bool run_chat_session(
         unprinted_text.reserve(1024);
         full_response.reserve(32768);
 
-        bool in_tool_call_stream = false;
-        size_t tool_start = string::npos;
+        // When resuming mid-tool-call via g_tool_interrupt_pending, initialize tracking
+        // variables to reflect that we are already inside a tool call.
+        bool was_mid_tool_call = g_tool_interrupt_pending;
+        g_tool_interrupt_pending = false;
+
+        bool in_tool_call_stream = was_mid_tool_call;
+        size_t tool_start = was_mid_tool_call ? 0 : string::npos;
         size_t tool_end = string::npos;
         bool trigger_tool_execution = false;
         size_t func_search_pos = 0;
@@ -564,9 +574,23 @@ bool run_chat_session(
 
         static bool prev_stdout_ended_with_newline = false;
 
+        // Track the last sampled token so we can decode it on Ctrl+C break,
+        // preventing double-sampling on resume.
+        static llama_token g_last_sampled_token = -1;
+        static bool g_has_unsaved_sample = false;
+
         // --- INNER TOKEN GENERATION LOOP ---
         while (true) {
             if (stop_generation) {
+                // Decode any sampled-but-not-yet-decoded token to prevent
+                // double-sampling on resume.
+                if (g_has_unsaved_sample) {
+                    batch.n_tokens = 0;
+                    common_batch_add(batch, g_last_sampled_token, n_past++, {0}, true);
+                    handle_llama_decode_error(ctx, batch);
+                    g_has_unsaved_sample = false;
+                }
+
                 diag("Task Interrupted by User", "\033[31m");
                 stream("\n\n[Task Interrupted by User]\n\n");
                 stop_generation = 0;
@@ -574,6 +598,10 @@ bool run_chat_session(
                 prev_was_interrupted = true;
                 auto_continue = false;
                 reincarnate_mode = false;
+                // If interrupted mid-tool-call, preserve state for seamless resume.
+                if (in_tool_call_stream && tool_start != string::npos) {
+                    g_tool_interrupt_pending = true;
+                }
                 rl_redisplay();
                 break;
             }
@@ -911,16 +939,30 @@ bool run_chat_session(
                 double elapsed_turn = chrono::duration<double>(now - start).count();
                 if (elapsed_turn >= turn_timeout_sec) {
                     diag("System: Turn timeout reached (" + std::to_string((int)elapsed_turn) + "s/" + std::to_string((int)turn_timeout_sec) + "s). LLM may be stuck in a hallucination loop. Forcing stop.", "\033[1;33m");
+                    prev_was_interrupted = true;
                     auto_continue = false;
                     reincarnate_mode = false;
                     break;
                 }
             }
 
+            g_last_sampled_token = next_token;
+            g_has_unsaved_sample = true;
+
             batch.n_tokens = 0;
             common_batch_add(batch, next_token, n_past++, {0}, true);
             if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); reincarnate_mode = false; break; }
+            g_has_unsaved_sample = false;
         } // END INNER TOKEN LOOP
+
+        // If we exited the inner loop while mid-tool-call (e.g., due to timeout or Ctrl+C),
+        // don't close the assistant turn. On resume, just continue generating from where
+        // we left off so the LLM never knows it was interrupted.
+        if (in_tool_call_stream && tool_start != string::npos) {
+            g_tool_interrupt_pending = true;
+            // Save the partial tool text already in generated_text for reconstruction on resume.
+            g_partial_tool_text = generated_text.substr(tool_start);
+        }
 
         cerr << "\r\033[K";
 
@@ -954,7 +996,15 @@ bool run_chat_session(
 
         // --- TOOL EXECUTION BLOCK ---
         if (trigger_tool_execution && tool_start != string::npos && tool_end != string::npos) {
-            string tool_call = generated_text.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
+            // When resuming from a mid-tool-call interrupt, prepend the saved partial text
+            // so the extracted tool_call contains the complete XML including FUNC_START.
+            string full_generated = generated_text;
+            if (!g_partial_tool_text.empty()) {
+                full_generated = g_partial_tool_text + full_generated;
+                g_partial_tool_text.clear();
+            }
+
+            string tool_call = full_generated.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
             string preamble = "";
             if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
 
