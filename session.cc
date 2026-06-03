@@ -458,7 +458,7 @@ bool run_chat_session(
         bool had_eog_recovery = false;
         bool context_warned_this_turn = false;
 
-        static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 60.0;
+        static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 300.0;
         const char* timeout_env = getenv("LLLM_TURN_TIMEOUT");
         double turn_timeout_sec = (timeout_env != nullptr && strlen(timeout_env) > 0) ? atof(timeout_env) : DEFAULT_TURN_TIMEOUT_SEC;
         if (turn_timeout_sec < 5.0) turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
