@@ -223,6 +223,10 @@ bool run_chat_session(
     const char* history_file = ".lllm_history";
     load_history_safe(history_file);
 
+    // Persistent state across loop iterations for "continue" resume feature.
+    static int g_auto_continue_depth_val = 0;
+    static bool g_tool_interrupt_pending = false;
+
     // --- MAIN CHAT TURN LOOP ---
     while (true) {
         string user_input = "";
@@ -363,6 +367,45 @@ bool run_chat_session(
 
         if (user_input.empty() && !auto_continue) continue;
 
+        // Handle "continue" as a reserved word to resume generation after an interruption.
+        if (user_input == "continue") {
+            if (prev_was_interrupted) {
+                // Interrupted during token generation -- close the partial turn and reopen it.
+                prev_was_interrupted = false;
+                diag("Resuming generation...", "\033[1;33m");
+
+                string resume_message = string(TURN_END) + "\n" + string(TURN_START) + "assistant\n";
+                vector<llama_token> resume_tokens = tokenize(resume_message);
+
+                if (n_past + (int)resume_tokens.size() >= (int)cparams.n_ctx) {
+                    diag("Context Limit Reached! Cannot resume. Type 'clear' to reset.", "\033[31m");
+                    continue;
+                }
+
+                if (!feed_tokens(resume_tokens)) {
+                    if (stop_generation) stop_generation = 0;
+                    diag("Failed to feed resume tokens. Type 'clear' to reset.", "\033[31m");
+                    continue;
+                }
+
+                auto_continue = true;
+                g_auto_continue_depth_val = 0;
+                user_input = ""; // Clear so it's not processed as a regular message
+            } else if (g_tool_interrupt_pending) {
+                // Interrupted during tool execution -- assistant turn is already open.
+                // Just resume generation without feeding additional tokens.
+                g_tool_interrupt_pending = false;
+                diag("Resuming after tool interruption...", "\033[1;33m");
+
+                auto_continue = true;
+                g_auto_continue_depth_val = 0;
+                user_input = ""; // Clear so it's not processed as a regular message
+            } else {
+                // No active interruption -- just treat "continue" as a regular user message.
+                // Fall through to normal processing below.
+            }
+        }
+
         bool browser_connected = check_browser_connected();
 
         static string prev_tty = ttyname(STDIN_FILENO) ? string(ttyname(STDIN_FILENO)) : "";
@@ -386,6 +429,9 @@ bool run_chat_session(
         }
 
         if (!user_input.empty()) {
+            // If user provides regular input (not "continue"), clear any pending tool interrupt state.
+            if (!auto_continue) g_tool_interrupt_pending = false;
+
             if (!auto_continue) {
                 log_entry("USER", user_input);
                 if (should_output_to_browser() && pipe_fd >= 0) {
@@ -441,6 +487,7 @@ bool run_chat_session(
 
         static int g_auto_continue_depth = 0;
         if (!auto_continue) g_auto_continue_depth = 0;
+        bool allow_continue_resume = false;
         string generated_text = "";
         string unprinted_text = "";
         string full_response = "";
@@ -1005,7 +1052,7 @@ bool run_chat_session(
                         if (stop_generation) {
                             diag("Tool Interrupted by User", "\033[31m");
                             stop_generation = 0;
-                            abort_auto = true;
+                            allow_continue_resume = true;
                             reincarnate_mode = false;
                         }
 
@@ -1109,6 +1156,13 @@ bool run_chat_session(
                     g_auto_continue_depth++;
                     if (g_auto_continue_depth > max_auto_continue) {
                         diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
+                        auto_continue = false;
+                    } else if (allow_continue_resume) {
+                        // Interrupted during tool call -- feed result but drop to prompt.
+                        // User can type "continue" to resume generation.
+                        diag("Tool execution interrupted. Type 'continue' to let the LLM proceed, or provide input.", "\033[1;33m");
+                        allow_continue_resume = false;
+                        g_tool_interrupt_pending = true;
                         auto_continue = false;
                     } else {
                         auto_continue = true;
