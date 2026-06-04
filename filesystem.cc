@@ -445,12 +445,11 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   }
 
   if (match_count == 0) {
-    log_tool_diagnostic(search_label + ": No occurrences found");
+    log_tool_diagnostic(search_label);
     return "No occurrences found for text.";
   }
 
-  // Log function call with match count on one line
-  log_tool_diagnostic(search_label + ": " + to_string(match_count) + (match_count == 1 ? " match" : " matches"));
+  log_tool_diagnostic(search_label);
 
   escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
@@ -745,6 +744,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   }
   result["status"] = "updated";
   result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified).";
-  log_tool_diagnostic(edit_label + ": " + to_string(changes_count) + " change(s)");
+  log_tool_diagnostic(edit_label);
   return result;
 }

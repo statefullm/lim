@@ -1,4 +1,5 @@
 #include "network.h"
+#include "filesystem.h"
 #include <curl/curl.h>
 #include <iostream>
 #include <fstream>
@@ -865,6 +866,7 @@ string NetworkTools::web_search(const string& query) {
     init_ssl_certificates();
 
     string query_str = "\"" + (query.length() > 80 ? query.substr(0, 77) + "..." : query) + "\"";
+    log_tool_diagnostic("web_search(" + query_str + ")");
     cerr << "web_search(" + query_str + ")" << endl;
 
     string cache = HOME + "/.search_cache";
