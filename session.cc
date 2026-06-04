@@ -1197,7 +1197,7 @@ bool run_chat_session(
                                 if (tool_result.find("[Cache hit") != string::npos) display_result += "(Cache Hit)";
                             } else if (tool_name == "web_search") {
                                 string q = extract_string_arg_bounded(tool_call, "query");
-                                display_result = "Web search: " + q;
+                                display_result = "";
                                 // Append a truncated snippet of actual results for browser/log display
                                 if (tool_result.find("Error:") != string::npos && tool_result.find("Search Results for:") == string::npos) {
                                     // Error case: show the error message
@@ -1290,7 +1290,7 @@ bool run_chat_session(
                                 }
                             } else if (tool_name == "exec_shell") {
                                 string cmd = extract_string_arg_bounded(tool_call, "command");
-                                display_result = "Exec shell: " + cmd;
+                                display_result = "";
                                 // Truncate output for browser/log display
                                 string out = tool_result;
                                 if (out.length() > 500) {
