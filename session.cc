@@ -1077,7 +1077,7 @@ bool run_chat_session(
                 if (is_debug && should_show_tools() && should_output_to_browser()) {
                     string raw_display = tool_call;
                     if (raw_display.length() > 500) {
-                        raw_display = raw_display.substr(0, 497) + "...";
+                        raw_display = raw_display.substr(0, 500) + "...";
                     }
                     string safe;
                     for (char c : raw_display) {
@@ -1108,7 +1108,7 @@ bool run_chat_session(
                     if (is_debug && should_show_tools() && should_output_to_browser()) {
                         string raw_display = tool_call;
                         if (raw_display.length() > 500) {
-                            raw_display = raw_display.substr(0, 497) + "...";
+                            raw_display = raw_display.substr(0, 500) + "...";
                         }
                         string safe;
                         for (char c : raw_display) {
@@ -1198,6 +1198,24 @@ bool run_chat_session(
                             } else if (tool_name == "web_search") {
                                 string q = extract_string_arg_bounded(tool_call, "query");
                                 display_result = "Web search: " + q;
+                                // Append a truncated snippet of actual results for browser/log display
+                                if (tool_result.find("Error:") != string::npos && tool_result.find("Search Results for:") == string::npos) {
+                                    // Error case: show the error message
+                                    display_result += "\n" + tool_result;
+                                } else if (tool_result.find("No results found") != string::npos) {
+                                    display_result += "\n" + tool_result;
+                                } else if (tool_result.length() > 0) {
+                                    // Show first ~500 chars of results as a preview snippet
+                                    size_t snippet_len = 500;
+                                    if (tool_result.length() <= snippet_len) {
+                                        display_result += "\n" + tool_result;
+                                    } else {
+                                        // Find a good break point near snippet_len (prefer end of line)
+                                        size_t cut = tool_result.rfind('\n', snippet_len);
+                                        if (cut == string::npos || cut < snippet_len - 100) cut = snippet_len;
+                                        display_result += "\n" + tool_result.substr(0, cut) + "\n...";
+                                    }
+                                }
                             } else if (tool_name == "search_file") {
                                 string fpath = extract_string_arg_bounded(tool_call, "path");
                                 int bline = extract_int_arg_bounded(tool_call, "begin");
@@ -1259,7 +1277,7 @@ bool run_chat_session(
 
                 string display_for_browser = display_result;
                 if (!is_debug && display_for_browser.length() > 500) {
-                    display_for_browser = "..." + display_for_browser.substr(display_for_browser.length() - 497);
+                    display_for_browser = "..." + display_for_browser.substr(display_for_browser.length() - 500);
                 }
 
                 string safe_result;
