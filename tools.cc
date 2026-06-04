@@ -174,10 +174,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
 }
 
 string sanitize(string text) {
-    size_t pos = 0;
-    while ((pos = text.find(PARAM_END, pos)) != string::npos) {
-        text.replace(pos, strlen(PARAM_END), PARAM_END_ESC);
-        pos += strlen(PARAM_END_ESC);
-    }
+    escape_parameter_tags(text);
     return text;
 }

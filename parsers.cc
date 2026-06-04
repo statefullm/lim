@@ -7,6 +7,85 @@
 using namespace std;
 using namespace Tokens;
 
+// The suffix to match after '<' and optional backslashes, derived from PARAM_END.
+static const string param_end_suffix = string(PARAM_END, 1);
+
+void escape_parameter_tags(string& str) {
+    size_t start_pos = 0;
+    while (start_pos < str.length()) {
+        size_t lt_pos = str.find('<', start_pos);
+        if (lt_pos == string::npos) break;
+
+        size_t scan = lt_pos + 1;
+        int num_backslashes = 0;
+        while (scan < str.length() && str[scan] == '\\') {
+            num_backslashes++;
+            scan++;
+        }
+
+        bool match = true;
+        for (size_t k = 0; k < param_end_suffix.length(); k++) {
+            if (scan + k >= str.length() || str[scan + k] != param_end_suffix[k]) {
+                match = false;
+                break;
+            }
+        }
+
+        if (match) {
+            size_t token_start = lt_pos;
+            size_t token_end = scan + param_end_suffix.length();
+
+            // Build replacement: PARAM_END with num_backslashes extra '\' inserted after '<'
+            string replacement("<");
+            for (int b = 0; b <= num_backslashes; b++) replacement += '\\';
+            replacement += param_end_suffix;
+
+            str.replace(token_start, token_end - token_start, replacement);
+            start_pos = token_start + replacement.length();
+        } else {
+            start_pos = lt_pos + 1;
+        }
+    }
+}
+
+void unescape_parameter_tags(string& str) {
+    size_t start_pos = 0;
+    while (start_pos < str.length()) {
+        size_t lt_pos = str.find('<', start_pos);
+        if (lt_pos == string::npos) break;
+
+        size_t scan = lt_pos + 1;
+        int num_backslashes = 0;
+        while (scan < str.length() && str[scan] == '\\') {
+            num_backslashes++;
+            scan++;
+        }
+
+        bool match = true;
+        for (size_t k = 0; k < param_end_suffix.length(); k++) {
+            if (scan + k >= str.length() || str[scan + k] != param_end_suffix[k]) {
+                match = false;
+                break;
+            }
+        }
+
+        if (match) {
+            size_t token_start = lt_pos;
+            size_t token_end = scan + param_end_suffix.length();
+
+            // Build replacement: PARAM_END with (num_backslashes-1) '\' after '<', min 0
+            int new_bs = (num_backslashes > 0) ? (num_backslashes - 1) : 0;
+            string replacement("<");
+            for (int b = 0; b < new_bs; b++) replacement += '\\';
+            replacement += param_end_suffix;
+
+            str.replace(token_start, token_end - token_start, replacement);
+            start_pos = token_start + replacement.length();
+        } else {
+            start_pos = lt_pos + 1;
+        }
+    }
+}
 // Strip surrounding matching quotes (single or double) from a string.
 // Handles cases where whitespace surrounds the quoted content:
 //   "main.cc"        -> main.cc

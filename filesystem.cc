@@ -105,95 +105,6 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
     chat_log.flush();
 }
 
-// --- Helper to escape tags from disk so they don't break the LLM's XML parser ---
-// Recursive backslash scheme: for <\//parameter> with N backslashes between < and /,
-// produce <\//parameter> with N+1 backslashes sent to the LLM.
-static void escape_parameter_tags(std::string& str) {
-    size_t start_pos = 0;
-    while (start_pos < str.length()) {
-        size_t lt_pos = str.find('<', start_pos);
-        if (lt_pos == string::npos) break;
-
-        size_t scan = lt_pos + 1;
-        int num_backslashes = 0;
-        while (scan < str.length() && str[scan] == '\\') {
-            num_backslashes++;
-            scan++;
-        }
-
-        string suffix = "/parameter>";
-        bool match = true;
-        for (size_t k = 0; k < suffix.length(); k++) {
-            if (scan + k >= str.length() || str[scan + k] != suffix[k]) {
-                match = false;
-                break;
-            }
-        }
-
-        if (match) {
-            size_t token_start = lt_pos;
-            size_t token_end = scan + suffix.length();
-
-            // Replace with N+1 backslashes
-            string replacement = "<";
-            for (int b = 0; b <= num_backslashes; b++) {
-                replacement += '\\';
-            }
-            replacement += "/parameter>";
-
-            str.replace(token_start, token_end - token_start, replacement);
-            start_pos = token_start + replacement.length();
-        } else {
-            start_pos = lt_pos + 1;
-        }
-    }
-}
-
-// --- Helper to unescape tags from LLM input before writing to disk ---
-// Recursive backslash scheme: for <\//parameter> with N backslashes between < and /,
-// produce <\//parameter> with N-1 backslashes on disk (inverse of escape).
-static void unescape_parameter_tags(std::string& str) {
-    size_t start_pos = 0;
-    while (start_pos < str.length()) {
-        size_t lt_pos = str.find('<', start_pos);
-        if (lt_pos == string::npos) break;
-
-        size_t scan = lt_pos + 1;
-        int num_backslashes = 0;
-        while (scan < str.length() && str[scan] == '\\') {
-            num_backslashes++;
-            scan++;
-        }
-
-        string suffix = "/parameter>";
-        bool match = true;
-        for (size_t k = 0; k < suffix.length(); k++) {
-            if (scan + k >= str.length() || str[scan + k] != suffix[k]) {
-                match = false;
-                break;
-            }
-        }
-
-        if (match) {
-            size_t token_start = lt_pos;
-            size_t token_end = scan + suffix.length();
-
-            // Replace with N-1 backslashes (minimum 0)
-            string replacement = "<";
-            int new_bs = (num_backslashes > 0) ? (num_backslashes - 1) : 0;
-            for (int b = 0; b < new_bs; b++) {
-                replacement += '\\';
-            }
-            replacement += "/parameter>";
-
-            str.replace(token_start, token_end - token_start, replacement);
-            start_pos = token_start + replacement.length();
-        } else {
-            start_pos = lt_pos + 1;
-        }
-    }
-}
-
 const string FileSystemTools::HOME = "/home/ai";
 
 // Test edit - filesystem tools verification
@@ -361,8 +272,9 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
       result += lines[i] + "\n";
     }
 
-    log_tool_diagnostic(search_label);
+    // Escape PARAM_END tokens before sending to LLM
     escape_parameter_tags(result);
+    log_tool_diagnostic(search_label);
     return result;
   }
 
@@ -449,9 +361,10 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
     return "No occurrences found for text.";
   }
 
+  // Escape PARAM_END tokens before sending to LLM
+  escape_parameter_tags(result);
   log_tool_diagnostic(search_label);
 
-  escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
 }
 
@@ -596,7 +509,8 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
       // Use logOnly=true to ensure content is never shown on stdout or in logfile
       log_diagnostic("Successfully read: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
 
-      escape_parameter_tags(content); // Escape any literal XML tags before sending to LLM
+      // Escape PARAM_END tokens before sending to LLM
+      escape_parameter_tags(content);
 
       result["status"] = "success";
       result["content"] = content;

@@ -6,6 +6,10 @@
 
 using namespace std;
 
+// --- Recursive Tokens::PARAM_END escape/unescape ---
+void escape_parameter_tags(string& str);
+void unescape_parameter_tags(string& str);
+
 // Linear-time parsers - O(n) time complexity with general data robustness
 // No artificial limits on string length or array size
 // Handles arbitrary-length tool calls safely
