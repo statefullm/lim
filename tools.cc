@@ -51,7 +51,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
 
         if (!is_url && clean_files.count(path)) {
           result += "Path: " + path + "\n";
-          result += "Content:\n[Content omitted: You already read this file and it has not been modified since your last read. If you need to search for specific code sections or variables, use the search_file tool instead. DO NOT call read_files on this file again.]\n";
+          result += "Content:\n[Cache hit - unchanged since last read]\n";
           result += "---\n";
         } else if (is_url) {
           auto url_results = net.fetch_urls({path});
@@ -123,7 +123,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
       if (result_map.count("status")) r_status = result_map.at("status");
       if (result_map.count("bytes")) r_bytes = result_map.at("bytes");
       if (result_map.count("error")) r_error = result_map.at("error");
-      result = "Status: " + r_status + ", Wrote " + r_bytes + " bytes";
+      result = "Status: " + r_status;
       if (!r_error.empty()) result += ", Error: " + r_error;
     } else {
       result = "Error: No path provided to write_file";
@@ -143,7 +143,17 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
       if (result_map.count("changes")) r_changes = result_map.at("changes");
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
-      if (!r_changes.empty()) result += ", " + r_changes;
+      if (!r_changes.empty()) {
+          // Extract just the number from "(N total occurrences modified)"
+          size_t lp = r_changes.find('(');
+          size_t rp = r_changes.find(')', lp);
+          if (lp != string::npos && rp != string::npos) {
+              string num_str = r_changes.substr(lp + 1, rp - lp - 1);
+              size_t sp = num_str.find(' ');
+              int n = atoi(num_str.substr(0, sp).c_str());
+              result += ", " + to_string(n) + (n == 1 ? " change" : " changes");
+          }
+      }
       if (!r_error.empty()) result += ", Error: " + r_error;
     } else {
       result = "Error: No path provided to edit_file";

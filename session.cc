@@ -1194,7 +1194,7 @@ bool run_chat_session(
                                 vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
                                 display_result = "Read files: ";
                                 for (const auto& p : paths) display_result += p + " ";
-                                if (tool_result.find("[Content omitted") != string::npos) display_result += "(Cache Hit)";
+                                if (tool_result.find("[Cache hit") != string::npos) display_result += "(Cache Hit)";
                             } else if (tool_name == "web_search") {
                                 string q = extract_string_arg_bounded(tool_call, "query");
                                 display_result = "Web search: " + q;
@@ -1224,29 +1224,13 @@ bool run_chat_session(
                                 }
                             } else if (tool_name == "write_file") {
                                 string fpath = extract_string_arg_bounded(tool_call, "path");
-                                size_t bs_pos = tool_result.find("Wrote ");
-                                if (bs_pos != string::npos) {
-                                    size_t bs_end = tool_result.find(" bytes", bs_pos + 6);
-                                    string byte_count = tool_result.substr(bs_pos + 6, bs_end - bs_pos - 6);
-                                    display_result = "Write file: " + fpath + ", Wrote " + byte_count + " bytes";
-                                } else {
-                                    display_result = tool_result;
-                                }
+                                display_result = "Write file: " + fpath;
                             } else if (tool_name == "edit_file") {
                                 string fpath = extract_string_arg_bounded(tool_call, "path");
-                                // Extract the number of changes from "(N total occurrences modified)"
-                                size_t lp = tool_result.find("(");
-                                if (lp != string::npos) {
-                                    size_t rp = tool_result.find(")", lp);
-                                    string change_info = tool_result.substr(lp + 1, rp - lp - 1);
-                                    // Extract just the leading number: "1 total occurrences modified" -> "1"
-                                    size_t num_end = change_info.find(' ');
-                                    if (num_end != string::npos) {
-                                        int n_changes = atoi(change_info.substr(0, num_end).c_str());
-                                        display_result = to_string(n_changes) + (n_changes == 1 ? " change" : " changes");
-                                    } else {
-                                        display_result = tool_result;
-                                    }
+                                // Extract the number of changes from ", N change(s)" in tool_result
+                                size_t comma_pos = tool_result.find(", ");
+                                if (comma_pos != string::npos) {
+                                    display_result = tool_result.substr(comma_pos + 2);
                                 } else {
                                     display_result = tool_result;
                                 }
