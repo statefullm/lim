@@ -1198,6 +1198,33 @@ bool run_chat_session(
                             } else if (tool_name == "web_search") {
                                 string q = extract_string_arg_bounded(tool_call, "query");
                                 display_result = "Web search: " + q;
+                            } else if (tool_name == "search_file") {
+                                string fpath = extract_string_arg_bounded(tool_call, "path");
+                                int bline = extract_int_arg_bounded(tool_call, "begin");
+                                int eline = extract_int_arg_bounded(tool_call, "end");
+                                display_result = "Search file: " + fpath;
+                                if (bline > 0 && eline >= bline) {
+                                    display_result += ", lines " + to_string(bline) + "-" + to_string(eline);
+                                    // Line range: 1 if content returned, 0 on error
+                                    int n_matches = (tool_result.find("Error:") == 0) ? 0 : 1;
+                                    display_result += ": " + to_string(n_matches) + " match" + (n_matches != 1 ? "es" : "");
+                                } else if (bline > 0 && eline > 0) {
+                                    // Invalid range (begin > end)
+                                    display_result += ", lines " + to_string(bline) + "-" + to_string(eline);
+                                    display_result += ": 0 matches";
+                                } else {
+                                    // Text search: count matches
+                                    int n_matches = 0;
+                                    if (tool_result.find("No occurrences found") == string::npos) {
+                                        for (size_t p = 0;;) {
+                                            size_t mp = tool_result.find("--- Match ", p);
+                                            if (mp == string::npos) break;
+                                            n_matches++;
+                                            p = mp + 1;
+                                        }
+                                    }
+                                    display_result += ": " + to_string(n_matches) + " match" + (n_matches != 1 ? "es" : "");
+                                }
                             } else {
                                 display_result = tool_result;
                             }
