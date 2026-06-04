@@ -1288,6 +1288,17 @@ bool run_chat_session(
                                 } else {
                                     display_result = "Edit file: " + fpath + ": " + tool_result;
                                 }
+                            } else if (tool_name == "exec_shell") {
+                                string cmd = extract_string_arg_bounded(tool_call, "command");
+                                display_result = "Exec shell: " + cmd;
+                                // Truncate output for browser/log display
+                                string out = tool_result;
+                                if (out.length() > 500) {
+                                    size_t cut = out.rfind('\n', 500);
+                                    if (cut == string::npos || cut < 400) cut = 500;
+                                    out = out.substr(0, cut) + "...";
+                                }
+                                display_result += "\n" + out;
                             } else {
                                 display_result = tool_result;
                             }
@@ -1312,9 +1323,6 @@ bool run_chat_session(
                 }
 
                 string display_for_browser = display_result;
-                if (!is_debug && display_for_browser.length() > 500) {
-                    display_for_browser = "..." + display_for_browser.substr(display_for_browser.length() - 500);
-                }
 
                 string safe_result;
                 for (char c : display_for_browser) {
