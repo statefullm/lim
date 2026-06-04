@@ -59,13 +59,25 @@ Output the exact raw, multi-line text you want to search for, read, or write,
 subject only to the following exception.
 
 PARAM_END ESCAPING CONTRACT:
-There is a special token called PARAM_END. Its literal form on disk is </parameter>. To prevent XML parsing issues, this token is always escaped when crossing the LLM <-> SYSTEM boundary:
+The string </parameter> is a reserved XML closing tag and can never appear
+literally in tool calls or tool responses. It is always escaped when crossing
+the LLM <-> SYSTEM boundary.
 
-1. SYSTEM -> LLM: When you read files, any </parameter> tokens in the file content are sent to you with one additional backslash before the /. You will NEVER see unescaped </parameter> tokens in tool responses.
+1. SYSTEM -> LLM: When you read files, any </parameter> tokens in the file
+   content are sent to you with one additional backslash before the /. You
+   will NEVER see unescaped </parameter> tokens in tool responses.
 
-2. LLM -> SYSTEM: If you want to send TEXT that contains </parameter>, write it with one additional backslash before the / in your tool call. The system removes that backslash before writing to disk.
+2. LLM -> SYSTEM: If you want to send text that contains </parameter>, write
+   it with one additional backslash before the / in your tool call. The system
+   removes exactly that one backslash before writing to disk; any other
+   backslashes are preserved as-is.
 
-The rule is simple: whatever form of </parameter> you see in a tool response, use that exact same text when writing it back for lossless round-tripping.
+Examples (on disk -> in response):
+  </parameter> -> <\/parameter>
+  <\/parameter> -> <\\/parameter>
+
+Actionable shortcut: whatever form you see in a tool response, use that exact
+same text when writing it back. The system handles both directions symmetrically.
 
 MATH FORMATTING RULES:
 - ALWAYS use LaTeX-style dollar signs for inline math: $\delta$, $x^2$.
