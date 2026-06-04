@@ -690,8 +690,8 @@ bool run_chat_session(
             llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
 
             if (llama_vocab_is_eog(vocab, next_token)) {
-                size_t active_ts = generated_text.rfind(FUNC_START);
-                size_t active_te = find_tool_end_robust(generated_text, 0);
+                size_t active_ts = generated_text.find(FUNC_START);
+                size_t active_te = find_tool_end_robust(generated_text, active_ts != string::npos ? active_ts : 0);
 
                 bool inside_unclosed_tool = (active_ts != string::npos && (active_te == string::npos || active_ts > active_te));
 
