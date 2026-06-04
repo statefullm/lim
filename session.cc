@@ -1205,26 +1205,43 @@ bool run_chat_session(
                                 } else if (tool_result.find("No results found") != string::npos) {
                                     display_result += "\n" + tool_result;
                                 } else if (tool_result.length() > 0) {
-                                    // Split into individual result blocks by "\n\n", truncate each to 500 chars
+                                    // Strip the "Search Results for: ...\n\n" header (redundant, query already shown)
+                                    string content = tool_result;
+                                    size_t hdr = content.find("\n\n");
+                                    if (hdr != string::npos) content = content.substr(hdr + 2);
+
+                                    // Split into individual result blocks by "Title:", truncate each to 500 chars
                                     vector<string> blocks;
                                     size_t blk_start = 0;
-                                    while (blk_start < tool_result.length()) {
-                                        size_t sep = tool_result.find("\n\n", blk_start);
-                                        if (sep == string::npos) {
-                                            blocks.push_back(tool_result.substr(blk_start));
-                                            break;
+                                    while (blk_start < content.length()) {
+                                        size_t next_title = content.find("Title:", blk_start + 6);
+                                        string block;
+                                        if (next_title == string::npos) {
+                                            block = content.substr(blk_start);
                                         } else {
-                                            blocks.push_back(tool_result.substr(blk_start, sep - blk_start));
-                                            blk_start = sep + 2;
+                                            // Skip any leading blank lines before the next Title:
+                                            size_t trimmed = next_title;
+                                            while (trimmed > blk_start && (content[trimmed - 1] == '\n')) trimmed--;
+                                            block = content.substr(blk_start, trimmed - blk_start);
+                                            blk_start = next_title;
                                         }
+                                        blocks.push_back(block);
+                                        if (next_title == string::npos) break;
                                     }
 
-                                    for (size_t i = 0; i < blocks.size(); i++) {
-                                        if (blocks[i].length() > 500) {
+                                    for (auto& b : blocks) {
+                                        // Trim leading/trailing whitespace
+                                        size_t s = b.find_first_not_of(" \t\n\r");
+                                        if (s == string::npos) continue;  // empty block
+                                        if (s > 0) b = b.substr(s);
+                                        size_t e = b.find_last_not_of(" \t\n\r");
+                                        if (e != string::npos) b = b.substr(0, e + 1);
+
+                                        if (b.length() > 500) {
                                             // Truncate to 500 chars, prefer breaking at end of line
-                                            size_t cut = blocks[i].rfind('\n', 500);
+                                            size_t cut = b.rfind('\n', 500);
                                             if (cut == string::npos || cut < 400) cut = 500;
-                                            blocks[i] = blocks[i].substr(0, cut);
+                                            b = b.substr(0, cut) + "...";
                                         }
                                     }
 
