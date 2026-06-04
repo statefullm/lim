@@ -45,14 +45,8 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 
     string val = tool_call.substr(start, end - start);
 
-    // Strip the structural newline the LLM injects immediately after/before tags.
-    if (!val.empty() && val.front() == '\n') val.erase(val.begin());
-    if (!val.empty() && val.back() == '\n') val.pop_back();
-    // Also strip a trailing \r if present (Windows line endings)
-    if (!val.empty() && val.back() == '\r') val.pop_back();
-    // Strip trailing horizontal whitespace (spaces/tabs) that can leak from XML formatting
-    // e.g., <path>main.cc\n  </parameter> where the two spaces before </parameter> are accidental.
-    while (!val.empty() && (val.back() == ' ' || val.back() == '\t')) val.pop_back();
+    // With the single-line tool protocol, parameter values are taken verbatim.
+    // No structural newlines exist between tags, so we preserve all content exactly.
 
     return strip_quotes(val);
 }

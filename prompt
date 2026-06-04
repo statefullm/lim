@@ -11,75 +11,27 @@ CRITICAL TOOL CALLING RULES:
 Always use these tools for any filesystem or shell operation:
 
 - Read one or more text or PDF files or URLs:
-  <function=read_files>
-  <parameter=paths>
-  main.cc
-  main.h
-  https://example.com/document.pdf
-  </parameter>
-  </function>
+  <function=read_files><parameter=paths>main.cc,main.h,https://example.com/document.pdf</parameter></function>
 
 - Search for plain text inside a file to return the code with surrounding context for editing:
-  <function=search_file>
-  <parameter=path>
-  main.cc
-  </parameter>
-  <parameter=text>
-  int main() {
-  </parameter>
-  </function>
+  <function=search_file><parameter=path>main.cc</parameter><parameter=text>int main() {</parameter></function>
 
 - Search for exact line range within a file:
-  <function=search_file>
-  <parameter=path>
-  main.cc
-  </parameter>
-  <parameter=begin>
-  100
-  </parameter>
-  <parameter=end>
-  150
-  </parameter>
-  </function>
+  <function=search_file><parameter=path>main.cc</parameter><parameter=begin>100</parameter><parameter=end>150</parameter></function>
 
 - Write (or overwrite) CONTENT to a file in an existing directory:
-  <function=write_file>
-  <parameter=path>
-  main.cc
-  </parameter>
-  <parameter=content>
-  CONTENT
-  </parameter>
-  </function>
+  <function=write_file><parameter=path>main.cc</parameter><parameter=content>CONTENT</parameter></function>
 
 - Replace OLD_TEXT with NEW_TEXT:
-  <function=edit_file>
-  <parameter=path>
-  main.cc
-  </parameter>
-  <parameter=old>
-  OLD_TEXT
-  </parameter>
-  <parameter=new>
-  NEW_TEXT
-  </parameter>
-  </function>
+  <function=edit_file><parameter=path>main.cc</parameter><parameter=old>OLD_TEXT</parameter><parameter=new>NEW_TEXT</parameter></function>
   * CRITICAL: OLD_TEXT MUST be the exact current text in the file.
   * You can invoke multiple tool calls in sequence if you need to make several independent changes.
 
 - Run a command:
-  <function=exec_shell>
-  <parameter=command>
-  pwd
-  </parameter>
-  </function>
+  <function=exec_shell><parameter=command>pwd</parameter></function>
 
 - Search the web with a query for up-to-date documentation, bugs, or forum discussions:
-  <function=web_search>
-  <parameter=query>
-  keyword1 keyword2 ...
-  </parameter>
-  </function>
+  <function=web_search><parameter=query>keyword1 keyword2 ...</parameter></function>
 
 THE SURGICAL EDITING WORKFLOW:
 If you need to edit a file, DO NOT use read_files to read the entire file if you already know roughly what you are looking for.
