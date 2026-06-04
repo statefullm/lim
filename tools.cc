@@ -114,7 +114,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     string path = extract_string_arg_bounded(tool_call, "path");
     if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
     string content = extract_string_arg_bounded(tool_call, "content");
-    content = remove_trailing_spaces(content);
     clean_files.erase(path);
     if (!path.empty()) {
       FileSystemTools fs;
@@ -132,7 +131,6 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
-    new_str = remove_trailing_spaces(new_str);
     clean_files.erase(path);
     if (!path.empty()) {
       FileSystemTools fs;
