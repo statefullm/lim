@@ -2,13 +2,14 @@
 #include "tokens.h"
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <sstream> // Required for stringstream
 
 using namespace std;
 using namespace Tokens;
 
 // The suffix to match after '<' and optional backslashes, derived from PARAM_END.
-static const string param_end_suffix = string(PARAM_END, 1);
+static const string param_end_suffix = string(PARAM_END + 1);
 
 void escape_parameter_tags(string& str) {
     size_t start_pos = 0;
@@ -86,6 +87,35 @@ void unescape_parameter_tags(string& str) {
         }
     }
 }
+
+// Find the next unescaped PARAM_END starting from 'from'.
+// Skips over backslash-escaped forms (PARAM_END_ESC).
+// Returns string::npos if no unescaped PARAM_END is found.
+static size_t find_unescaped_param_end(const string& text, size_t from) {
+    size_t param_len = strlen(PARAM_END);
+    while (from + param_len <= text.length()) {
+        size_t pos = text.find(PARAM_END, from);
+        if (pos == string::npos) return string::npos;
+
+        // Check if there's a backslash immediately before the '<'
+        if (pos > 0 && text[pos - 1] == '\\') {
+            // Count consecutive backslashes before '<'
+            size_t bs_start = pos - 1;
+            while (bs_start > 0 && text[bs_start - 1] == '\\') {
+                bs_start--;
+            }
+            int num_bs = pos - bs_start;
+            if (num_bs % 2 == 1) {
+                // Odd number of backslashes => escaped, skip past this match
+                from = pos + param_len;
+                continue;
+            }
+        }
+        return pos; // Unescaped PARAM_END found
+    }
+    return string::npos;
+}
+
 // Strip surrounding matching quotes (single or double) from a string.
 // Handles cases where whitespace surrounds the quoted content:
 //   "main.cc"        -> main.cc
@@ -119,7 +149,7 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
     if (pos == string::npos) return "";
 
     size_t start = pos + search_key.length();
-    size_t end = tool_call.find(PARAM_END, start);
+    size_t end = find_unescaped_param_end(tool_call, start);
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);
@@ -141,7 +171,7 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
     if (pos == string::npos) return result;
 
     size_t start = pos + search_key.length();
-    size_t end = tool_call.find(PARAM_END, start);
+    size_t end = find_unescaped_param_end(tool_call, start);
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);
@@ -187,7 +217,7 @@ int extract_int_arg_bounded(const string& tool_call, const string& arg_name) {
     if (pos == string::npos) return 0;
 
     size_t start = pos + search_key.length();
-    size_t end = tool_call.find(PARAM_END, start);
+    size_t end = find_unescaped_param_end(tool_call, start);
     if (end == string::npos) end = tool_call.length();
 
     string val = tool_call.substr(start, end - start);
