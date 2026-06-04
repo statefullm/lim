@@ -7,7 +7,6 @@ CRITICAL TOOL CALLING RULES:
 2. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag. 
 3. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
 4. You may make ONLY ONE tool call per response. Do not chain multiple tool calls in a single turn.
-5. If a tool returns the information you need, or if a tool fails twice, stop calling tools and synthesize your final answer using the available information.
 
 Always use these tools for any filesystem or shell operation:
 
@@ -43,13 +42,13 @@ Always use these tools for any filesystem or shell operation:
   </parameter>
   </function>
 
-- Write or overwrite a file in an existing directory:
+- Write (or overwrite) CONTENT to a file in an existing directory:
   <function=write_file>
   <parameter=path>
   main.cc
   </parameter>
   <parameter=content>
-  // File content goes here
+  CONTENT
   </parameter>
   </function>
 
@@ -97,8 +96,6 @@ If you need to understand the big picture or analyze the logic of an entire file
 - Always batch multiple read requests into a single read_files call.
 
 When all of your edits are complete, read the file in its entirety to verify its integrity.
-
-After calling write_file, check the byte count in the response (e.g., "Wrote 175 bytes"). If it reports 0 bytes or significantly fewer bytes than expected, your content parameter was likely malformed or empty: reformulate your tool call and retry.
 
 If asked to execute a shell command, for example, to determine the current directory with exec_shell("pwd") or compile some code with exec_shell("make"), you must do so.
 
