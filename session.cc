@@ -449,23 +449,10 @@ bool run_chat_session(
                 g_auto_continue_depth_val = 0;
                 user_input = ""; // Clear so it's not processed as a regular message
             } else if (prev_was_interrupted) {
-                // Interrupted during normal text generation -- close the partial turn and reopen it.
+                // Interrupted during normal text generation -- resume seamlessly without
+                // feeding any additional tokens so the LLM doesn't even know it was interrupted.
                 prev_was_interrupted = false;
                 diag("Resuming generation...", "\033[1;33m");
-
-                string resume_message = string(TURN_END) + "\n" + string(TURN_START) + "assistant\n";
-                vector<llama_token> resume_tokens = tokenize(resume_message);
-
-                if (n_past + (int)resume_tokens.size() >= (int)cparams.n_ctx) {
-                    diag("Context Limit Reached! Cannot resume. Type 'clear' to reset.", "\033[31m");
-                    continue;
-                }
-
-                if (!feed_tokens(resume_tokens)) {
-                    if (stop_generation) stop_generation = 0;
-                    diag("Failed to feed resume tokens. Type 'clear' to reset.", "\033[31m");
-                    continue;
-                }
 
                 auto_continue = true;
                 g_auto_continue_depth_val = 0;
@@ -607,23 +594,9 @@ bool run_chat_session(
 
         static bool prev_stdout_ended_with_newline = false;
 
-        // Track the last sampled token so we can decode it on Ctrl+C break,
-        // preventing double-sampling on resume.
-        static llama_token g_last_sampled_token = -1;
-        static bool g_has_unsaved_sample = false;
-
         // --- INNER TOKEN GENERATION LOOP ---
         while (true) {
             if (stop_generation) {
-                // Decode any sampled-but-not-yet-decoded token to prevent
-                // double-sampling on resume.
-                if (g_has_unsaved_sample) {
-                    batch.n_tokens = 0;
-                    common_batch_add(batch, g_last_sampled_token, n_past++, {0}, true);
-                    handle_llama_decode_error(ctx, batch);
-                    g_has_unsaved_sample = false;
-                }
-
                 diag("Task Interrupted by User", "\033[31m");
                 stream("\n\n[Task Interrupted by User]\n\n");
                 stop_generation = 0;
@@ -985,13 +958,9 @@ bool run_chat_session(
                 }
             }
 
-            g_last_sampled_token = next_token;
-            g_has_unsaved_sample = true;
-
             batch.n_tokens = 0;
             common_batch_add(batch, next_token, n_past++, {0}, true);
             if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); reincarnate_mode = false; break; }
-            g_has_unsaved_sample = false;
         } // END INNER TOKEN LOOP
 
         // If we exited the inner loop while mid-tool-call (e.g., due to timeout or Ctrl+C),
@@ -1041,6 +1010,17 @@ bool run_chat_session(
             if (!g_partial_tool_text.empty()) {
                 full_generated = g_partial_tool_text + full_generated;
                 g_partial_tool_text.clear();
+                // tool_end was found within generated_text, but full_generated now has
+                // g_partial_tool_text prepended. Adjust tool_end to be relative to full_generated.
+                // Re-search for FUNC_END in full_generated starting from tool_start to get the correct offset.
+                tool_end = find_tool_end_robust(full_generated, tool_start);
+                if (tool_end != string::npos) {
+                    size_t exact_pos = full_generated.find(FUNC_END, tool_start);
+                    if (exact_pos == string::npos) {
+                        repair_malformed_tool_end(full_generated, tool_end);
+                        tool_end = full_generated.find(FUNC_END, tool_start);
+                    }
+                }
             }
 
             string tool_call = full_generated.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
