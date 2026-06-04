@@ -119,9 +119,8 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
-      string r_status, r_bytes, r_error;
+      string r_status, r_error;
       if (result_map.count("status")) r_status = result_map.at("status");
-      if (result_map.count("bytes")) r_bytes = result_map.at("bytes");
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
       if (!r_error.empty()) result += ", Error: " + r_error;
@@ -144,15 +143,8 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
       if (!r_changes.empty()) {
-          // Extract just the number from "(N total occurrences modified)"
-          size_t lp = r_changes.find('(');
-          size_t rp = r_changes.find(')', lp);
-          if (lp != string::npos && rp != string::npos) {
-              string num_str = r_changes.substr(lp + 1, rp - lp - 1);
-              size_t sp = num_str.find(' ');
-              int n = atoi(num_str.substr(0, sp).c_str());
-              result += ", " + to_string(n) + (n == 1 ? " change" : " changes");
-          }
+          int n = atoi(r_changes.c_str());
+          result += ", " + to_string(n) + (n == 1 ? " change" : " changes");
       }
       if (!r_error.empty()) result += ", Error: " + r_error;
     } else {

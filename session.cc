@@ -1230,9 +1230,9 @@ bool run_chat_session(
                                 // Extract the number of changes from ", N change(s)" in tool_result
                                 size_t comma_pos = tool_result.find(", ");
                                 if (comma_pos != string::npos) {
-                                    display_result = tool_result.substr(comma_pos + 2);
+                                    display_result = "Edit file: " + fpath + ": " + tool_result.substr(comma_pos + 2);
                                 } else {
-                                    display_result = tool_result;
+                                    display_result = "Edit file: " + fpath + ": " + tool_result;
                                 }
                             } else {
                                 display_result = tool_result;

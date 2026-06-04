@@ -643,7 +643,6 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
     return result;
   }
   result["status"] = "success";
-  result["bytes"] = to_string(writable_content.length());
   // Log success without content - use logOnly=true to ensure content is never shown
   log_diagnostic("Successfully written: " + path + " (size=" + to_string(writable_content.length()) + " bytes)", true /* logOnly */);
   return result;
@@ -743,7 +742,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     return result;
   }
   result["status"] = "updated";
-  result["changes"] = "Successfully applied replacement (" + to_string(changes_count) + " total occurrences modified).";
+  result["changes"] = to_string(changes_count);
   log_tool_diagnostic(edit_label);
   return result;
 }
