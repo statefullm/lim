@@ -1205,15 +1205,34 @@ bool run_chat_session(
                                 } else if (tool_result.find("No results found") != string::npos) {
                                     display_result += "\n" + tool_result;
                                 } else if (tool_result.length() > 0) {
-                                    // Show first ~500 chars of results as a preview snippet
-                                    size_t snippet_len = 500;
-                                    if (tool_result.length() <= snippet_len) {
-                                        display_result += "\n" + tool_result;
-                                    } else {
-                                        // Find a good break point near snippet_len (prefer end of line)
-                                        size_t cut = tool_result.rfind('\n', snippet_len);
-                                        if (cut == string::npos || cut < snippet_len - 100) cut = snippet_len;
-                                        display_result += "\n" + tool_result.substr(0, cut) + "\n...";
+                                    // Split into individual result blocks by "\n\n", truncate each to 500 chars
+                                    vector<string> blocks;
+                                    size_t blk_start = 0;
+                                    while (blk_start < tool_result.length()) {
+                                        size_t sep = tool_result.find("\n\n", blk_start);
+                                        if (sep == string::npos) {
+                                            blocks.push_back(tool_result.substr(blk_start));
+                                            break;
+                                        } else {
+                                            blocks.push_back(tool_result.substr(blk_start, sep - blk_start));
+                                            blk_start = sep + 2;
+                                        }
+                                    }
+
+                                    for (size_t i = 0; i < blocks.size(); i++) {
+                                        if (blocks[i].length() > 500) {
+                                            // Truncate to 500 chars, prefer breaking at end of line
+                                            size_t cut = blocks[i].rfind('\n', 500);
+                                            if (cut == string::npos || cut < 400) cut = 500;
+                                            blocks[i] = blocks[i].substr(0, cut);
+                                        }
+                                    }
+
+                                    // Rejoin blocks for display
+                                    display_result += "\n";
+                                    for (size_t i = 0; i < blocks.size(); i++) {
+                                        if (i > 0) display_result += "\n\n";
+                                        display_result += blocks[i];
                                     }
                                 }
                             } else if (tool_name == "search_file") {
