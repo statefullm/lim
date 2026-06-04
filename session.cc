@@ -1213,17 +1213,28 @@ bool run_chat_session(
                                     display_result += ", lines " + to_string(bline) + "-" + to_string(eline);
                                     display_result += ": 0 matches";
                                 } else {
-                                    // Text search: count matches
-                                    int n_matches = 0;
-                                    if (tool_result.find("No occurrences found") == string::npos) {
-                                        for (size_t p = 0;;) {
-                                            size_t mp = tool_result.find("--- Match ", p);
-                                            if (mp == string::npos) break;
-                                            n_matches++;
-                                            p = mp + 1;
-                                        }
-                                    }
-                                    display_result += ": " + to_string(n_matches) + " match" + (n_matches != 1 ? "es" : "");
+                                    // Text search: match count shown in tool diagnostic line
+                                    display_result += ": text search";
+                                }
+                            } else if (tool_name == "write_file") {
+                                string fpath = extract_string_arg_bounded(tool_call, "path");
+                                size_t bs_pos = tool_result.find("Wrote ");
+                                if (bs_pos != string::npos) {
+                                    size_t bs_end = tool_result.find(" bytes", bs_pos + 6);
+                                    string byte_count = tool_result.substr(bs_pos + 6, bs_end - bs_pos - 6);
+                                    display_result = "Write file: " + fpath + ", Wrote " + byte_count + " bytes";
+                                } else {
+                                    display_result = tool_result;
+                                }
+                            } else if (tool_name == "edit_file") {
+                                string fpath = extract_string_arg_bounded(tool_call, "path");
+                                size_t rep_pos = tool_result.find("(");
+                                if (rep_pos != string::npos) {
+                                    size_t rep_end = tool_result.find(")", rep_pos);
+                                    string change_info = tool_result.substr(rep_pos + 1, rep_end - rep_pos - 1);
+                                    display_result = "edit_file: " + change_info;
+                                } else {
+                                    display_result = tool_result;
                                 }
                             } else {
                                 display_result = tool_result;

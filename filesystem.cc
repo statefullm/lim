@@ -450,7 +450,7 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   }
 
   // Log function call with match count on one line
-  log_tool_diagnostic(search_label + ": " + to_string(match_count) + " match(es)");
+  log_tool_diagnostic(search_label + ": " + to_string(match_count) + (match_count == 1 ? " match" : " matches"));
 
   escape_parameter_tags(result); // Escape any literal XML tags before sending to LLM
   return result;
