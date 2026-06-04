@@ -613,6 +613,26 @@ bool run_chat_session(
             }
 
             {
+                auto now = chrono::high_resolution_clock::now();
+                double elapsed_turn = chrono::duration<double>(now - start).count();
+                if (elapsed_turn >= turn_timeout_sec) {
+                    diag("System: Turn timeout reached (" + std::to_string((int)elapsed_turn) + "s/" + std::to_string((int)turn_timeout_sec) + "s). Pausing generation.", "\033[1;33m");
+                    stream("\n\n[Turn Timeout Reached]\n\n");
+                    stop_generation = 0;
+                    g_was_interrupted = 0;
+                    prev_was_interrupted = true;
+                    auto_continue = false;
+                    reincarnate_mode = false;
+                    // If interrupted mid-tool-call, preserve state for seamless resume.
+                    if (in_tool_call_stream && tool_start != string::npos) {
+                        g_tool_interrupt_pending = true;
+                    }
+                    rl_redisplay();
+                    break;
+                }
+            }
+
+            {
                 int context_90pct = (int)(cparams.n_ctx * 0.9);
                 if (n_past >= context_90pct && !context_warned_this_turn) {
                     context_warned_this_turn = true;
@@ -943,18 +963,6 @@ bool run_chat_session(
                     }
                     recent_token_count = 0;
                     last_rate_check = now;
-                }
-            }
-
-            {
-                auto now = chrono::high_resolution_clock::now();
-                double elapsed_turn = chrono::duration<double>(now - start).count();
-                if (elapsed_turn >= turn_timeout_sec) {
-                    diag("System: Turn timeout reached (" + std::to_string((int)elapsed_turn) + "s/" + std::to_string((int)turn_timeout_sec) + "s). LLM may be stuck in a hallucination loop. Forcing stop.", "\033[1;33m");
-                    prev_was_interrupted = true;
-                    auto_continue = false;
-                    reincarnate_mode = false;
-                    break;
                 }
             }
 
