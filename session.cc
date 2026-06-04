@@ -118,13 +118,33 @@ static void replace_all_tags(string& str, const string& from, const string& to) 
     }
 }
 
-// Find tool call end robustly, handling malformed closing tags.
+// Find tool call end robustly, handling malformed closing tags and nested FUNC_START in content.
 static size_t find_tool_end_robust(const string& text, size_t from_pos) {
-    size_t pos = text.find(FUNC_END, from_pos);
-    if (pos != string::npos) return pos;
+    string fe_str(FUNC_END);
+    string fs_str(FUNC_START);
+
+    // Depth-aware search: start at depth 1 (we're already inside a tool call).
+    int depth = 1;
+    size_t pos = from_pos;
+    while (pos != string::npos && pos < text.length()) {
+        size_t next_start = text.find(fs_str, pos);
+        size_t next_end = text.find(fe_str, pos);
+
+        if (next_end == string::npos) break;  // No closing tag found at all
+
+        if (next_start != string::npos && next_start < next_end) {
+            // Nested FUNC_START inside content — increase depth, keep searching.
+            depth++;
+            pos = next_start + fs_str.length();
+        } else {
+            // Found FUNC_END at current depth
+            depth--;
+            if (depth == 0) return next_end;
+            pos = next_end + fe_str.length();
+        }
+    }
 
     // Fallback: look for FUNC_END without trailing >, followed by garbage
-    string fe_str(FUNC_END);
     string partial = fe_str.substr(0, fe_str.length() - 1);
     size_t p;
     while ((p = text.find(partial, from_pos)) != string::npos) {
@@ -1339,6 +1359,9 @@ bool run_chat_session(
 
                 chat_log << "\n";
                 generated_text = ""; unprinted_text = "";
+                // Advance func_search_pos past the processed tool call so that
+                // FUNC_START tokens inside parameter content are never re-scanned.
+                func_search_pos = tool_end + string(FUNC_END).length();
                 tool_start = string::npos; tool_end = string::npos;
                 think_start = string::npos; think_end = string::npos;
                 in_tool_call_stream = false; in_thinking_block = false;
