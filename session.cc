@@ -1228,8 +1228,9 @@ bool run_chat_session(
                             if (tool_name == "read_files") {
                                 vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
                                 // Parse tool_result to show bytes read per file (or error)
-                                display_result = "Read files:";
+                                display_result = "";
                                 size_t pos = 0;
+                                bool first = true;
                                 while ((pos = tool_result.find("Path: ", pos)) != string::npos) {
                                     size_t p_end = tool_result.find('\n', pos);
                                     if (p_end == string::npos) break;
@@ -1245,24 +1246,34 @@ bool run_chat_session(
                                         size_t err_pos = block.find("Error: ");
                                         if (err_pos != string::npos) {
                                             string err_msg = block.substr(err_pos + 7);
-                                            display_result += " " + fpath + ": " + err_msg;
+                                            // Trim trailing whitespace/newlines
+                                            while (!err_msg.empty() && (err_msg.back() == '\n' || err_msg.back() == '\r' || err_msg.back() == ' ')) {
+                                                err_msg.pop_back();
+                                            }
+                                            // Strip trailing ": filename" if present, to avoid duplication
+                                            size_t colon = err_msg.rfind(": ");
+                                            if (colon != string::npos && err_msg.substr(colon + 2) == fpath) {
+                                                err_msg = err_msg.substr(0, colon);
+                                            }
+                                            display_result += (first ? "Read files: " : "\n            ") + fpath + ": " + err_msg;
                                         } else if (block.find("[Cache hit") != string::npos) {
-                                            display_result += " " + fpath + " (cached)";
+                                            display_result += (first ? "Read files: " : "\n            ") + fpath + " (cached)";
                                         } else {
                                             // Count bytes of actual content
                                             size_t content_start = block.find_first_not_of(" \t\n\r");
                                             if (content_start == string::npos) {
-                                                display_result += " " + fpath + ": 0 bytes";
+                                                display_result += (first ? "Read files: " : "\n            ") + fpath + ": 0 bytes";
                                             } else {
                                                 // Trim trailing whitespace/newlines for accurate count
                                                 size_t content_end = block.find_last_not_of(" \t\n\r");
                                                 long bytes = content_end - content_start + 1;
-                                                display_result += " " + fpath + ": " + to_string(bytes) + " bytes";
+                                                display_result += (first ? "Read files: " : "\n            ") + fpath + ": " + to_string(bytes) + " bytes";
                                             }
                                         }
                                     } else {
-                                        display_result += " " + fpath;
+                                        display_result += (first ? "Read files: " : "\n            ") + fpath;
                                     }
+                                    first = false;
                                     pos = (sep != string::npos) ? sep + 4 : tool_result.length();
                                 }
                             } else if (tool_name == "web_search") {
