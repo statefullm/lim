@@ -1227,9 +1227,44 @@ bool run_chat_session(
 
                             if (tool_name == "read_files") {
                                 vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
-                                display_result = "Read files: ";
-                                for (const auto& p : paths) display_result += p + " ";
-                                if (tool_result.find("[Cache hit") != string::npos) display_result += "(Cache Hit)";
+                                // Parse tool_result to show bytes read per file (or error)
+                                display_result = "Read files:";
+                                size_t pos = 0;
+                                while ((pos = tool_result.find("Path: ", pos)) != string::npos) {
+                                    size_t p_end = tool_result.find('\n', pos);
+                                    if (p_end == string::npos) break;
+                                    string fpath = tool_result.substr(pos + 6, p_end - pos - 6);
+
+                                    // Find the Content: block for this file
+                                    size_t c_start = tool_result.find("Content:\n", p_end);
+                                    size_t sep = tool_result.find("---\n", c_start != string::npos ? c_start : p_end);
+
+                                    if (c_start != string::npos && (sep == string::npos || c_start < sep)) {
+                                        string block = tool_result.substr(c_start + 9, sep - (c_start + 9));
+                                        // Check for error within this block
+                                        size_t err_pos = block.find("Error: ");
+                                        if (err_pos != string::npos) {
+                                            string err_msg = block.substr(err_pos + 7);
+                                            display_result += " " + fpath + ": " + err_msg;
+                                        } else if (block.find("[Cache hit") != string::npos) {
+                                            display_result += " " + fpath + " (cached)";
+                                        } else {
+                                            // Count bytes of actual content
+                                            size_t content_start = block.find_first_not_of(" \t\n\r");
+                                            if (content_start == string::npos) {
+                                                display_result += " " + fpath + ": 0 bytes";
+                                            } else {
+                                                // Trim trailing whitespace/newlines for accurate count
+                                                size_t content_end = block.find_last_not_of(" \t\n\r");
+                                                long bytes = content_end - content_start + 1;
+                                                display_result += " " + fpath + ": " + to_string(bytes) + " bytes";
+                                            }
+                                        }
+                                    } else {
+                                        display_result += " " + fpath;
+                                    }
+                                    pos = (sep != string::npos) ? sep + 4 : tool_result.length();
+                                }
                             } else if (tool_name == "web_search") {
                                 string q = extract_string_arg_bounded(tool_call, "query");
                                 display_result = "";
@@ -1313,7 +1348,14 @@ bool run_chat_session(
                                 }
                             } else if (tool_name == "write_file") {
                                 string fpath = extract_string_arg_bounded(tool_call, "path");
-                                display_result = "Write file: " + fpath;
+                                string content = extract_string_arg_bounded(tool_call, "content");
+                                // Check for write errors in tool_result
+                                if (tool_result.find("Error:") != string::npos) {
+                                    size_t err_pos = tool_result.find("Error: ");
+                                    display_result = "Write file: " + fpath + ": " + tool_result.substr(err_pos + 7);
+                                } else {
+                                    display_result = "Write file: " + fpath + ": " + to_string(content.length()) + " bytes";
+                                }
                             } else if (tool_name == "edit_file") {
                                 string fpath = extract_string_arg_bounded(tool_call, "path");
                                 // Extract the number of changes from ", N change(s)" in tool_result
