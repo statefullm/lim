@@ -822,12 +822,16 @@ bool run_chat_session(
                 }
             }
             if (tool_start != string::npos && tool_end == string::npos) {
-                tool_end = find_tool_end_robust(generated_text, tool_start);
+                // When resuming mid-tool-call, generated_text contains only the continuation
+                // (no FUNC_START). Search from position 0 so find_tool_end_robust starts at
+                // depth 1 and correctly locates the matching FUNC_END in the continuation text.
+                size_t search_from = was_mid_tool_call ? 0 : tool_start;
+                tool_end = find_tool_end_robust(generated_text, search_from);
                 if (tool_end != string::npos) {
-                    size_t exact_pos = generated_text.find(FUNC_END, tool_start);
+                    size_t exact_pos = generated_text.find(FUNC_END, search_from);
                     if (exact_pos == string::npos) {
                         repair_malformed_tool_end(generated_text, tool_end);
-                        tool_end = generated_text.find(FUNC_END, tool_start);
+                        tool_end = generated_text.find(FUNC_END, search_from);
                     }
                 }
             }
@@ -850,12 +854,12 @@ bool run_chat_session(
                 generated_text += forced_close;
                 full_response += forced_close;
 
-                tool_end = find_tool_end_robust(generated_text, tool_start);
+                tool_end = find_tool_end_robust(generated_text, was_mid_tool_call ? 0 : tool_start);
                 if (tool_end != string::npos) {
-                    size_t exact_pos = generated_text.find(FUNC_END, tool_start);
+                    size_t exact_pos = generated_text.find(FUNC_END, was_mid_tool_call ? 0 : tool_start);
                     if (exact_pos == string::npos) {
                         repair_malformed_tool_end(generated_text, tool_end);
-                        tool_end = generated_text.find(FUNC_END, tool_start);
+                        tool_end = generated_text.find(FUNC_END, was_mid_tool_call ? 0 : tool_start);
                     }
                 }
                 trigger_tool_execution = true;
@@ -996,8 +1000,14 @@ bool run_chat_session(
         // we left off so the LLM never knows it was interrupted.
         if (in_tool_call_stream && tool_start != string::npos) {
             g_tool_interrupt_pending = true;
-            // Save the partial tool text already in generated_text for reconstruction on resume.
-            g_partial_tool_text = generated_text.substr(tool_start);
+            // Save the partial tool text for reconstruction on resume.
+            // On a resumed turn, prepend g_partial_tool_text since generated_text
+            // starts from the continuation point (after the previous interrupt).
+            if (was_mid_tool_call) {
+                g_partial_tool_text = g_partial_tool_text + generated_text;
+            } else {
+                g_partial_tool_text = generated_text.substr(tool_start);
+            }
         }
 
         cerr << "\r\033[K";
@@ -1041,12 +1051,17 @@ bool run_chat_session(
                 // tool_end was found within generated_text, but full_generated now has
                 // g_partial_tool_text prepended. Adjust tool_end to be relative to full_generated.
                 // Re-search for FUNC_END in full_generated starting from tool_start to get the correct offset.
-                tool_end = find_tool_end_robust(full_generated, tool_start);
+                // On resume (tool_start==0), search from the actual FUNC_START position inside
+                // g_partial_tool_text to avoid double-counting it (depth would go 1->2 and never return).
+                size_t resume_search_from = was_mid_tool_call
+                    ? full_generated.find(FUNC_START)
+                    : tool_start;
+                tool_end = find_tool_end_robust(full_generated, resume_search_from);
                 if (tool_end != string::npos) {
-                    size_t exact_pos = full_generated.find(FUNC_END, tool_start);
+                    size_t exact_pos = full_generated.find(FUNC_END, resume_search_from);
                     if (exact_pos == string::npos) {
                         repair_malformed_tool_end(full_generated, tool_end);
-                        tool_end = full_generated.find(FUNC_END, tool_start);
+                        tool_end = full_generated.find(FUNC_END, resume_search_from);
                     }
                 }
             }
@@ -1310,7 +1325,6 @@ bool run_chat_session(
                                 }
                             } else if (tool_name == "exec_shell") {
                                 string cmd = extract_string_arg_bounded(tool_call, "command");
-                                display_result = "";
                                 // Truncate output for browser/log display
                                 string out = tool_result;
                                 if (out.length() > 500) {
@@ -1318,7 +1332,7 @@ bool run_chat_session(
                                     if (cut == string::npos || cut < 400) cut = 500;
                                     out = out.substr(0, cut) + "...";
                                 }
-                                display_result += "\n" + out;
+                                display_result = out;
                             } else {
                                 display_result = tool_result;
                             }
