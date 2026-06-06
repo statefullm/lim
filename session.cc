@@ -254,16 +254,7 @@ bool run_chat_session(
     const llama_context_params& cparams,
     const vector<llama_token>& system_tokens,
     bool use_dummy_thought,
-    bool& auto_continue,
-    bool& reincarnate_mode,
-    bool& prev_was_interrupted,
-    bool& first_turn_done,
-    int& last_t_count,
-    double& last_elapsed,
-    int& last_n_past,
-    set<string>& clean_files,
-    LoopDetector& loop_guard,
-    int& invalid_tool_strikes
+    SessionState& state
 ) {
     auto tokenize = [&](string text) { return common_tokenize(ctx, text, false, true); };
 
@@ -279,7 +270,7 @@ bool run_chat_session(
     };
 
     // Persistent state for mid-tool-call resume: saves partial tool text from KV cache.
-    static string g_partial_tool_text = "";
+    // (Now stored in state.partial_tool_text)
 
     // Feed a vector of tokens into the KV cache, batching as needed.
     auto feed_tokens = [&](const vector<llama_token>& toks) -> bool {
@@ -311,9 +302,9 @@ bool run_chat_session(
 
     // Reset only the LLM-facing state (lighter reset for mid-session recovery).
     auto reset_llm_state = [&]() {
-        clean_files.clear();
-        loop_guard.clear_history();
-        invalid_tool_strikes = 0;
+        state.clean_files.clear();
+        state.loop_guard.clear_history();
+        state.invalid_tool_strikes = 0;
         llama_sampler_reset(smpl);
     };
 
@@ -323,7 +314,7 @@ bool run_chat_session(
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
         g_browser_warning_suppressed = false;
-        g_partial_tool_text.clear();
+        state.partial_tool_text.clear();
     };
 
     const char* history_file = ".lllm_history";
@@ -333,8 +324,6 @@ bool run_chat_session(
     map<string, string> aliases = load_aliases();
 
     // Persistent state across loop iterations for "continue" resume feature.
-    static int g_auto_continue_depth_val = 0;
-    static bool g_tool_interrupt_pending = false;
 
     // --- MAIN CHAT TURN LOOP ---
     while (true) {
@@ -342,13 +331,13 @@ bool run_chat_session(
         stop_generation = 0;
         g_was_interrupted = 0;
 
-        if (!auto_continue) {
+        if (!state.auto_continue) {
             // Print Speed from previous generation right before >>> (skip first turn)
-            if (first_turn_done && last_t_count > 0) {
-                double context_percent = (last_n_past / (double)cparams.n_ctx) * 100.0;
+            if (state.first_turn_done && state.last_t_count > 0) {
+                double context_percent = (state.last_n_past / (double)cparams.n_ctx) * 100.0;
                 ostringstream oss;
                 oss << fixed << setprecision(1);
-                oss << "Speed: " << (last_t_count / last_elapsed) << " t/s | Context: " << last_n_past << "/" << cparams.n_ctx << " (" << context_percent << "%) | Elapsed: " << last_elapsed << "s";
+                oss << "Speed: " << (state.last_t_count / state.last_elapsed) << " t/s | Context: " << state.last_n_past << "/" << cparams.n_ctx << " (" << context_percent << "%) | Elapsed: " << state.last_elapsed << "s";
                 string speed_line = oss.str();
                 diag_speed_impl(speed_line);
             }
@@ -412,12 +401,12 @@ bool run_chat_session(
 
         if (user_input == "clear") {
             clear_context();
-            auto_continue = false;
-            prev_was_interrupted = false;
+            state.auto_continue = false;
+            state.prev_was_interrupted = false;
             reset_session_state();
-            last_t_count = 0;
-            last_elapsed = 0.0;
-            last_n_past = 0;
+            state.last_t_count = 0;
+            state.last_elapsed = 0.0;
+            state.last_n_past = 0;
             log_entry("SYSTEM", "Context Cleared");
             clear_viewer();
             diag("Context Cleared Successfully", "\033[32m");
@@ -457,16 +446,16 @@ bool run_chat_session(
             log_entry("USER", "[reincarnate] " + reincarnate_text);
 
             string reincarnate_message;
-            if (prev_was_interrupted) {
+            if (state.prev_was_interrupted) {
                 reincarnate_message = string(TURN_END) + "\n" + string(TURN_START) + "user\n" + reincarnate_text + TURN_END + "\n" + TURN_START + "assistant\n";
             } else {
                 reincarnate_message = string(TURN_START) + "user\n" + reincarnate_text + TURN_END + "\n" + TURN_START + "assistant\n";
             }
-            prev_was_interrupted = false;
+            state.prev_was_interrupted = false;
             vector<llama_token> reincarnate_tokens = tokenize(reincarnate_message);
 
             if (n_past + (int)reincarnate_tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = context_limit_diag(n_past, last_n_past, (size_t)reincarnate_tokens.size(), (int)cparams.n_ctx);
+                string ctx_diag = context_limit_diag(n_past, state.last_n_past, (size_t)reincarnate_tokens.size(), (int)cparams.n_ctx);
                 diag("Context Limit Reached! Cannot process reincarnate" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 continue;
             }
@@ -479,34 +468,34 @@ bool run_chat_session(
             // Log reincarnate tokens to token_log when debug is enabled
             log_tokens("FEED USER_INPUT", reincarnate_tokens, ctx);
 
-            auto_continue = true;
-            reincarnate_mode = true;
+            state.auto_continue = true;
+            state.reincarnate_mode = true;
             reset_session_state();
             continue;
         }
 
-        if (user_input.empty() && !auto_continue) continue;
+        if (user_input.empty() && !state.auto_continue) continue;
 
         // Handle "continue" as a reserved word to resume generation after an interruption.
         if (user_input == "continue") {
-            if (g_tool_interrupt_pending) {
+            if (state.tool_interrupt_pending) {
                 // Interrupted mid-tool-call -- assistant turn is already open with partial
                 // tool XML in the KV cache. Resume without feeding any additional tokens
                 // so the LLM continues generating from exactly where it left off.
-                prev_was_interrupted = false;
+                state.prev_was_interrupted = false;
                 diag("Resuming after tool interruption...", "\033[1;33m");
 
-                auto_continue = true;
-                g_auto_continue_depth_val = 0;
+                state.auto_continue = true;
+                state.auto_continue_depth_val = 0;
                 user_input = ""; // Clear so it's not processed as a regular message
-            } else if (prev_was_interrupted) {
+            } else if (state.prev_was_interrupted) {
                 // Interrupted during normal text generation -- resume seamlessly without
                 // feeding any additional tokens so the LLM doesn't even know it was interrupted.
-                prev_was_interrupted = false;
+                state.prev_was_interrupted = false;
                 diag("Resuming generation...", "\033[1;33m");
 
-                auto_continue = true;
-                g_auto_continue_depth_val = 0;
+                state.auto_continue = true;
+                state.auto_continue_depth_val = 0;
                 user_input = ""; // Clear so it's not processed as a regular message
             } else {
                 // No active interruption -- just treat "continue" as a regular user message.
@@ -538,9 +527,9 @@ bool run_chat_session(
 
         if (!user_input.empty()) {
             // If user provides regular input (not "continue"), clear any pending tool interrupt state.
-            if (!auto_continue) g_tool_interrupt_pending = false;
+            if (!state.auto_continue) state.tool_interrupt_pending = false;
 
-            if (!auto_continue) {
+            if (!state.auto_continue) {
                 log_entry("USER", user_input);
                 if (should_output_to_browser() && pipe_fd >= 0) {
                     string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(user_input) + "</code></pre></div>\n\n";
@@ -549,8 +538,8 @@ bool run_chat_session(
             }
 
             string user_message;
-            string turn_close = prev_was_interrupted ? (string(TURN_END) + "\n") : "";
-            prev_was_interrupted = false;
+            string turn_close = state.prev_was_interrupted ? (string(TURN_END) + "\n") : "";
+            state.prev_was_interrupted = false;
 
             if (use_dummy_thought) {
                 user_message = turn_close + string(TURN_START) + "user\n" +
@@ -562,7 +551,7 @@ bool run_chat_session(
             vector<llama_token> tokens = tokenize(user_message);
 
             if (n_past + (int)tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = context_limit_diag(n_past, last_n_past, (size_t)tokens.size(), (int)cparams.n_ctx);
+                string ctx_diag = context_limit_diag(n_past, state.last_n_past, (size_t)tokens.size(), (int)cparams.n_ctx);
                 diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 continue;
             }
@@ -582,14 +571,14 @@ bool run_chat_session(
         auto start = chrono::high_resolution_clock::now();
         int t_count = 0;
 
-        if (!auto_continue) {
+        if (!state.auto_continue) {
             console("\n\033[1;90m--- Generating (Ctrl+C to interrupt) ---\033[0m\n");
             consoleFlush();
             stream("\n\n<div class='generation-start'>-- Generating --</div>\n\n");
         }
 
         static int g_auto_continue_depth = 0;
-        if (!auto_continue) g_auto_continue_depth = 0;
+        if (!state.auto_continue) g_auto_continue_depth = 0;
         bool allow_continue_resume = false;
         string generated_text = "";
         string unprinted_text = "";
@@ -600,10 +589,10 @@ bool run_chat_session(
         unprinted_text.reserve(1024);
         full_response.reserve(32768);
 
-        // When resuming mid-tool-call via g_tool_interrupt_pending, initialize tracking
+        // When resuming mid-tool-call via state.tool_interrupt_pending, initialize tracking
         // variables to reflect that we are already inside a tool call.
-        bool was_mid_tool_call = g_tool_interrupt_pending;
-        g_tool_interrupt_pending = false;
+        bool was_mid_tool_call = state.tool_interrupt_pending;
+        state.tool_interrupt_pending = false;
 
         bool in_tool_call_stream = was_mid_tool_call;
         size_t tool_start = was_mid_tool_call ? 0 : string::npos;
@@ -643,12 +632,12 @@ bool run_chat_session(
                 stream("\n\n[Task Interrupted by User]\n\n");
                 stop_generation = 0;
                 g_was_interrupted = 0;
-                prev_was_interrupted = true;
-                auto_continue = false;
-                reincarnate_mode = false;
+                state.prev_was_interrupted = true;
+                state.auto_continue = false;
+                state.reincarnate_mode = false;
                 // If interrupted mid-tool-call, preserve state for seamless resume.
                 if (in_tool_call_stream && tool_start != string::npos) {
-                    g_tool_interrupt_pending = true;
+                    state.tool_interrupt_pending = true;
                 }
                 rl_redisplay();
                 break;
@@ -662,12 +651,12 @@ bool run_chat_session(
                     stream("\n\n[Turn Timeout Reached]\n\n");
                     stop_generation = 0;
                     g_was_interrupted = 0;
-                    prev_was_interrupted = true;
-                    auto_continue = false;
-                    reincarnate_mode = false;
+                    state.prev_was_interrupted = true;
+                    state.auto_continue = false;
+                    state.reincarnate_mode = false;
                     // If interrupted mid-tool-call, preserve state for seamless resume.
                     if (in_tool_call_stream && tool_start != string::npos) {
-                        g_tool_interrupt_pending = true;
+                        state.tool_interrupt_pending = true;
                     }
                     rl_redisplay();
                     break;
@@ -691,22 +680,22 @@ bool run_chat_session(
             }
 
             if (n_past >= (int)cparams.n_ctx - 10) {
-                string ctx_diag = context_limit_diag(n_past, last_n_past, 0, (int)cparams.n_ctx);
+                string ctx_diag = context_limit_diag(n_past, state.last_n_past, 0, (int)cparams.n_ctx);
                 diag("Context Window Exhausted!" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 if (!unprinted_text.empty()) {
                     console(unprinted_text.c_str());
                     consoleFlush();
                     stream(unprinted_text);
                 }
-                auto_continue = false;
-                reincarnate_mode = false;
+                state.auto_continue = false;
+                state.reincarnate_mode = false;
                 break;
             }
 
             if (batch.n_tokens < 1) {
                 diag("Error: no tokens in batch to sample from", "\033[31m");
-                auto_continue = false;
-                reincarnate_mode = false;
+                state.auto_continue = false;
+                state.reincarnate_mode = false;
                 break;
             }
             llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
@@ -801,7 +790,7 @@ bool run_chat_session(
                         tool_end = generated_text.find(FUNC_END, active_ts);
                         trigger_tool_execution = true;
                     } else {
-                        auto_continue = false;
+                        state.auto_continue = false;
                     }
                     break;
                 }
@@ -1014,21 +1003,21 @@ bool run_chat_session(
 
             batch.n_tokens = 0;
             common_batch_add(batch, next_token, n_past++, {0}, true);
-            if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); reincarnate_mode = false; break; }
+            if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); state.reincarnate_mode = false; break; }
         } // END INNER TOKEN LOOP
 
         // If we exited the inner loop while mid-tool-call (e.g., due to timeout or Ctrl+C),
         // don't close the assistant turn. On resume, just continue generating from where
         // we left off so the LLM never knows it was interrupted.
         if (in_tool_call_stream && tool_start != string::npos) {
-            g_tool_interrupt_pending = true;
+            state.tool_interrupt_pending = true;
             // Save the partial tool text for reconstruction on resume.
-            // On a resumed turn, prepend g_partial_tool_text since generated_text
+            // On a resumed turn, prepend state.partial_tool_text since generated_text
             // starts from the continuation point (after the previous interrupt).
             if (was_mid_tool_call) {
-                g_partial_tool_text = g_partial_tool_text + generated_text;
+                state.partial_tool_text = state.partial_tool_text + generated_text;
             } else {
-                g_partial_tool_text = generated_text.substr(tool_start);
+                state.partial_tool_text = generated_text.substr(tool_start);
             }
         }
 
@@ -1050,16 +1039,16 @@ bool run_chat_session(
             cout << "\n";
         }
 
-        last_t_count = t_count;
-        last_elapsed = elapsed;
-        last_n_past = n_past;
-        first_turn_done = true;
+        state.last_t_count = t_count;
+        state.last_elapsed = elapsed;
+        state.last_n_past = n_past;
+        state.first_turn_done = true;
 
         prev_stdout_ended_with_newline = true;
 
         if (stop_generation) {
             stop_generation = 0;
-            auto_continue = false;
+            state.auto_continue = false;
         }
 
         // --- TOOL EXECUTION BLOCK ---
@@ -1067,14 +1056,14 @@ bool run_chat_session(
             // When resuming from a mid-tool-call interrupt, prepend the saved partial text
             // so the extracted tool_call contains the complete XML including FUNC_START.
             string full_generated = generated_text;
-            if (!g_partial_tool_text.empty()) {
-                full_generated = g_partial_tool_text + full_generated;
-                g_partial_tool_text.clear();
+            if (!state.partial_tool_text.empty()) {
+                full_generated = state.partial_tool_text + full_generated;
+                state.partial_tool_text.clear();
                 // tool_end was found within generated_text, but full_generated now has
-                // g_partial_tool_text prepended. Adjust tool_end to be relative to full_generated.
+                // state.partial_tool_text prepended. Adjust tool_end to be relative to full_generated.
                 // Re-search for FUNC_END in full_generated starting from tool_start to get the correct offset.
                 // On resume (tool_start==0), search from the actual FUNC_START position inside
-                // g_partial_tool_text to avoid double-counting it (depth would go 1->2 and never return).
+                // state.partial_tool_text to avoid double-counting it (depth would go 1->2 and never return).
                 size_t resume_search_from = was_mid_tool_call
                     ? full_generated.find(FUNC_START)
                     : tool_start;
@@ -1103,11 +1092,11 @@ bool run_chat_session(
             string active_intervention_msg = "";
 
             // Pre-execution loop guard check.
-            bool pre_loop = loop_guard.would_repeat(tool_call);
+            bool pre_loop = state.loop_guard.would_repeat(tool_call);
             if (pre_loop) {
-                was_loop = loop_guard.record_and_check(tool_call);
+                was_loop = state.loop_guard.record_and_check(tool_call);
                 tool_blocked_by_loop = true;
-                int current_strikes = loop_guard.get_loop_strikes();
+                int current_strikes = state.loop_guard.get_loop_strikes();
 
                 active_intervention_msg = get_next_loop_message();
                 tool_out.content = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
@@ -1125,39 +1114,39 @@ bool run_chat_session(
                 }
             } else {
                 // Execute the tool.
-                tool_out = execute_tool_call(tool_call, clean_files);
+                tool_out = execute_tool_call(tool_call, state.clean_files);
 
                 // Handle validation errors reported by the struct.
                 if (!tool_out.recognized || !tool_out.params_valid) {
-                    invalid_tool_strikes++;
+                    state.invalid_tool_strikes++;
 
                     if (is_debug && should_show_tools() && should_output_to_browser()) {
                         string raw_display = tool_call;
                         if (raw_display.length() > 500) raw_display = raw_display.substr(0, 500) + "...";
                         string safe = html_escape(raw_display);
                         string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
-                        string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
+                        string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
                         stream_tool_result(error_html);
 
-                        if (invalid_tool_strikes >= 5) {
-                            diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                        if (state.invalid_tool_strikes >= 5) {
+                            diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
                             abort_auto = true;
-                        } else if (invalid_tool_strikes >= 2) {
-                            diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+                        } else if (state.invalid_tool_strikes >= 2) {
+                            diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
                             inject_auto_user_msg = true;
                             active_intervention_msg = SYSTEM_PROMPT_REMINDER;
                         }
                     }
                 } else {
-                    invalid_tool_strikes = 0;
+                    state.invalid_tool_strikes = 0;
 
-                    was_loop = loop_guard.record_and_check(tool_call);
+                    was_loop = state.loop_guard.record_and_check(tool_call);
 
                     if (stop_generation) {
                         diag("Tool Interrupted by User", "\033[31m");
                         stop_generation = 0;
                         allow_continue_resume = true;
-                        reincarnate_mode = false;
+                        state.reincarnate_mode = false;
                     }
 
                     if (!abort_auto && was_loop) {
@@ -1168,8 +1157,8 @@ bool run_chat_session(
                         diag("System: Post-execution loop warning (Strike 2).", "\033[35m");
                         inject_auto_user_msg = true;
                     } else if (!abort_auto) {
-                        if (tool_out.is_mutating && !tool_out.is_error) loop_guard.clear_history();
-                        if (tool_out.is_mutating && tool_out.is_expected_error) loop_guard.clear_history();
+                        if (tool_out.is_mutating && !tool_out.is_error) state.loop_guard.clear_history();
+                        if (tool_out.is_mutating && tool_out.is_expected_error) state.loop_guard.clear_history();
                     }
                 }
             }
@@ -1226,7 +1215,7 @@ bool run_chat_session(
                     char buf[32];
                     snprintf(buf, sizeof(buf), "%.1f%%", pct);
                     diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ".", "\033[1;33m");
-                    auto_continue = false;
+                    state.auto_continue = false;
                 } else if (!feed_tokens(t_tokens)) {
                     abort_auto = true;
                 } else {
@@ -1236,25 +1225,25 @@ bool run_chat_session(
                     g_auto_continue_depth++;
                     if (g_auto_continue_depth > max_auto_continue) {
                         diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
-                        auto_continue = false;
+                        state.auto_continue = false;
                     } else if (allow_continue_resume) {
                         // Interrupted during tool call -- feed result but drop to prompt.
                         // User can type "continue" to resume generation.
                         diag("Tool execution interrupted. Type 'continue' to let the LLM proceed, or provide input.", "\033[1;33m");
                         allow_continue_resume = false;
-                        g_tool_interrupt_pending = true;
-                        auto_continue = false;
+                        state.tool_interrupt_pending = true;
+                        state.auto_continue = false;
                     } else {
-                        auto_continue = true;
+                        state.auto_continue = true;
                         continue;
                     }
                 }
             } else {
-                auto_continue = false;
+                state.auto_continue = false;
                 generated_text = ""; unprinted_text = "";
 
                 string abort_msg;
-                if (invalid_tool_strikes >= 5) {
+                if (state.invalid_tool_strikes >= 5) {
                     abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
                 } else {
                     abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
@@ -1272,11 +1261,11 @@ bool run_chat_session(
             }
         }
 
-        if (!auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
+        if (!state.auto_continue && !generated_text.empty()) log_entry("ASSISTANT", generated_text);
 
         // --- REINCARNATE POST-GENERATION HANDLING ---
-        if (reincarnate_mode && !auto_continue) {
-            reincarnate_mode = false;
+        if (state.reincarnate_mode && !state.auto_continue) {
+            state.reincarnate_mode = false;
 
             string userprompt_path = string(HOME) + "/userprompt";
 
@@ -1322,7 +1311,7 @@ bool run_chat_session(
             vector<llama_token> new_session_tokens = tokenize(new_session_message);
 
             if (n_past + (int)new_session_tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = context_limit_diag(n_past, last_n_past, (size_t)new_session_tokens.size(), (int)cparams.n_ctx);
+                string ctx_diag = context_limit_diag(n_past, state.last_n_past, (size_t)new_session_tokens.size(), (int)cparams.n_ctx);
                 diag("Context Limit Reached! Cannot process reincarnated prompt" + ctx_diag + ".", "\033[31m");
                 continue;
             }
@@ -1336,7 +1325,7 @@ bool run_chat_session(
             // Log reincarnated session tokens to token_log when debug is enabled
             log_tokens("FEED USER_INPUT", new_session_tokens, ctx);
 
-            auto_continue = true;
+            state.auto_continue = true;
             reset_session_state();
             log_entry("SYSTEM", "Context Cleared and Reincarnated with New Prompt");
             continue;

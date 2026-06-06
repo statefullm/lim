@@ -10,8 +10,24 @@
 #include <functional>
 #include <chrono>
 #include "loop_detector.h"
-
 using namespace std;
+
+struct SessionState {
+    bool auto_continue = false;
+    bool reincarnate_mode = false;
+    bool prev_was_interrupted = false;
+    bool first_turn_done = false;
+    int last_t_count = 0;
+    double last_elapsed = 0.0;
+    int last_n_past = 0;
+    set<string> clean_files;
+    LoopDetector loop_guard;
+    int invalid_tool_strikes = 0;
+    // Internal state (was static inside the function)
+    int auto_continue_depth_val = 0;
+    bool tool_interrupt_pending = false;
+    string partial_tool_text;
+};
 
 // Run the main chat session loop.
 // Returns true to continue, false when user types quit/exit.
@@ -30,19 +46,8 @@ bool run_chat_session(
     // Configuration
     bool use_dummy_thought,
 
-    // Session state (passed by reference so caller can observe changes)
-    bool& auto_continue,
-    bool& reincarnate_mode,
-    bool& prev_was_interrupted,
-    bool& first_turn_done,
-    int& last_t_count,
-    double& last_elapsed,
-    int& last_n_past,
-
-    // Loop prevention state
-    set<string>& clean_files,
-    LoopDetector& loop_guard,
-    int& invalid_tool_strikes
+    // Session state (consolidated into a single struct)
+    SessionState& state
 );
 
 #endif // SESSION_H

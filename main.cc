@@ -230,26 +230,14 @@ int main(int argc, char ** argv) {
 
     if (!handle_llama_decode_error(ctx, batch)) return 1;
 
-    // Session state variables
-    bool auto_continue = false;
-    bool reincarnate_mode = false;
-    bool prev_was_interrupted = false;
-    bool first_turn_done = false;
-    int last_t_count = 0;
-    double last_elapsed = 0.0;
-    int last_n_past = 0;
-
-    set<string> clean_files;
-    LoopDetector loop_guard(15);
-    int invalid_tool_strikes = 0;
+    // Session state
+    SessionState state;
 
     // --- Run the main chat session loop ---
     bool result = run_chat_session(
         ctx, vocab, smpl, batch, n_past, cparams,
         system_tokens, use_dummy_thought,
-        auto_continue, reincarnate_mode, prev_was_interrupted, first_turn_done,
-        last_t_count, last_elapsed, last_n_past,
-        clean_files, loop_guard, invalid_tool_strikes
+        state
     );
 
     // Cleanup
