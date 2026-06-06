@@ -158,9 +158,25 @@ int main(int argc, char ** argv) {
     llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
 
     auto mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 999;
-    mparams.use_mmap = false;
-    mparams.use_mlock = true;
+    // Allow overriding model params with LLLM_* environment variables
+    {
+        const char* env;
+        if ((env = getenv("LLLM_GPU_LAYERS")) != nullptr) {
+            mparams.n_gpu_layers = atoi(env);
+        } else {
+            mparams.n_gpu_layers = 999;
+        }
+        if ((env = getenv("LLLM_USE_MMAP")) != nullptr) {
+            mparams.use_mmap = atoi(env) != 0;
+        } else {
+            mparams.use_mmap = false;
+        }
+        if ((env = getenv("LLLM_USE_MLOCK")) != nullptr) {
+            mparams.use_mlock = atoi(env) != 0;
+        } else {
+            mparams.use_mlock = true;
+        }
+    }
 
     llama_model * model = llama_model_load_from_file(argv[1], mparams);
     if (!model) return 1;
@@ -169,11 +185,35 @@ int main(int argc, char ** argv) {
     ModelType model_type = detect_model_type(vocab);
 
     auto cparams = llama_context_default_params();
-    cparams.n_ctx     = 262144;
-    cparams.n_batch   = 2048;
-    cparams.n_ubatch  = 512;
-    cparams.n_threads = 8;
-    cparams.n_threads_batch = 8;
+    // Allow overriding context params with LLLM_* environment variables
+    {
+        const char* env;
+        if ((env = getenv("LLLM_CTX")) != nullptr) {
+            cparams.n_ctx = atoi(env);
+        } else {
+            cparams.n_ctx = 262144;
+        }
+        if ((env = getenv("LLLM_BATCH")) != nullptr) {
+            cparams.n_batch = atoi(env);
+        } else {
+            cparams.n_batch = 2048;
+        }
+        if ((env = getenv("LLLM_UBATCH")) != nullptr) {
+            cparams.n_ubatch = atoi(env);
+        } else {
+            cparams.n_ubatch = 512;
+        }
+        if ((env = getenv("LLLM_THREADS")) != nullptr) {
+            cparams.n_threads = atoi(env);
+        } else {
+            cparams.n_threads = 8;
+        }
+        if ((env = getenv("LLLM_THREADS_BATCH")) != nullptr) {
+            cparams.n_threads_batch = atoi(env);
+        } else {
+            cparams.n_threads_batch = 8;
+        }
+    }
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
     cparams.type_k = GGML_TYPE_Q8_0;
