@@ -1073,29 +1073,6 @@ bool run_chat_session(
             const vector<string> strip_tags_vec = {TURN_START, TURN_END};
             strip_tags(tool_call, strip_tags_vec);
 
-            string tool_name_for_display = "";
-            size_t name_start = tool_call.find(FUNC_START);
-            if (name_start != string::npos) {
-                name_start += string(FUNC_START).length();
-                size_t name_end = tool_call.find('>', name_start);
-                if (name_end != string::npos) {
-                    tool_name_for_display = tool_call.substr(name_start, name_end - name_start);
-                }
-            }
-
-            unprinted_text = "";
-
-            bool is_real_tool = false;
-            vector<string> valid_tools = {
-                "read_files", "search_file", "exec_shell", "edit_file", "write_file", "web_search"
-            };
-            for (const auto& vn : valid_tools) {
-                if (tool_name_for_display == vn) {
-                    is_real_tool = true;
-                    break;
-                }
-            }
-
             ToolResult tool_out;
             bool was_loop = false;
             bool tool_blocked_by_loop = false;
@@ -1103,47 +1080,38 @@ bool run_chat_session(
             bool inject_auto_user_msg = false;
             string active_intervention_msg = "";
 
-            string tool_name = tool_name_for_display;
+            // Pre-execution loop guard check.
+            bool pre_loop = loop_guard.would_repeat(tool_call);
+            if (pre_loop) {
+                was_loop = loop_guard.record_and_check(tool_call);
+                tool_blocked_by_loop = true;
+                int current_strikes = loop_guard.get_loop_strikes();
 
-            if (!is_real_tool) {
-                invalid_tool_strikes++;
-
-                if (is_debug && should_show_tools() && should_output_to_browser()) {
-                    string raw_display = tool_call;
-                    if (raw_display.length() > 500) {
-                        raw_display = raw_display.substr(0, 500) + "...";
-                    }
-                    string safe;
-                    for (char c : raw_display) {
-                        if (c == '&') safe += "&amp;";
-                        else if (c == '<') safe += "&lt;";
-                        else if (c == '>') safe += "&gt;";
-                        else safe += c;
-                    }
-                    string error_html = "\n\n<div class='tool-error'>Invalid Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
-                    stream_tool_result(error_html);
-                }
-
-                tool_out.content = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema.";
+                active_intervention_msg = get_next_loop_message();
+                tool_out.content = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
                 tool_out.display = tool_out.content;
 
-                if (invalid_tool_strikes >= 5) {
-                    diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
-                    abort_auto = true;
-                } else if (invalid_tool_strikes >= 2) {
-                    diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+                diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
+
+                int max_attempts = loopMessages.size();
+                if (current_strikes <= max_attempts) {
+                    diag("System: Automating intervention (Attempt " + std::to_string(current_strikes) + "/" + std::to_string(max_attempts) + ").", "\033[35m");
                     inject_auto_user_msg = true;
-                    active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+                } else {
+                    diag("System: Circuit breaker -- intervention failed after " + std::to_string(max_attempts) + " strikes. Ejecting to prompt.", "\033[1;31m");
+                    abort_auto = true;
                 }
             } else {
-                if (!validate_tool_params(tool_name, tool_call)) {
+                // Execute the tool.
+                tool_out = execute_tool_call(tool_call, clean_files);
+
+                // Handle validation errors reported by the struct.
+                if (!tool_out.recognized || !tool_out.params_valid) {
                     invalid_tool_strikes++;
 
                     if (is_debug && should_show_tools() && should_output_to_browser()) {
                         string raw_display = tool_call;
-                        if (raw_display.length() > 500) {
-                            raw_display = raw_display.substr(0, 500) + "...";
-                        }
+                        if (raw_display.length() > 500) raw_display = raw_display.substr(0, 500) + "...";
                         string safe;
                         for (char c : raw_display) {
                             if (c == '&') safe += "&amp;";
@@ -1151,74 +1119,41 @@ bool run_chat_session(
                             else if (c == '>') safe += "&gt;";
                             else safe += c;
                         }
-                        string error_html = "\n\n<div class='tool-error'>Malformed Tool Call (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
+                        string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
+                        string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
                         stream_tool_result(error_html);
-                    }
 
-                    string schema_hint = string(PARAM_START) + "param_name>value</" + string(PARAM_END);
-                    tool_out.content = "System Error: Malformed tool call. Required parameter tags are missing from your XML. You MUST use the strict schema: <function=TOOL_NAME>" + schema_hint + "...";
-                    tool_out.display = tool_out.content;
-
-                    diag("System: Malformed tool call -- missing required parameter tags (Strike " + std::to_string(invalid_tool_strikes) + ").", "\033[1;31m");
-
-                    if (invalid_tool_strikes >= 5) {
-                        diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive malformed tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
-                        abort_auto = true;
-                    } else if (invalid_tool_strikes >= 2) {
-                        diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive malformed tool calls. Injecting intervention.", "\033[1;31m");
-                        inject_auto_user_msg = true;
-                        active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+                        if (invalid_tool_strikes >= 5) {
+                            diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                            abort_auto = true;
+                        } else if (invalid_tool_strikes >= 2) {
+                            diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+                            inject_auto_user_msg = true;
+                            active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+                        }
                     }
                 } else {
                     invalid_tool_strikes = 0;
-                    bool is_mutating_tool = (tool_name == "edit_file" || tool_name == "write_file");
 
-                    bool pre_loop = loop_guard.would_repeat(tool_call);
+                    was_loop = loop_guard.record_and_check(tool_call);
 
-                    if (pre_loop) {
-                        was_loop = loop_guard.record_and_check(tool_call);
-                        tool_blocked_by_loop = true;
-                        int current_strikes = loop_guard.get_loop_strikes();
+                    if (stop_generation) {
+                        diag("Tool Interrupted by User", "\033[31m");
+                        stop_generation = 0;
+                        allow_continue_resume = true;
+                        reincarnate_mode = false;
+                    }
 
+                    if (!abort_auto && was_loop) {
                         active_intervention_msg = get_next_loop_message();
-                        tool_out.content = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
+                        tool_out.content = "System Warning: You just repeated a tool call. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
                         tool_out.display = tool_out.content;
 
-                        diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
-
-                        int max_attempts = loopMessages.size();
-
-                        if (current_strikes <= max_attempts) {
-                            diag("System: Automating intervention (Attempt " + std::to_string(current_strikes) + "/" + std::to_string(max_attempts) + ").", "\033[35m");
-                            abort_auto = false;
-                            inject_auto_user_msg = true;
-                        } else {
-                            diag("System: Circuit breaker -- intervention failed after " + std::to_string(max_attempts) + " strikes. Ejecting to prompt.", "\033[1;31m");
-                            abort_auto = true;
-                        }
-                    } else {
-                        tool_out = execute_tool_call(tool_call, clean_files);
-
-                        was_loop = loop_guard.record_and_check(tool_call);
-
-                        if (stop_generation) {
-                            diag("Tool Interrupted by User", "\033[31m");
-                            stop_generation = 0;
-                            allow_continue_resume = true;
-                            reincarnate_mode = false;
-                        }
-
-                        if (!abort_auto && was_loop) {
-                            active_intervention_msg = get_next_loop_message();
-                            tool_out.content = "System Warning: You just repeated a tool call. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
-                            tool_out.display = tool_out.content;
-
-                            diag("System: Post-execution loop warning (Strike 2).", "\033[35m");
-                            inject_auto_user_msg = true;
-                        } else if (!abort_auto) {
-                            if (is_mutating_tool && !tool_out.is_error) loop_guard.clear_history();
-                            if (is_mutating_tool && tool_out.is_expected_error) loop_guard.clear_history();
-                        }
+                        diag("System: Post-execution loop warning (Strike 2).", "\033[35m");
+                        inject_auto_user_msg = true;
+                    } else if (!abort_auto) {
+                        if (tool_out.is_mutating && !tool_out.is_error) loop_guard.clear_history();
+                        if (tool_out.is_mutating && tool_out.is_expected_error) loop_guard.clear_history();
                     }
                 }
             }

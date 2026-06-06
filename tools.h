@@ -13,6 +13,9 @@ struct ToolResult {
     string display;          // Short summary shown in console/browser
     bool is_error = false;   // Whether the tool call failed
     bool is_expected_error = false;  // Whether failure is expected (e.g., edit mismatch)
+    bool is_mutating = false;  // Whether the tool modifies files
+    bool recognized = true;  // Whether the tool name was recognized
+    bool params_valid = true;  // Whether required parameters are present
 };
 
 bool param_has_newline(const string& s);

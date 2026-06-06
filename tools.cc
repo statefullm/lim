@@ -22,6 +22,37 @@ bool param_has_newline(const string& s) {
     return param_has_newline_impl(s);
 }
 
+// Tool metadata: required parameters per tool.
+struct ToolSpec { string name; vector<string> params; };
+static const vector<ToolSpec> tool_specs = {
+    {"read_files",  {"paths"}},
+    {"search_file", {"path"}},
+    {"write_file",  {"path", "content"}},
+    {"edit_file",   {"path", "old", "new"}},
+    {"exec_shell",  {"command"}},
+    {"web_search",  {"query"}}
+};
+
+static bool check_params(const string& tool_name, const string& tool_call) {
+    for (const auto& spec : tool_specs) {
+        if (spec.name == tool_name) {
+            for (const auto& param : spec.params) {
+                string key = string(PARAM_START) + param + ">";
+                if (tool_call.find(key) == string::npos) return false;
+            }
+            return true;
+        }
+    }
+    return false;  // unknown tool
+}
+
+static bool is_known_tool(const string& name) {
+    for (const auto& spec : tool_specs) {
+        if (spec.name == name) return true;
+    }
+    return false;
+}
+
 ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) {
   ToolResult out;
   string display_result = "";
@@ -38,6 +69,21 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
 
   // Check for interrupt before starting tool execution
   if (stop_generation) { out.content = "[Tool interrupted by user]"; return out; }
+
+  // Validate: is this a recognized tool with required parameters?
+  out.recognized = is_known_tool(tool_name);
+  out.params_valid = check_params(tool_name, tool_call);
+
+  if (!out.recognized) {
+      out.content = "Error: Unknown tool call";
+      out.is_error = true;
+      return out;
+  }
+  if (!out.params_valid) {
+      out.content = "System Error: Malformed tool call. Required parameter tags are missing.";
+      out.is_error = true;
+      return out;
+  }
 
   if (tool_name == "read_files") {
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
@@ -186,6 +232,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
     clean_files.erase(path);
+    out.is_mutating = true;
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
@@ -209,6 +256,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
     clean_files.erase(path);
+    out.is_mutating = true;
     if (!path.empty()) {
       FileSystemTools fs;
       auto result_map = fs.edit_file(path, old_str, new_str);
