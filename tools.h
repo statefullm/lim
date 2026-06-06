@@ -20,6 +20,6 @@ struct ToolResult {
 
 bool param_has_newline(const string& s);
 ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files);
-string sanitize(string text);
+
 
 #endif // TOOLS_H

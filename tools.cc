@@ -279,8 +279,5 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
   return out;
 }
 
-string sanitize(string text) {
-    escape_parameter_tags(text);
-    return text;
-}
+
 

@@ -334,8 +334,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
       result += lines[i] + "\n";
     }
 
-    // Escape PARAM_END tokens before sending to LLM
-    escape_parameter_tags(result);
     out["content"] = result;
   } else if (!text.empty()) {
     bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
@@ -421,7 +419,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
       out["match_count"] = to_string(match_count);
 
       if (match_count > 0) {
-        escape_parameter_tags(result);
         out["content"] = result;
       }
     }
@@ -562,9 +559,6 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
       // Log success without content - only file size, never the actual content
       // Use logOnly=true to ensure content is never shown on stdout or in logfile
       log_diagnostic("Successfully read: " + path + " (size=" + to_string(content.length()) + " bytes)", true /* logOnly */);
-
-      // Escape PARAM_END tokens before sending to LLM
-      escape_parameter_tags(content);
 
       result["status"] = "success";
       result["content"] = content;

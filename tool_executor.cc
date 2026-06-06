@@ -2,6 +2,7 @@
 #include "session_utils.h"
 #include "output.h"
 #include "signals.h"
+#include "parsers.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -166,11 +167,14 @@ ToolExecutor::Result ToolExecutor::execute(
 
         chat_log << "\n";
         generated_text = "";
-        string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_out.content) + TURN_END + "\n";
+
+        string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + tool_out.content + TURN_END + "\n";
+        escape_parameter_tags(tool_result_section);
         string tool_msg = tool_result_section;
 
         if (tool_blocked_by_loop || inject_auto_user_msg) {
-            string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_out.content);
+            string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + tool_out.content;
+            escape_parameter_tags(clean_user_turn);
             if (inject_auto_user_msg && !active_intervention_msg.empty()) {
                 clean_user_turn += "\n" + active_intervention_msg;
             }
