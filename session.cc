@@ -20,18 +20,13 @@
 #include <map>
 #include <cstdlib>
 #include <cstring>
-#include <cstdarg>
 #include <cstdio>
 #include <chrono>
 #include <signal.h>
 #include <cctype>
 #include <set>
-#include <algorithm>
-#include <deque>
 #include <functional>
 #include <iomanip>
-#include <ctime>
-#include <sys/stat.h>
 #include <unistd.h>
 
 // --- Readline Headers ---
@@ -95,16 +90,6 @@ static void save_history_safe(const char* filename, const string& input) {
     string enc = input;
     for (char& c : enc) { if (c == '\n') c = '\x1E'; }
     out << enc << "\n";
-}
-
-// --- Helper to unescape tags passed by the LLM ---
-static void replace_all_tags(string& str, const string& from, const string& to) {
-    if (from.empty()) return;
-    size_t start_pos = 0;
-    while ((start_pos = str.find(from, start_pos)) != string::npos) {
-        str.replace(start_pos, from.length(), to);
-        start_pos += to.length();
-    }
 }
 
 // --- Helper to build context-limit diagnostic string ---
