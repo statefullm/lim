@@ -22,7 +22,8 @@ bool param_has_newline(const string& s) {
     return param_has_newline_impl(s);
 }
 
-string execute_tool_call(const string& tool_call, set<string>& clean_files) {
+string execute_tool_call(const string& tool_call, set<string>& clean_files, string& display_result) {
+  display_result = "";
   string result = "";
   string tool_name = "";
   size_t ns = tool_call.find(FUNC_START);
@@ -53,6 +54,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
           result += "Path: " + path + "\n";
           result += "Content:\n[Cache hit - unchanged since last read]\n";
           result += "---\n";
+          display_result += (display_result.empty() ? "Read files: " : "\n            ") + path + " (cached)";
         } else if (is_url) {
           auto url_results = net.fetch_urls({path});
           for (const auto& file : url_results) {
@@ -66,6 +68,12 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
             result += "---\n";
 
             if (f_error.empty() && !f_path.empty()) clean_files.insert(f_path);
+
+            if (!f_error.empty()) {
+              display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + f_error;
+            } else {
+              display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + to_string(f_content.length()) + " bytes";
+            }
           }
         } else {
           local_paths_to_read.push_back(path);
@@ -85,6 +93,12 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
           result += "---\n";
 
           if (f_error.empty() && !f_path.empty()) clean_files.insert(f_path);
+
+          if (!f_error.empty()) {
+            display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + f_error;
+          } else {
+            display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + to_string(f_content.length()) + " bytes";
+          }
         }
       }
     } else {
@@ -107,6 +121,39 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!path.empty()) {
       FileSystemTools fs;
       result = fs.search_file(path, text, begin_line, end_line);
+
+      // Build display_result
+      int n_matches = 0;
+      size_t spos = 0;
+      while ((spos = result.find("--- Match", spos)) != string::npos) {
+          n_matches++;
+          spos += 9;
+      }
+      display_result = "Search file: " + path;
+      if (begin_line > 0 && end_line >= begin_line) {
+          // Extract the actual range from the result string ("Lines X-Y of ...")
+          size_t lines_pos = result.find("Lines ");
+          if (lines_pos != string::npos) {
+              size_t dash = result.find('-', lines_pos + 6);
+              size_t of_pos = result.find(" of ", lines_pos);
+              if (dash != string::npos && of_pos != string::npos) {
+                  int actual_start = atoi(result.substr(lines_pos + 6, dash - lines_pos - 6).c_str());
+                  int actual_end = atoi(result.substr(dash + 1, of_pos - dash - 1).c_str());
+                  display_result += ", lines " + to_string(actual_start) + "-" + to_string(actual_end);
+              } else {
+                  display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
+              }
+          } else {
+              display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
+          }
+          int n_found = (result.find("Error:") == 0) ? 0 : 1;
+          display_result += ": " + to_string(n_found) + " match" + (n_found != 1 ? "es" : "");
+      } else if (begin_line > 0 && end_line > 0) {
+          display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
+          display_result += ": 0 matches";
+      } else {
+          display_result += ": " + to_string(n_matches) + (n_matches == 1 ? " match" : " matches");
+      }
     } else {
       result = "Error: path is required for search_file";
     }
@@ -123,6 +170,12 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
       if (!r_error.empty()) result += ", Error: " + r_error;
+
+      if (!r_error.empty()) {
+          display_result = "Write file: " + path + ": " + r_error;
+      } else {
+          display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
+      }
     } else {
       result = "Error: No path provided to write_file";
     }
@@ -143,6 +196,9 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
       if (!r_changes.empty()) {
           int n = atoi(r_changes.c_str());
           result += ", " + to_string(n) + (n == 1 ? " change" : " changes");
+          display_result = "Edit file: " + path + ": " + to_string(n) + (n == 1 ? " change" : " changes");
+      } else {
+          display_result = "Edit file: " + path;
       }
       if (!r_error.empty()) result += ", Error: " + r_error;
     } else {
@@ -154,6 +210,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!command.empty()) {
       FileSystemTools fs;
       result = fs.exec_shell(command);
+      display_result = result;
     } else {
       result = "Error: No command provided to exec_shell";
     }
@@ -163,6 +220,15 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files) {
     if (!query.empty()) {
       NetworkTools net;
       result = net.web_search(query);
+      display_result = "Web search: \"" + query + "\"";
+      // Count results
+      int n_results = 0;
+      size_t wp = 0;
+      while ((wp = result.find("Title:", wp)) != string::npos) {
+          n_results++;
+          wp += 6;
+      }
+      display_result += ": " + to_string(n_results) + (n_results == 1 ? " result" : " results");
     } else {
       result = "Error: No query provided to web_search";
     }
