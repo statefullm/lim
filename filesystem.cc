@@ -228,7 +228,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 
   // Build the function call label (logged at end with match count for text searches)
   string search_label = "search_file(" + path_str;
-  if (begin_line > 0 && end_line >= begin_line) {
+  if (text.empty() && begin_line >= 1 && end_line >= begin_line) {
     search_label += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
   }
   search_label += ")";
@@ -258,8 +258,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   string content = buffer.str();
   in_file.close();
 
-  // Line range reading mode: if both begin and end are provided, return those lines directly
-  if (begin_line > 0 && end_line >= begin_line) {
+  // Line range reading mode: if text is empty and both begin and end are provided, return those lines directly
+  if (text.empty() && begin_line >= 1 && end_line >= begin_line) {
     vector<string> lines;
     string line;
     stringstream ss(content);

@@ -112,11 +112,21 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     string end_str = extract_string_arg_bounded(tool_call, "end");
     int begin_line = 0;
     int end_line = 0;
-    if (!begin_str.empty() && begin_str.find_first_not_of("0123456789") == string::npos) {
-      begin_line = atoi(begin_str.c_str());
+    if (!begin_str.empty()) {
+      if (begin_str.find_first_not_of("0123456789") == string::npos) {
+        begin_line = atoi(begin_str.c_str());
+        if (begin_line < 1) return "Error: 'begin' must be a positive integer (>= 1).";
+      } else {
+        return "Error: 'begin' must be a positive integer.";
+      }
     }
-    if (!end_str.empty() && end_str.find_first_not_of("0123456789") == string::npos) {
-      end_line = atoi(end_str.c_str());
+    if (!end_str.empty()) {
+      if (end_str.find_first_not_of("0123456789") == string::npos) {
+        end_line = atoi(end_str.c_str());
+        if (end_line < 1) return "Error: 'end' must be a positive integer (>= 1).";
+      } else {
+        return "Error: 'end' must be a positive integer.";
+      }
     }
     if (!path.empty()) {
       FileSystemTools fs;
@@ -141,7 +151,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       // Build display_result from structured data -- no string parsing needed
       int n_matches = atoi(r_match_count.c_str());
       display_result = "Search file: " + path;
-      if (begin_line > 0 && end_line >= begin_line) {
+      if (text.empty() && begin_line > 0 && end_line >= begin_line) {
           // Use the actual clamped range returned by search_file
           int a_start = atoi(r_actual_start.c_str());
           int a_end   = atoi(r_actual_end.c_str());
