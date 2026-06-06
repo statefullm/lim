@@ -9,6 +9,7 @@
 #include "filesystem.h"
 #include "network.h"
 #include "tools.h"
+#include "token_generator.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -46,20 +47,6 @@ extern ofstream chat_log;
 extern ofstream token_log;
 
 // HOME is declared as extern std::string HOME in network.h
-
-// --- Helper to escape token piece strings for token log ---
-static string escape_token_piece(const string& s) {
-    string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else if (c == '"') out += "\\\"";
-        else out += c;
-    }
-    return out;
-}
 
 // --- Helper to trim leading/trailing whitespace ---
 static string trim(const string& s) {
@@ -118,76 +105,6 @@ static void replace_all_tags(string& str, const string& from, const string& to) 
     }
 }
 
-// Find tool call end robustly, handling malformed closing tags and nested FUNC_START in content.
-static size_t find_tool_end_robust(const string& text, size_t from_pos) {
-    string fe_str(FUNC_END);
-    string fs_str(FUNC_START);
-
-    // Depth-aware search: start at depth 1 (we're already inside a tool call).
-    int depth = 1;
-    size_t pos = from_pos;
-    while (pos != string::npos && pos < text.length()) {
-        size_t next_start = text.find(fs_str, pos);
-        size_t next_end = text.find(fe_str, pos);
-
-        if (next_end == string::npos) break;  // No closing tag found at all
-
-        if (next_start != string::npos && next_start < next_end) {
-            // Nested FUNC_START inside content — increase depth, keep searching.
-            depth++;
-            pos = next_start + fs_str.length();
-        } else {
-            // Found FUNC_END at current depth
-            depth--;
-            if (depth == 0) return next_end;
-            pos = next_end + fe_str.length();
-        }
-    }
-
-    // Fallback: look for FUNC_END without trailing >, followed by garbage
-    string partial = fe_str.substr(0, fe_str.length() - 1);
-    size_t p;
-    while ((p = text.find(partial, from_pos)) != string::npos) {
-        if (p + partial.length() < text.length()) {
-            char next_c = text[p + partial.length()];
-            if (next_c == '>') return p;
-            size_t garbage_end = text.find('>', p + partial.length());
-            if (garbage_end != string::npos) {
-                return p + partial.length();
-            }
-        }
-        from_pos = p + partial.length();
-    }
-    return string::npos;
-}
-
-// Repair malformed closing tag at position returned by find_tool_end_robust.
-static void repair_malformed_tool_end(string& text, size_t pos) {
-    if (pos >= text.length()) return;
-    char next_c = text[pos];
-    if (next_c == '>') return;
-    size_t garbage_end = text.find('>', pos);
-    if (garbage_end == string::npos) {
-        text.insert(pos, ">");
-        return;
-    }
-    text.replace(pos, garbage_end + 1 - pos, ">");
-}
-
-// --- Helper to strip thinking and tool-call XML tags from a string ---
-static void _strip_think_and_tool_tags(string& str) {
-    static const vector<string> all_tags = {
-        Tokens::THINK_START, Tokens::THINK_END,
-        FUNC_START, FUNC_END,
-        PARAM_START, PARAM_END
-    };
-    for (const auto& tag : all_tags) {
-        size_t p;
-        while ((p = str.find(tag)) != string::npos) {
-            str.erase(p, tag.length());
-        }
-    }
-}
 // --- Helper to strip all occurrences of given tags from a string ---
 static void strip_tags(string& str, const vector<string>& tags) {
     for (const auto& tag : tags) {
@@ -568,9 +485,6 @@ bool run_chat_session(
             log_tokens("FEED USER_INPUT", tokens, ctx);
         }
 
-        auto start = chrono::high_resolution_clock::now();
-        int t_count = 0;
-
         if (!state.auto_continue) {
             console("\n\033[1;90m--- Generating (Ctrl+C to interrupt) ---\033[0m\n");
             consoleFlush();
@@ -580,28 +494,8 @@ bool run_chat_session(
         static int g_auto_continue_depth = 0;
         if (!state.auto_continue) g_auto_continue_depth = 0;
         bool allow_continue_resume = false;
-        string generated_text = "";
-        string unprinted_text = "";
-        string full_response = "";
-        size_t print_pos = 0;
 
-        generated_text.reserve(32768);
-        unprinted_text.reserve(1024);
-        full_response.reserve(32768);
-
-        // When resuming mid-tool-call via state.tool_interrupt_pending, initialize tracking
-        // variables to reflect that we are already inside a tool call.
-        bool was_mid_tool_call = state.tool_interrupt_pending;
-        state.tool_interrupt_pending = false;
-
-        bool in_tool_call_stream = was_mid_tool_call;
-        size_t tool_start = was_mid_tool_call ? 0 : string::npos;
-        size_t tool_end = string::npos;
-        bool trigger_tool_execution = false;
-        size_t func_search_pos = 0;
-        bool had_eog_recovery = false;
-        bool context_warned_this_turn = false;
-
+        // Compute turn timeout from environment
         static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 300.0;
         const char* timeout_env = getenv("LLLM_TURN_TIMEOUT");
         double turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
@@ -617,424 +511,56 @@ bool run_chat_session(
         int max_auto_continue = (max_auto_env != nullptr && strlen(max_auto_env) > 0) ? atoi(max_auto_env) : DEFAULT_MAX_AUTO_CONTINUE;
         if (max_auto_continue < 5) max_auto_continue = DEFAULT_MAX_AUTO_CONTINUE;
 
-        bool in_thinking_block = false;
-        size_t think_start = string::npos;
-        size_t think_end = string::npos;
-        string think_buffer;
-        bool think_buffering = true;
-
         static bool prev_stdout_ended_with_newline = false;
 
-        // --- INNER TOKEN GENERATION LOOP ---
-        while (true) {
-            if (stop_generation) {
-                diag("Task Interrupted by User", "\033[31m");
-                stream("\n\n[Task Interrupted by User]\n\n");
-                stop_generation = 0;
-                g_was_interrupted = 0;
-                state.prev_was_interrupted = true;
-                state.auto_continue = false;
-                state.reincarnate_mode = false;
-                // If interrupted mid-tool-call, preserve state for seamless resume.
-                if (in_tool_call_stream && tool_start != string::npos) {
-                    state.tool_interrupt_pending = true;
-                }
-                rl_redisplay();
-                break;
-            }
+        // When resuming mid-tool-call via state.tool_interrupt_pending, initialize tracking
+        // variables to reflect that we are already inside a tool call.
+        bool was_mid_tool_call = state.tool_interrupt_pending;
+        state.tool_interrupt_pending = false;
 
-            {
-                auto now = chrono::high_resolution_clock::now();
-                double elapsed_turn = chrono::duration<double>(now - start).count();
-                if (elapsed_turn >= turn_timeout_sec) {
-                    diag("System: Turn timeout reached (" + std::to_string((int)elapsed_turn) + "s/" + std::to_string((int)turn_timeout_sec) + "s). Pausing generation.", "\033[1;33m");
-                    stream("\n\n[Turn Timeout Reached]\n\n");
-                    stop_generation = 0;
-                    g_was_interrupted = 0;
-                    state.prev_was_interrupted = true;
-                    state.auto_continue = false;
-                    state.reincarnate_mode = false;
-                    // If interrupted mid-tool-call, preserve state for seamless resume.
-                    if (in_tool_call_stream && tool_start != string::npos) {
-                        state.tool_interrupt_pending = true;
-                    }
-                    rl_redisplay();
-                    break;
-                }
-            }
+        auto start = chrono::high_resolution_clock::now();
 
-            {
-                int context_90pct = (int)(cparams.n_ctx * 0.9);
-                if (n_past >= context_90pct && !context_warned_this_turn) {
-                    context_warned_this_turn = true;
+        // --- TOKEN GENERATION via TokenGenerator class ---
+        TokenGenerator tg(ctx, vocab, smpl, batch, n_past, cparams,
+                          turn_timeout_sec, was_mid_tool_call, state.last_n_past);
+        auto gen_result = tg.generate();
 
-                    if (!unprinted_text.empty()) {
-                        console(unprinted_text.c_str());
-                        consoleFlush();
-                        stream(unprinted_text);
-                        unprinted_text = "";
-                    }
+        string generated_text = gen_result.text;
+        int t_count = gen_result.token_count;
+        bool trigger_tool_execution = gen_result.has_tool_call;
+        size_t tool_start = gen_result.tool_start;
+        size_t tool_end = gen_result.tool_end;
 
-                    diag("Context approaching limit (" + std::to_string(n_past) + "/" + std::to_string(cparams.n_ctx) + "). Type 'reincarnate' to start a fresh session, or 'clear' to reset.", "\033[1;33m");
-                }
-            }
-
-            if (n_past >= (int)cparams.n_ctx - 10) {
-                string ctx_diag = context_limit_diag(n_past, state.last_n_past, 0, (int)cparams.n_ctx);
-                diag("Context Window Exhausted!" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
-                if (!unprinted_text.empty()) {
-                    console(unprinted_text.c_str());
-                    consoleFlush();
-                    stream(unprinted_text);
-                }
-                state.auto_continue = false;
-                state.reincarnate_mode = false;
-                break;
-            }
-
-            if (batch.n_tokens < 1) {
-                diag("Error: no tokens in batch to sample from", "\033[31m");
-                state.auto_continue = false;
-                state.reincarnate_mode = false;
-                break;
-            }
-            llama_token next_token = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
-
-            if (llama_vocab_is_eog(vocab, next_token)) {
-                size_t active_ts = generated_text.find(FUNC_START);
-                size_t active_te = find_tool_end_robust(generated_text, active_ts != string::npos ? active_ts : 0);
-
-                bool inside_unclosed_tool = (active_ts != string::npos && (active_te == string::npos || active_ts > active_te));
-
-                static int eog_event_count = 0;
-                static int total_poll_iters = 0;
-                static int max_poll_iters = 0;
-                static int last_printed = 0;
-                int poll_iter_used = 0;
-
-                static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 30;
-                static constexpr int EOG_RESAMPLE_HARD_CAP    = 200;
-
-                const char* eog_env = getenv("LLLM_EOG_RESAMPLE_MAX");
-                int max_iterations = (eog_env != nullptr && strlen(eog_env) > 0) ? atoi(eog_env) : DEFAULT_EOG_RESAMPLE_MAX;
-                max_iterations = std::max(1, std::min(max_iterations, EOG_RESAMPLE_HARD_CAP));
-
-                bool recovered = false;
-
-                {
-                    llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
-                    if (!llama_vocab_is_eog(vocab, polled)) {
-                        next_token = polled;
-                        recovered = true;
-                        poll_iter_used = 1;
-                    }
-                }
-
-                if (!recovered) {
-                    for (int poll_iter = 0; poll_iter < max_iterations; ++poll_iter) {
-                        if (stop_generation) break;
-                        llama_token polled = llama_sampler_sample(smpl, ctx, batch.n_tokens - 1);
-                        if (!llama_vocab_is_eog(vocab, polled)) {
-                            next_token = polled;
-                            recovered = true;
-                            poll_iter_used = poll_iter + 2;
-                            break;
-                        }
-                    }
-                }
-
-                if (recovered) {
-                    eog_event_count++;
-                    total_poll_iters += poll_iter_used;
-                    max_poll_iters = std::max(max_poll_iters, poll_iter_used);
-
-                    string recovered_piece = common_token_to_piece(ctx, next_token);
-                    if (is_debug) {
-                        message("\033[90m[EOG recovery: token=" + recovered_piece + " | polls=" + std::to_string(poll_iter_used) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
-                        cout.flush();
-
-                        if (eog_event_count - last_printed >= 10) {
-                            double avg = (double)total_poll_iters / eog_event_count;
-                            char avg_buf[16];
-                            snprintf(avg_buf, sizeof(avg_buf), "%.1f", avg);
-                            message("\033[90m[EOG diagnostic: " + std::to_string(eog_event_count) + " spurious EOGs recovered | "
-                                "avg polls: " + string(avg_buf) + "/" + std::to_string(max_iterations) +
-                                " | max: " + std::to_string(max_poll_iters) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
-                            cout.flush();
-                            last_printed = eog_event_count;
-                        }
-                    }
-
-                    had_eog_recovery = true;
-                }
-
-                if (!recovered) {
-                    if (inside_unclosed_tool) {
-                        if (is_debug) {
-                            message("\033[31m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
-                            cout.flush();
-                        }
-
-                        size_t trailing_slash = generated_text.rfind("</");
-                        if (trailing_slash != string::npos && trailing_slash > active_ts) {
-                            size_t drop_len = generated_text.length() - trailing_slash;
-                            generated_text.erase(trailing_slash);
-                            full_response.erase(full_response.length() - drop_len);
-                        }
-
-                        string forced_close = "\n" + string(TURN_END) + "\n" + string(FUNC_END) + "\n";
-                        generated_text += forced_close;
-                        full_response += forced_close;
-
-                        tool_start = active_ts;
-                        tool_end = generated_text.find(FUNC_END, active_ts);
-                        trigger_tool_execution = true;
-                    } else {
-                        state.auto_continue = false;
-                    }
-                    break;
-                }
-            }
-
-            string token_str = common_token_to_piece(ctx, next_token).c_str();
-            generated_text += token_str;
-            full_response += token_str;
-
-            // Log generated token to token_log when debug is enabled
-            if (is_debug && token_log.is_open()) {
-                token_log << t_count << " " << next_token << " \"" << escape_token_piece(token_str) << "\"\n";
-                token_log.flush();
-            }
-
-            if (think_start == string::npos) {
-                think_start = generated_text.find(Tokens::THINK_START);
-            }
-            if (think_start != string::npos && think_end == string::npos) {
-                think_end = generated_text.find(Tokens::THINK_END, think_start);
-            }
-            in_thinking_block = (think_start != string::npos && think_end == string::npos);
-
-            if (tool_start == string::npos) {
-                size_t search_from = func_search_pos;
-                while (true) {
-                    tool_start = generated_text.find(FUNC_START, search_from);
-                    if (tool_start == string::npos) break;
-
-                    if (think_start != string::npos &&
-                        tool_start >= think_start &&
-                        (think_end == string::npos || tool_start < think_end)) {
-                        search_from = think_end;
-                        continue;
-                    }
-                    break;
-                }
-                if (tool_start == string::npos) {
-                    func_search_pos = generated_text.length() > 20 ? generated_text.length() - 20 : 0;
-                }
-            }
-            if (tool_start != string::npos && tool_end == string::npos) {
-                // When resuming mid-tool-call, generated_text contains only the continuation
-                // (no FUNC_START). Search from position 0 so find_tool_end_robust starts at
-                // depth 1 and correctly locates the matching FUNC_END in the continuation text.
-                size_t search_from = was_mid_tool_call ? 0 : tool_start;
-                tool_end = find_tool_end_robust(generated_text, search_from);
-                if (tool_end != string::npos) {
-                    size_t exact_pos = generated_text.find(FUNC_END, search_from);
-                    if (exact_pos == string::npos) {
-                        repair_malformed_tool_end(generated_text, tool_end);
-                        tool_end = generated_text.find(FUNC_END, search_from);
-                    }
-                }
-            }
-
-            in_tool_call_stream = (tool_start != string::npos && tool_end == string::npos);
-
-            if (in_tool_call_stream && generated_text.length() >= 4 &&
-                generated_text.compare(generated_text.length() - 4, 4, DOUBLE_OPEN) == 0) {
-
-                diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
-
-                size_t bad_pos = generated_text.rfind(DOUBLE_OPEN);
-                if (bad_pos != string::npos && bad_pos > tool_start) {
-                    size_t drop_len = generated_text.length() - bad_pos;
-                    generated_text.erase(bad_pos);
-                    full_response.erase(full_response.length() - drop_len);
-                }
-
-                string forced_close = "\n" + string(TURN_END) + "\n" + string(FUNC_END) + "\n";
-                generated_text += forced_close;
-                full_response += forced_close;
-
-                tool_end = find_tool_end_robust(generated_text, was_mid_tool_call ? 0 : tool_start);
-                if (tool_end != string::npos) {
-                    size_t exact_pos = generated_text.find(FUNC_END, was_mid_tool_call ? 0 : tool_start);
-                    if (exact_pos == string::npos) {
-                        repair_malformed_tool_end(generated_text, tool_end);
-                        tool_end = generated_text.find(FUNC_END, was_mid_tool_call ? 0 : tool_start);
-                    }
-                }
-                trigger_tool_execution = true;
-                break;
-            }
-
-            if (tool_end != string::npos) {
-                trigger_tool_execution = true;
-                break;
-            }
-
-            if (!in_tool_call_stream && !in_thinking_block) {
-                size_t safe_len = generated_text.length();
-                string fstart(FUNC_START);
-                string tstart(Tokens::THINK_START);
-
-                if (think_start != string::npos && think_end != string::npos) {
-                    size_t think_block_end = think_end + string(Tokens::THINK_END).length();
-
-                    think_buffer.clear();
-                    think_buffering = true;
-
-                    if (print_pos < think_block_end) {
-                        if (!think_buffering && print_pos <= think_end) {
-                            string close_tag = generated_text.substr(print_pos, think_block_end - print_pos);
-                            console_think(close_tag.c_str());
-                            consoleThinkFlush();
-                        }
-                        print_pos = think_block_end;
-                    }
-                }
-
-                for (size_t len = 1; len <= max(fstart.length(), tstart.length()) && len <= generated_text.length(); ++len) {
-                    if (generated_text.compare(generated_text.length() - len, len, fstart, 0, len) == 0 ||
-                        generated_text.compare(generated_text.length() - len, len, tstart, 0, len) == 0) {
-                        safe_len = generated_text.length() - len;
-                        break;
-                    }
-                }
-
-                if (safe_len > print_pos) {
-                    unprinted_text += generated_text.substr(print_pos, safe_len - print_pos);
-                    print_pos = safe_len;
-                }
-
-                if (!unprinted_text.empty() && (t_count % 10 == 0 || unprinted_text.back() == '\n')) {
-                    console(unprinted_text.c_str());
-                    consoleFlush();
-                    stream(unprinted_text);
-                    unprinted_text = "";
-                }
-            } else if (in_thinking_block) {
-                size_t safe_len = generated_text.length();
-                string tstart(Tokens::THINK_START);
-                string tend(Tokens::THINK_END);
-
-                for (size_t len = 1; len <= tend.length() && len <= generated_text.length(); ++len) {
-                    if (generated_text.compare(generated_text.length() - len, len, tend, 0, len) == 0) {
-                        safe_len = generated_text.length() - len;
-                        break;
-                    }
-                }
-
-                if (safe_len > print_pos) {
-                    string think_output = generated_text.substr(print_pos, safe_len - print_pos);
-
-                    if (think_buffering) {
-                        _strip_think_and_tool_tags(think_output);
-
-                        bool found_content = false;
-                        size_t content_start = 0;
-                        for (size_t i = 0; i < think_output.size(); ++i) {
-                            if (!isspace(think_output[i])) {
-                                found_content = true;
-                                content_start = i;
-                                break;
-                            }
-                        }
-
-                        if (found_content) {
-                            think_buffer.clear();
-                            think_output = think_output.substr(content_start);
-                            console_think(think_output.c_str());
-                            consoleThinkFlush();
-                            think_buffering = false;
-                        } else {
-                            think_buffer += think_output;
-                        }
-                    } else {
-                        _strip_think_and_tool_tags(think_output);
-                        console_think(think_output.c_str());
-                        consoleThinkFlush();
-                    }
-                    print_pos = safe_len;
-                }
-            } else {
-                if (!unprinted_text.empty()) {
-                    console(unprinted_text.c_str());
-                    consoleFlush();
-                    stream(unprinted_text);
-                    unprinted_text = "";
-                }
-                print_pos = generated_text.length();
-            }
-
-            t_count++;
-
-            if (t_count % 50 == 0 && !in_tool_call_stream && !in_thinking_block) {
-                cerr << "\r\033[K[Generating... " << t_count << " tokens]";
-                cerr.flush();
-            }
-
-            {
-                static int recent_token_count = 0;
-                static auto last_rate_check = chrono::high_resolution_clock::now();
-                recent_token_count++;
-
-                auto now = chrono::high_resolution_clock::now();
-                double elapsed_window = chrono::duration<double>(now - last_rate_check).count();
-                if (elapsed_window >= 10.0) {
-                    double rate = recent_token_count / elapsed_window;
-                    if (rate < 0.5 && t_count > 20) {
-                        diag("System: Token generation rate critically low (" +
-                             to_string((int)(rate * 10) / 10.0) + " tok/s). Possible stall detected.", "\033[1;33m");
-                    }
-                    recent_token_count = 0;
-                    last_rate_check = now;
-                }
-            }
-
-            batch.n_tokens = 0;
-            common_batch_add(batch, next_token, n_past++, {0}, true);
-            if (!handle_llama_decode_error(ctx, batch)) { sync_n_past(ctx, n_past); state.reincarnate_mode = false; break; }
-        } // END INNER TOKEN LOOP
-
-        // If we exited the inner loop while mid-tool-call (e.g., due to timeout or Ctrl+C),
-        // don't close the assistant turn. On resume, just continue generating from where
-        // we left off so the LLM never knows it was interrupted.
-        if (in_tool_call_stream && tool_start != string::npos) {
+        // Handle mid-tool-call state saving (regardless of exit reason)
+        if (gen_result.tool_start != string::npos && gen_result.tool_end == string::npos) {
             state.tool_interrupt_pending = true;
-            // Save the partial tool text for reconstruction on resume.
-            // On a resumed turn, prepend state.partial_tool_text since generated_text
-            // starts from the continuation point (after the previous interrupt).
             if (was_mid_tool_call) {
                 state.partial_tool_text = state.partial_tool_text + generated_text;
             } else {
-                state.partial_tool_text = generated_text.substr(tool_start);
+                state.partial_tool_text = generated_text.substr(gen_result.tool_start);
             }
         }
 
-        cerr << "\r\033[K";
+        // Update session state based on exit reason
+        if (gen_result.was_interrupted) {
+            state.prev_was_interrupted = true;
+            state.auto_continue = false;
+            state.reincarnate_mode = false;
+        } else if (gen_result.early_exit) {
+            state.auto_continue = false;
+            state.reincarnate_mode = false;
+        } else if (!gen_result.has_tool_call) {
+            // Normal EOG
+            state.auto_continue = false;
+        }
 
         auto end = chrono::high_resolution_clock::now();
         double elapsed = chrono::duration<double>(end - start).count();
 
         bool stdout_ended_with_newline = prev_stdout_ended_with_newline;
-        if (!unprinted_text.empty()) {
-            console(unprinted_text.back() != '\n' ? (unprinted_text + "\n").c_str() : unprinted_text.c_str());
-            consoleFlush();
-            stream(unprinted_text + (unprinted_text.back() != '\n' ? "\n" : ""));
+        if (stdout_ended_with_newline || !generated_text.empty()) {
             stdout_ended_with_newline = true;
-            unprinted_text = "";
         }
-
         if (!stdout_ended_with_newline) {
             cout << "\n";
         }
@@ -1185,16 +711,7 @@ bool run_chat_session(
                 prev_stdout_ended_with_newline = true;
 
                 chat_log << "\n";
-                generated_text = ""; unprinted_text = "";
-                // Advance func_search_pos past the processed tool call so that
-                // FUNC_START tokens inside parameter content are never re-scanned.
-                func_search_pos = tool_end + string(FUNC_END).length();
-                tool_start = string::npos; tool_end = string::npos;
-                think_start = string::npos; think_end = string::npos;
-                in_tool_call_stream = false; in_thinking_block = false;
-                think_buffer.clear();
-                think_buffering = true;
-
+                generated_text = "";
                 string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_out.content) + TURN_END + "\n";
                 string tool_msg = tool_result_section;
 
@@ -1240,7 +757,7 @@ bool run_chat_session(
                 }
             } else {
                 state.auto_continue = false;
-                generated_text = ""; unprinted_text = "";
+                generated_text = "";
 
                 string abort_msg;
                 if (state.invalid_tool_strikes >= 5) {
