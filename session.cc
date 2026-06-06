@@ -1096,8 +1096,7 @@ bool run_chat_session(
                 }
             }
 
-            string tool_result = "";
-            string display_result = "";
+            ToolResult tool_out;
             bool was_loop = false;
             bool tool_blocked_by_loop = false;
             bool abort_auto = false;
@@ -1125,8 +1124,8 @@ bool run_chat_session(
                     stream_tool_result(error_html);
                 }
 
-                tool_result = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema.";
-                display_result = tool_result;
+                tool_out.content = "System Error: Invalid tool format or unsupported tool. You MUST use the strict XML schema.";
+                tool_out.display = tool_out.content;
 
                 if (invalid_tool_strikes >= 5) {
                     diag("System: " + std::to_string(invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
@@ -1157,8 +1156,8 @@ bool run_chat_session(
                     }
 
                     string schema_hint = string(PARAM_START) + "param_name>value</" + string(PARAM_END);
-                    tool_result = "System Error: Malformed tool call. Required parameter tags are missing from your XML. You MUST use the strict schema: <function=TOOL_NAME>" + schema_hint + "...";
-                    display_result = tool_result;
+                    tool_out.content = "System Error: Malformed tool call. Required parameter tags are missing from your XML. You MUST use the strict schema: <function=TOOL_NAME>" + schema_hint + "...";
+                    tool_out.display = tool_out.content;
 
                     diag("System: Malformed tool call -- missing required parameter tags (Strike " + std::to_string(invalid_tool_strikes) + ").", "\033[1;31m");
 
@@ -1182,8 +1181,8 @@ bool run_chat_session(
                         int current_strikes = loop_guard.get_loop_strikes();
 
                         active_intervention_msg = get_next_loop_message();
-                        tool_result = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
-                        display_result = tool_result;
+                        tool_out.content = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
+                        tool_out.display = tool_out.content;
 
                         diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
 
@@ -1198,7 +1197,7 @@ bool run_chat_session(
                             abort_auto = true;
                         }
                     } else {
-                        tool_result = execute_tool_call(tool_call, clean_files, display_result);
+                        tool_out = execute_tool_call(tool_call, clean_files);
 
                         was_loop = loop_guard.record_and_check(tool_call);
 
@@ -1211,34 +1210,23 @@ bool run_chat_session(
 
                         if (!abort_auto && was_loop) {
                             active_intervention_msg = get_next_loop_message();
-                            tool_result = "System Warning: You just repeated a tool call. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
-                            display_result = tool_result;
+                            tool_out.content = "System Warning: You just repeated a tool call. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
+                            tool_out.display = tool_out.content;
 
                             diag("System: Post-execution loop warning (Strike 2).", "\033[35m");
                             inject_auto_user_msg = true;
                         } else if (!abort_auto) {
-                            bool tool_failed = (tool_result.find("System Error:") != string::npos || tool_result.find("Error:") != string::npos);
-
-                            if (is_mutating_tool && !tool_failed) loop_guard.clear_history();
-
-                            bool is_expected_error = (tool_result.find("exact match not found") != string::npos ||
-                                                     tool_result.find("contains the 'old' string") != string::npos);
-                            if (is_mutating_tool && is_expected_error) loop_guard.clear_history();
-
-
-                            // display_result already populated by execute_tool_call
+                            if (is_mutating_tool && !tool_out.is_error) loop_guard.clear_history();
+                            if (is_mutating_tool && tool_out.is_expected_error) loop_guard.clear_history();
                         }
                     }
                 }
             }
 
             if (!abort_auto) {
-                bool has_error = (display_result.find("Error:") != string::npos);
-                bool has_match_count = (display_result.find("Match count:") != string::npos);
-
                 if (is_debug) {
                     console("\n\033[92m[Tool Result]\033[0m\n");
-                    string result_to_print = display_result;
+                    string result_to_print = tool_out.display;
                     size_t p = 0;
                     while ((p = result_to_print.find('\n')) != string::npos) {
                         console("  ", (int)p, result_to_print.c_str(),"\n");
@@ -1247,7 +1235,7 @@ bool run_chat_session(
                     if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
                 }
 
-                string display_for_browser = display_result;
+                string display_for_browser = tool_out.display;
 
                 string safe_result;
                 for (char c : display_for_browser) {
@@ -1273,11 +1261,11 @@ bool run_chat_session(
                 think_buffer.clear();
                 think_buffering = true;
 
-                string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result) + TURN_END + "\n";
+                string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_out.content) + TURN_END + "\n";
                 string tool_msg = tool_result_section;
 
                 if (tool_blocked_by_loop || inject_auto_user_msg) {
-                    string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_result);
+                    string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + sanitize(tool_out.content);
                     if (inject_auto_user_msg && !active_intervention_msg.empty()) {
                         clean_user_turn += "\n" + active_intervention_msg;
                     }

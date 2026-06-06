@@ -22,8 +22,9 @@ bool param_has_newline(const string& s) {
     return param_has_newline_impl(s);
 }
 
-string execute_tool_call(const string& tool_call, set<string>& clean_files, string& display_result) {
-  display_result = "";
+ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) {
+  ToolResult out;
+  string display_result = "";
   string result = "";
   string tool_name = "";
   size_t ns = tool_call.find(FUNC_START);
@@ -36,7 +37,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
   }
 
   // Check for interrupt before starting tool execution
-  if (stop_generation) return "[Tool interrupted by user]";
+  if (stop_generation) { out.content = "[Tool interrupted by user]"; return out; }
 
   if (tool_name == "read_files") {
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
@@ -106,7 +107,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
   } else if (tool_name == "search_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
+    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
@@ -115,18 +116,26 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     if (!begin_str.empty()) {
       if (begin_str.find_first_not_of("0123456789") == string::npos) {
         begin_line = atoi(begin_str.c_str());
-        if (begin_line < 1) return "Error: 'begin' must be a positive integer (>= 1).";
+        if (begin_line < 1) { result = "Error: 'begin' must be a positive integer (>= 1)."; out.is_error = true; }
       } else {
-        return "Error: 'begin' must be a positive integer.";
+        result = "Error: 'begin' must be a positive integer."; out.is_error = true;
       }
+    }
+    if (!result.empty()) {
+        out.content = result;
+        return out;
     }
     if (!end_str.empty()) {
       if (end_str.find_first_not_of("0123456789") == string::npos) {
         end_line = atoi(end_str.c_str());
-        if (end_line < 1) return "Error: 'end' must be a positive integer (>= 1).";
+        if (end_line < 1) { result = "Error: 'end' must be a positive integer (>= 1)."; out.is_error = true; }
       } else {
-        return "Error: 'end' must be a positive integer.";
+        result = "Error: 'end' must be a positive integer."; out.is_error = true;
       }
+    }
+    if (!result.empty()) {
+        out.content = result;
+        return out;
     }
     if (!path.empty()) {
       FileSystemTools fs;
@@ -142,13 +151,14 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       // Build the LLM-facing result string
       if (!r_error.empty()) {
           result = "Error: " + r_error;
+          out.is_error = true;
       } else if (r_content.empty()) {
           result = "No occurrences found for text.";
       } else {
           result = r_content;
       }
 
-      // Build display_result from structured data -- no string parsing needed
+      // Build display_result from structured data
       int n_matches = atoi(r_match_count.c_str());
       display_result = "Search file: " + path;
       if (text.empty() && begin_line > 0 && end_line >= begin_line) {
@@ -173,7 +183,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
   } else if (tool_name == "write_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
+    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
     clean_files.erase(path);
     if (!path.empty()) {
@@ -183,9 +193,9 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       if (result_map.count("status")) r_status = result_map.at("status");
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
-      if (!r_error.empty()) result += ", Error: " + r_error;
-
       if (!r_error.empty()) {
+          result += ", Error: " + r_error;
+          out.is_error = true;
           display_result = "Write file: " + path + ": " + r_error;
       } else {
           display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
@@ -195,7 +205,7 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
   } else if (tool_name == "edit_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) return PATH_NEWLINE_ERROR;
+    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
     clean_files.erase(path);
@@ -214,7 +224,15 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
       } else {
           display_result = "Edit file: " + path;
       }
-      if (!r_error.empty()) result += ", Error: " + r_error;
+      if (!r_error.empty()) {
+          result += ", Error: " + r_error;
+          out.is_error = true;
+          // Check for expected edit errors (mismatch)
+          if (r_error.find("not found") != string::npos ||
+              r_error.find("exact match") != string::npos) {
+              out.is_expected_error = true;
+          }
+      }
     } else {
       result = "Error: No path provided to edit_file";
     }
@@ -250,10 +268,18 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     result = "Error: Unknown tool call";
   }
 
-  return result;
+  out.content = result;
+  out.display = display_result;
+  if (out.is_error) return out;
+  // Detect error from content string as fallback for tools that set result but not is_error
+  if (result.find("Error:") != string::npos) {
+      out.is_error = true;
+  }
+  return out;
 }
 
 string sanitize(string text) {
     escape_parameter_tags(text);
     return text;
 }
+
