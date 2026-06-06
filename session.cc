@@ -188,7 +188,6 @@ static void _strip_think_and_tool_tags(string& str) {
         }
     }
 }
-
 // --- Helper to strip all occurrences of given tags from a string ---
 static void strip_tags(string& str, const vector<string>& tags) {
     for (const auto& tag : tags) {
@@ -197,6 +196,44 @@ static void strip_tags(string& str, const vector<string>& tags) {
             str.erase(p, tag.length());
         }
     }
+}
+
+
+// --- Helper to escape HTML special characters ---
+static string html_escape(const string& s) {
+    string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '&') out += "&amp;";
+        else if (c == '<') out += "&lt;";
+        else if (c == '>') out += "&gt;";
+        else if (c == '"') out += "&quot;";
+        else out += c;
+    }
+    return out;
+}
+
+// --- Helper to log a batch of tokens with a label ---
+static void log_tokens(const string& label, const vector<llama_token>& toks, llama_context* ctx) {
+    if (!is_debug || !token_log.is_open()) return;
+    for (llama_token t : toks) {
+        string piece = common_token_to_piece(ctx, t);
+        token_log << label << " " << t << " \"" << escape_token_piece(piece) << "\"\n";
+    }
+    token_log.flush();
+}
+
+// --- Helper to build context-limit diagnostic string ---
+static string context_limit_diag(int n_past, int last_n_past, size_t needed, int n_ctx) {
+    if (n_past == last_n_past) return "";
+    ostringstream oss;
+    oss << " (n_past=" << n_past;
+    if (needed > 0) {
+        oss << " + " << needed << ", last_n_past=" << last_n_past << ")";
+    } else {
+        oss << ", last_n_past=" << last_n_past << ", n_ctx=" << n_ctx << ")";
+    }
+    return oss.str();
 }
 
 // Local diag_speed implementation for session.cc
@@ -429,7 +466,7 @@ bool run_chat_session(
             vector<llama_token> reincarnate_tokens = tokenize(reincarnate_message);
 
             if (n_past + (int)reincarnate_tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(reincarnate_tokens.size()) + ", last_n_past=" + std::to_string(last_n_past) + ")" : "";
+                string ctx_diag = context_limit_diag(n_past, last_n_past, (size_t)reincarnate_tokens.size(), (int)cparams.n_ctx);
                 diag("Context Limit Reached! Cannot process reincarnate" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 continue;
             }
@@ -440,13 +477,7 @@ bool run_chat_session(
             }
 
             // Log reincarnate tokens to token_log when debug is enabled
-            if (is_debug && token_log.is_open()) {
-                for (llama_token t : reincarnate_tokens) {
-                    string piece = common_token_to_piece(ctx, t);
-                    token_log << "FEED USER_INPUT " << t << " \"" << escape_token_piece(piece) << "\"\n";
-                }
-                token_log.flush();
-            }
+            log_tokens("FEED USER_INPUT", reincarnate_tokens, ctx);
 
             auto_continue = true;
             reincarnate_mode = true;
@@ -512,15 +543,7 @@ bool run_chat_session(
             if (!auto_continue) {
                 log_entry("USER", user_input);
                 if (should_output_to_browser() && pipe_fd >= 0) {
-                    string escaped_user;
-                    for (char c : user_input) {
-                        if (c == '&') escaped_user += "&amp;";
-                        else if (c == '<') escaped_user += "&lt;";
-                        else if (c == '>') escaped_user += "&gt;";
-                        else if (c == '"') escaped_user += "&quot;";
-                        else escaped_user += c;
-                    }
-                    string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + escaped_user + "</code></pre></div>\n\n";
+                    string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(user_input) + "</code></pre></div>\n\n";
                     stream_html(user_html);
                 }
             }
@@ -539,7 +562,7 @@ bool run_chat_session(
             vector<llama_token> tokens = tokenize(user_message);
 
             if (n_past + (int)tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(tokens.size()) + ", last_n_past=" + std::to_string(last_n_past) + ")" : "";
+                string ctx_diag = context_limit_diag(n_past, last_n_past, (size_t)tokens.size(), (int)cparams.n_ctx);
                 diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 continue;
             }
@@ -553,13 +576,7 @@ bool run_chat_session(
             }
 
             // Log user input tokens to token_log when debug is enabled
-            if (is_debug && token_log.is_open()) {
-                for (llama_token t : tokens) {
-                    string piece = common_token_to_piece(ctx, t);
-                    token_log << "FEED USER_INPUT " << t << " \"" << escape_token_piece(piece) << "\"\n";
-                }
-                token_log.flush();
-            }
+            log_tokens("FEED USER_INPUT", tokens, ctx);
         }
 
         auto start = chrono::high_resolution_clock::now();
@@ -674,7 +691,7 @@ bool run_chat_session(
             }
 
             if (n_past >= (int)cparams.n_ctx - 10) {
-                string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + ", last_n_past=" + std::to_string(last_n_past) + ", n_ctx=" + std::to_string(cparams.n_ctx) + ")" : "";
+                string ctx_diag = context_limit_diag(n_past, last_n_past, 0, (int)cparams.n_ctx);
                 diag("Context Window Exhausted!" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
                 if (!unprinted_text.empty()) {
                     console(unprinted_text.c_str());
@@ -1117,13 +1134,7 @@ bool run_chat_session(
                     if (is_debug && should_show_tools() && should_output_to_browser()) {
                         string raw_display = tool_call;
                         if (raw_display.length() > 500) raw_display = raw_display.substr(0, 500) + "...";
-                        string safe;
-                        for (char c : raw_display) {
-                            if (c == '&') safe += "&amp;";
-                            else if (c == '<') safe += "&lt;";
-                            else if (c == '>') safe += "&gt;";
-                            else safe += c;
-                        }
+                        string safe = html_escape(raw_display);
                         string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
                         string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
                         stream_tool_result(error_html);
@@ -1177,13 +1188,7 @@ bool run_chat_session(
 
                 string display_for_browser = tool_out.display;
 
-                string safe_result;
-                for (char c : display_for_browser) {
-                    if (c == '&') safe_result += "&amp;";
-                    else if (c == '<') safe_result += "&lt;";
-                    else if (c == '>') safe_result += "&gt;";
-                    else safe_result += c;
-                }
+                string safe_result = html_escape(display_for_browser);
 
                 string result_html = "\n\n<div class='tool-result'>Tool Result:<pre><code>" + safe_result + "</code></pre></div>\n\n";
                 stream_tool_result(result_html);
@@ -1226,13 +1231,7 @@ bool run_chat_session(
                     abort_auto = true;
                 } else {
                     // Log tool result tokens to token_log when debug is enabled
-                    if (is_debug && token_log.is_open()) {
-                        for (llama_token t : t_tokens) {
-                            string piece = common_token_to_piece(ctx, t);
-                            token_log << "FEED TOOL_RESULT " << t << " \"" << escape_token_piece(piece) << "\"\n";
-                        }
-                        token_log.flush();
-                    }
+                    log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
 
                     g_auto_continue_depth++;
                     if (g_auto_continue_depth > max_auto_continue) {
@@ -1268,13 +1267,7 @@ bool run_chat_session(
                     feed_tokens(t_tokens);
 
                     // Log abort tool result tokens to token_log when debug is enabled
-                    if (is_debug && token_log.is_open()) {
-                        for (llama_token t : t_tokens) {
-                            string piece = common_token_to_piece(ctx, t);
-                            token_log << "FEED TOOL_RESULT " << t << " \"" << escape_token_piece(piece) << "\"\n";
-                        }
-                        token_log.flush();
-                    }
+                    log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
                 }
             }
         }
@@ -1329,7 +1322,7 @@ bool run_chat_session(
             vector<llama_token> new_session_tokens = tokenize(new_session_message);
 
             if (n_past + (int)new_session_tokens.size() >= (int)cparams.n_ctx) {
-                string ctx_diag = n_past != last_n_past ? " (n_past=" + std::to_string(n_past) + " + " + std::to_string(new_session_tokens.size()) + ", last_n_past=" + std::to_string(last_n_past) + ")" : "";
+                string ctx_diag = context_limit_diag(n_past, last_n_past, (size_t)new_session_tokens.size(), (int)cparams.n_ctx);
                 diag("Context Limit Reached! Cannot process reincarnated prompt" + ctx_diag + ".", "\033[31m");
                 continue;
             }
@@ -1341,13 +1334,7 @@ bool run_chat_session(
             }
 
             // Log reincarnated session tokens to token_log when debug is enabled
-            if (is_debug && token_log.is_open()) {
-                for (llama_token t : new_session_tokens) {
-                    string piece = common_token_to_piece(ctx, t);
-                    token_log << "FEED USER_INPUT " << t << " \"" << escape_token_piece(piece) << "\"\n";
-                }
-                token_log.flush();
-            }
+            log_tokens("FEED USER_INPUT", new_session_tokens, ctx);
 
             auto_continue = true;
             reset_session_state();
