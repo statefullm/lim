@@ -21,7 +21,9 @@ bool g_browser_warning_suppressed = false;
 static int get_server_port() {
     const char* env = getenv("LLLM_PORT");
     if (env != nullptr && strlen(env) > 0) {
-        return atoi(env);
+        char* endp = nullptr;
+        long val = strtol(env, &endp, 10);
+        if (*endp == '\0' && val > 0 && val < 65536) return static_cast<int>(val);
     }
     return 8765;
 }
@@ -30,7 +32,10 @@ int get_output_mode() {
     if (g_browser_warning_suppressed) return 1;
     const char* env = getenv("LLLM_OUTPUT");
     if (env == nullptr) return 2;  // Default: browser
-    int mode = atoi(env);
+    char* endp = nullptr;
+    long val = strtol(env, &endp, 10);
+    if (*endp != '\0') return 3;
+    int mode = static_cast<int>(val);
     if (mode < 0 || mode > 3) return 3;
     return mode;
 }
@@ -53,7 +58,9 @@ bool should_output_think_blocks() {
 bool should_show_tools() {
     const char* env = getenv("LLLM_SHOW_TOOLS");
     if (env == nullptr) return true;
-    int val = atoi(env);
+    char* endp = nullptr;
+    long val = strtol(env, &endp, 10);
+    if (*endp != '\0') return true;
     return val != 0;
 }
 

@@ -598,7 +598,12 @@ bool run_chat_session(
 
         static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 300.0;
         const char* timeout_env = getenv("LLLM_TURN_TIMEOUT");
-        double turn_timeout_sec = (timeout_env != nullptr && strlen(timeout_env) > 0) ? atof(timeout_env) : DEFAULT_TURN_TIMEOUT_SEC;
+        double turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
+        if (timeout_env != nullptr && strlen(timeout_env) > 0) {
+            char* endp = nullptr;
+            double val = strtod(timeout_env, &endp);
+            if (*endp == '\0') turn_timeout_sec = val;
+        }
         if (turn_timeout_sec < 5.0) turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
 
         static constexpr int DEFAULT_MAX_AUTO_CONTINUE = 500;

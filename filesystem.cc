@@ -233,37 +233,49 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   }
   search_label += ")";
 
-  // Parse and validate begin/end — single point of validation.
+  // Parse and validate begin/end — parse as integers first, then validate.
   int begin_line = 0, end_line = 0;
   if (!begin_str.empty()) {
-    if (begin_str.find_first_not_of("0123456789") != string::npos) {
+    char* endptr = nullptr;
+    long val = strtol(begin_str.c_str(), &endptr, 10);
+    if (*endptr != '\0' || begin_str.empty()) {
       out["error"] = "Error: 'begin' must be a positive integer.";
       log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
-    begin_line = atoi(begin_str.c_str());
-    if (begin_line < 1) {
-      out["error"] = "Error: 'begin' must be a positive integer (>= 1).";
+    if (val < 1) {
+      out["error"] = "Error: 'begin' must be a positive integer (>= 1). Negative values and zero are not allowed.";
       log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
+    begin_line = static_cast<int>(val);
   }
   if (!end_str.empty()) {
-    if (end_str.find_first_not_of("0123456789") != string::npos) {
+    char* endptr = nullptr;
+    long val = strtol(end_str.c_str(), &endptr, 10);
+    if (*endptr != '\0' || end_str.empty()) {
       out["error"] = "Error: 'end' must be a positive integer.";
       log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
-    end_line = atoi(end_str.c_str());
-    if (end_line < 1) {
-      out["error"] = "Error: 'end' must be a positive integer (>= 1).";
+    if (val < 1) {
+      out["error"] = "Error: 'end' must be a positive integer (>= 1). Negative values and zero are not allowed.";
       log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
+    end_line = static_cast<int>(val);
+  }
+
+  // Validate range: begin must not exceed end, whenever both are provided.
+  if (begin_line >= 1 && end_line >= 1 && begin_line > end_line) {
+    out["error"] = "Invalid range: 'begin' (" + to_string(begin_line) + ") is greater than 'end' (" + to_string(end_line) + ").";
+    log_tool_diagnostic(search_label);
+    out["display"] = "Search file: " + path + ": " + out["error"];
+    return out;
   }
 
   // If LLLM_DEBUG=1, also output full text (truncated in stdout only)
@@ -293,13 +305,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   string content = buffer.str();
   in_file.close();
 
-  // Validate: in line-range mode (no text), begin must not exceed end.
-  if (text.empty() && begin_line >= 1 && end_line >= 1 && begin_line > end_line) {
-    out["error"] = "Invalid range: 'begin' (" + to_string(begin_line) + ") is greater than 'end' (" + to_string(end_line) + ").";
-    log_tool_diagnostic(search_label);
-    out["display"] = "Search file: " + path + ": " + out["error"];
-    return out;
-  }
+  // (Range validation moved earlier, after begin/end parsing.)
 
   // Line range reading mode: if text is empty and both begin and end are provided, return those lines directly
   if (text.empty() && begin_line >= 1 && end_line >= begin_line) {

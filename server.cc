@@ -2,6 +2,7 @@
 #include "output.h"
 #include "filesystem.h"
 #include <sys/wait.h>
+#include <cstdlib>
 
 // --- LLLM Server Process Management ---
 pid_t g_lllm_server_pid = -1;
@@ -117,7 +118,9 @@ bool check_browser_connected() {
 int get_server_port() {
     const char* env = getenv("LLLM_PORT");
     if (env != nullptr && strlen(env) > 0) {
-        return atoi(env);
+        char* endp = nullptr;
+        long val = strtol(env, &endp, 10);
+        if (*endp == '\0' && val > 0 && val < 65536) return static_cast<int>(val);
     }
     return 8765;
 }

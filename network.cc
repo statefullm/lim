@@ -108,8 +108,9 @@ static size_t HeaderCallback(char *buffer, size_t size, size_t nitems, void *use
             string status_code_str = lower_header.substr(space_pos + 1);
             // Check if this is a redirect response (3xx)
             if (status_code_str.size() >= 3) {
-                int status_code = atoi(status_code_str.c_str());
-                if (status_code >= 300 && status_code < 400) {
+                char* endp = nullptr;
+                long status_code = strtol(status_code_str.c_str(), &endp, 10);
+                if (*endp == '\0' && status_code >= 300 && status_code < 400) {
                     // This is a redirect - reset state for the final response
                     state->is_text = false;
                     state->is_pdf = false;

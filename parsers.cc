@@ -230,7 +230,12 @@ int extract_int_arg_bounded(const string& tool_call, const string& arg_name) {
     size_t first = val.find_first_not_of(" \t\n\r");
     if (first == string::npos) return 0;
 
-    return std::atoi(val.c_str() + first);
+    char* endptr = nullptr;
+    long result = strtol(val.c_str() + first, &endptr, 10);
+    if (*endptr != '\0' && *endptr != '\n' && *endptr != '\r' && *endptr != ' ' && *endptr != '\t') {
+        return 0;  // Non-numeric trailing content
+    }
+    return static_cast<int>(result);
 }
 
 string remove_trailing_spaces(const string& str) {
