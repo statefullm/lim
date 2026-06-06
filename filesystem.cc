@@ -215,7 +215,14 @@ string FileSystemTools::exec_shell(const string& command) {
   return result;
 }
 
-string FileSystemTools::search_file(const string& path, const string& text, int begin_line, int end_line) {
+map<string, string> FileSystemTools::search_file(const string& path, const string& text, int begin_line, int end_line) {
+  map<string, string> out;
+  out["content"] = "";
+  out["match_count"] = "0";
+  out["actual_start"] = "0";
+  out["actual_end"] = "0";
+  out["error"] = "";
+
   // Build human-readable function call syntax (truncate for display)
   string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
 
@@ -242,7 +249,8 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
   string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
-    return "Error: Failed to open file for reading: " + fullpath;
+    out["error"] = "Failed to open file for reading: " + fullpath;
+    return out;
   }
 
   stringstream buffer;
@@ -264,8 +272,14 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
     int end = min((int)lines.size() - 1, end_line - 1);
 
     if (start >= (int)lines.size()) {
-      return "Error: Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
+      out["error"] = "Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
+      return out;
     }
+
+    // Store actual range for display_result
+    out["actual_start"] = to_string(start + 1);
+    out["actual_end"] = to_string(end + 1);
+    out["match_count"] = "1";
 
     string result = "Lines " + to_string(start + 1) + "-" + to_string(end + 1) + " of " + path + ":\n";
     for (int i = start; i <= end; i++) {
@@ -274,8 +288,9 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
 
     // Escape PARAM_END tokens before sending to LLM
     escape_parameter_tags(result);
+    out["content"] = result;
     log_tool_diagnostic(search_label);
-    return result;
+    return out;
   }
 
   bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
@@ -293,17 +308,17 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
       }
 
       size_t start_pos = 0;
-      int start_line = 1, end_line = 1;
+      int start_line = 1, end_line_local = 1;
       for (size_t i = 0; i < pos; i++) {
         if (content[i] == '\n') start_line++;
       }
 
       size_t end_pos = pos + unescaped_text.length();
       for (size_t i = 0; i < end_pos && i < content.length(); i++) {
-        if (content[i] == '\n') end_line++;
+        if (content[i] == '\n') end_line_local++;
       }
 
-      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line) + ") ---\n";
+      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line_local) + ") ---\n";
 
       size_t ctx_start = pos;
       size_t ctx_end = end_pos;
@@ -328,7 +343,8 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
     string line;
     ifstream line_file(fullpath);
     if (!line_file.is_open()) {
-      return "Error: Failed to reopen file for line-by-line reading: " + fullpath;
+      out["error"] = "Failed to reopen file for line-by-line reading: " + fullpath;
+      return out;
     }
     while (getline(line_file, line)) {
       lines.push_back(line);
@@ -356,16 +372,19 @@ string FileSystemTools::search_file(const string& path, const string& text, int 
     }
   }
 
+  out["match_count"] = to_string(match_count);
+
   if (match_count == 0) {
     log_tool_diagnostic(search_label);
-    return "No occurrences found for text.";
+    return out;
   }
 
   // Escape PARAM_END tokens before sending to LLM
   escape_parameter_tags(result);
+  out["content"] = result;
   log_tool_diagnostic(search_label);
 
-  return result;
+  return out;
 }
 
 vector<map<string, string>> FileSystemTools::read_files(const vector<string>& paths) {

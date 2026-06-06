@@ -120,33 +120,37 @@ string execute_tool_call(const string& tool_call, set<string>& clean_files, stri
     }
     if (!path.empty()) {
       FileSystemTools fs;
-      result = fs.search_file(path, text, begin_line, end_line);
+      auto result_map = fs.search_file(path, text, begin_line, end_line);
 
-      // Build display_result
-      int n_matches = 0;
-      size_t spos = 0;
-      while ((spos = result.find("--- Match", spos)) != string::npos) {
-          n_matches++;
-          spos += 9;
+      string r_content, r_error, r_match_count, r_actual_start, r_actual_end;
+      if (result_map.count("content")) r_content = result_map.at("content");
+      if (result_map.count("error")) r_error = result_map.at("error");
+      if (result_map.count("match_count")) r_match_count = result_map.at("match_count");
+      if (result_map.count("actual_start")) r_actual_start = result_map.at("actual_start");
+      if (result_map.count("actual_end")) r_actual_end = result_map.at("actual_end");
+
+      // Build the LLM-facing result string
+      if (!r_error.empty()) {
+          result = "Error: " + r_error;
+      } else if (r_content.empty()) {
+          result = "No occurrences found for text.";
+      } else {
+          result = r_content;
       }
+
+      // Build display_result from structured data -- no string parsing needed
+      int n_matches = atoi(r_match_count.c_str());
       display_result = "Search file: " + path;
       if (begin_line > 0 && end_line >= begin_line) {
-          // Extract the actual range from the result string ("Lines X-Y of ...")
-          size_t lines_pos = result.find("Lines ");
-          if (lines_pos != string::npos) {
-              size_t dash = result.find('-', lines_pos + 6);
-              size_t of_pos = result.find(" of ", lines_pos);
-              if (dash != string::npos && of_pos != string::npos) {
-                  int actual_start = atoi(result.substr(lines_pos + 6, dash - lines_pos - 6).c_str());
-                  int actual_end = atoi(result.substr(dash + 1, of_pos - dash - 1).c_str());
-                  display_result += ", lines " + to_string(actual_start) + "-" + to_string(actual_end);
-              } else {
-                  display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
-              }
+          // Use the actual clamped range returned by search_file
+          int a_start = atoi(r_actual_start.c_str());
+          int a_end   = atoi(r_actual_end.c_str());
+          if (a_start > 0 && a_end > 0) {
+              display_result += ", lines " + to_string(a_start) + "-" + to_string(a_end);
           } else {
               display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
           }
-          int n_found = (result.find("Error:") == 0) ? 0 : 1;
+          int n_found = r_error.empty() ? 1 : 0;
           display_result += ": " + to_string(n_found) + " match" + (n_found != 1 ? "es" : "");
       } else if (begin_line > 0 && end_line > 0) {
           display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);

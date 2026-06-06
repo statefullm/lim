@@ -17,8 +17,10 @@ public:
 
   std::map<std::string, std::string> edit_file(const std::string& path, const std::string& old_str, const std::string& new_str);
 
-  // Search for text with optional line range
-  std::string search_file(const std::string& path, const std::string& text, int begin_line = 0, int end_line = 0);
+  // Search for text with optional line range.
+  // Returns map with keys: "content" (LLM-facing result), "match_count",
+  // "actual_start", "actual_end" (for line-range mode), "error" (non-empty on failure).
+  std::map<std::string, std::string> search_file(const std::string& path, const std::string& text, int begin_line = 0, int end_line = 0);
 
 private:
   std::string _get_fullpath(const std::string& path);
