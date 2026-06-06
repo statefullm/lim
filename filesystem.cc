@@ -107,6 +107,15 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
 
 const string FileSystemTools::HOME = "/home/ai";
 
+// Helper: extract the file extension (lowercased) from a path, or empty string.
+static string _file_ext(const string& path) {
+  size_t dot = path.rfind('.');
+  if (dot == string::npos) return "";
+  string ext = path.substr(dot);
+  transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
+  return ext;
+}
+
 // Test edit - filesystem tools verification
 FileSystemTools::FileSystemTools() {}
 
@@ -238,14 +247,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   if (!begin_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(begin_str.c_str(), &endptr, 10);
-    if (*endptr != '\0' || begin_str.empty()) {
+    if (*endptr != '\0' || begin_str.empty() || val < 1) {
       out["error"] = "Error: 'begin' must be a positive integer.";
-      log_tool_diagnostic(search_label);
-      out["display"] = "Search file: " + path + ": " + out["error"];
-      return out;
-    }
-    if (val < 1) {
-      out["error"] = "Error: 'begin' must be a positive integer (>= 1). Negative values and zero are not allowed.";
       log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
@@ -255,14 +258,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   if (!end_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(end_str.c_str(), &endptr, 10);
-    if (*endptr != '\0' || end_str.empty()) {
+    if (*endptr != '\0' || end_str.empty() || val < 1) {
       out["error"] = "Error: 'end' must be a positive integer.";
-      log_tool_diagnostic(search_label);
-      out["display"] = "Search file: " + path + ": " + out["error"];
-      return out;
-    }
-    if (val < 1) {
-      out["error"] = "Error: 'end' must be a positive integer (>= 1). Negative values and zero are not allowed.";
       log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
@@ -340,7 +337,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
     // Escape PARAM_END tokens before sending to LLM
     escape_parameter_tags(result);
     out["content"] = result;
-    log_tool_diagnostic(search_label);
   } else if (!text.empty()) {
     bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
     string result = "";
@@ -428,11 +424,11 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
         escape_parameter_tags(result);
         out["content"] = result;
       }
-      log_tool_diagnostic(search_label);
     }
   }
 
-  // Single exit point: build display string from the final state of out.
+  // Single exit point: log and build display string from the final state of out.
+  log_tool_diagnostic(search_label);
   if (out["error"].empty()) {
       int n = atoi(out["match_count"].c_str());
       out["display"] = "Search file: " + path + ": " + to_string(n) + (n == 1 ? " match" : " matches");
@@ -454,13 +450,7 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
   // Check if any file is a PDF to determine if we need Docling
   bool needs_pdf_processing = false;
   for (const auto& path : paths) {
-    string ext = path;
-    size_t last_dot = path.rfind('.');
-    if (last_dot != string::npos) {
-      ext = path.substr(last_dot);
-      transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
-    }
-    if (ext == ".pdf" || ext == ".PDF") {
+    if (_file_ext(path) == ".pdf") {
       needs_pdf_processing = true;
       break;
     }
@@ -482,20 +472,11 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
     bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
     // Check if this is a PDF file
-    string ext = path;
-    size_t last_dot = path.rfind('.');
-    if (last_dot != string::npos) {
-      ext = path.substr(last_dot);
-      transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
-    }
-
-    bool is_pdf = (ext == ".pdf" || ext == ".PDF");
+    bool is_pdf = (_file_ext(path) == ".pdf");
 
     if (is_pdf) {
       // Unified PDF handling - local files read directly, URLs use NetworkTools
       cerr << "Processing PDF: " + path << endl;
-
-      bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
       if (is_url) {
         // Remote URL - use NetworkTools fetch mechanism
@@ -570,7 +551,6 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
       ifstream in_file(_get_fullpath(path));
       if (!in_file.is_open()) {
         result["error"] = "Failed to open file for reading: " + path;
-        cerr << "Error: Failed to open file: " << endl;
         results.push_back(result);
         continue;
       }
@@ -614,7 +594,7 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "Failed to open file for writing: " + path;
-    log_diagnostic("Error: Failed to open file for writing", true /* logOnly */);
+    log_diagnostic(result["error"], true /* logOnly */);
     return result;
   }
 
@@ -627,7 +607,7 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   if (!write_ok) {
     result["status"] = "error";
     result["error"] = "Write failed for file: " + path;
-    log_diagnostic("Error: Write failed for file", true /* logOnly */);
+    log_diagnostic(result["error"], true /* logOnly */);
     return result;
   }
   result["status"] = "success";
@@ -667,7 +647,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "Failed to open file for reading: " + path;
-    log_diagnostic("Error: Failed to open file for reading", true /* logOnly */);
+    log_diagnostic(result["error"], true /* logOnly */);
     return result;
   }
 
@@ -683,7 +663,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
       map<string, string> result;
       result["status"] = "error";
       result["error"] = "OLD_TEXT cannot be empty";
-      log_diagnostic("Error: OLD_TEXT is empty", true /* logOnly */);
+      log_diagnostic(result["error"], true /* logOnly */);
       return result;
   }
 
@@ -697,7 +677,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "String not found in file. Ensure the OLD_TEXT exactly matches the file contents, including all whitespace and newlines.";
-    log_diagnostic("Error: String not found in file", true /* logOnly */);
+    log_diagnostic(result["error"], true /* logOnly */);
     return result;
   }
 
@@ -705,7 +685,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
       map<string, string> result;
       result["status"] = "error";
       result["error"] = "CRITICAL ERROR: Content is empty - refusing to write empty file";
-      log_diagnostic("Error: Content is empty after edit", true /* logOnly */);
+      log_diagnostic(result["error"], true /* logOnly */);
       return result;
   }
 
@@ -714,7 +694,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     map<string, string> result;
     result["status"] = "error";
     result["error"] = "Failed to open file for writing after edit";
-    log_diagnostic("Error: Failed to open file for writing after edit", true /* logOnly */);
+    log_diagnostic(result["error"], true /* logOnly */);
     return result;
   }
 
@@ -726,7 +706,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   if (!out_file) {
     result["status"] = "error";
     result["error"] = "Write failed after edit for file: " + path;
-    log_diagnostic("Error: Write failed after edit", true /* logOnly */);
+    log_diagnostic(result["error"], true /* logOnly */);
     return result;
   }
   result["status"] = "updated";
