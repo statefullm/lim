@@ -323,7 +323,9 @@ string ChatSession::get_user_input() {
         rl_callback_handler_remove();
         rl_unbind_key('\n');  // Restore default \n binding
 
-        cout << "\033[0m" << endl;
+        // _rl_callback_newline() redisplayed the prompt before invoking our callback.
+        // Erase that redundant prompt line, then reset color and print newline.
+        cout << "\r\033[K\033[0m" << endl;
 
         captured_line = g_captured_line;
         if (!captured_line.empty()) {
