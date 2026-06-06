@@ -20,7 +20,7 @@ public:
   // Search for text with optional line range.
   // Returns map with keys: "content" (LLM-facing result), "match_count",
   // "actual_start", "actual_end" (for line-range mode), "error" (non-empty on failure).
-  std::map<std::string, std::string> search_file(const std::string& path, const std::string& text, int begin_line = 0, int end_line = 0);
+  std::map<std::string, std::string> search_file(const std::string& path, const std::string& text, const std::string& begin_str = "", const std::string& end_str = "");
 
 private:
   std::string _get_fullpath(const std::string& path);

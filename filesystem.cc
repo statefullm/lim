@@ -215,7 +215,7 @@ string FileSystemTools::exec_shell(const string& command) {
   return result;
 }
 
-map<string, string> FileSystemTools::search_file(const string& path, const string& text, int begin_line, int end_line) {
+map<string, string> FileSystemTools::search_file(const string& path, const string& text, const string& begin_str, const string& end_str) {
   map<string, string> out;
   out["content"] = "";
   out["match_count"] = "0";
@@ -228,10 +228,43 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 
   // Build the function call label (logged at end with match count for text searches)
   string search_label = "search_file(" + path_str;
-  if (text.empty() && begin_line >= 1 && end_line >= begin_line) {
-    search_label += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
+  if (!begin_str.empty() || !end_str.empty()) {
+    search_label += ", lines " + begin_str + "-" + end_str;
   }
   search_label += ")";
+
+  // Parse and validate begin/end — single point of validation.
+  int begin_line = 0, end_line = 0;
+  if (!begin_str.empty()) {
+    if (begin_str.find_first_not_of("0123456789") != string::npos) {
+      out["error"] = "Error: 'begin' must be a positive integer.";
+      log_tool_diagnostic(search_label);
+      out["display"] = "Search file: " + path + ": " + out["error"];
+      return out;
+    }
+    begin_line = atoi(begin_str.c_str());
+    if (begin_line < 1) {
+      out["error"] = "Error: 'begin' must be a positive integer (>= 1).";
+      log_tool_diagnostic(search_label);
+      out["display"] = "Search file: " + path + ": " + out["error"];
+      return out;
+    }
+  }
+  if (!end_str.empty()) {
+    if (end_str.find_first_not_of("0123456789") != string::npos) {
+      out["error"] = "Error: 'end' must be a positive integer.";
+      log_tool_diagnostic(search_label);
+      out["display"] = "Search file: " + path + ": " + out["error"];
+      return out;
+    }
+    end_line = atoi(end_str.c_str());
+    if (end_line < 1) {
+      out["error"] = "Error: 'end' must be a positive integer (>= 1).";
+      log_tool_diagnostic(search_label);
+      out["display"] = "Search file: " + path + ": " + out["error"];
+      return out;
+    }
+  }
 
   // If LLLM_DEBUG=1, also output full text (truncated in stdout only)
   if (is_debug) {
@@ -250,6 +283,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
     out["error"] = "Failed to open file for reading: " + fullpath;
+    log_tool_diagnostic(search_label);
+    out["display"] = "Search file: " + path + ": " + out["error"];
     return out;
   }
 
@@ -257,6 +292,14 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   buffer << in_file.rdbuf();
   string content = buffer.str();
   in_file.close();
+
+  // Validate: in line-range mode (no text), begin must not exceed end.
+  if (text.empty() && begin_line >= 1 && end_line >= 1 && begin_line > end_line) {
+    out["error"] = "Invalid range: 'begin' (" + to_string(begin_line) + ") is greater than 'end' (" + to_string(end_line) + ").";
+    log_tool_diagnostic(search_label);
+    out["display"] = "Search file: " + path + ": " + out["error"];
+    return out;
+  }
 
   // Line range reading mode: if text is empty and both begin and end are provided, return those lines directly
   if (text.empty() && begin_line >= 1 && end_line >= begin_line) {
@@ -273,10 +316,12 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 
     if (start >= (int)lines.size()) {
       out["error"] = "Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
+      log_tool_diagnostic(search_label);
+      out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
 
-    // Store actual range for display_result
+    // Store actual range for display
     out["actual_start"] = to_string(start + 1);
     out["actual_end"] = to_string(end + 1);
     out["match_count"] = "1";
@@ -290,100 +335,104 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
     escape_parameter_tags(result);
     out["content"] = result;
     log_tool_diagnostic(search_label);
-    return out;
-  }
+  } else if (!text.empty()) {
+    bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
+    string result = "";
+    int match_count = 0;
+    int context = 5;
 
-  bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
-  string result = "";
-  int match_count = 0;
-  int context = 5;
-
-  if (search_with_newlines) {
-    size_t pos = 0;
-    while ((pos = content.find(unescaped_text, pos)) != string::npos) {
-      match_count++;
-      if (match_count > 10) {
-          result += "... (Truncated after 10 matches)\n";
-          break;
-      }
-
-      size_t start_pos = 0;
-      int start_line = 1, end_line_local = 1;
-      for (size_t i = 0; i < pos; i++) {
-        if (content[i] == '\n') start_line++;
-      }
-
-      size_t end_pos = pos + unescaped_text.length();
-      for (size_t i = 0; i < end_pos && i < content.length(); i++) {
-        if (content[i] == '\n') end_line_local++;
-      }
-
-      result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line_local) + ") ---\n";
-
-      size_t ctx_start = pos;
-      size_t ctx_end = end_pos;
-
-      int lines_before = 0;
-      while (ctx_start > 0 && lines_before < context) {
-        ctx_start--;
-        if (content[ctx_start] == '\n') lines_before++;
-      }
-
-      int lines_after = 0;
-      while (ctx_end < content.length() && lines_after < context) {
-        if (content[ctx_end] == '\n') lines_after++;
-        ctx_end++;
-      }
-
-      result += content.substr(ctx_start, ctx_end - ctx_start);
-      pos = end_pos;
-    }
-  } else {
-    vector<string> lines;
-    string line;
-    ifstream line_file(fullpath);
-    if (!line_file.is_open()) {
-      out["error"] = "Failed to reopen file for line-by-line reading: " + fullpath;
-      return out;
-    }
-    while (getline(line_file, line)) {
-      lines.push_back(line);
-    }
-    line_file.close();
-
-    int i = 0;
-    while (i < (int)lines.size()) {
-      if (lines[i].find(unescaped_text) != string::npos) {
+    if (search_with_newlines) {
+      size_t pos = 0;
+      while ((pos = content.find(unescaped_text, pos)) != string::npos) {
         match_count++;
         if (match_count > 10) {
-          result += "... (Truncated after 10 matches)\n";
-          break;
+            result += "... (Truncated after 10 matches)\n";
+            break;
         }
-        int start = max(0, i - context);
-        int end = min((int)lines.size() - 1, i + context);
-        result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n";
-        for (int j = start; j <= end; j++) {
-          result += lines[j] + "\n";
+
+        size_t start_pos = 0;
+        int start_line = 1, end_line_local = 1;
+        for (size_t i = 0; i < pos; i++) {
+          if (content[i] == '\n') start_line++;
         }
-        result += "\n";
-        i = end;
+
+        size_t end_pos = pos + unescaped_text.length();
+        for (size_t i = 0; i < end_pos && i < content.length(); i++) {
+          if (content[i] == '\n') end_line_local++;
+        }
+
+        result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line_local) + ") ---\n";
+
+        size_t ctx_start = pos;
+        size_t ctx_end = end_pos;
+
+        int lines_before = 0;
+        while (ctx_start > 0 && lines_before < context) {
+          ctx_start--;
+          if (content[ctx_start] == '\n') lines_before++;
+        }
+
+        int lines_after = 0;
+        while (ctx_end < content.length() && lines_after < context) {
+          if (content[ctx_end] == '\n') lines_after++;
+          ctx_end++;
+        }
+
+        result += content.substr(ctx_start, ctx_end - ctx_start);
+        pos = end_pos;
       }
-      i++;
+    } else {
+      vector<string> lines;
+      string line;
+      ifstream line_file(fullpath);
+      if (!line_file.is_open()) {
+        out["error"] = "Failed to reopen file for line-by-line reading: " + fullpath;
+        log_tool_diagnostic(search_label);
+        out["display"] = "Search file: " + path + ": " + out["error"];
+        return out;
+      }
+      while (getline(line_file, line)) {
+        lines.push_back(line);
+      }
+      line_file.close();
+
+      int i = 0;
+      while (i < (int)lines.size()) {
+        if (lines[i].find(unescaped_text) != string::npos) {
+          match_count++;
+          if (match_count > 10) {
+            result += "... (Truncated after 10 matches)\n";
+            break;
+          }
+          int start = max(0, i - context);
+          int end = min((int)lines.size() - 1, i + context);
+          result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n";
+          for (int j = start; j <= end; j++) {
+            result += lines[j] + "\n";
+          }
+          result += "\n";
+          i = end;
+        }
+        i++;
+      }
+
+      out["match_count"] = to_string(match_count);
+
+      if (match_count > 0) {
+        escape_parameter_tags(result);
+        out["content"] = result;
+      }
+      log_tool_diagnostic(search_label);
     }
   }
 
-  out["match_count"] = to_string(match_count);
-
-  if (match_count == 0) {
-    log_tool_diagnostic(search_label);
-    return out;
+  // Single exit point: build display string from the final state of out.
+  if (out["error"].empty()) {
+      int n = atoi(out["match_count"].c_str());
+      out["display"] = "Search file: " + path + ": " + to_string(n) + (n == 1 ? " match" : " matches");
+  } else {
+      out["display"] = "Search file: " + path + ": " + out["error"];
   }
-
-  // Escape PARAM_END tokens before sending to LLM
-  escape_parameter_tags(result);
-  out["content"] = result;
-  log_tool_diagnostic(search_label);
-
   return out;
 }
 

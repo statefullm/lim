@@ -157,42 +157,14 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
-    int begin_line = 0;
-    int end_line = 0;
-    if (!begin_str.empty()) {
-      if (begin_str.find_first_not_of("0123456789") == string::npos) {
-        begin_line = atoi(begin_str.c_str());
-        if (begin_line < 1) { result = "Error: 'begin' must be a positive integer (>= 1)."; out.is_error = true; }
-      } else {
-        result = "Error: 'begin' must be a positive integer."; out.is_error = true;
-      }
-    }
-    if (!result.empty()) {
-        out.content = result;
-        return out;
-    }
-    if (!end_str.empty()) {
-      if (end_str.find_first_not_of("0123456789") == string::npos) {
-        end_line = atoi(end_str.c_str());
-        if (end_line < 1) { result = "Error: 'end' must be a positive integer (>= 1)."; out.is_error = true; }
-      } else {
-        result = "Error: 'end' must be a positive integer."; out.is_error = true;
-      }
-    }
-    if (!result.empty()) {
-        out.content = result;
-        return out;
-    }
     if (!path.empty()) {
       FileSystemTools fs;
-      auto result_map = fs.search_file(path, text, begin_line, end_line);
+      auto result_map = fs.search_file(path, text, begin_str, end_str);
 
-      string r_content, r_error, r_match_count, r_actual_start, r_actual_end;
+      string r_content, r_error, r_display;
       if (result_map.count("content")) r_content = result_map.at("content");
       if (result_map.count("error")) r_error = result_map.at("error");
-      if (result_map.count("match_count")) r_match_count = result_map.at("match_count");
-      if (result_map.count("actual_start")) r_actual_start = result_map.at("actual_start");
-      if (result_map.count("actual_end")) r_actual_end = result_map.at("actual_end");
+      if (result_map.count("display")) r_display = result_map.at("display");
 
       // Build the LLM-facing result string
       if (!r_error.empty()) {
@@ -204,26 +176,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
           result = r_content;
       }
 
-      // Build display_result from structured data
-      int n_matches = atoi(r_match_count.c_str());
-      display_result = "Search file: " + path;
-      if (text.empty() && begin_line > 0 && end_line >= begin_line) {
-          // Use the actual clamped range returned by search_file
-          int a_start = atoi(r_actual_start.c_str());
-          int a_end   = atoi(r_actual_end.c_str());
-          if (a_start > 0 && a_end > 0) {
-              display_result += ", lines " + to_string(a_start) + "-" + to_string(a_end);
-          } else {
-              display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
-          }
-          int n_found = r_error.empty() ? 1 : 0;
-          display_result += ": " + to_string(n_found) + " match" + (n_found != 1 ? "es" : "");
-      } else if (begin_line > 0 && end_line > 0) {
-          display_result += ", lines " + to_string(begin_line) + "-" + to_string(end_line);
-          display_result += ": 0 matches";
-      } else {
-          display_result += ": " + to_string(n_matches) + (n_matches == 1 ? " match" : " matches");
-      }
+      display_result = r_display;
     } else {
       result = "Error: path is required for search_file";
     }
