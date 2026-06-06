@@ -80,11 +80,10 @@ void sync_n_past(llama_context *ctx, int &n_past) {
 }
 
 // --- Log Callbacks ---
-// first_prompt_displayed and is_debug are defined in main.cc (see model.h / filesystem.h extern declarations)
+// is_debug is defined in main.cc
 
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {}
 
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
-    if (first_prompt_displayed) return;
     cerr << text;
 }

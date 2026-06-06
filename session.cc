@@ -28,10 +28,17 @@
 #include <functional>
 #include <iomanip>
 #include <unistd.h>
+#include <sys/select.h>
 
 // --- Readline Headers ---
 #include <readline/readline.h>
 #include <readline/history.h>
+
+// --- Custom readline function: insert literal newline (Ctrl+J) ---
+static int rl_insert_newline(int /*count*/, int /*key*/) {
+    rl_insert_text("\n");
+    return 0;
+}
 
 using namespace std;
 using namespace Tokens;
@@ -39,7 +46,6 @@ using namespace Tokens;
 // Forward declarations for functions defined in main.cc
 extern void diag(const string& msg, const char* color);
 extern bool is_debug;
-extern bool first_prompt_displayed;
 extern ofstream chat_log;
 extern ofstream token_log;
 
@@ -236,7 +242,7 @@ private:
     int max_auto_continue_;
 };
 
-// --- get_user_input: readline loop with multiline support and speed display ---
+// --- get_user_input: readline callback interface with Ctrl+J newline support ---
 string ChatSession::get_user_input() {
     string user_input = "";
 
@@ -251,50 +257,87 @@ string ChatSession::get_user_input() {
             diag_speed_impl(speed_line);
         }
 
-        while (true) {
-            const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
-            const char* cont_p = "\001\033[1;96m\002... \001\033[96m\002";
-            if (!first_prompt_displayed) first_prompt_displayed = true;
+        // Clear any leftover terminal state from previous interrupt
+        console("\r\033[K");
+        consoleFlush();
+        console("\n");
 
-            // Clear any leftover terminal state from previous interrupt
+        const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
+
+        // Bind Ctrl+J (\n) to insert a literal newline instead of accepting the line.
+        // In callback mode, \r (Enter/Return) and \n (Ctrl+J) are distinct.
+        // \r remains bound to accept-line (submit), \n inserts a newline character.
+        rl_bind_key('\n', rl_insert_newline);
+
+        bool input_complete = false;
+        string captured_line;
+
+        // Callback is invoked by readline when a complete line is available.
+        // rl_done is unreliable here because _rl_callback_newline() resets it
+        // to 0 before rl_callback_read_char() returns, so we use static
+        // variables shared with the callback.
+        static string g_captured_line;
+        static bool g_input_complete = false;
+        g_captured_line.clear();
+        g_input_complete = false;
+
+        auto storing_callback = [](char* line) {
+            g_captured_line = line ? line : "";
+            g_input_complete = true;
+        };
+
+        rl_callback_handler_install(main_p, storing_callback);
+
+        // Event loop: poll for input with select(), check for interrupts
+        while (!input_complete) {
+            if (g_was_interrupted) {
+                break;
+            }
+
+            fd_set fds;
+            FD_ZERO(&fds);
+            FD_SET(0, &fds);  // stdin
+
+            struct timeval tv;
+            tv.tv_sec = 0;
+            tv.tv_usec = 100000;  // 100ms timeout to check interrupts
+
+            int ret = select(1, &fds, nullptr, nullptr, &tv);
+            if (ret < 0) {
+                if (errno == EINTR) continue;
+                break;
+            }
+
+            if (ret > 0 && FD_ISSET(0, &fds)) {
+                rl_callback_read_char();
+            }
+
+            // Check our static flag set by the callback instead of rl_done,
+            // which gets reset to 0 by _rl_callback_newline() inside
+            // rl_callback_read_char() before we can observe it.
+            if (g_input_complete) {
+                input_complete = true;
+            }
+        }
+
+        rl_callback_handler_remove();
+        rl_unbind_key('\n');  // Restore default \n binding
+
+        cout << "\033[0m" << endl;
+
+        captured_line = g_captured_line;
+        if (!captured_line.empty()) {
+            user_input = captured_line;
+
+            if (!user_input.empty()) {
+                save_history_safe(".lllm_history", user_input);
+                add_history(user_input.c_str());
+            }
+        } else {
+            // EOF (Ctrl+D on empty line) — treat as interrupt/break
+            g_was_interrupted = 0;
             console("\r\033[K");
             consoleFlush();
-
-            if (user_input.empty()) console("\n");
-            char* input_c = readline(user_input.empty() ? main_p : cont_p);
-
-            cout << "\033[0m" << endl;
-
-            if (!input_c) {
-                g_was_interrupted = 0;
-                console("\r\033[K");
-                consoleFlush();
-                break;
-            }
-
-            string line(input_c);
-            free(input_c);
-
-            if (line.empty()) {
-                continue;
-            }
-
-            if (line == "quit" || line == "exit" || line == "clear" || line == "reset" || line == "reincarnate") {
-                user_input = line;
-                break;
-            }
-
-            if (!line.empty() && line.back() == '\\') {
-                line.pop_back();
-                user_input += line + "\n";
-            } else {
-                user_input += line;
-                if (!user_input.empty()) {
-                    save_history_safe(".lllm_history", user_input);
-                    add_history(user_input.c_str());
-                }
-                break;
-            }
         }
     }
 

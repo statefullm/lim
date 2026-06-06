@@ -37,7 +37,6 @@ static string escape_token_piece(const string& s) {
 
 // --- Global State ---
 bool is_debug = false;
-bool first_prompt_displayed = false;
 ofstream chat_log;
 ofstream token_log;
 
