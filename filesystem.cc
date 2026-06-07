@@ -242,7 +242,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   }
   search_label += ")";
 
-  // Parse and validate begin/end — parse as integers first, then validate.
+  // Parse and validate begin/end -- parse as integers first, then validate.
   int begin_line = 0, end_line = 0;
   if (!begin_str.empty()) {
     char* endptr = nullptr;

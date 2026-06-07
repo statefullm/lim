@@ -336,7 +336,7 @@ string ChatSession::get_user_input() {
                 add_history(user_input.c_str());
             }
         } else {
-            // EOF (Ctrl+D on empty line) — treat as interrupt/break
+            // EOF (Ctrl+D on empty line) -- treat as interrupt/break
             g_was_interrupted = 0;
             console("\r\033[K");
             consoleFlush();

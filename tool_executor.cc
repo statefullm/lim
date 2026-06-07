@@ -148,7 +148,7 @@ ToolExecutor::Result ToolExecutor::execute(
             static constexpr size_t STDOUT_TRUNCATE_LIMIT = 500;
             if (should_output_to_stdout() && result_to_print.length() > STDOUT_TRUNCATE_LIMIT) {
                 size_t original_len = result_to_print.length();
-                result_to_print = result_to_print.substr(0, STDOUT_TRUNCATE_LIMIT) + "\n  ... (truncated, " + std::to_string(original_len) + " chars total — see browser for full output)\n";
+                result_to_print = result_to_print.substr(0, STDOUT_TRUNCATE_LIMIT) + "\n  ... (truncated, " + std::to_string(original_len) + " chars total -- see browser for full output)\n";
             }
             size_t p = 0;
             while ((p = result_to_print.find('\n')) != string::npos) {

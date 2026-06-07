@@ -1,6 +1,6 @@
-# LLLM — Stateful, O(1) Local LLM Controller
+# LLLM: Stateful, O(1) Local LLM Controller
 
-**LLLM** is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggerganov/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache — no context transmission or re-tokenization on every turn.
+**LLLM** is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggerganov/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn.
 
 ## Why O(1)? The Fundamental Difference
 
@@ -9,7 +9,7 @@ Every mainstream chatbot (and most local LLM frontends) follows the *reprocess-e
 LLLM takes full advantage of what a single-user local setup affords:
 
 - **The KV-cache is never discarded.** Each turn's tokens are simply appended to `n_past`. The model continues generating from exactly where it left off.
-- **New user input costs O(input tokens)** — not O(total history). Even after hundreds of turns, each new message processes only its own tokens plus the delta since last turn.
+- **New user input costs O(input tokens)**, not O(total history). Even after hundreds of turns, each new message processes only its own tokens plus the delta since last turn.
 - **No re-tokenization overhead.** The system prompt is tokenized once at startup and lives in the cache forever.
 
 This means long-running coding sessions stay fast regardless of how many tool calls, file edits, or searches accumulate.
@@ -33,8 +33,8 @@ This means long-running coding sessions stay fast regardless of how many tool ca
         +-----------+ +----------+ +------------+
 ```
 
-- **`lllm`** — The C++ binary. Handles the REPL, KV-cache management, tool dispatch, and signal handling.
-- **`lllmServer.py`** — An optional Python WebSocket server that streams output to a browser via `/tmp/lllm.fifo`.
+- **`lllm`**: The C++ binary. Handles the REPL, KV-cache management, tool dispatch, and signal handling.
+- **`lllmServer.py`**: An optional Python WebSocket server that streams output to a browser via `/tmp/lllm.fifo`.
 
 ---
 
@@ -59,7 +59,7 @@ make
 
 ### 1. The `ai` System User
 
-LLLM **must** run as the system user `ai`. The binary enforces this at startup — it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
+LLLM **must** run as the system user `ai`. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
 
 Create the user and group if they don't exist:
 
@@ -90,7 +90,7 @@ drwxrwsr-x+ 32 $USER ai 4096 Jun  6 11:53 /home/ai/
 
 The setgid bit (`s`) ensures new files inherit the `ai` group.
 
-A convenient alias to fix permissions on any project directory — add this to **your personal** `~/.bashrc`:
+A convenient alias to fix permissions on any project directory; add this to **your personal** `~/.bashrc`:
 
 ```bash
 alias fixai 'sudo chown -R $USER:ai .; chmod -R g+w .'
@@ -108,9 +108,9 @@ alias coder='sudo -u ai -E taskset -c 0-15 ~/bin/lllm ~/models/Qwen3.6-27B-UD-Q5
 
 This alias does three things:
 
-- **`sudo -u ai -E`** — Runs as user `ai`, preserving your environment variables (`-E`).
-- **`taskset -c 0-15`** — Pins LLM inference to performance cores (P-cores), leaving efficiency cores (E-cores) free for the Python browser server and background services.
-- **Model path** — Points to your preferred GGUF model.
+- **`sudo -u ai -E`**: Runs as user `ai`, preserving your environment variables (`-E`).
+- **`taskset -c 0-15`**: Pins LLM inference to performance cores (P-cores), leaving efficiency cores (E-cores) free for the Python browser server and background services.
+- **Model path**: Points to your preferred GGUF model.
 
 Add this alias to your personal `~/.bashrc`.
 
@@ -138,14 +138,14 @@ The `cd` override writes the current directory to `/home/ai/.cwd`, which LLLM re
 
 ### 6. The System Prompt
 
-Place your system prompt in `/home/ai/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior — available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
+Place your system prompt in `/home/ai/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
 
 ### 7. Session Aliases
 
 Create `/home/ai/.lllm_aliases` to define shorthand commands at the `>>>` prompt:
 
 ```
-# ~/.lllm_aliases — one key=value per line; # comments are ignored
+# ~/.lllm_aliases: one key=value per line; # comments are ignored
 
 test=test the filesystem tools and clean up after
 message=show me a 1-sentence concise git commit message
@@ -220,14 +220,14 @@ Run your alias (e.g., `coder`). You'll see the `>>>` prompt. Type your request a
 
 ### Available Tools
 
-The LLM has access to six tools. You don't call them directly — just describe what you want and the LLM handles the rest:
+The LLM has access to six tools. You don't call them directly; just describe what you want and the LLM handles the rest:
 
-- **`read_files`** — Read text files, PDFs, or URLs
-- **`search_file`** — Search for text within a file, with optional line range
-- **`edit_file`** — Replace exact text within a file (surgical editing)
-- **`write_file`** — Write or overwrite a file
-- **`exec_shell`** — Run a shell command as user `ai`
-- **`web_search`** — Search the web via SearXNG
+- **`read_files`**: Read text files, PDFs, or URLs
+- **`search_file`**: Search for text within a file, with optional line range
+- **`edit_file`**: Replace exact text within a file (surgical editing)
+- **`write_file`**: Write or overwrite a file
+- **`exec_shell`**: Run a shell command as user `ai`
+- **`web_search`**: Search the web via SearXNG
 
 Tools are invoked via XML-structured tags in the LLM's output. Results are fed back as continuation tokens into the KV-cache, avoiding the overhead of re-tokenizing the full conversation history.
 
@@ -278,7 +278,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 
 ### Interrupting Generation
 
-Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `continue` to resume seamlessly — the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
+Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `continue` to resume seamlessly: the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
 
 ### Browser Output
 
@@ -288,7 +288,7 @@ By default (`LLLM_OUTPUT=2`), LLLM streams output to a browser via WebSocket. Lo
 http://<hostname>:8765/viewer.html
 ```
 
-The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It's pinned to efficiency cores (E-cores, 16–23) via `taskset`. The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
+The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It's pinned to efficiency cores (E-cores, 16-23) via `taskset`. The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
 
 ---
 
