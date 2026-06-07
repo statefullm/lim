@@ -101,9 +101,7 @@ ToolExecutor::Result ToolExecutor::execute(
             state.invalid_tool_strikes++;
 
             if (is_debug && should_show_tools() && should_output_to_browser()) {
-                string raw_display = tool_call;
-                if (raw_display.length() > 500) raw_display = raw_display.substr(0, 500) + "...";
-                string safe = html_escape(raw_display);
+                string safe = html_escape(tool_call);
                 string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
                 string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
                 stream_tool_result(error_html);
@@ -147,6 +145,11 @@ ToolExecutor::Result ToolExecutor::execute(
         if (is_debug) {
             console("\n\033[92m[Tool Result]\033[0m\n");
             string result_to_print = tool_out.display;
+            static constexpr size_t STDOUT_TRUNCATE_LIMIT = 500;
+            if (should_output_to_stdout() && result_to_print.length() > STDOUT_TRUNCATE_LIMIT) {
+                size_t original_len = result_to_print.length();
+                result_to_print = result_to_print.substr(0, STDOUT_TRUNCATE_LIMIT) + "\n  ... (truncated, " + std::to_string(original_len) + " chars total — see browser for full output)\n";
+            }
             size_t p = 0;
             while ((p = result_to_print.find('\n')) != string::npos) {
                 console("  ", (int)p, result_to_print.c_str(),"\n");
