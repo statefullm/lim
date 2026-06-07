@@ -4,12 +4,19 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <functional>
 
 class FileSystemTools {
 public:
   FileSystemTools();
 
-  std::string exec_shell(const std::string& command);
+  // Execute a shell command. Callbacks fire as output arrives, allowing
+  // real-time streaming. on_open is called once before any output, on_chunk
+  // per read(), and on_close after the command finishes (with the full result).
+  std::string exec_shell(const std::string& command,
+                         std::function<void()> on_open = nullptr,
+                         std::function<void(const std::string&)> on_chunk = nullptr,
+                         std::function<void(const std::string&)> on_close = nullptr);
 
   std::vector<std::map<std::string, std::string>> read_files(const std::vector<std::string>& paths);
 

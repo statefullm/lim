@@ -3,9 +3,11 @@
 #include "network.h"
 #include "parsers.h"
 #include "tokens.h"
+#include "output.h"
 #include <set>
 #include <cstring>
 #include <signal.h>
+#include <functional>
 
 using namespace std;
 using namespace Tokens;
@@ -242,8 +244,27 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     clean_files.clear();
     if (!command.empty()) {
       FileSystemTools fs;
-      result = fs.exec_shell(command);
-      display_result = result;
+      // Stream output to browser in real-time as the command produces it.
+      // All chunks go through stream() (SEG_LLM_TEXT) so they render via
+      // marked.parse() as a single markdown code block with a scrollbar.
+      result = fs.exec_shell(
+          command,
+          []() {
+              // Open a markdown code fence before any output arrives.
+              stream("```\n");
+          },
+          [](const string& chunk) {
+              // Send raw text directly — no HTML escaping needed since
+              // SEG_LLM_TEXT goes through marked.parse().
+              stream(chunk);
+          },
+          [](const string&) {
+              // Close the code fence when done.
+              stream("```\n");
+          }
+      );
+      // Don't set display_result — streaming already sent the output to the
+      // browser. Leaving it empty prevents tool_executor.cc from duplicating.
     } else {
       result = "Error: No command provided to exec_shell";
     }

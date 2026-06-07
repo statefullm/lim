@@ -30,6 +30,8 @@
             padding: 15px;
             border-radius: 8px;
             overflow-x: auto;
+            max-height: 12em;
+            overflow-y: auto;
         }
         code {
             font-family: "Fira Code", "Consolas", monospace;
@@ -280,9 +282,28 @@
 
                         const wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
                         if (wrapperDiv) {
+                            // Before replacing innerHTML, check whether each <pre>
+                            // inside this segment was scrolled to the bottom.  We'll
+                            // restore that state after re-rendering so that streaming
+                            // code blocks (e.g., exec_shell output) always stay at the
+                            // bottom like a terminal, unless the user scrolled up.
+                            const preWasAtBottom = [];
+                            wrapperDiv.querySelectorAll('pre').forEach(function(pre) {
+                                const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+                                preWasAtBottom.push(nearBottom);
+                            });
+
                             wrapperDiv.innerHTML = segToHtml(segments[i]);
                             injectCopyButtons(wrapperDiv);
                             renderMathInDiv(wrapperDiv);
+
+                            // Restore bottom-scroll on each <pre> that was at the bottom.
+                            const pres = wrapperDiv.querySelectorAll('pre');
+                            for (let p = 0; p < pres.length && p < preWasAtBottom.length; p++) {
+                                if (preWasAtBottom[p]) {
+                                    pres[p].scrollTop = pres[p].scrollHeight;
+                                }
+                            }
                         }
                     }
                 } else {

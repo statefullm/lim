@@ -12,6 +12,8 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/wait.h>
+#include <poll.h>
 #include <pwd.h>
 #include <cstring>
 #include <vector>
@@ -145,7 +147,9 @@ string FileSystemTools::_get_fullpath(const string& path) {
   return fullpath;
 }
 
-string FileSystemTools::exec_shell(const string& command) {
+string FileSystemTools::exec_shell(const string& command, function<void()> on_open,
+                                   function<void(const string&)> on_chunk,
+                                   function<void(const string&)> on_close) {
   // Build human-readable function call syntax (truncate for display)
   string cmd_str = "\"" + (command.length() > 80 ? command.substr(0, 77) + "..." : command) + "\"";
 
@@ -166,21 +170,111 @@ string FileSystemTools::exec_shell(const string& command) {
   int fd = mkstemp(const_cast<char*>(exit_code_file.c_str()));
   if (fd >= 0) close(fd); // Close so bash can write to it
 
-  string full_command = "bash -c 'cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " ; echo \"$?\" > \"" + exit_code_file + "\"' 2>&1";
+  string full_command = "stdbuf -oL -eL bash -c 'cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " ; echo \"$?\" > \"" + exit_code_file + "\"' 2>&1";
 
-  string result;
-  FILE* pipe = popen(full_command.c_str(), "r");
-  if (!pipe) {
+  // Use fork + pipe to stream output as it becomes available.
+  int pipefd[2];
+  if (pipe(pipefd) == -1) {
+    unlink(exit_code_file.c_str());
+    return "Error: Failed to create pipe for shell execution.";
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
     unlink(exit_code_file.c_str());
     return "Error: Failed to spawn shell process. The exec_shell tool may be temporarily unavailable.";
   }
 
-  char buffer[1024];
-  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-    result += buffer;
+  if (pid == 0) {
+    // Child process: redirect stdout/stderr to the pipe, then exec.
+    close(pipefd[0]); // Close read end
+    dup2(pipefd[1], STDOUT_FILENO);
+    dup2(pipefd[1], STDERR_FILENO);
+    close(pipefd[1]);
+
+    execl("/bin/bash", "bash", "-c", full_command.c_str(), nullptr);
+    // If execl fails, write error and exit
+    fprintf(stderr, "Error: Failed to exec bash\n");
+    _exit(127);
   }
 
-  int pipe_status = pclose(pipe);
+  // Parent process: read from pipe incrementally.
+  close(pipefd[1]); // Close write end
+
+  // Make the read end non-blocking so we can detect EOF while streaming.
+  int flags = fcntl(pipefd[0], F_GETFL, 0);
+  fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+  string result;
+
+  // Signal that streaming is about to begin.
+  if (on_open) on_open();
+
+  struct pollfd pfd;
+  pfd.fd = pipefd[0];
+  pfd.events = POLLIN;
+
+  while (true) {
+    // Block until the pipe has data or the child exits.
+    int ready = poll(&pfd, 1, -1);  // -1 = block indefinitely
+    if (ready < 0) {
+      // Interrupted by signal — retry.
+      if (errno == EINTR) continue;
+      break;  // Unexpected error, bail out.
+    }
+
+    if (pfd.revents & (POLLIN | POLLHUP)) {
+      char buffer[4096];
+      ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
+
+      if (n > 0) {
+        buffer[n] = '\0';
+        result += buffer;
+
+        // Feed chunks to the streaming callback immediately.
+        if (on_chunk) on_chunk(buffer);
+
+        // Also flush to chat_log incrementally
+        if (chat_log.is_open()) {
+          chat_log << buffer;
+          chat_log.flush();
+        }
+      } else {
+        // n == 0 or n < 0: EOF / pipe closed.
+        break;
+      }
+    }
+
+    // Check if child has exited regardless of poll events.
+    int wstatus = 0;
+    pid_t waited = waitpid(pid, &wstatus, WNOHANG);
+    if (waited > 0) {
+      // Drain any remaining data in the pipe.
+      if (pfd.revents & (POLLIN | POLLHUP)) {
+        char buffer[4096];
+        ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
+        if (n > 0) {
+          buffer[n] = '\0';
+          result += buffer;
+          if (on_chunk) on_chunk(buffer);
+          if (chat_log.is_open()) { chat_log << buffer; chat_log.flush(); }
+        }
+      }
+      break;
+    }
+    if (waited == -1) break;  // Child gone.
+  }
+
+  close(pipefd[0]);
+
+  // Signal that streaming is complete, passing the accumulated result.
+  if (on_close) on_close(result);
+
+  // Wait for child to finish and get exit status.
+  int pipe_status = 0;
+  waitpid(pid, &pipe_status, 0);
 
   // Read exit code from temp file -- guaranteed to be the actual command exit code.
   int exit_code = -1;
@@ -198,16 +292,11 @@ string FileSystemTools::exec_shell(const string& command) {
     exit_code = WEXITSTATUS(pipe_status);
   }
 
-  if (!result.empty()) {
-    chat_log << result << "\n\n";
-    chat_log.flush();
-  } else {
-    chat_log << "[Command executed with no output]\n\n";
-    chat_log.flush();
-  }
-
   // Build the final result with exit code information for better LLM diagnostics
   if (result.empty()) {
+    chat_log << "[Command executed with no output]\n\n";
+    chat_log.flush();
+
     if (exit_code == 0) {
       result = "[Command exited with code 0 and produced no output]\n";
     } else if (exit_code > 0) {
@@ -216,6 +305,9 @@ string FileSystemTools::exec_shell(const string& command) {
       result = "[Command produced no output; exit code could not be determined]\n";
     }
   } else {
+    chat_log << "\n\n";
+    chat_log.flush();
+
     // Always include exit code so the LLM can distinguish success from failure
     if (exit_code > 0) {
       result = "[Exit code: " + to_string(exit_code) + "]\n" + result;
