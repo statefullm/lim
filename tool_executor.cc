@@ -168,7 +168,46 @@ ToolExecutor::Result ToolExecutor::execute(
         }
         consoleFlush();
 
-        chat_log << "\n";
+        // Log tool result to chat_log (skip exec_shell — already streamed incrementally)
+        if (!tool_out.content.empty() && tool_out.content != "[Command executed with no output]") {
+            // For web_search, log query + snippets but skip full page content
+            if (tool_out.content.find("Search Results for:") == 0) {
+                string logged;
+                size_t i = 0;
+                while (i < tool_out.content.size()) {
+                    size_t page_content = tool_out.content.find("Page Content: ", i);
+                    if (page_content != string::npos && page_content + 14 < tool_out.content.size()) {
+                        // Skip everything from "Page Content:" until the next "Title:" or "Snippet:" or end of result block
+                        logged += tool_out.content.substr(i, page_content - i);
+                        // Find the end: blank line followed by Title:, Snippet:, or next result marker
+                        size_t skip_start = page_content;
+                        size_t j = page_content + 14;
+                        bool past_blank = false;
+                        while (j < tool_out.content.size()) {
+                            if (tool_out.content[j] == '\n') {
+                                if (past_blank) {
+                                    // Two consecutive newlines — end of page content block
+                                    break;
+                                }
+                                past_blank = true;
+                            } else {
+                                past_blank = false;
+                            }
+                            j++;
+                        }
+                        logged += "[Page Content omitted from log]\n";
+                        i = j;
+                    } else {
+                        // Rest of content (titles, URLs, snippets) — keep it all
+                        logged += tool_out.content.substr(i);
+                        break;
+                    }
+                }
+                if (!logged.empty()) chat_log << logged << "\n";
+            } else {
+                chat_log << tool_out.content << "\n";
+            }
+        }
         generated_text = "";
 
         string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + tool_out.content + TURN_END + "\n";
