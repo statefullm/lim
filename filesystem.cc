@@ -150,8 +150,8 @@ string FileSystemTools::_get_fullpath(const string& path) {
 string FileSystemTools::exec_shell(const string& command, function<void()> on_open,
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
-  // Build human-readable function call syntax (truncate for display)
-  string cmd_str = "\"" + (command.length() > 80 ? command.substr(0, 77) + "..." : command) + "\"";
+  // Build human-readable function call syntax
+  string cmd_str = "\"" + command + "\"";
 
   // Output function call to both stdout and logfile
   log_tool_diagnostic("exec_shell(" + cmd_str + ")");
@@ -324,8 +324,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   out["actual_end"] = "0";
   out["error"] = "";
 
-  // Build human-readable function call syntax (truncate for display)
-  string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
+  // Build human-readable function call syntax
+  string path_str = "\"" + path + "\"";
 
   // Build the function call label (logged at end with match count for text searches)
   string search_label = "search_file(" + path_str;
@@ -530,7 +530,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 vector<map<string, string>> FileSystemTools::read_files(const vector<string>& paths) {
   // Output function call to both stdout and logfile for each file
   for (const auto& path : paths) {
-    string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
+    string path_str = "\"" + path + "\"";
     log_tool_diagnostic("read_file(" + path_str + ")");
   }
 
@@ -663,8 +663,8 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 }
 
 map<string, string> FileSystemTools::write_file(const string& path, const string& content) {
-  // Build human-readable function call syntax (truncate for display)
-  string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
+  // Build human-readable function call syntax
+  string path_str = "\"" + path + "\"";
 
   // Output the tool function call to both stdout and logfile
   log_tool_diagnostic("write_file(" + path_str + ")");
@@ -703,8 +703,8 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
 }
 
 map<string, string> FileSystemTools::edit_file(const string& path, const string& old_str, const string& new_str) {
-  // Build human-readable function call syntax (truncate for display)
-  string path_str = "\"" + (path.length() > 50 ? path.substr(0, 47) + "..." : path) + "\"";
+  // Build human-readable function call syntax
+  string path_str = "\"" + path + "\"";
 
   // Build the function call label (logged at end with change count)
   string edit_label = "edit_file(" + path_str + ")";

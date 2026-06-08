@@ -198,7 +198,7 @@ The `ai` user operates in a sandboxed environment:
 
 - **File access** is limited to directories where the `ai` group has write permission. Use `fixai` to grant access to new project directories.
 - **Shell commands** executed via the `exec_shell` tool run as user `ai`. They inherit the `ai` user's PATH and environment.
-- **Git integration**: The sandbox repo is a separate git repository that is writable by user `ai` using an SSH deploy key. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
+- **Git integration**: The sandbox repo is a separate git repository that is writable by user `ai` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
 
 Set up a deploy key:
 

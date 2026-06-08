@@ -866,7 +866,7 @@ string NetworkTools::web_search(const string& query) {
     // Initialize SSL certificates on first web search
     init_ssl_certificates();
 
-    string query_str = "\"" + (query.length() > 80 ? query.substr(0, 77) + "..." : query) + "\"";
+    string query_str = "\"" + query + "\"";
     log_tool_diagnostic("web_search(" + query_str + ")");
     cerr << "web_search(" + query_str + ")" << endl;
 
