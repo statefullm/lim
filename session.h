@@ -12,6 +12,9 @@
 #include "loop_detector.h"
 using namespace std;
 
+// Forward declaration for INITIAL_CWD from main.cc
+extern string INITIAL_CWD;
+
 struct SessionState {
     bool auto_continue = false;
     bool reincarnate_mode = false;

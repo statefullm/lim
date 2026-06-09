@@ -39,6 +39,7 @@ static string escape_token_piece(const string& s) {
 bool is_debug = false;
 ofstream chat_log;
 ofstream token_log;
+string INITIAL_CWD;
 
 static void diag_impl(const string& formatted_line, const string& msg) {
     cout << formatted_line << endl;
@@ -71,6 +72,8 @@ int main(int argc, char ** argv) {
             cwd_file << cwd << endl;
             cwd_file.close();
         }
+        // Save initial directory for clear command to restore
+        INITIAL_CWD = cwd;
     }
 
     umask(0002);

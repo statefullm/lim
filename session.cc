@@ -191,6 +191,16 @@ private:
         llama_memory_clear(llama_get_memory(ctx_), true);
         n_past_ = 0;
         feed_tokens_impl(system_tokens_);
+
+        // Reset the current directory to the initial value so no memory of the last session persists
+        {
+            chdir(INITIAL_CWD.c_str());
+            ofstream cwd_file(HOME + "/.cwd");
+            if (cwd_file.is_open()) {
+                cwd_file << INITIAL_CWD << endl;
+                cwd_file.close();
+            }
+        }
     }
 
     void reset_llm_state() {
