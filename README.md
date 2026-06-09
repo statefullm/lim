@@ -90,13 +90,11 @@ drwxrwsr-x+ 32 $USER ai 4096 Jun  6 11:53 /home/ai/
 
 The setgid bit (`s`) ensures new files inherit the `ai` group.
 
-A convenient alias to fix permissions on any project directory; add this to **your personal** `~/.bashrc`:
+To set permissions in any project sandbox; add this alias to **your personal** `~/.bashrc`:
 
 ```bash
-alias fixai 'sudo chown -R $USER:ai .; chmod -R g+w .'
+alias fixai 'sudo chown -R $USER:ai .; chmod -R -t .'
 ```
-
-Run `fixai` in any working directory before starting a session so the `ai` user has full read/write access.
 
 ### 4. Running as User `ai`
 
