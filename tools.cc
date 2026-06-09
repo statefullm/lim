@@ -248,24 +248,32 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
       // Stream output to browser in real-time as the command produces it.
       // Output is wrapped in a green .tool-result box and streamed incrementally
       // via SEG_HTML so all chunks coalesce into a single scrolling <pre><code> block.
+      // Defer opening the box until the first chunk arrives so empty results are hidden.
+      bool box_opened = false;
       result = fs.exec_shell(
           command,
-          []() {
-              // Open the green tool-result box before any output arrives.
-              stream_html("\n\n<div class='tool-result'>Tool Result:<pre><code>");
+          [&box_opened]() {
+              // Opening callback -- don't send HTML yet; wait for first chunk.
           },
-          [](const string& chunk) {
+          [&box_opened](const string& chunk) {
+              // On first chunk, open the green tool-result box before streaming content.
+              if (!box_opened) {
+                  stream_html("\n\n<div class='tool-result'>Tool Result:<pre><code>");
+                  box_opened = true;
+              }
               // Stream raw command output inside the green box as HTML-escaped text.
               // All SEG_HTML segments coalesce, so this builds up incrementally
               // within the same <pre><code> block.
               stream_html(html_escape(chunk));
           },
-          [](const string&) {
-              // Close the code fence and tool-result div when done.
-              stream_html("</code></pre></div>\n\n");
+          [&box_opened](const string&) {
+              // Close the code fence and tool-result div only if we opened it.
+              if (box_opened) {
+                  stream_html("</code></pre></div>\n\n");
+              }
           }
       );
-      // Don't show a separate summary box — output is already streamed inside the green box above.
+      // Don't show a separate summary box -- output is already streamed inside the green box above.
       display_result = "";
     } else {
       result = "Error: No command provided to exec_shell";
