@@ -128,6 +128,19 @@ cd() {
     builtin cd "$@" && pwd > /home/ai/.cwd
 }
 
+# Block git add -A / --all to prevent the LLM from staging untracked files
+git() {
+    if [ "$1" = "add" ]; then
+        for arg in "$@"; do
+            if [ "$arg" = "-A" ] || [ "$arg" = "--all" ] || [[ "$arg" =~ ^-[a-zA-Z]*A[a-zA-Z]*$ ]]; then
+                echo "ERROR: git add -A / --all is disabled" >&2
+                return 1
+            fi
+        done
+    fi
+    command git "$@"
+}
+
 # Optional: add custom paths
 export PATH="$HOME/bin:$PATH"
 ```
