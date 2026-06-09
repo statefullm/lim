@@ -6,6 +6,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <poll.h>
 
 // --- Segment Constants ---
 const char SEG_LLM_TEXT   = '\x02';  // LLM-generated text (rendered through marked)
@@ -77,11 +78,43 @@ static void ensure_pipe_open() {
 
 void pipe_write(const char* data, size_t len) {
     ensure_pipe_open();
-    if (pipe_fd >= 0) {
-        ssize_t res = write(pipe_fd, data, len);
-        if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(pipe_fd);
-            pipe_fd = -1;
+    if (pipe_fd < 0) return;
+
+    const size_t max_retries = 50;
+    size_t offset = 0;
+    unsigned int retry_count = 0;
+
+    while (offset < len) {
+        ssize_t res = write(pipe_fd, data + offset, len - offset);
+        if (res > 0) {
+            offset += static_cast<size_t>(res);
+            retry_count = 0;  // Reset retry counter on successful write
+        } else if (res < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // FIFO buffer is full — wait for the reader to drain it.
+                // Use poll() with a 5-second timeout instead of sleeping blindly.
+                retry_count++;
+                if (retry_count > max_retries) {
+                    // Give up after too many retries to avoid hanging forever.
+                    return;
+                }
+
+                struct pollfd pfd;
+                pfd.fd = pipe_fd;
+                pfd.events = POLLOUT;
+                int poll_res = poll(&pfd, 1, 5000);  // 5-second timeout
+                if (poll_res <= 0) {
+                    // Timeout or error — pipe reader may have disconnected.
+                    close(pipe_fd);
+                    pipe_fd = -1;
+                    return;
+                }
+            } else {
+                // Real error (e.g., EPIPE, EBADF) — give up.
+                close(pipe_fd);
+                pipe_fd = -1;
+                return;
+            }
         }
     }
 }

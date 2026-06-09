@@ -135,9 +135,9 @@
         /*  Segment-based renderer                                            */
         /* ------------------------------------------------------------------ */
         /*  Content arrives tagged with control-character prefixes:
-        /*    \x02 = LLM text   → rendered through marked.parse()
-        /*    \x03 = Tool label → inserted as raw HTML
-        /*    \x04 = Other HTML → inserted as raw HTML (results, user input, etc.)
+        /*    \x02 = LLM text   -> rendered through marked.parse()
+        /*    \x03 = Tool label -> inserted as raw HTML
+        /*    \x04 = Other HTML -> inserted as raw HTML (results, user input, etc.)
         /*
         /*  Each segment renders independently. Markdown code fences in one
         /*  LLM segment can never swallow a tool-label div from another segment.
@@ -212,7 +212,7 @@
                     return '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
             } else {
-                // Tool labels and other HTML — insert directly
+                // Tool labels and other HTML - insert directly
                 return seg.content;
             }
         }
@@ -275,7 +275,7 @@
             // Process existing segments: re-render only if content changed.
             for (let i = 0; i < segments.length; i++) {
                 if (i < segRenderedContent.length) {
-                    // Existing segment — check if content changed
+                    // Existing segment - check if content changed
                     if (segments[i].content !== segRenderedContent[i]) {
                         hasChanges = true;
                         segRenderedContent[i] = segments[i].content;
@@ -307,7 +307,7 @@
                         }
                     }
                 } else {
-                    // New segment — create wrapper div and append
+                    // New segment - create wrapper div and append
                     hasChanges = true;
                     segRenderedContent[i] = segments[i].content;
 
@@ -373,13 +373,18 @@
                 for (let i = 0; i < data.length; i++) {
                     const ch = data[i];
                     if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML) {
-                        // Push any trailing untagged text before this prefix as LLM text
+                        // Append any text between the last prefix and this one to the
+                        // segment that was opened by the last prefix.  When multiple
+                        // prefixes arrive in a single WebSocket frame (e.g., three
+                        // stream_html() calls read together), the content of each
+                        // segment sits between its own prefix and the next prefix.
                         if (i > lastIdx) {
-                            const trailing = data.substring(lastIdx, i);
-                            if (segments.length > 0 && segments[segments.length - 1].type === SEG_LLM_TEXT) {
-                                segments[segments.length - 1].content += trailing;
-                            } else if (trailing.length > 0) {
-                                segments.push({ type: SEG_LLM_TEXT, content: trailing });
+                            const payload = data.substring(lastIdx, i);
+                            if (segments.length > 0) {
+                                segments[segments.length - 1].content += payload;
+                            } else {
+                                // Untagged text with no prior segment - treat as LLM text
+                                segments.push({ type: SEG_LLM_TEXT, content: payload });
                             }
                         }
                         // Start a new segment
@@ -392,7 +397,7 @@
                 if (lastIdx < data.length) {
                     segments[segments.length - 1].content += data.substring(lastIdx);
                 } else if (lastIdx === data.length && data.length > 0) {
-                    // Message ended exactly on a prefix with no content — shouldn't happen normally
+                    // Message ended exactly on a prefix with no content - shouldn't happen normally
                     // but handle gracefully by adding empty segment
                 }
 

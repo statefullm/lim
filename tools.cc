@@ -4,6 +4,7 @@
 #include "parsers.h"
 #include "tokens.h"
 #include "output.h"
+#include "session_utils.h"
 #include <set>
 #include <cstring>
 #include <signal.h>
@@ -245,26 +246,27 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     if (!command.empty()) {
       FileSystemTools fs;
       // Stream output to browser in real-time as the command produces it.
-      // All chunks go through stream() (SEG_LLM_TEXT) so they render via
-      // marked.parse() as a single markdown code block with a scrollbar.
+      // Output is wrapped in a green .tool-result box and streamed incrementally
+      // via SEG_HTML so all chunks coalesce into a single scrolling <pre><code> block.
       result = fs.exec_shell(
           command,
           []() {
-              // Open a markdown code fence before any output arrives.
-              stream("```\n");
+              // Open the green tool-result box before any output arrives.
+              stream_html("\n\n<div class='tool-result'>Tool Result:<pre><code>");
           },
           [](const string& chunk) {
-              // Send raw text directly — no HTML escaping needed since
-              // SEG_LLM_TEXT goes through marked.parse().
-              stream(chunk);
+              // Stream raw command output inside the green box as HTML-escaped text.
+              // All SEG_HTML segments coalesce, so this builds up incrementally
+              // within the same <pre><code> block.
+              stream_html(html_escape(chunk));
           },
           [](const string&) {
-              // Close the code fence when done.
-              stream("```\n");
+              // Close the code fence and tool-result div when done.
+              stream_html("</code></pre></div>\n\n");
           }
       );
-      // Don't set display_result — streaming already sent the output to the
-      // browser. Leaving it empty prevents tool_executor.cc from duplicating.
+      // Don't show a separate summary box — output is already streamed inside the green box above.
+      display_result = "";
     } else {
       result = "Error: No command provided to exec_shell";
     }
