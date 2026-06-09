@@ -133,7 +133,7 @@ git() {
     if [ "$1" = "add" ]; then
         for arg in "$@"; do
             if [ "$arg" = "-A" ] || [ "$arg" = "--all" ] || [[ "$arg" =~ ^-[a-zA-Z]*A[a-zA-Z]*$ ]]; then
-                echo "ERROR: git add -A / --all is disabled" >&2
+                echo "ERROR: git add -A / --all is disabled: use -a" >&2
                 return 1
             fi
         done
