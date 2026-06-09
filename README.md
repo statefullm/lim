@@ -198,6 +198,7 @@ Set via `LLLM_OUTPUT`:
 | `LLLM_UBATCH` | `512` | Unbatched size |
 | `LLLM_THREADS` | `8` | Threads for inference |
 | `LLLM_THREADS_BATCH` | `8` | Threads for batch processing |
+| `LLLM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
 | `LLLM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
 | `LLLM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 

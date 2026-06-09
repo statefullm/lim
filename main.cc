@@ -82,17 +82,19 @@ int main(int argc, char ** argv) {
 
     setup_signals();
 
-    float temp = 0.7f;
-    bool use_dummy_thought = false;
-
-    if (argc < 2 || argc > 3) {
-        cerr << "Usage: " << argv[0] << " <model_path> [temperature]" << endl;
+    if (argc < 2 || argc > 2) {
+        cerr << "Usage: " << argv[0] << " <model_path>" << endl;
         return 1;
     }
 
-    // Parse optional temperature argument
-    if (argc >= 3) {
-        temp = atof(argv[2]);
+    // Temperature from LLLM_TEMP environment variable
+    float temp = 0.7f;
+    bool use_dummy_thought = false;
+    {
+        const char* env = getenv("LLLM_TEMP");
+        if (env != nullptr) {
+            temp = atof(env);
+        }
         if (temp == 0.0f) {
             use_dummy_thought = true;
         }
