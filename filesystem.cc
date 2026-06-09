@@ -170,7 +170,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   int fd = mkstemp(const_cast<char*>(exit_code_file.c_str()));
   if (fd >= 0) close(fd); // Close so bash can write to it
 
-  string full_command = "stdbuf -oL -eL bash -c 'cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " ; echo \"$?\" > \"" + exit_code_file + "\"' 2>&1";
+  string full_command = "stdbuf -oL -eL bash -c 'source ~/.bashrc 2>/dev/null; cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " ; echo \"$?\" > \"" + exit_code_file + "\"' 2>&1";
 
   // Use fork + pipe to stream output as it becomes available.
   int pipefd[2];
