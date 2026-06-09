@@ -17,6 +17,7 @@
 #include <cstring>
 #include <set>
 #include <clocale>
+#include <ctime>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
@@ -234,6 +235,22 @@ int main(int argc, char ** argv) {
         buffer << prompt_file.rdbuf();
         system_prompt = buffer.str();
         prompt_file.close();
+    }
+
+    // Append current working directory and date to system prompt
+    {
+        char current_cwd[1024];
+        if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
+            system_prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
+        }
+
+        time_t now = time(nullptr);
+        struct tm tm_buf;
+        if (localtime_r(&now, &tm_buf)) {
+            char time_str[64];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
+            system_prompt += "Current date and time: " + string(time_str) + "\n";
+        }
     }
 
     string formatted_system_prompt = string(Tokens::TURN_START) + "system\n" + system_prompt + Tokens::TURN_END + "\n";
