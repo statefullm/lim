@@ -32,7 +32,7 @@ async def broadcast_llm_stream():
     with os.fdopen(fd, 'rb', buffering=0) as pipe:
         while True:
             try:
-                chunk = pipe.read(4096)
+                chunk = pipe.read(65536)
                 if chunk:
                     text = chunk.decode('utf-8', errors='ignore')
                     if clients:

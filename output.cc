@@ -91,7 +91,7 @@ void pipe_write(const char* data, size_t len) {
             retry_count = 0;  // Reset retry counter on successful write
         } else if (res < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                // FIFO buffer is full — wait for the reader to drain it.
+                // FIFO buffer is full - wait for the reader to drain it.
                 // Use poll() with a 5-second timeout instead of sleeping blindly.
                 retry_count++;
                 if (retry_count > max_retries) {
@@ -104,13 +104,13 @@ void pipe_write(const char* data, size_t len) {
                 pfd.events = POLLOUT;
                 int poll_res = poll(&pfd, 1, 5000);  // 5-second timeout
                 if (poll_res <= 0) {
-                    // Timeout or error — pipe reader may have disconnected.
+                    // Timeout or error - pipe reader may have disconnected.
                     close(pipe_fd);
                     pipe_fd = -1;
                     return;
                 }
             } else {
-                // Real error (e.g., EPIPE, EBADF) — give up.
+                // Real error (e.g., EPIPE, EBADF) - give up.
                 close(pipe_fd);
                 pipe_fd = -1;
                 return;

@@ -179,6 +179,8 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     return "Error: Failed to create pipe for shell execution.";
   }
 
+  // Maximize the pipe buffer to prevent EPIPE.
+  fcntl(pipefd[0], F_SETPIPE_SZ, 1048576);
   pid_t pid = fork();
   if (pid < 0) {
     close(pipefd[0]);
@@ -209,6 +211,11 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
   string result;
 
+  // Limit output to avoid overwhelming LLM context and browser display.
+  // All three consumers (LLM result, browser stream, chat_log) see the same bounded output.
+  static constexpr size_t MAX_OUTPUT_SIZE = 32768;  // 32KB
+  bool truncated = false;
+
   // Signal that streaming is about to begin.
   if (on_open) on_open();
 
@@ -220,27 +227,41 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     // Block until the pipe has data or the child exits.
     int ready = poll(&pfd, 1, -1);  // -1 = block indefinitely
     if (ready < 0) {
-      // Interrupted by signal — retry.
+      // Interrupted by signal - retry.
       if (errno == EINTR) continue;
       break;  // Unexpected error, bail out.
     }
 
     if (pfd.revents & (POLLIN | POLLHUP)) {
-      char buffer[4096];
+      char buffer[65536];
       ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
 
       if (n > 0) {
         buffer[n] = '\0';
-        result += buffer;
 
-        // Feed chunks to the streaming callback immediately.
-        if (on_chunk) on_chunk(buffer);
+        // Keep draining the child pipe to prevent EPIPE, but only
+        // forward data to consumers until we hit the limit.
+        if (!truncated) {
+          size_t remaining = MAX_OUTPUT_SIZE - result.size();
+          if (static_cast<size_t>(n) > remaining) {
+            // This chunk would exceed the limit - clip it.
+            result += std::string(buffer, remaining);
+            if (on_chunk) on_chunk(std::string(buffer, remaining));
+            if (chat_log.is_open()) { chat_log << std::string(buffer, remaining); chat_log.flush(); }
 
-        // Also flush to chat_log incrementally
-        if (chat_log.is_open()) {
-          chat_log << buffer;
-          chat_log.flush();
+            // Inject truncation marker for all consumers.
+            string trunc_msg = "\n[Output truncated at " + std::to_string(MAX_OUTPUT_SIZE) + " bytes]\n";
+            result += trunc_msg;
+            if (on_chunk) on_chunk(trunc_msg);
+            if (chat_log.is_open()) { chat_log << trunc_msg; chat_log.flush(); }
+            truncated = true;
+          } else {
+            result += buffer;
+            if (on_chunk) on_chunk(buffer);
+            if (chat_log.is_open()) { chat_log << buffer; chat_log.flush(); }
+          }
         }
+        // If already truncated, just discard - child is still being drained.
       } else {
         // n == 0 or n < 0: EOF / pipe closed.
         break;
@@ -251,16 +272,11 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     int wstatus = 0;
     pid_t waited = waitpid(pid, &wstatus, WNOHANG);
     if (waited > 0) {
-      // Drain any remaining data in the pipe.
+      // Drain any remaining data in the pipe (prevent EPIPE).
       if (pfd.revents & (POLLIN | POLLHUP)) {
-        char buffer[4096];
+        char buffer[65536];
         ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
-        if (n > 0) {
-          buffer[n] = '\0';
-          result += buffer;
-          if (on_chunk) on_chunk(buffer);
-          if (chat_log.is_open()) { chat_log << buffer; chat_log.flush(); }
-        }
+        // Discard - child is exiting, just drain.
       }
       break;
     }
