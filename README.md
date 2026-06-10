@@ -93,7 +93,7 @@ The setgid bit (`s`) ensures new files inherit the `ai` group.
 To set permissions in any project sandbox; add this alias to **your personal** `~/.bashrc`:
 
 ```bash
-alias fixai='sudo chown -R $USER:ai .; chmod -R -t .'
+alias fixai='sudo chown -R $USER:ai .; chmod -R g+rw .; chmod -R -t .'
 ```
 
 ### 4. Running as User `ai`
