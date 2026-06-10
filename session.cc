@@ -87,6 +87,8 @@ static map<string, string> load_aliases() {
             } else {
                 aliases[key] = value;
             }
+        } else if (!key.empty()) {
+            cerr << "Warning: alias key '" << key << "' is missing the required '/' prefix, ignored. (Update .lllm_aliases to use '/key=value' syntax.)" << endl;
         }
     }
     return aliases;
