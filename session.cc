@@ -669,7 +669,6 @@ bool ChatSession::run() {
         if (last_cmd_ == Command::QUIT) {
             // Auto-save before exiting so the user's current work is preserved.
             string autosave_path = "log/" + to_string(state_.log_index) + ".save";
-            diag("Auto-saving session to " + autosave_path + "...", "\033[35m");
             bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
                                              state_.all_context_tokens.data(),
                                              state_.all_context_tokens.size());
@@ -688,7 +687,6 @@ bool ChatSession::run() {
             // with the regular save file that /quit or /exit will overwrite.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                diag("Auto-saving session to " + autosave_path + "...", "\033[35m");
                 bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
                                                  state_.all_context_tokens.data(),
                                                  state_.all_context_tokens.size());
