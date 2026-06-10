@@ -164,7 +164,7 @@ int main(int argc, char ** argv) {
         }
     };
 
-    diag("Session #" + to_string(log_index) + " started", "\033[35m");
+    diag("Session #" + to_string(log_index) + " started: type /quit to quit or /help to see a list of commands", "\033[35m");
     log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(log_index) + ")");
 
     llama_backend_init();

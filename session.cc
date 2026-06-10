@@ -63,7 +63,7 @@ static string trim(const string& s) {
 static map<string, string> load_aliases() {
     // Built-in commands that cannot be overridden by aliases.
     static const set<string> builtin_commands = {
-        "quit", "exit", "clear", "reset", "reincarnate", "continue", "save"
+        "quit", "exit", "clear", "reset", "reincarnate", "continue", "save", "help"
     };
 
     map<string, string> aliases;
@@ -88,7 +88,7 @@ static map<string, string> load_aliases() {
                 aliases[key] = value;
             }
         } else if (!key.empty()) {
-            cerr << "Warning: alias key '" << key << "' is missing the required '/' prefix, ignored. (Update .lllm_aliases to use '/key=value' syntax.)" << endl;
+            cerr << "Warning: alias key '" << key << "' ignored: update "+HOME+"/.lllm_aliases to use '/key=value' syntax." << endl;
         }
     }
     return aliases;
@@ -162,7 +162,7 @@ public:
     bool run();
 
 private:
-    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE };
+    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, HELP };
 
     // Parsed command and optional save prefix
     Command last_cmd_ = Command::NONE;
@@ -410,6 +410,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
     if (rest == "reset") return Command::RESET;
     if (rest == "reincarnate") return Command::REINCARNATE;
     if (rest == "continue") return Command::CONTINUE;
+    if (rest == "help") return Command::HELP;
     return Command::NONE;
 }
 
@@ -800,6 +801,19 @@ bool ChatSession::run() {
             continue;
         }
 
+        if (last_cmd_ == Command::HELP) {
+            diag("Available Commands:", "\033[1;36m");
+            diag("  /quit or /exit      Save session and exit", "\033[37m");
+            diag("  /clear              Clear context (auto-saves first to log/<N>-clear.save)", "\033[37m");
+            diag("  /reset              Reset loop detector and file cache", "\033[37m");
+            diag("  /reincarnate        Compose new prompt in ~/userprompt, then restart", "\033[37m");
+            diag("  /continue           Resume generation after interruption", "\033[37m");
+            diag("  /save [path]        Save session state (default: log/<N>.save)", "\033[37m");
+            diag("  /help               Show this help message", "\033[37m");
+            diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;36m");
+            continue;
+        }
+
         if (last_cmd_ == Command::CONTINUE) {
             if (state_.tool_interrupt_pending) {
                 state_.prev_was_interrupted = false;
@@ -884,4 +898,3 @@ bool run_chat_session(
                         system_tokens, use_dummy_thought, state);
     return session.run();
 }
-
