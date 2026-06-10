@@ -61,6 +61,11 @@ static string trim(const string& s) {
 
 // --- Load aliases from ~/.lllm_aliases ---
 static map<string, string> load_aliases() {
+    // Built-in commands that cannot be overridden by aliases.
+    static const set<string> builtin_commands = {
+        "quit", "exit", "clear", "reset", "reincarnate", "continue", "save"
+    };
+
     map<string, string> aliases;
     string path = string(HOME) + "/.lllm_aliases";
     ifstream in(path);
@@ -74,8 +79,14 @@ static map<string, string> load_aliases() {
         if (eq == string::npos) continue;
         string key = trim(trimmed.substr(0, eq));
         string value = trim(trimmed.substr(eq + 1));
-        if (!key.empty()) {
-            aliases[key] = value;
+        if (!key.empty() && key[0] == '/') {
+            // Strip leading '/' to get the command name
+            string cmd = key.substr(1);
+            if (builtin_commands.count(cmd)) {
+                cerr << "Warning: alias '" << key << "' shadows a built-in command, ignored." << endl;
+            } else {
+                aliases[key] = value;
+            }
         }
     }
     return aliases;
@@ -151,6 +162,10 @@ public:
 private:
     enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE };
 
+    // Parsed command and optional save prefix
+    Command last_cmd_ = Command::NONE;
+    string save_prefix_;
+
     // --- Helper methods (extracted from lambdas) ---
     vector<llama_token> tokenize(string text) {
         return common_tokenize(ctx_, text, false, true);
@@ -178,7 +193,7 @@ private:
             }
         }
         if (batch_.n_tokens > 0) {
-            if (!handle_llama_decode_error(ctx_, batch_, "KV Cache Exhausted. Type 'clear' to reset.", false)) {
+            if (!handle_llama_decode_error(ctx_, batch_, "KV Cache Exhausted. Type '/clear' to reset.", false)) {
                 sync_n_past(ctx_, n_past_);
                 return false;
             }
@@ -369,13 +384,30 @@ string ChatSession::get_user_input() {
 }
 
 // --- handle_command: detect which command the input represents ---
+// Commands must be prefixed with '/'.  "/save [path]" is handled specially:
+//   /save              → SAVE with empty path (saves to log/<N>.save)
+//   /save cats         → SAVE with path "cats" (saves to cats.save)
+//   /save /tmp/check   → SAVE with path "/tmp/check" (saves to /tmp/check.save)
 ChatSession::Command ChatSession::handle_command(const string& input) {
-    if (input == "quit" || input == "exit") return Command::QUIT;
-    if (input == "clear") return Command::CLEAR;
-    if (input == "reset") return Command::RESET;
-    if (input == "reincarnate") return Command::REINCARNATE;
-    if (input == "continue") return Command::CONTINUE;
-    if (input == "save") return Command::SAVE;
+    if (input.empty() || input[0] != '/') return Command::NONE;
+
+    // Strip the leading '/'
+    string rest = input.substr(1);
+
+    // "/save" may have an optional argument
+    if (rest.substr(0, 4) == "save") {
+        rest.erase(0, 4);
+        save_prefix_ = trim(rest);
+        return Command::SAVE;
+    }
+
+    save_prefix_.clear();
+
+    if (rest == "quit" || rest == "exit") return Command::QUIT;
+    if (rest == "clear") return Command::CLEAR;
+    if (rest == "reset") return Command::RESET;
+    if (rest == "reincarnate") return Command::REINCARNATE;
+    if (rest == "continue") return Command::CONTINUE;
     return Command::NONE;
 }
 
@@ -407,7 +439,7 @@ bool ChatSession::feed_user_message(const string& input) {
 
     if (n_past_ + (int)tokens.size() >= (int)cparams_.n_ctx) {
         string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, (size_t)tokens.size(), (int)cparams_.n_ctx);
-        diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
+        diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type '/clear' to reset.", "\033[31m");
         return false;
     }
 
@@ -599,7 +631,7 @@ bool ChatSession::handle_reincarnate_completion() {
 
     if (!feed_tokens_impl(new_session_tokens)) {
         if (stop_generation) stop_generation = 0;
-        diag("Failed to feed reincarnated session tokens. Type 'clear' to reset.", "\033[31m");
+        diag("Failed to feed reincarnated session tokens. Type '/clear' to reset.", "\033[31m");
         return true; // continue outer loop
     }
 
@@ -628,11 +660,43 @@ bool ChatSession::run() {
         // 1. Get user input
         string user_input = get_user_input();
 
-        // 2. Handle quit/exit
-        if (user_input == "quit" || user_input == "exit") return false;
+        // 2. Parse and dispatch commands (all require '/' prefix)
+        last_cmd_ = handle_command(user_input);
 
-        // 3. Handle clear command
-        if (user_input == "clear") {
+        if (last_cmd_ == Command::QUIT) {
+            // Auto-save before exiting so the user's current work is preserved.
+            string autosave_path = "log/" + to_string(state_.log_index) + ".save";
+            diag("Auto-saving session to " + autosave_path + "...", "\033[35m");
+            bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
+                                             state_.all_context_tokens.data(),
+                                             state_.all_context_tokens.size());
+            if (!ok) {
+                diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+            } else {
+                llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
+            }
+            return false;
+        }
+
+        if (last_cmd_ == Command::CLEAR) {
+            // Auto-save before clearing so nothing is truly lost.
+            // Uses a distinct name (e.g., log/5-clear.save) so it doesn't conflict
+            // with the regular save file that /quit or /exit will overwrite.
+            {
+                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                diag("Auto-saving session to " + autosave_path + "...", "\033[35m");
+                bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
+                                                 state_.all_context_tokens.data(),
+                                                 state_.all_context_tokens.size());
+                if (!ok) {
+                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+                } else {
+                    llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                    diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
+                }
+            }
+
             clear_context();
             state_.auto_continue = false;
             state_.prev_was_interrupted = false;
@@ -646,16 +710,14 @@ bool ChatSession::run() {
             continue;
         }
 
-        // 4. Handle reset command
-        if (user_input == "reset") {
+        if (last_cmd_ == Command::RESET) {
             reset_llm_state();
             log_entry("SYSTEM", "Loop Counter and File Cache Reset");
             diag("Loop Counter and File Cache Reset Successfully", "\033[32m");
             continue;
         }
 
-        // 5. Handle reincarnate command
-        if (user_input == "reincarnate") {
+        if (last_cmd_ == Command::REINCARNATE) {
             string reincarnate_path = string(HOME) + "/reincarnate";
             ifstream reincarnate_file(reincarnate_path);
             if (!reincarnate_file.is_open()) {
@@ -691,7 +753,7 @@ bool ChatSession::run() {
 
             if (n_past_ + (int)reincarnate_tokens.size() >= (int)cparams_.n_ctx) {
                 string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, (size_t)reincarnate_tokens.size(), (int)cparams_.n_ctx);
-                diag("Context Limit Reached! Cannot process reincarnate" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
+                diag("Context Limit Reached! Cannot process reincarnate" + ctx_diag + ". Type '/clear' to reset.", "\033[31m");
                 continue;
             }
 
@@ -709,21 +771,26 @@ bool ChatSession::run() {
             continue;
         }
 
-        // 5.5. Handle save command
-        if (user_input == "save") {
-            string save_path = "log/" + to_string(state_.log_index) + ".save";
+        if (last_cmd_ == Command::SAVE) {
+            // save_prefix_ was set by handle_command:
+            //   /save              → empty string, saves to log/<N>.save
+            //   /save cats         → "cats", saves to cats.save
+            //   /save /tmp/checkpoint → "/tmp/checkpoint", saves to /tmp/checkpoint.save
+            string save_path;
+            if (save_prefix_.empty()) {
+                save_path = "log/" + to_string(state_.log_index) + ".save";
+            } else {
+                save_path = save_prefix_ + ".save";
+            }
 
             diag("Saving session to " + save_path + "...", "\033[35m");
 
-            // Save KV cache and all context state
             bool ok = llama_state_save_file(ctx_, save_path.c_str(),
                                              state_.all_context_tokens.data(),
                                              state_.all_context_tokens.size());
             if (!ok) {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
-                // Report the actual KV cache position (matching the restore diagnostic),
-                // not state_.all_context_tokens.size() which only counts explicitly fed tokens.
                 llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
                 diag("Session saved to " + save_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[32m");
                 log_entry("SYSTEM", "Session saved to " + save_path);
@@ -731,35 +798,27 @@ bool ChatSession::run() {
             continue;
         }
 
-        // 6. Skip empty input when not auto-continuing
-        if (user_input.empty() && !state_.auto_continue) continue;
-
-        // 7. Handle "continue" command
-        if (user_input == "continue") {
+        if (last_cmd_ == Command::CONTINUE) {
             if (state_.tool_interrupt_pending) {
-                // Interrupted mid-tool-call -- assistant turn is already open with partial
-                // tool XML in the KV cache. Resume without feeding any additional tokens
-                // so the LLM continues generating from exactly where it left off.
                 state_.prev_was_interrupted = false;
                 diag("Resuming after tool interruption...", "\033[1;33m");
-
                 state_.auto_continue = true;
                 state_.auto_continue_depth_val = 0;
-                user_input = ""; // Clear so it's not processed as a regular message
+                user_input = "";
             } else if (state_.prev_was_interrupted) {
-                // Interrupted during normal text generation -- resume seamlessly without
-                // feeding any additional tokens so the LLM doesn't even know it was interrupted.
                 state_.prev_was_interrupted = false;
                 diag("Resuming generation...", "\033[1;33m");
-
                 state_.auto_continue = true;
                 state_.auto_continue_depth_val = 0;
-                user_input = ""; // Clear so it's not processed as a regular message
+                user_input = "";
             } else {
-                // No active interruption -- just treat "continue" as a regular user message.
-                // Fall through to normal processing below.
+                // No active interruption -- fall through as a regular message.
+                last_cmd_ = Command::NONE;
             }
         }
+
+        // 3. Skip empty input when not auto-continuing
+        if (user_input.empty() && !state_.auto_continue) continue;
 
         // 8. Browser/TTY setup
         bool browser_connected = check_browser_connected();

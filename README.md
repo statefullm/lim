@@ -151,21 +151,22 @@ The `cd` override writes the current directory to `/home/ai/.cwd`, which LLLM re
 
 Place your system prompt in `/home/ai/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
 
-### 7. Session Aliases
+### 7. Message Shortcuts
 
-Create `/home/ai/.lllm_aliases` to define shorthand commands at the `>>>` prompt:
+Create `/home/ai/.lllm_aliases` to define shorthand expansions at the `>>>` prompt:
 
 ```
 # ~/.lllm_aliases: one key=value per line; # comments are ignored
+# Keys must start with / to distinguish them from regular messages
 
-test=test the filesystem tools and clean up after
-message=show me a 1-sentence concise git commit message
-commit=run git commit -a
-make=run make
-amend=amend the previous commit
+/test=test the filesystem tools and clean up after
+/message=show me a 1-sentence concise git commit message
+/commit=run git commit -a
+/make=run make
+/amend=amend the previous commit
 ```
 
-At the `>>>` prompt, typing `commit` expands to `run git commit -a` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. This is loaded fresh each session.
+At the `>>>` prompt, typing `/commit` expands to `run git commit -a` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. Built-in command names (e.g., `/quit`, `/clear`) cannot be used as alias keys. This is loaded fresh each session.
 
 ---
 
@@ -282,18 +283,19 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 
 | Command | Effect |
 |---|---|
-| `quit` / `exit` | Exit the session |
-| `clear` | Clear the KV-cache (resets to system prompt only). All history is lost but the process stays alive. |
-| `reset` | Reset internal state (loop detector, file cache) without clearing the KV-cache |
-| `reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
-| `continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
-| `save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, matching the current chat log number |
+| `/quit` or `/exit` | Auto-save the current state to `log/<N>.save`, then exit the session |
+| `/clear` | Auto-save the current state to `log/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. For a permanent named checkpoint before clearing, use `/save <name>` first. |
+| `/reset` | Reset internal state (loop detector, file cache) without clearing the KV-cache |
+| `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
+| `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
+| `/save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, overwriting any previous save for this session |
+| `/save <path>` | Save the full session state to `<path>.save`. The path can be relative (`/save cats` → `cats.save`) or absolute (`/save /tmp/checkpoint` → `/tmp/checkpoint.save`). Use this to create named checkpoints at meaningful points in your session. |
 
 ### Save and Restore
 
 You can save a running session and restore it later with zero context loss:
 
-**Save:** Type `save` at the `>>>` prompt. The KV-cache, logits, sampler state, and all conversation tokens are written to `log/<N>.save` (where `<N>` matches the current chat log).
+**Save:** Type `/save` at the `>>>` prompt to save to `log/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints — e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. The KV-cache, logits, sampler state, and all conversation tokens are written.
 
 **Restore:** Pass a `.save` file as the last argument to `coder`:
 
@@ -301,11 +303,13 @@ You can save a running session and restore it later with zero context loss:
 coder log/5.save
 ```
 
-This restores the session exactly as it was — the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `clear` after a restore resets to a fresh system prompt with the current date and working directory.
+This restores the session exactly as it was — the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
+
+**Auto-save on clear and quit:** Before clearing the context, LLLM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other — if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 
 ### Interrupting Generation
 
-Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `continue` to resume seamlessly: the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
+Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `/continue` to resume seamlessly: the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
 
 ### Browser Output
 
