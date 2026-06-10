@@ -171,7 +171,7 @@ bool prompt_for_browser_connection() {
     int retries = 5;
     while (retries > 0) {
         if (check_browser_connected()) {
-            message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m");
+            message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
             return true;
         }
 

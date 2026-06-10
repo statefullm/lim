@@ -86,9 +86,16 @@ int main(int argc, char ** argv) {
 
     setup_signals();
 
-    if (argc < 2 || argc > 2) {
-        cerr << "Usage: " << argv[0] << " <model_path>" << endl;
+    if (argc < 2 || argc > 3) {
+        cerr << "Usage: " << argv[0] << " <model_path> [restore_file]" << endl;
         return 1;
+    }
+
+    // Check if we are restoring from a save file
+    bool restore_from_file = (argc == 3);
+    string restore_path;
+    if (restore_from_file) {
+        restore_path = argv[2];
     }
 
     // Temperature from LLLM_TEMP environment variable
@@ -157,7 +164,8 @@ int main(int argc, char ** argv) {
         }
     };
 
-    log_entry("SYSTEM", "Starting LLM Controller Session");
+    diag("Session #" + to_string(log_index) + " started", "\033[35m");
+    log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(log_index) + ")");
 
     llama_backend_init();
     llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
@@ -227,6 +235,10 @@ int main(int argc, char ** argv) {
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
 
+    // Always load and tokenize the system prompt.
+    // This is needed even during restore so that `system_tokens` holds only the
+    // actual system prompt (not the full conversation).  clear_context() uses
+    // system_tokens to re-seed the KV cache after a wipe, so it must be correct.
     string system_prompt;
 
     ifstream prompt_file(HOME+"/prompt");
@@ -279,20 +291,72 @@ int main(int argc, char ** argv) {
 
     llama_batch batch = llama_batch_init(cparams.n_batch, 0, 1);
     int n_past = 0;
-    batch.n_tokens = 0;
-    for (size_t i = 0; i < (int)system_tokens.size(); i++) {
-        common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
-        if (is_debug && token_log.is_open()) {
-            string piece = common_token_to_piece(ctx, system_tokens[i]);
-            token_log << "FEED SYSTEM_PROMPT_INIT " << system_tokens[i] << " \"" << escape_token_piece(piece) << "\"\n";
-            token_log.flush();
+
+    if (!restore_from_file) {
+        // Normal startup: feed system prompt tokens into KV cache
+        batch.n_tokens = 0;
+        for (size_t i = 0; i < (int)system_tokens.size(); i++) {
+            common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
+            if (is_debug && token_log.is_open()) {
+                string piece = common_token_to_piece(ctx, system_tokens[i]);
+                token_log << "FEED SYSTEM_PROMPT_INIT " << system_tokens[i] << " \"" << escape_token_piece(piece) << "\"\n";
+                token_log.flush();
+            }
         }
+
+        if (!handle_llama_decode_error(ctx, batch)) return 1;
+    } else {
+        // Restore from save file: load KV cache and all state via llama_state_load_file.
+        // This populates the KV cache directly -- no need to feed/decode tokens ourselves.
+        diag("Restoring session from " + restore_path + "...", "\033[35m");
+        vector<llama_token> restored_tokens(cparams.n_ctx);
+        size_t n_restored = 0;
+        bool ok = llama_state_load_file(ctx, restore_path.c_str(),
+                                         restored_tokens.data(), restored_tokens.size(), &n_restored);
+        if (!ok) {
+            cerr << "Error: Failed to restore session from " << restore_path << endl;
+            return 1;
+        }
+        // Use the actual KV cache position, not the saved token count.
+        // The saved token count only tracks tokens fed via feed_tokens_impl
+        // (system prompt, user messages, tool results), but the KV cache also
+        // contains all generated assistant tokens that were fed directly via
+        // common_batch_add in TokenGenerator.  Using the stale count causes
+        // balloc->init to reject the first post-restore batch because the
+        // batch positions don't match the real cache boundary.
+        llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+        n_past = (int)(actual_max + 1);
+
+        // Trim restored_tokens to the actual count returned
+        restored_tokens.resize(n_restored);
+
+        diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+        log_entry("SYSTEM", "Restored session from " + restore_path);
+
+        // Session state with full conversation history for save/restore tracking.
+        // system_tokens remains as the real system prompt only (for clear_context).
+        SessionState state;
+        state.all_context_tokens = restored_tokens;
+        state.log_index = log_index;
+
+        // --- Run the main chat session loop ---
+        bool result = run_chat_session(
+            ctx, vocab, smpl, batch, n_past, cparams,
+            system_tokens, use_dummy_thought,
+            state
+        );
+
+        // Cleanup
+        llama_free(ctx);
+        llama_model_free(model);
+        llama_backend_free();
+        return 0;
     }
 
-    if (!handle_llama_decode_error(ctx, batch)) return 1;
-
-    // Session state
+    // Session state (normal startup)
     SessionState state;
+    state.all_context_tokens = system_tokens;
+    state.log_index = log_index;
 
     // --- Run the main chat session loop ---
     bool result = run_chat_session(

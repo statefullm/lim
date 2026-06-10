@@ -30,6 +30,10 @@ struct SessionState {
     int auto_continue_depth_val = 0;
     bool tool_interrupt_pending = false;
     string partial_tool_text;
+    // All tokens fed into context, for save/restore
+    vector<llama_token> all_context_tokens;
+    // Log file index (set by main.cc), so save files match chat log numbering
+    int log_index = 0;
 };
 
 // Run the main chat session loop.

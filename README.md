@@ -287,6 +287,21 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `reset` | Reset internal state (loop detector, file cache) without clearing the KV-cache |
 | `reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
 | `continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
+| `save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, matching the current chat log number |
+
+### Save and Restore
+
+You can save a running session and restore it later with zero context loss:
+
+**Save:** Type `save` at the `>>>` prompt. The KV-cache, logits, sampler state, and all conversation tokens are written to `log/<N>.save` (where `<N>` matches the current chat log).
+
+**Restore:** Pass a `.save` file as the last argument to `coder`:
+
+```bash
+coder log/5.save
+```
+
+This restores the session exactly as it was — the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `clear` after a restore resets to a fresh system prompt with the current date and working directory.
 
 ### Interrupting Generation
 

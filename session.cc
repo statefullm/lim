@@ -149,7 +149,7 @@ public:
     bool run();
 
 private:
-    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE };
+    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE };
 
     // --- Helper methods (extracted from lambdas) ---
     vector<llama_token> tokenize(string text) {
@@ -184,12 +184,16 @@ private:
             }
             sync_n_past(ctx_, n_past_);
         }
+        // Track all tokens fed into context for save/restore
+        state_.all_context_tokens.insert(state_.all_context_tokens.end(), toks.begin(), toks.end());
         return true;
     }
 
     void clear_context() {
         llama_memory_clear(llama_get_memory(ctx_), true);
         n_past_ = 0;
+        // Reset context token tracker to just system tokens
+        state_.all_context_tokens = system_tokens_;
         feed_tokens_impl(system_tokens_);
 
         // Reset the current directory to the initial value so no memory of the last session persists
@@ -371,6 +375,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
     if (input == "reset") return Command::RESET;
     if (input == "reincarnate") return Command::REINCARNATE;
     if (input == "continue") return Command::CONTINUE;
+    if (input == "save") return Command::SAVE;
     return Command::NONE;
 }
 
@@ -701,6 +706,28 @@ bool ChatSession::run() {
             state_.auto_continue = true;
             state_.reincarnate_mode = true;
             reset_session_state();
+            continue;
+        }
+
+        // 5.5. Handle save command
+        if (user_input == "save") {
+            string save_path = "log/" + to_string(state_.log_index) + ".save";
+
+            diag("Saving session to " + save_path + "...", "\033[35m");
+
+            // Save KV cache and all context state
+            bool ok = llama_state_save_file(ctx_, save_path.c_str(),
+                                             state_.all_context_tokens.data(),
+                                             state_.all_context_tokens.size());
+            if (!ok) {
+                diag("Save failed: could not write " + save_path, "\033[31m");
+            } else {
+                // Report the actual KV cache position (matching the restore diagnostic),
+                // not state_.all_context_tokens.size() which only counts explicitly fed tokens.
+                llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                diag("Session saved to " + save_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[32m");
+                log_entry("SYSTEM", "Session saved to " + save_path);
+            }
             continue;
         }
 
