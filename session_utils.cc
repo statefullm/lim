@@ -4,6 +4,7 @@
 #include <fstream>
 #include <string>
 #include <vector>
+#include <iostream>
 
 using namespace std;
 
@@ -40,5 +41,15 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags) {
             str.erase(p, tag.length());
         }
     }
+}
+
+void diag_speed(int n_past, int n_ctx, int t_count, double elapsed) {
+    if (t_count <= 0 || elapsed <= 0.0) return;
+    std::ostringstream oss;
+    double context_percent = (n_past / (double)n_ctx) * 100.0;
+    oss << std::fixed << std::setprecision(1);
+    oss << "\033[0m[" << "Speed: " << (t_count / elapsed) << " t/s | Context: " << n_past << "/" << n_ctx << " (" << context_percent << "%) | Elapsed: " << elapsed << "s]\033[0m" << std::endl;
+    std::cout << oss.str();
+    std::fflush(stdout);
 }
 

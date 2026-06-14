@@ -4,6 +4,8 @@
 #include "llama.h"
 #include <string>
 #include <vector>
+#include <sstream>
+#include <iomanip>
 
 // HTML escape special characters
 std::string html_escape(const std::string& s);
@@ -13,6 +15,9 @@ void log_tokens(const std::string& label, const std::vector<llama_token>& toks, 
 
 // Strip all occurrences of given tags from a string
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
+
+// Print speed/context diagnostic to stdout (used during auto-continue chains)
+void diag_speed(int n_past, int n_ctx, int t_count, double elapsed);
 
 #endif // SESSION_UTILS_H
 
