@@ -247,7 +247,7 @@ ToolExecutor::Result ToolExecutor::execute(
             } else if (allow_continue_resume && result.was_interrupted) {
                 // Interrupted during tool call -- feed result but drop to prompt.
                 // User can type "continue" to resume generation.
-                diag("Tool execution interrupted. Type 'continue' to let the LLM proceed, or provide input.", "\033[1;33m");
+                diag("Tool execution interrupted. Type '/continue' to let the LLM proceed, or provide input.", "\033[1;33m");
                 state.tool_interrupt_pending = true;
                 state.auto_continue = false;
             } else {

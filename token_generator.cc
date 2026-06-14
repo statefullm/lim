@@ -179,7 +179,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     stream(unprinted_text_);
                     unprinted_text_ = "";
                 }
-                diag("Context approaching limit (" + std::to_string(n_past_) + "/" + std::to_string(cparams_.n_ctx) + "). Type 'reincarnate' to start a fresh session, or 'clear' to reset.", "\033[1;33m");
+                diag("Context approaching limit (" + std::to_string(n_past_) + "/" + std::to_string(cparams_.n_ctx) + "). Type '/reincarnate' to start a fresh session, or '/clear' to reset.", "\033[1;33m");
             }
         }
 
@@ -190,7 +190,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 oss << " (n_past=" << n_past_ << ", last_n_past=" << last_n_past_ << ", n_ctx=" << cparams_.n_ctx << ")";
                 ctx_diag = oss.str();
             }
-            diag("Context Window Exhausted!" + ctx_diag + ". Type 'clear' to reset.", "\033[31m");
+            diag("Context Window Exhausted!" + ctx_diag + ". Type '/clear' to reset.", "\033[31m");
             if (!unprinted_text_.empty()) {
                 console(unprinted_text_.c_str());
                 consoleFlush();
