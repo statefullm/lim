@@ -208,11 +208,30 @@ string FileSystemTools::_get_fullpath(const string& path) {
 string FileSystemTools::exec_shell(const string& command, function<void()> on_open,
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
-  // Build human-readable function call syntax
-  string cmd_str = "\"" + command + "\"";
+  // Output function call to stdout and logfile
+  if (!chat_log.is_open() == false) {
+      chat_log << "exec_shell(\"" << command << "\")" << "\n";
+      chat_log.flush();
+  }
+  if (should_output_to_stdout()) {
+      cout << "exec_shell(\"" << command << "\")" << endl;
+      fflush(stdout);
+  }
 
-  // Output function call to both stdout and logfile
-  log_tool_diagnostic("exec_shell(" + cmd_str + ")");
+  // Stream tool call to browser in a code box
+  if (should_output_to_browser()) {
+      string safe;
+      for (char c : command) {
+          if (c == '&') safe += "&amp;";
+          else if (c == '<') safe += "&lt;";
+          else if (c == '>') safe += "&gt;";
+          else safe += c;
+      }
+      string html = "<div class='tool-label'>exec_shell(<code>" + safe + "</code>)</div>";
+      uint8_t seg = SEG_HTML;
+      pipe_write(reinterpret_cast<const char*>(&seg), 1);
+      pipe_write(html.c_str(), html.length());
+  }
 
   string safe_cmd = command;
   size_t pos = 0;
