@@ -647,6 +647,17 @@ bool ChatSession::handle_reincarnate_completion() {
     return true; // continue outer loop
 }
 
+// Helper: dump the llama state into memory, then write it with a git-SHA header.
+// Replaces the old two-step llama_state_save_file + append_git_sha_to_save.
+static bool save_session_with_header(llama_context* ctx, const string& path) {
+    size_t n_bytes = llama_state_get_size(ctx);
+    if (n_bytes == 0) return false;
+    std::vector<uint8_t> buf(n_bytes);
+    size_t n_written = llama_state_get_data(ctx, buf.data(), n_bytes);
+    if (n_written != n_bytes) return false;
+    return write_llm_save(path, buf.data(), n_bytes);
+}
+
 // --- run: the main chat turn loop ---
 bool ChatSession::run() {
     const char* history_file = ".lllm_history";
@@ -669,14 +680,11 @@ bool ChatSession::run() {
         if (last_cmd_ == Command::QUIT) {
             // Auto-save before exiting so the user's current work is preserved.
             string autosave_path = "log/" + to_string(state_.log_index) + ".save";
-            bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
-                                             state_.all_context_tokens.data(),
-                                             state_.all_context_tokens.size());
+            bool ok = save_session_with_header(ctx_, autosave_path);
             if (!ok) {
                 diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
             } else {
                 llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
-                append_git_sha_to_save(autosave_path);
                 diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
             }
             return false;
@@ -688,14 +696,11 @@ bool ChatSession::run() {
             // with the regular save file that /quit or /exit will overwrite.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
-                                                 state_.all_context_tokens.data(),
-                                                 state_.all_context_tokens.size());
+                bool ok = save_session_with_header(ctx_, autosave_path);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
                     llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
-                    append_git_sha_to_save(autosave_path);
                     diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
                 }
             }
@@ -725,14 +730,11 @@ bool ChatSession::run() {
             // Uses the same -clear.save name since reincarnate calls clear_context internally.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
-                                                 state_.all_context_tokens.data(),
-                                                 state_.all_context_tokens.size());
+                bool ok = save_session_with_header(ctx_, autosave_path);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
                     llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
-                    append_git_sha_to_save(autosave_path);
                     diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
                 }
             }
@@ -804,14 +806,11 @@ bool ChatSession::run() {
 
             diag("Saving session to " + save_path + "...", "\033[35m");
 
-            bool ok = llama_state_save_file(ctx_, save_path.c_str(),
-                                             state_.all_context_tokens.data(),
-                                             state_.all_context_tokens.size());
+            bool ok = save_session_with_header(ctx_, save_path);
             if (!ok) {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
                 llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
-                append_git_sha_to_save(save_path);
                 diag("Session saved to " + save_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[32m");
                 log_entry("SYSTEM", "Session saved to " + save_path);
             }

@@ -38,8 +38,10 @@ string file_fingerprint(const string& path) {
 
 // Fast content hash (FNV-1a 64-bit), returned as a hex string.
 
-// Append "git_sha=<sha>" as a trailing line to an existing save file.
-bool append_git_sha_to_save(const string& save_path) {
+// Write a save file with a one-line text header containing the git SHA,
+// followed by the raw llama state.  The header format is:
+//     LLLM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
+bool write_llm_save(const string& save_path, const uint8_t* state_data, size_t state_size) {
     FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
     if (!pipe) return false;
     char buf[48];
@@ -51,34 +53,45 @@ bool append_git_sha_to_save(const string& save_path) {
     pclose(pipe);
     if (sha.empty()) return false;
 
-    ofstream out(save_path, ios::app | ios::binary);
-    if (!out.is_open()) return false;
-    out << "\ngit_sha=" << sha;
-    out.close();
-    return true;
+    // Write header + raw state in a single pass.
+    // Use C FILE I/O for reliability with large files (>2 GB).
+    FILE* fp = fopen(save_path.c_str(), "wb");
+    if (!fp) return false;
+
+    string header = "LLLM_SAVE_v1 git_sha=" + sha + "\n";
+    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
+    if (state_data && state_size > 0) {
+        if (fwrite(state_data, 1, state_size, fp) != state_size) { fclose(fp); return false; }
+    }
+    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
+    return ok;
 }
 
-// Read the git SHA from the last line of a save file, if present.
-string read_git_sha_from_save(const string& save_path) {
-    ifstream in(save_path, ios::binary);
-    if (!in.is_open()) return "";
-    // Seek to near the end - SHA line is at most ~50 bytes
-    static constexpr size_t MAX_TRAIL = 64;
-    in.seekg(0, ios::end);
-    streampos fsize = in.tellg();
-    if (fsize < 0) return "";
-    size_t read_from = (fsize > (streamoff)MAX_TRAIL) ? (size_t)fsize - MAX_TRAIL : 0;
-    in.seekg(read_from);
-    string tail((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
+// Read the header from an LLLM save file.
+string read_llm_save_header(const string& save_path, size_t* header_size) {
+    if (header_size) *header_size = 0;
 
-    // Find last newline, take the line after it
-    size_t last_nl = tail.rfind('\n');
-    if (last_nl == string::npos) return "";
-    string last_line = tail.substr(last_nl + 1);
-    if (last_line.size() > 8 && last_line.substr(0, 8) == "git_sha=") {
-        return last_line.substr(8);
+    FILE* fp = fopen(save_path.c_str(), "rb");
+    if (!fp) return "";
+
+    // Read the first line (max ~80 bytes: "LLLM_SAVE_v1 git_sha=" + 40 hex + '\n')
+    static constexpr size_t MAX_HEAD = 96;
+    char head[MAX_HEAD];
+    size_t n = fread(head, 1, MAX_HEAD, fp);
+    fclose(fp);
+    if (n < 14) return ""; // "LLLM_SAVE_v1" is 12 chars + space + at least 2 more
+
+    // Must start with the magic prefix
+    string magic = "LLLM_SAVE_v1 git_sha=";
+    string first_chunk(head, n);
+    if (first_chunk.substr(0, magic.size()) != magic) {
+        return ""; // Old-style raw save file — no header
     }
-    return "";
+
+    size_t nl = first_chunk.find('\n');
+    if (nl == string::npos) return ""; // Malformed
+    *header_size = nl + 1;
+    return first_chunk.substr(magic.size(), nl - magic.size());
 }
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.

@@ -4,15 +4,23 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <cstdint>
 
 // Fast file fingerprint (mtime:size) for cache validation without reading content.
 std::string file_fingerprint(const std::string& path);
 
-// Append git SHA as a trailing line to an existing save file.
-bool append_git_sha_to_save(const std::string& save_path);
+// Write a save file with a one-line text header containing the git SHA,
+// followed by the raw llama state.  The header format is:
+//     LLLM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
+// Returns true on success.  Overwrites any existing file at save_path.
+bool write_llm_save(const std::string& save_path, const uint8_t* state_data, size_t state_size);
 
-// Read the git SHA from the trailing line of a save file, if present.
-std::string read_git_sha_from_save(const std::string& save_path);
+// Read the header from an LLLM save file.
+// On success returns the git SHA and sets *header_size to the byte count of
+// the header line (including trailing newline).  The raw llama state begins
+// at offset *header_size in the file.  Returns "" for unrecognized / old-style
+// files (callers should fall back to llama_state_load_file directly).
+std::string read_llm_save_header(const std::string& save_path, size_t* header_size);
 #include <functional>
 
 class FileSystemTools {
