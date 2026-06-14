@@ -721,6 +721,22 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::REINCARNATE) {
+            // Auto-save before reincarnating so nothing is truly lost.
+            // Uses the same -clear.save name since reincarnate calls clear_context internally.
+            {
+                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                bool ok = llama_state_save_file(ctx_, autosave_path.c_str(),
+                                                 state_.all_context_tokens.data(),
+                                                 state_.all_context_tokens.size());
+                if (!ok) {
+                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+                } else {
+                    llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                    append_git_sha_to_save(autosave_path);
+                    diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
+                }
+            }
+
             string reincarnate_path = string(HOME) + "/reincarnate";
             ifstream reincarnate_file(reincarnate_path);
             if (!reincarnate_file.is_open()) {
