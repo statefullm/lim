@@ -94,7 +94,7 @@ ToolExecutor::Result ToolExecutor::execute(
         }
     } else {
         // Execute the tool.
-        tool_out = execute_tool_call(tool_call, state.clean_files);
+        tool_out = execute_tool_call(tool_call, state.file_cache);
 
         // Handle validation errors reported by the struct.
         if (!tool_out.recognized || !tool_out.params_valid) {

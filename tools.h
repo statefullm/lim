@@ -3,6 +3,7 @@
 
 #include <string>
 #include <set>
+#include <map>
 
 using namespace std;
 
@@ -19,7 +20,7 @@ struct ToolResult {
 };
 
 bool param_has_newline(const string& s);
-ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files);
+ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_cache);
 
 
 #endif // TOOLS_H

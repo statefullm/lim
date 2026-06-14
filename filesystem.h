@@ -4,6 +4,9 @@
 #include <string>
 #include <vector>
 #include <map>
+
+// Fast file fingerprint (mtime:size) for cache validation without reading content.
+std::string file_fingerprint(const std::string& path);
 #include <functional>
 
 class FileSystemTools {

@@ -225,7 +225,7 @@ private:
     }
 
     void reset_llm_state() {
-        state_.clean_files.clear();
+        state_.file_cache.clear();
         state_.loop_guard.clear_history();
         state_.invalid_tool_strikes = 0;
         llama_sampler_reset(smpl_);

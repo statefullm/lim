@@ -6,6 +6,7 @@
 #include "output.h"
 #include "session_utils.h"
 #include <set>
+#include <map>
 #include <cstring>
 #include <signal.h>
 #include <functional>
@@ -56,7 +57,7 @@ static bool is_known_tool(const string& name) {
     return false;
 }
 
-ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) {
+ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_cache) {
   ToolResult out;
   string display_result = "";
   string result = "";
@@ -100,11 +101,18 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
       for (const auto& path : paths) {
         bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
-        if (!is_url && clean_files.count(path)) {
-          result += "Path: " + path + "\n";
-          result += "Content:\n[Cache hit - unchanged since last read]\n";
-          result += "---\n";
-          display_result += (display_result.empty() ? "Read files: " : "\n            ") + path + " (cached)";
+        if (!is_url && file_cache.count(path)) {
+          // Verify cached fingerprint matches current file metadata (mtime:size).
+          string fp = file_fingerprint(path);
+          if (!fp.empty() && file_cache[path] == fp) {
+            // Fingerprint matches - cache hit, no need to include content.
+            result += "Path: " + path + "\n";
+            result += "Content:\n[Cache hit - unchanged since last read]\n";
+            result += "---\n";
+            display_result += (display_result.empty() ? "Read files: " : "\n            ") + path + " (cached)";
+            continue;
+          }
+          // Fingerprint changed or stat failed - fall through to re-read.
         } else if (is_url) {
           auto url_results = net.fetch_urls({path});
           for (const auto& file : url_results) {
@@ -117,7 +125,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
             if (!f_error.empty()) result += "Error: " + f_error + "\n";
             result += "---\n";
 
-            if (f_error.empty() && !f_path.empty()) clean_files.insert(f_path);
+            // URLs are not cached - they're always re-fetched.
 
             if (!f_error.empty()) {
               display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + f_error;
@@ -142,7 +150,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
           if (!f_error.empty()) result += "Error: " + f_error + "\n";
           result += "---\n";
 
-          if (f_error.empty() && !f_path.empty()) clean_files.insert(f_path);
+          if (f_error.empty() && !f_path.empty()) file_cache[f_path] = file_fingerprint(f_path);
 
           if (!f_error.empty()) {
             display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + f_error;
@@ -187,7 +195,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     string path = extract_string_arg_bounded(tool_call, "path");
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
-    clean_files.erase(path);
+    file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
       FileSystemTools fs;
@@ -211,7 +219,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
-    clean_files.erase(path);
+    file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
       FileSystemTools fs;
@@ -243,7 +251,6 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
   } else if (tool_name == "exec_shell") {
     string command = extract_string_arg_bounded(tool_call, "command");
     out.is_mutating = true;
-    clean_files.clear();
     if (!command.empty()) {
       FileSystemTools fs;
       // Stream output to browser in real-time as the command produces it.
@@ -281,7 +288,6 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     }
   } else if (tool_name == "web_search") {
     string query = extract_string_arg_bounded(tool_call, "query");
-    clean_files.clear();
     if (!query.empty()) {
       NetworkTools net;
       result = net.web_search(query);

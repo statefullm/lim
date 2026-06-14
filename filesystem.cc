@@ -4,8 +4,10 @@
 #include "tokens.h"
 #include "network.h"  // For process_pdf_with_docling and base64_encode
 #include <iostream>
-#include <fstream>
 #include <sstream>
+#include <iomanip>
+#include <fstream>
+#include <sys/stat.h>
 #include <cstdlib>
 #include <cstdio>
 #include <unistd.h>
@@ -16,12 +18,25 @@
 #include <poll.h>
 #include <pwd.h>
 #include <cstring>
+#include <cstdint>
 #include <vector>
 #include <algorithm>
 #include <limits.h>
 
 using namespace std;
 using namespace Tokens;
+
+// Return "mtime:size" fingerprint for a file, or empty string on error.
+// Used by the read cache to detect unchanged files without reading content.
+string file_fingerprint(const string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return "";
+    ostringstream oss;
+    oss << st.st_mtime << ":" << st.st_size;
+    return oss.str();
+}
+
+// Fast content hash (FNV-1a 64-bit), returned as a hex string.
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.
 // Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.

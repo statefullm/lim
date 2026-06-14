@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <map>
 #include <fstream>
 #include <functional>
 #include <chrono>
@@ -23,7 +24,7 @@ struct SessionState {
     int last_t_count = 0;
     double last_elapsed = 0.0;
     int last_n_past = 0;
-    set<string> clean_files;
+    map<string, string> file_cache;  // path -> content hash (for cache validation)
     LoopDetector loop_guard;
     int invalid_tool_strikes = 0;
     // Internal state (was static inside the function)
