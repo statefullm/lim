@@ -330,7 +330,35 @@ int main(int argc, char ** argv) {
         // Trim restored_tokens to the actual count returned
         restored_tokens.resize(n_restored);
 
-        diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+        // Check for saved git SHA in trailing line of save file
+        string saved_sha = read_git_sha_from_save(restore_path);
+        if (!saved_sha.empty()) {
+            FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
+            string current_sha;
+            if (pipe) {
+                char buf[48];
+                if (fgets(buf, sizeof(buf), pipe)) {
+                    current_sha = buf;
+                    while (!current_sha.empty() && (current_sha.back() == '\n' || current_sha.back() == '\r')) current_sha.pop_back();
+                }
+                pclose(pipe);
+            }
+            string short_saved = saved_sha.substr(0, 7);
+            if (!current_sha.empty()) {
+                string short_current = current_sha.substr(0, 7);
+                if (saved_sha == current_sha) {
+                    diag("Session restored: " + to_string(n_past) + " tokens loaded (git: " + short_saved + ")", "\033[32m");
+                } else {
+                    diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+                    diag("Git HEAD mismatch: session was at " + short_saved + ", currently at " + short_current, "\033[33m");
+                    diag("  To restore repo state: git checkout " + short_saved, "\033[37m");
+                }
+            } else {
+                diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+            }
+        } else {
+            diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+        }
         log_entry("SYSTEM", "Restored session from " + restore_path);
 
         // Session state with full conversation history for save/restore tracking.

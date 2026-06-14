@@ -676,6 +676,7 @@ bool ChatSession::run() {
                 diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
             } else {
                 llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                append_git_sha_to_save(autosave_path);
                 diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
             }
             return false;
@@ -694,6 +695,7 @@ bool ChatSession::run() {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
                     llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                    append_git_sha_to_save(autosave_path);
                     diag("Auto-saved to " + autosave_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[35m");
                 }
             }
@@ -793,6 +795,7 @@ bool ChatSession::run() {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
                 llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+                append_git_sha_to_save(save_path);
                 diag("Session saved to " + save_path + " (" + to_string(actual_max + 1) + " tokens)", "\033[32m");
                 log_entry("SYSTEM", "Session saved to " + save_path);
             }

@@ -38,6 +38,49 @@ string file_fingerprint(const string& path) {
 
 // Fast content hash (FNV-1a 64-bit), returned as a hex string.
 
+// Append "git_sha=<sha>" as a trailing line to an existing save file.
+bool append_git_sha_to_save(const string& save_path) {
+    FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
+    if (!pipe) return false;
+    char buf[48];
+    string sha;
+    if (fgets(buf, sizeof(buf), pipe)) {
+        sha = buf;
+        while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
+    }
+    pclose(pipe);
+    if (sha.empty()) return false;
+
+    ofstream out(save_path, ios::app | ios::binary);
+    if (!out.is_open()) return false;
+    out << "\ngit_sha=" << sha;
+    out.close();
+    return true;
+}
+
+// Read the git SHA from the last line of a save file, if present.
+string read_git_sha_from_save(const string& save_path) {
+    ifstream in(save_path, ios::binary);
+    if (!in.is_open()) return "";
+    // Seek to near the end - SHA line is at most ~50 bytes
+    static constexpr size_t MAX_TRAIL = 64;
+    in.seekg(0, ios::end);
+    streampos fsize = in.tellg();
+    if (fsize < 0) return "";
+    size_t read_from = (fsize > (streamoff)MAX_TRAIL) ? (size_t)fsize - MAX_TRAIL : 0;
+    in.seekg(read_from);
+    string tail((istreambuf_iterator<char>(in)), istreambuf_iterator<char>());
+
+    // Find last newline, take the line after it
+    size_t last_nl = tail.rfind('\n');
+    if (last_nl == string::npos) return "";
+    string last_line = tail.substr(last_nl + 1);
+    if (last_line.size() > 8 && last_line.substr(0, 8) == "git_sha=") {
+        return last_line.substr(8);
+    }
+    return "";
+}
+
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.
 // Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.
 void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,

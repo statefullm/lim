@@ -7,6 +7,12 @@
 
 // Fast file fingerprint (mtime:size) for cache validation without reading content.
 std::string file_fingerprint(const std::string& path);
+
+// Append git SHA as a trailing line to an existing save file.
+bool append_git_sha_to_save(const std::string& save_path);
+
+// Read the git SHA from the trailing line of a save file, if present.
+std::string read_git_sha_from_save(const std::string& save_path);
 #include <functional>
 
 class FileSystemTools {
