@@ -242,6 +242,7 @@ ToolResult execute_tool_call(const string& tool_call, set<string>& clean_files) 
     }
   } else if (tool_name == "exec_shell") {
     string command = extract_string_arg_bounded(tool_call, "command");
+    out.is_mutating = true;
     clean_files.clear();
     if (!command.empty()) {
       FileSystemTools fs;
