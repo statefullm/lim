@@ -37,17 +37,24 @@ static const vector<ToolSpec> tool_specs = {
     {"web_search",  {"query"}}
 };
 
-static bool check_params(const string& tool_name, const string& tool_call) {
+static vector<string> find_missing_params(const string& tool_name, const string& tool_call) {
+    vector<string> missing;
     for (const auto& spec : tool_specs) {
         if (spec.name == tool_name) {
             for (const auto& param : spec.params) {
                 string key = string(PARAM_START) + param + ">";
-                if (tool_call.find(key) == string::npos) return false;
+                if (tool_call.find(key) == string::npos) {
+                    missing.push_back(param);
+                }
             }
-            return true;
+            return missing;
         }
     }
-    return false;  // unknown tool
+    return missing;  // unknown tool returns empty
+}
+
+static bool check_params(const string& tool_name, const string& tool_call) {
+    return find_missing_params(tool_name, tool_call).empty();
 }
 
 static bool is_known_tool(const string& name) {
@@ -84,7 +91,13 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       return out;
   }
   if (!out.params_valid) {
-      out.content = "System Error: Malformed tool call. Required parameter tags are missing.";
+      vector<string> missing = find_missing_params(tool_name, tool_call);
+      string missing_list;
+      for (size_t i = 0; i < missing.size(); i++) {
+          if (i > 0) missing_list += ", ";
+          missing_list += "\"" + missing[i] + "\"";
+      }
+      out.content = "System Error: Malformed tool call. Missing required parameter(s): " + missing_list + ".";
       out.is_error = true;
       return out;
   }
