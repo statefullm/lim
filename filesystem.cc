@@ -193,7 +193,7 @@ static std::string sha256_hex(const std::string& data) {
     return oss.str();
 }
 
-static std::string get_cache_dir() {
+static std::string get_cache_dir_internal() {
     // Use .cache subdirectory in the project directory alongside save files.
     char cwd[4096];
     std::string base = (getcwd(cwd, sizeof(cwd)) ? cwd : ".");
@@ -201,6 +201,8 @@ static std::string get_cache_dir() {
     mkdir(dir.c_str(), 0755);
     return dir;
 }
+
+std::string get_cache_dir() { return get_cache_dir_internal(); }
 
 static std::string cache_key(const std::string& v2_path, const std::string& model_path,
                              const std::string& git_sha) {
@@ -222,7 +224,7 @@ bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path
                        const std::string& git_sha, struct llama_context* ctx) {
     if (git_sha.empty()) return false; // No SHA means no cache key
 
-    std::string dir = get_cache_dir();
+    std::string dir = get_cache_dir_internal();
     std::string key = cache_key(v2_path, model_path, git_sha);
     std::string cache_path = dir + "/" + key;
 
@@ -233,8 +235,6 @@ bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path
     // Check v2 source hasn't been updated since cache was created
     long v2_mtime = file_mtime(v2_path);
     if (v2_mtime == -1 || v2_mtime > st.st_mtime) return false; // stale or missing
-
-    log_diagnostic("V1 cache hit: " + key + " (" + std::to_string(st.st_size / (1024*1024)) + " MB)", false, false);
 
     // Load the cached KV cache (it has a V1 header)
     size_t header_size = 0;
@@ -261,41 +261,38 @@ bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path
     return n_loaded == state_size;
 }
 
-void write_v1_cache(const std::string& v2_path, const std::string& model_path,
+bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
                     const std::string& git_sha, struct llama_context* ctx) {
-    if (git_sha.empty()) return; // No SHA means no cache key
+    if (git_sha.empty()) return false;
 
-    std::string dir = get_cache_dir();
+    std::string dir = get_cache_dir_internal();
     std::string key = cache_key(v2_path, model_path, git_sha);
     std::string cache_path = dir + "/" + key;
 
-    log_diagnostic("Writing V1 cache: " + key + "...", false, false);
-
     // Get the current KV cache as raw state data
     size_t state_size = llama_state_get_size(ctx);
-    if (state_size == 0) return;
+    if (state_size == 0) return false;
 
     std::vector<uint8_t> state_buf(state_size);
     size_t n_written = llama_state_get_data(ctx, state_buf.data(), state_size);
-    if (n_written == 0) return;
+    if (n_written == 0) return false;
 
     // Write with V1 header so it's self-describing
     FILE* fp = fopen(cache_path.c_str(), "wb");
-    if (!fp) { log_diagnostic("V1 cache write failed: could not open " + cache_path, false, false); return; }
+    if (!fp) return false;
 
     // Header: same format as V1 save, includes source info for debugging
     std::string header = "LLLM_SAVE_v1 git_sha=" + git_sha + "\n";
-    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return; }
-    if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return; }
+    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
+    if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
 
     bool ok = fflush(fp) == 0 && fclose(fp) == 0;
-    if (ok) {
-        struct stat st;
-        stat(cache_path.c_str(), &st);
-        log_diagnostic("V1 cache written: " + key + " (" + std::to_string(st.st_size / (1024*1024)) + " MB)", false, false);
-    } else {
-        log_diagnostic("V1 cache write failed for " + key, false, false);
-    }
+    if (!ok) { return false; }
+
+    // Return cache size in MB for the caller to log
+    struct stat st;
+    stat(cache_path.c_str(), &st);
+    return true;
 }
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.

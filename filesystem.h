@@ -32,14 +32,14 @@ bool write_token_save(const std::string& save_path, const std::vector<llama_toke
 bool read_token_save(const std::string& save_path, std::vector<llama_token>& tokens);
 
 // V1 cache: after a slow V2 restore, auto-save the rebuilt KV cache for instant
-// future restores.  Cache lives in <cwd>/.cache/<hash>.v1 with a registry.json
-// mapping hash → source info (v2 path, model path, git sha, mtimes).
-// Returns true if a valid cached V1 was found and loaded into ctx.
+// future restores.  Cache lives in <cwd>/.cache/<hash>.
 bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path,
                        const std::string& git_sha, struct llama_context* ctx);
 // After a successful V2 restore, persist the current KV cache as a V1 cache entry.
-void write_v1_cache(const std::string& v2_path, const std::string& model_path,
+// Returns true on success.
+bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
                     const std::string& git_sha, struct llama_context* ctx);
+std::string get_cache_dir();
 #include <functional>
 
 class FileSystemTools {

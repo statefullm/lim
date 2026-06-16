@@ -710,6 +710,7 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
             pclose(pipe);
         }
         if (!git_sha.empty()) {
+            diag("Writing V1 cache...", "\033[35m");
             write_v1_cache(abs_path, g_model_path, git_sha, ctx);
         }
     }
