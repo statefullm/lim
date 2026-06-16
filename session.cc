@@ -387,9 +387,9 @@ string ChatSession::get_user_input() {
 
 // --- handle_command: detect which command the input represents ---
 // Commands must be prefixed with '/'.  "/save [path]" is handled specially:
-//   /save              → SAVE with empty path (saves to log/<N>.save)
-//   /save cats         → SAVE with path "cats" (saves to cats.save)
-//   /save /tmp/check   → SAVE with path "/tmp/check" (saves to /tmp/check.save)
+//   /save              -> SAVE with empty path (saves to log/<N>.save)
+//   /save cats         -> SAVE with path "cats" (saves to cats.save)
+//   /save /tmp/check   -> SAVE with path "/tmp/check" (saves to /tmp/check.save)
 ChatSession::Command ChatSession::handle_command(const string& input) {
     if (input.empty() || input[0] != '/') return Command::NONE;
 
@@ -648,7 +648,7 @@ bool ChatSession::handle_reincarnate_completion() {
     return true; // continue outer loop
 }
 
-// Helper: compact save — write only the token sequence (not the raw KV cache).
+// Helper: compact save -- write only the token sequence (not the raw KV cache).
 // On restore, tokens are re-decoded through the model to regenerate the KV cache.
 // For a 75K-token session this produces ~300 KB instead of ~2 GB.
 static bool save_session_with_header(const vector<llama_token>& tokens, const string& path) {
@@ -789,9 +789,9 @@ bool ChatSession::run() {
 
         if (last_cmd_ == Command::SAVE) {
             // save_prefix_ was set by handle_command:
-            //   /save              → empty string, saves to log/<N>.save
-            //   /save cats         → "cats", saves to cats.save
-            //   /save /tmp/checkpoint → "/tmp/checkpoint", saves to /tmp/checkpoint.save
+            //   /save              -> empty string, saves to log/<N>.save
+            //   /save cats         -> "cats", saves to cats.save
+            //   /save /tmp/checkpoint -> "/tmp/checkpoint", saves to /tmp/checkpoint.save
             string save_path;
             if (save_prefix_.empty()) {
                 save_path = "log/" + to_string(state_.log_index) + ".save";

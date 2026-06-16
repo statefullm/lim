@@ -311,11 +311,11 @@ int main(int argc, char ** argv) {
         if (!handle_llama_decode_error(ctx, batch)) return 1;
     } else {
         // Restore from save file.
-        // V2 format: compact token sequence — re-decode through model to rebuild KV cache.
+        // V2 format: compact token sequence -- re-decode through model to rebuild KV cache.
         //   Header: "LLLM_SAVE_V2 git_sha=<sha> n_tokens=<N>\n<token_ids_as_int32>"
-        // V1 format (legacy): raw llama state — load via llama_state_set_data.
+        // V1 format (legacy): raw llama state -- load via llama_state_set_data.
         //   Header: "LLLM_SAVE_v1 git_sha=<sha>\n<raw-state-bytes>"
-        // Old-style: raw llama state with no header — load via llama_state_load_file.
+        // Old-style: raw llama state with no header -- load via llama_state_load_file.
         diag("Restoring session from " + restore_path + "...", "\033[35m");
 
         vector<llama_token> restored_tokens;
@@ -342,27 +342,20 @@ int main(int argc, char ** argv) {
                     saved_sha = (sp != string::npos) ? raw.substr(0, sp) : raw;
                 }
             }
-
             used_v2 = true;
             n_restored = (int)restored_tokens.size();
             diag("Loading " + to_string(n_restored) + " tokens from compact save...", "\033[35m");
 
             // Re-decode all tokens through the model to rebuild the KV cache.
             // This is deterministic: same tokens + same model = identical KV cache.
+            // Decode in n_batch-sized chunks to stay within llama.cpp's batch limit.
             auto restore_start = chrono::high_resolution_clock::now();
-            batch.n_tokens = 0;
-            for (int i = 0; i < n_restored; i++) {
-                common_batch_add(batch, restored_tokens[i], n_past++, {0}, (i == n_restored - 1));
-                if (batch.n_tokens == (int)cparams.n_batch && i != n_restored - 1) {
-                    if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
-                        sync_n_past(ctx, n_past);
-                        cerr << "Error: Failed to decode tokens during restore" << endl;
-                        return 1;
-                    }
-                    batch.n_tokens = 0;
+            for (int i = 0; i < n_restored; i += (int)cparams.n_batch) {
+                int chunk = std::min((int)cparams.n_batch, n_restored - i);
+                batch.n_tokens = 0;
+                for (int j = 0; j < chunk; j++) {
+                    common_batch_add(batch, restored_tokens[i + j], n_past++, {0}, (i + j == n_restored - 1));
                 }
-            }
-            if (batch.n_tokens > 0) {
                 if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
                     sync_n_past(ctx, n_past);
                     cerr << "Error: Failed to decode tokens during restore" << endl;

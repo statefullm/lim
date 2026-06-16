@@ -168,7 +168,7 @@ ToolExecutor::Result ToolExecutor::execute(
         }
         consoleFlush();
 
-        // Log tool result to chat_log (skip exec_shell — already streamed incrementally)
+        // Log tool result to chat_log (skip exec_shell -- already streamed incrementally)
         if (!tool_out.content.empty() && tool_out.content != "[Command executed with no output]") {
             // For web_search, log query + snippets but skip full page content
             if (tool_out.content.find("Search Results for:") == 0) {
@@ -186,7 +186,7 @@ ToolExecutor::Result ToolExecutor::execute(
                         while (j < tool_out.content.size()) {
                             if (tool_out.content[j] == '\n') {
                                 if (past_blank) {
-                                    // Two consecutive newlines — end of page content block
+                                    // Two consecutive newlines -- end of page content block
                                     break;
                                 }
                                 past_blank = true;
@@ -198,7 +198,7 @@ ToolExecutor::Result ToolExecutor::execute(
                         logged += "[Page Content omitted from log]\n";
                         i = j;
                     } else {
-                        // Rest of content (titles, URLs, snippets) — keep it all
+                        // Rest of content (titles, URLs, snippets) -- keep it all
                         logged += tool_out.content.substr(i);
                         break;
                     }

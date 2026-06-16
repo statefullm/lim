@@ -85,7 +85,7 @@ string read_llm_save_header(const string& save_path, size_t* header_size) {
     string magic = "LLLM_SAVE_v1 git_sha=";
     string first_chunk(head, n);
     if (first_chunk.substr(0, magic.size()) != magic) {
-        return ""; // Old-style raw save file — no header
+        return ""; // Old-style raw save file -- no header
     }
 
     size_t nl = first_chunk.find('\n');
@@ -155,7 +155,7 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
     if (nt_pos == string::npos) { fclose(fp); return false; }
     size_t num_tokens = std::stoull(header_str.substr(nt_pos + 9));
 
-    // Seek to right after the header newline — fread may have consumed
+    // Seek to right after the header newline -- fread may have consumed
     // bytes beyond the newline into our buffer, so we can't just continue reading.
     long header_end = (long)(nl + 1);
     if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }

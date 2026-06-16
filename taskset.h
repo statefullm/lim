@@ -144,7 +144,7 @@ static bool get_core_split(std::string& p_mask, std::string& e_mask) {
         if (cpu_str.find_first_not_of("0123456789") != std::string::npos) continue;
         if (id < 0) continue;
 
-        // If siblings contain a dash, this CPU has hyperthreading → P-core
+        // If siblings contain a dash, this CPU has hyperthreading -> P-core
         if (sib.find('-') != std::string::npos) {
             p_cores.push_back(id);
         } else {
@@ -158,7 +158,7 @@ static bool get_core_split(std::string& p_mask, std::string& e_mask) {
         std::sort(p_cores.begin(), p_cores.end());
         std::sort(e_cores.begin(), e_cores.end());
 
-        // Build compact masks: "0-15", "16,17,18,...,23" → "16-23"
+        // Build compact masks: "0-15", "16,17,18,...,23" -> "16-23"
         auto to_mask = [](const std::vector<int>& c) -> std::string {
             if (c.empty()) return "";
             std::string m;
