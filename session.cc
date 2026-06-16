@@ -791,12 +791,17 @@ bool ChatSession::run() {
             // save_prefix_ was set by handle_command:
             //   /save              -> empty string, saves to log/<N>.save
             //   /save cats         -> "cats", saves to cats.save
+            //   /save cats.save    -> "cats.save", saves to cats.save (no double extension)
             //   /save /tmp/checkpoint -> "/tmp/checkpoint", saves to /tmp/checkpoint.save
             string save_path;
             if (save_prefix_.empty()) {
                 save_path = "log/" + to_string(state_.log_index) + ".save";
             } else {
-                save_path = save_prefix_ + ".save";
+                save_path = save_prefix_;
+                // Append .save only if not already present
+                if (save_path.size() < 5 || save_path.substr(save_path.size() - 5) != ".save") {
+                    save_path += ".save";
+                }
             }
 
             diag("Saving session to " + save_path + "...", "\033[35m");

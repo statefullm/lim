@@ -325,19 +325,21 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
 | `/save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, overwriting any previous save for this session |
-| `/save <path>` | Save the full session state to `<path>.save`. The path can be relative (`/save cats` -> `cats.save`) or absolute (`/save /tmp/checkpoint` -> `/tmp/checkpoint.save`). Use this to create named checkpoints at meaningful points in your session. |
+| `/save <path>` | Save the full session state to `<path>.save`. The path can be relative (`/save cats` -> `cats.save`) or absolute (`/save /tmp/checkpoint` -> `/tmp/checkpoint.save`). If the path already ends in `.save`, no extra extension is added. Use this to create named checkpoints at meaningful points in your session. |
 | `/help` | Display a summary of all available commands |
 
 ### Save and Restore
 
 You can save a running session and restore it later with zero context loss:
 
-**Save:** Type `/save` at the `>>>` prompt to save to `log/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. The KV-cache, logits, sampler state, and all conversation tokens are written.
+**Save:** Type `/save` at the `>>>` prompt to save to `log/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The KV-cache, logits, sampler state, and all conversation tokens are written.
 
-**Restore:** Pass a `.save` file as the last argument to `coder`:
+**Restore:** Pass a save file as the last argument to `coder`. The `.save` extension is added automatically if not already present, matching `/save` behavior:
 
 ```bash
-coder log/5.save
+coder log/5.save    # explicit extension
+coder log/5         # .save appended automatically
+coder cats          # restores from cats.save
 ```
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).

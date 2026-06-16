@@ -99,6 +99,10 @@ int main(int argc, char ** argv) {
     string restore_path;
     if (restore_from_file) {
         restore_path = argv[2];
+        // Match /save behavior: append .save if not already present
+        if (restore_path.size() < 5 || restore_path.substr(restore_path.size() - 5) != ".save") {
+            restore_path += ".save";
+        }
     }
 
     // Temperature from LLLM_TEMP environment variable
