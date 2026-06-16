@@ -8,6 +8,7 @@
 #include "server.h"
 #include "model.h"
 #include "session.h"
+#include "taskset.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -166,6 +167,7 @@ int main(int argc, char ** argv) {
     };
 
     diag("Session #" + to_string(log_index) + " started: type /help to see a list of commands", "\033[35m");
+    if (is_debug) Taskset::log_core_detection(std::cerr);
     log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(log_index) + ")");
 
     llama_backend_init();

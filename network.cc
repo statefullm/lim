@@ -1,5 +1,6 @@
 #include "network.h"
 #include "filesystem.h"
+#include "taskset.h"
 #include <curl/curl.h>
 #include <iostream>
 #include <fstream>
@@ -208,7 +209,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stdout);
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stderr);
 
-        string cmd = "exec taskset -c 16-23 /usr/bin/python " + HOME + "/searxng/searx/webapp.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"/usr/bin/python " + HOME + "/searxng/searx/webapp.py";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
@@ -265,7 +266,7 @@ void NetworkTools::start_docling_if_needed() {
         freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
 
-        string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec taskset -c 0-15 "+HOME+"/venv/bin/docling-serve run --enable-ui";
+        string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+HOME+"/venv/bin/docling-serve run --enable-ui";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {

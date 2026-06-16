@@ -101,16 +101,50 @@ alias fixai='sudo chown -R $USER:ai .; chmod -R g+rw .; chmod -R -t .'
 You launch LLLM by switching to user `ai` while preserving your environment:
 
 ```bash
-alias coder='sudo -u ai -E taskset -c 0-15 ~/bin/lllm ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
+alias coder='sudo -u ai -E ~/bin/lllm ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
 ```
 
-This alias does three things:
+This alias does two things:
 
 - **`sudo -u ai -E`**: Runs as user `ai`, preserving your environment variables (`-E`).
-- **`taskset -c 0-15`**: Pins LLM inference to performance cores (P-cores), leaving efficiency cores (E-cores) free for the Python browser server and background services.
 - **Model path**: Points to your preferred GGUF model.
 
 Add this alias to your personal `~/.bashrc`.
+
+#### Core Pinning (taskset)
+
+LLLM automatically detects P-cores and E-cores on hybrid CPUs (Intel Alder Lake, Raptor Lake, etc.) by comparing `thread_siblings_list` from sysfs. It pins background services accordingly:
+
+| Workload | Default Cores | Description |
+|---|---|---|
+| SearxNG search server | E-cores | Light background Python process |
+| Browser WebSocket server | E-cores | Light background Python process |
+| Docling PDF converter | P-cores | Heavy ML inference workload |
+
+On non-hybrid CPUs (all cores identical), no taskset pinning is applied. If the pinning command isn't found on `$PATH` (e.g., macOS has no `taskset`), pinning is silently skipped.
+
+Override the auto-detected layout with `LLLM_TASKSET`:
+
+```bash
+# Format: LLLM_TASKSET="P_CORES:E_CORES"
+export LLLM_TASKSET="0-15:16-23"   # Classic i9-12900K layout
+export LLLM_TASKSET="0-7:"         # P-cores 0-7, no E-core pinning
+export LLLM_TASKSET=":8-15"        # No P-core pinning, E-cores 8-15
+export LLLM_TASKSET="::"           # Disable all taskset pinning
+```
+
+**macOS / non-Linux systems:** macOS has no `taskset` binary. To enable manual core pinning, install an alternative and point `LLLM_TASKSET_CMD` at it:
+
+```bash
+# Install numactl via Homebrew, then use it as the pinning backend
+brew install numactl
+export LLLM_TASKSET="0-3:4-7"
+export LLLM_TASKSET_CMD="numactl --cpunodebind"
+```
+
+Or write a custom wrapper script and set `LLLM_TASKSET_CMD` to its path. If the command isn't on `$PATH`, pinning is silently skipped — services still start normally, just unpinned.
+
+The detected topology and pinning status are logged to stderr at startup.
 
 ### 5. Setting Up `/home/ai/.bashrc`
 
@@ -202,6 +236,8 @@ Set via `LLLM_OUTPUT`:
 | `LLLM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
 | `LLLM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
 | `LLLM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
+| `LLLM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
+| `LLLM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
 ---
 
@@ -320,7 +356,7 @@ By default (`LLLM_OUTPUT=2`), LLLM streams output to a browser via WebSocket. Lo
 http://<hostname>:8765/viewer.html
 ```
 
-The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It's pinned to efficiency cores (E-cores, 16-23) via `taskset`. The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
+The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores (auto-detected, or all cores on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
 
 ---
 

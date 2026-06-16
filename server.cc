@@ -1,6 +1,7 @@
 #include "server.h"
 #include "output.h"
 #include "filesystem.h"
+#include "taskset.h"
 #include <sys/wait.h>
 #include <cstdlib>
 
@@ -61,7 +62,7 @@ void start_lllm_server_if_needed() {
     pid_t pid = fork();
     if (pid == 0) {
         setpgid(0, 0);
-        string cmd = "exec taskset -c 16-23 /usr/bin/python "+string(home_env)+"/lllm/lllmServer.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"/usr/bin/python "+string(home_env)+"/lllm/lllmServer.py";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
