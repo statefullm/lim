@@ -2,7 +2,7 @@ LLAMA_ROOT = ../llama.cpp
 
 CXX = g++
 CXXFLAGS = -std=c++17 -O3 -I$(LLAMA_ROOT)/include -I$(LLAMA_ROOT)/common -I$(LLAMA_ROOT)/ggml/include -I$(LLAMA_ROOT)/vendor -I/usr/include/libxml2
-LDFLAGS =  -L$(LLAMA_ROOT)/build/bin -L/usr/local/cuda-13.0/targets/x86_64-linux/lib -Wl,-rpath,$(shell readlink -f $(LLAMA_ROOT)/build/bin) -Wl,-rpath,/usr/local/cuda-13.0/targets/x86_64-linux/lib -lllama -lggml-base -lggml -lggml-cpu -lggml-cuda -lcudart -lllama-common -lreadline -lcurl -lxml2
+LDFLAGS =  -L$(LLAMA_ROOT)/build/bin -L/usr/local/cuda-13.0/targets/x86_64-linux/lib -Wl,-rpath,$(shell readlink -f $(LLAMA_ROOT)/build/bin) -Wl,-rpath,/usr/local/cuda-13.0/targets/x86_64-linux/lib -lllama -lggml-base -lggml -lggml-cpu -lggml-cuda -lcudart -lllama-common -lreadline -lcurl -lxml2 -lcrypto
 MAKEDEPEND = $(CXXFLAGS) -O0 -M -MG -DDEPEND
 
 FILES = output server tools filesystem network parsers signals model session token_generator tool_executor session_utils

@@ -142,7 +142,7 @@ export LLLM_TASKSET="0-3:4-7"
 export LLLM_TASKSET_CMD="numactl --cpunodebind"
 ```
 
-Or write a custom wrapper script and set `LLLM_TASKSET_CMD` to its path. If the command isn't on `$PATH`, pinning is silently skipped — services still start normally, just unpinned.
+Or write a custom wrapper script and set `LLLM_TASKSET_CMD` to its path. If the command isn't on `$PATH`, pinning is silently skipped -- services still start normally, just unpinned.
 
 The detected topology and pinning status are logged to stderr at startup.
 
@@ -346,6 +346,8 @@ coder cats          # restores from cats.save
 ```
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
+
+**Instant restore cache:** Save files contain only the token sequence, keeping them small and model-agnostic. On first restore, tokens are decoded through the model to rebuild the KV-cache. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are instant. Explicit `/save` commands also trigger this cache write immediately. Auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the cache to save disk space. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
 **Auto-save on clear and quit:** Before clearing the context, LLLM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 

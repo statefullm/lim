@@ -57,6 +57,9 @@ void diag(const string& msg, const char* color) {
     diag_impl(string(color) + "[" + msg + "]\033[0m", msg);
 }
 
+// Model path — set in main(), read by session.cc for V1 cache writes.
+std::string g_model_path;
+
 int main(int argc, char ** argv) {
     setlocale(LC_ALL, "");
 
@@ -94,14 +97,24 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    g_model_path = argv[1];
+
     // Check if we are restoring from a save file
     bool restore_from_file = (argc == 3);
     string restore_path;
+    string restore_path_abs;
     if (restore_from_file) {
         restore_path = argv[2];
         // Match /save behavior: append .save if not already present
         if (restore_path.size() < 5 || restore_path.substr(restore_path.size() - 5) != ".save") {
             restore_path += ".save";
+        }
+        // Resolve to absolute path for cache key consistency
+        char abs_buf[4096];
+        if (realpath(restore_path.c_str(), abs_buf)) {
+            restore_path_abs = abs_buf;
+        } else {
+            restore_path_abs = restore_path;
         }
     }
 
@@ -346,34 +359,52 @@ int main(int argc, char ** argv) {
                     saved_sha = (sp != string::npos) ? raw.substr(0, sp) : raw;
                 }
             }
-            used_v2 = true;
-            n_restored = (int)restored_tokens.size();
-            diag("Loading " + to_string(n_restored) + " tokens from compact save...", "\033[35m");
 
-            // Re-decode all tokens through the model to rebuild the KV cache.
-            // This is deterministic: same tokens + same model = identical KV cache.
-            // Decode in n_batch-sized chunks to stay within llama.cpp's batch limit.
-            auto restore_start = chrono::high_resolution_clock::now();
-            for (int i = 0; i < n_restored; i += (int)cparams.n_batch) {
-                int chunk = std::min((int)cparams.n_batch, n_restored - i);
-                batch.n_tokens = 0;
-                for (int j = 0; j < chunk; j++) {
-                    common_batch_add(batch, restored_tokens[i + j], n_past++, {0}, (i + j == n_restored - 1));
+            // Try instant restore from V1 cache before slow token decode
+            bool cache_hit = false;
+            if (!saved_sha.empty() && !restore_path_abs.empty()) {
+                cache_hit = try_load_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
+            }
+
+            if (cache_hit) {
+                n_past = (int)llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
+                n_restored = n_past;
+                used_v2 = true;
+            } else {
+                used_v2 = true;
+                n_restored = (int)restored_tokens.size();
+                diag("Loading " + to_string(n_restored) + " tokens from compact save...", "\033[35m");
+
+                // Re-decode all tokens through the model to rebuild the KV cache.
+                // This is deterministic: same tokens + same model = identical KV cache.
+                // Decode in n_batch-sized chunks to stay within llama.cpp's batch limit.
+                auto restore_start = chrono::high_resolution_clock::now();
+                for (int i = 0; i < n_restored; i += (int)cparams.n_batch) {
+                    int chunk = std::min((int)cparams.n_batch, n_restored - i);
+                    batch.n_tokens = 0;
+                    for (int j = 0; j < chunk; j++) {
+                        common_batch_add(batch, restored_tokens[i + j], n_past++, {0}, (i + j == n_restored - 1));
+                    }
+                    if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
+                        sync_n_past(ctx, n_past);
+                        cerr << "Error: Failed to decode tokens during restore" << endl;
+                        return 1;
+                    }
                 }
-                if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
-                    sync_n_past(ctx, n_past);
-                    cerr << "Error: Failed to decode tokens during restore" << endl;
-                    return 1;
+                sync_n_past(ctx, n_past);
+
+                auto restore_end = chrono::high_resolution_clock::now();
+                double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
+                double restore_speed = (restore_elapsed > 0) ? n_restored / restore_elapsed : 0;
+                diag("KV cache regenerated: " + to_string(n_restored) + " tokens at " +
+                     std::to_string((int)restore_speed) + " t/s (" +
+                     std::to_string((int)restore_elapsed) + "s)", "\033[35m");
+
+                // Auto-write V1 cache for instant future restores
+                if (!saved_sha.empty() && !restore_path_abs.empty()) {
+                    write_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 }
             }
-            sync_n_past(ctx, n_past);
-
-            auto restore_end = chrono::high_resolution_clock::now();
-            double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
-            double restore_speed = (restore_elapsed > 0) ? n_restored / restore_elapsed : 0;
-            diag("KV cache regenerated: " + to_string(n_restored) + " tokens at " +
-                 std::to_string((int)restore_speed) + " t/s (" +
-                 std::to_string((int)restore_elapsed) + "s)", "\033[35m");
         } else {
             // Fall back to V1 (raw KV cache) or old-style save
             size_t header_size = 0;

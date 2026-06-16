@@ -22,6 +22,8 @@
 #include <vector>
 #include <algorithm>
 #include <limits.h>
+#include <climits>
+#include <openssl/sha.h>
 
 using namespace std;
 using namespace Tokens;
@@ -173,6 +175,127 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
         fclose(fp);
     }
     return true;
+}
+
+// --- V1 Cache: auto-cached KV cache for instant V2 restores ---
+
+#include <openssl/sha.h>
+#include <array>
+#include <ctime>
+#include <dirent.h>
+#include <sys/stat.h>
+
+static std::string sha256_hex(const std::string& data) {
+    std::array<uint8_t, SHA256_DIGEST_LENGTH> hash;
+    SHA256(reinterpret_cast<const uint8_t*>(data.data()), data.size(), hash.data());
+    std::ostringstream oss;
+    for (auto b : hash) oss << std::hex << std::setfill('0') << std::setw(2) << (int)b;
+    return oss.str();
+}
+
+static std::string get_cache_dir() {
+    // Use .cache subdirectory in the project directory alongside save files.
+    char cwd[4096];
+    std::string base = (getcwd(cwd, sizeof(cwd)) ? cwd : ".");
+    std::string dir = base + "/.cache";
+    mkdir(dir.c_str(), 0755);
+    return dir;
+}
+
+static std::string cache_key(const std::string& v2_path, const std::string& model_path,
+                             const std::string& git_sha) {
+    // Hash the combination of v2 path, model path, and git sha.
+    // This ensures cache invalidation on any change.
+    return sha256_hex(v2_path + "|" + model_path + "|" + git_sha).substr(0, 12);
+}
+
+static long file_mtime(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) return -1;
+    return st.st_mtime;
+}
+
+// Minimal JSON registry: just track mtime of v2 source for staleness detection.
+// Full registry.json is overkill — we embed metadata in the V1 cache header instead.
+
+bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path,
+                       const std::string& git_sha, struct llama_context* ctx) {
+    if (git_sha.empty()) return false; // No SHA means no cache key
+
+    std::string dir = get_cache_dir();
+    std::string key = cache_key(v2_path, model_path, git_sha);
+    std::string cache_path = dir + "/" + key;
+
+    // Check cache exists
+    struct stat st;
+    if (stat(cache_path.c_str(), &st) != 0) return false;
+
+    // Check v2 source hasn't been updated since cache was created
+    long v2_mtime = file_mtime(v2_path);
+    if (v2_mtime == -1 || v2_mtime > st.st_mtime) return false; // stale or missing
+
+    log_diagnostic("V1 cache hit: " + key + " (" + std::to_string(st.st_size / (1024*1024)) + " MB)", false, false);
+
+    // Load the cached KV cache (it has a V1 header)
+    size_t header_size = 0;
+    read_llm_save_header(cache_path, &header_size);
+
+    FILE* fp = fopen(cache_path.c_str(), "rb");
+    if (!fp) return false;
+    if (fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0) { fclose(fp); return false; }
+    fseek(fp, 0, SEEK_END);
+    long fsize = ftell(fp);
+    fclose(fp);
+    size_t state_size = static_cast<size_t>(fsize) - header_size;
+
+    std::vector<uint8_t> state_buf(state_size);
+    fp = fopen(cache_path.c_str(), "rb");
+    if (!fp || fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0 ||
+        fread(state_buf.data(), 1, state_size, fp) != state_size) {
+        if (fp) fclose(fp);
+        return false;
+    }
+    fclose(fp);
+
+    size_t n_loaded = llama_state_set_data(ctx, state_buf.data(), state_size);
+    return n_loaded == state_size;
+}
+
+void write_v1_cache(const std::string& v2_path, const std::string& model_path,
+                    const std::string& git_sha, struct llama_context* ctx) {
+    if (git_sha.empty()) return; // No SHA means no cache key
+
+    std::string dir = get_cache_dir();
+    std::string key = cache_key(v2_path, model_path, git_sha);
+    std::string cache_path = dir + "/" + key;
+
+    log_diagnostic("Writing V1 cache: " + key + "...", false, false);
+
+    // Get the current KV cache as raw state data
+    size_t state_size = llama_state_get_size(ctx);
+    if (state_size == 0) return;
+
+    std::vector<uint8_t> state_buf(state_size);
+    size_t n_written = llama_state_get_data(ctx, state_buf.data(), state_size);
+    if (n_written == 0) return;
+
+    // Write with V1 header so it's self-describing
+    FILE* fp = fopen(cache_path.c_str(), "wb");
+    if (!fp) { log_diagnostic("V1 cache write failed: could not open " + cache_path, false, false); return; }
+
+    // Header: same format as V1 save, includes source info for debugging
+    std::string header = "LLLM_SAVE_v1 git_sha=" + git_sha + "\n";
+    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return; }
+    if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return; }
+
+    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
+    if (ok) {
+        struct stat st;
+        stat(cache_path.c_str(), &st);
+        log_diagnostic("V1 cache written: " + key + " (" + std::to_string(st.st_size / (1024*1024)) + " MB)", false, false);
+    } else {
+        log_diagnostic("V1 cache write failed for " + key, false, false);
+    }
 }
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.

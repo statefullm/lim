@@ -18,6 +18,10 @@
 #include <vector>
 #include <string>
 #include <map>
+#include <cstring>
+
+// From main.cc
+extern std::string g_model_path;
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
@@ -682,9 +686,34 @@ static string make_save_path(const string& prefix, const string& default_path) {
 // Helper: compact save -- write only the token sequence (not the raw KV cache).
 // On restore, tokens are re-decoded through the model to regenerate the KV cache.
 // For a 75K-token session this produces ~300 KB instead of ~2 GB.
-static bool save_session_with_header(const vector<llama_token>& tokens, const string& path) {
+static bool save_session_with_header(const vector<llama_token>& tokens, const string& path,
+                                     bool write_v1 = false, llama_context* ctx = nullptr) {
     if (tokens.empty()) return false;
-    return write_token_save(path, tokens);
+    bool ok = write_token_save(path, tokens);
+
+    // Also write V1 cache for instant future restores (only on explicit /save)
+    if (ok && write_v1) {
+        // Resolve to absolute path for consistent cache key
+        char abs_buf[4096];
+        string abs_path = path;
+        if (realpath(path.c_str(), abs_buf)) abs_path = abs_buf;
+
+        FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
+        string git_sha;
+        if (pipe) {
+            char buf[48];
+            if (fgets(buf, sizeof(buf), pipe)) {
+                git_sha = buf;
+                while (!git_sha.empty() && (git_sha.back() == '\n' || git_sha.back() == '\r'))
+                    git_sha.pop_back();
+            }
+            pclose(pipe);
+        }
+        if (!git_sha.empty()) {
+            write_v1_cache(abs_path, g_model_path, git_sha, ctx);
+        }
+    }
+    return ok;
 }
 
 // --- run: the main chat turn loop ---
@@ -823,7 +852,7 @@ bool ChatSession::run() {
 
             diag("Saving session to " + save_path + "...", "\033[35m");
 
-            bool ok = save_session_with_header(state_.all_context_tokens, save_path);
+            bool ok = save_session_with_header(state_.all_context_tokens, save_path, true /* write_v1 */, ctx_);
             if (!ok) {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
