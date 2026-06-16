@@ -405,10 +405,29 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 
     save_prefix_.clear();
 
-    if (rest == "quit" || rest == "exit") return Command::QUIT;
-    if (rest == "clear") return Command::CLEAR;
+    // "/quit", "/exit", "/clear", "/reincarnate" may have an optional save path argument
+    if (rest.substr(0, 4) == "quit") {
+        rest.erase(0, 4);
+        save_prefix_ = trim(rest);
+        return Command::QUIT;
+    }
+    if (rest.substr(0, 4) == "exit") {
+        rest.erase(0, 4);
+        save_prefix_ = trim(rest);
+        return Command::QUIT;
+    }
+    if (rest.substr(0, 5) == "clear") {
+        rest.erase(0, 5);
+        save_prefix_ = trim(rest);
+        return Command::CLEAR;
+    }
+    if (rest.substr(0, 12) == "reincarnate") {
+        rest.erase(0, 12);
+        save_prefix_ = trim(rest);
+        return Command::REINCARNATE;
+    }
+
     if (rest == "reset") return Command::RESET;
-    if (rest == "reincarnate") return Command::REINCARNATE;
     if (rest == "continue") return Command::CONTINUE;
     if (rest == "help") return Command::HELP;
     return Command::NONE;
@@ -648,6 +667,18 @@ bool ChatSession::handle_reincarnate_completion() {
     return true; // continue outer loop
 }
 
+// Helper: build a save path from an optional user-supplied prefix.
+// If prefix is empty, returns the default autosave path.
+// Appends .save if not already present.
+static string make_save_path(const string& prefix, const string& default_path) {
+    if (prefix.empty()) return default_path;
+    string path = prefix;
+    if (path.size() < 5 || path.substr(path.size() - 5) != ".save") {
+        path += ".save";
+    }
+    return path;
+}
+
 // Helper: compact save -- write only the token sequence (not the raw KV cache).
 // On restore, tokens are re-decoded through the model to regenerate the KV cache.
 // For a 75K-token session this produces ~300 KB instead of ~2 GB.
@@ -677,7 +708,7 @@ bool ChatSession::run() {
 
         if (last_cmd_ == Command::QUIT) {
             // Auto-save before exiting so the user's current work is preserved.
-            string autosave_path = "log/" + to_string(state_.log_index) + ".save";
+            string autosave_path = make_save_path(save_prefix_, "log/" + to_string(state_.log_index) + ".save");
             bool ok = save_session_with_header(state_.all_context_tokens, autosave_path);
             if (!ok) {
                 diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -692,7 +723,7 @@ bool ChatSession::run() {
             // Uses a distinct name (e.g., log/5-clear.save) so it doesn't conflict
             // with the regular save file that /quit or /exit will overwrite.
             {
-                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                string autosave_path = make_save_path(save_prefix_, "log/" + to_string(state_.log_index) + "-clear.save");
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -725,7 +756,7 @@ bool ChatSession::run() {
             // Auto-save before reincarnating so nothing is truly lost.
             // Uses the same -clear.save name since reincarnate calls clear_context internally.
             {
-                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                string autosave_path = make_save_path(save_prefix_, "log/" + to_string(state_.log_index) + "-clear.save");
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -788,21 +819,7 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::SAVE) {
-            // save_prefix_ was set by handle_command:
-            //   /save              -> empty string, saves to log/<N>.save
-            //   /save cats         -> "cats", saves to cats.save
-            //   /save cats.save    -> "cats.save", saves to cats.save (no double extension)
-            //   /save /tmp/checkpoint -> "/tmp/checkpoint", saves to /tmp/checkpoint.save
-            string save_path;
-            if (save_prefix_.empty()) {
-                save_path = "log/" + to_string(state_.log_index) + ".save";
-            } else {
-                save_path = save_prefix_;
-                // Append .save only if not already present
-                if (save_path.size() < 5 || save_path.substr(save_path.size() - 5) != ".save") {
-                    save_path += ".save";
-                }
-            }
+            string save_path = make_save_path(save_prefix_, "log/" + to_string(state_.log_index) + ".save");
 
             diag("Saving session to " + save_path + "...", "\033[35m");
 
@@ -818,12 +835,12 @@ bool ChatSession::run() {
 
         if (last_cmd_ == Command::HELP) {
             diag("Available Commands:", "\033[1;36m");
-            diag("  /quit or /exit      Save session and exit", "\033[37m");
-            diag("  /clear              Clear context (auto-saves first to log/<N>-clear.save)", "\033[37m");
-            diag("  /reset              Reset loop detector and file cache", "\033[37m");
-            diag("  /reincarnate        Compose new prompt in ~/userprompt, then restart", "\033[37m");
-            diag("  /continue           Resume generation after interruption", "\033[37m");
-            diag("  /save [path]        Save session state (default: log/<N>.save)", "\033[37m");
+            diag("  /quit or /exit [path]  Save to [path].save and exit (default: log/<N>.save)", "\033[37m");
+            diag("  /clear [path]          Clear context (auto-saves first to log/<N>-clear.save, or [path].save)", "\033[37m");
+            diag("  /reset                 Reset loop detector and file cache", "\033[37m");
+            diag("  /reincarnate [path]    Compose new prompt in ~/userprompt, then restart (auto-saves first)", "\033[37m");
+            diag("  /continue              Resume generation after interruption", "\033[37m");
+            diag("  /save [path]           Save session state (default: log/<N>.save)", "\033[37m");
             diag("  /help               Show this help message", "\033[37m");
             diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;36m");
             continue;

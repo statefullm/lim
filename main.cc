@@ -453,16 +453,16 @@ int main(int argc, char ** argv) {
             if (!current_sha.empty()) {
                 string short_current = current_sha.substr(0, 7);
                 if (saved_sha == current_sha) {
-                    diag("Session restored: " + to_string(n_past) + " tokens loaded (git: " + short_saved + ")", "\033[32m");
+                    diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded (git: " + short_saved + ")", "\033[32m");
                 } else {
-                    diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+                    diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
                     diag("Git HEAD mismatch: session was at " + short_saved + ", currently at " + short_current, "\033[33m");
                 }
             } else {
-                diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+                diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
             }
         } else {
-            diag("Session restored: " + to_string(n_past) + " tokens loaded", "\033[32m");
+            diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
         }
         log_entry("SYSTEM", "Restored session from " + restore_path);
 
