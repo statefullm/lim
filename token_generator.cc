@@ -114,7 +114,8 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                llama_sampler* smpl, llama_batch& batch,
                                int& n_past, const llama_context_params& cparams,
                                double turn_timeout_sec, bool was_mid_tool_call,
-                               int last_n_past)
+                               int last_n_past,
+                               std::vector<llama_token>* out_tokens)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec),
       print_pos_(0),
@@ -131,7 +132,8 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       think_buffering_(true),
       t_count_(0),
       last_n_past_(last_n_past),
-      was_mid_tool_call_(was_mid_tool_call)
+      was_mid_tool_call_(was_mid_tool_call),
+      out_tokens_(out_tokens)
 {
     generated_text_.reserve(32768);
     unprinted_text_.reserve(1024);
@@ -206,6 +208,9 @@ TokenGenerator::Result TokenGenerator::generate() {
             break;
         }
         llama_token next_token = llama_sampler_sample(smpl_, ctx_, batch_.n_tokens - 1);
+
+        // Track this sampled token for compact save/restore
+        if (out_tokens_) out_tokens_->push_back(next_token);
 
         if (llama_vocab_is_eog(vocab_, next_token)) {
             size_t active_ts = generated_text_.find(FUNC_START);

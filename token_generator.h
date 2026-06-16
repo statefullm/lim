@@ -30,7 +30,8 @@ public:
                    llama_sampler* smpl, llama_batch& batch,
                    int& n_past, const llama_context_params& cparams,
                    double turn_timeout_sec, bool was_mid_tool_call,
-                   int last_n_past);
+                   int last_n_past,
+                   std::vector<llama_token>* out_tokens = nullptr);
 
     Result generate();
 
@@ -63,6 +64,7 @@ private:
     int t_count_;
     int last_n_past_;
     bool was_mid_tool_call_;
+    std::vector<llama_token>* out_tokens_;  // If non-null, each sampled token is appended here
 };
 
 #endif // TOKEN_GENERATOR_H

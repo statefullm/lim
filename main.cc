@@ -20,6 +20,7 @@
 #include <clocale>
 #include <ctime>
 #include <algorithm>
+#include <chrono>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
@@ -309,75 +310,134 @@ int main(int argc, char ** argv) {
 
         if (!handle_llama_decode_error(ctx, batch)) return 1;
     } else {
-        // Restore from save file: load KV cache and all state.
-        // New-style files have a one-line header "LLLM_SAVE_v1 git_sha=<sha>\n"
-        // followed by raw llama state.  Old-style files are raw state with no header.
+        // Restore from save file.
+        // V2 format: compact token sequence — re-decode through model to rebuild KV cache.
+        //   Header: "LLLM_SAVE_V2 git_sha=<sha> n_tokens=<N>\n<token_ids_as_int32>"
+        // V1 format (legacy): raw llama state — load via llama_state_set_data.
+        //   Header: "LLLM_SAVE_v1 git_sha=<sha>\n<raw-state-bytes>"
+        // Old-style: raw llama state with no header — load via llama_state_load_file.
         diag("Restoring session from " + restore_path + "...", "\033[35m");
 
-        size_t header_size = 0;
-        string saved_sha = read_llm_save_header(restore_path, &header_size);
+        vector<llama_token> restored_tokens;
+        string saved_sha;
+        int n_restored = 0;
+        bool used_v2 = false;
 
-        vector<llama_token> restored_tokens(cparams.n_ctx);
-        size_t n_restored = 0;
-        bool ok;
-
-        if (!saved_sha.empty() && header_size > 0) {
-            // New-style: read raw state (after header) into memory, then llama_state_set_data.
+        // Try V2 (compact token save) first
+        if (read_token_save(restore_path, restored_tokens)) {
+            // Parse git SHA from the header by reading just the first line
             FILE* fp = fopen(restore_path.c_str(), "rb");
-            if (!fp) {
-                cerr << "Error: Failed to open save file for restore: " << restore_path << endl;
-                return 1; }
-            if (fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0) {
+            if (fp) {
+                char head[128];
+                size_t n = fread(head, 1, sizeof(head) - 1, fp);
                 fclose(fp);
-                cerr << "Error: Failed to seek past header in save file" << endl;
-                return 1; }
-            fseek(fp, 0, SEEK_END);
-            long fsize = ftell(fp);
-            fclose(fp);
-            size_t state_size = static_cast<size_t>(fsize) - header_size;
+                head[n] = '\0';
+                string header_line(head);
+                size_t nl = header_line.find('\n');
+                if (nl != string::npos) header_line.resize(nl);
+                size_t sha_pos = header_line.find("git_sha=");
+                if (sha_pos != string::npos) {
+                    string raw = header_line.substr(sha_pos + 8);
+                    size_t sp = raw.find(' ');
+                    saved_sha = (sp != string::npos) ? raw.substr(0, sp) : raw;
+                }
+            }
 
-            std::vector<uint8_t> state_buf(state_size);
-            fp = fopen(restore_path.c_str(), "rb");
-            if (!fp || fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0 ||
-                fread(state_buf.data(), 1, state_size, fp) != state_size) {
-                if (fp) fclose(fp);
-                cerr << "Error: Failed to read state data from save file" << endl;
-                return 1; }
-            fclose(fp);
+            used_v2 = true;
+            n_restored = (int)restored_tokens.size();
+            diag("Loading " + to_string(n_restored) + " tokens from compact save...", "\033[35m");
 
-            size_t n_loaded = llama_state_set_data(ctx, state_buf.data(), state_size);
-            if (n_loaded != state_size) {
-                cerr << "Error: llama_state_set_data loaded " << n_loaded << " of " << state_size << " bytes" << endl;
-                return 1; }
-            ok = true;
+            // Re-decode all tokens through the model to rebuild the KV cache.
+            // This is deterministic: same tokens + same model = identical KV cache.
+            auto restore_start = chrono::high_resolution_clock::now();
+            batch.n_tokens = 0;
+            for (int i = 0; i < n_restored; i++) {
+                common_batch_add(batch, restored_tokens[i], n_past++, {0}, (i == n_restored - 1));
+                if (batch.n_tokens == (int)cparams.n_batch && i != n_restored - 1) {
+                    if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
+                        sync_n_past(ctx, n_past);
+                        cerr << "Error: Failed to decode tokens during restore" << endl;
+                        return 1;
+                    }
+                    batch.n_tokens = 0;
+                }
+            }
+            if (batch.n_tokens > 0) {
+                if (!handle_llama_decode_error(ctx, batch, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
+                    sync_n_past(ctx, n_past);
+                    cerr << "Error: Failed to decode tokens during restore" << endl;
+                    return 1;
+                }
+            }
+            sync_n_past(ctx, n_past);
 
-            // Get restored tokens from the KV cache.
-            // (llama_state_set_data doesn't return tokens; extract them.)
-            llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
-            n_restored = 0; // We don't have token IDs from set_data, but that's OK.
-            n_past = (int)(actual_max + 1);
+            auto restore_end = chrono::high_resolution_clock::now();
+            double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
+            double restore_speed = (restore_elapsed > 0) ? n_restored / restore_elapsed : 0;
+            diag("KV cache regenerated: " + to_string(n_restored) + " tokens at " +
+                 std::to_string((int)restore_speed) + " t/s (" +
+                 std::to_string((int)restore_elapsed) + "s)", "\033[35m");
         } else {
-            // Old-style: load directly via llama_state_load_file.
-            if (access(restore_path.c_str(), F_OK) != 0) {
-                cerr << "Error: Save file not found: " << restore_path << endl;
-                return 1; }
-            ok = llama_state_load_file(ctx, restore_path.c_str(),
-                                         restored_tokens.data(), restored_tokens.size(), &n_restored);
-            if (!ok) {
-                cerr << "Error: Failed to load save file (corrupt or incompatible): " << restore_path << endl;
-                return 1; }
-            // Use the actual KV cache position, not the saved token count.
-            // The saved token count only tracks tokens fed via feed_tokens_impl
-            // (system prompt, user messages, tool results), but the KV cache also
-            // contains all generated assistant tokens that were fed directly via
-            // common_batch_add in TokenGenerator.  Using the stale count causes
-            // balloc->init to reject the first post-restore batch because the
-            // batch positions don't match the real cache boundary.
-            llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
-            n_past = (int)(actual_max + 1);
+            // Fall back to V1 (raw KV cache) or old-style save
+            size_t header_size = 0;
+            saved_sha = read_llm_save_header(restore_path, &header_size);
+
+            vector<llama_token> legacy_tokens(cparams.n_ctx);
+            size_t n_legacy = 0;
+
+            if (!saved_sha.empty() && header_size > 0) {
+                // V1: read raw state (after header) into memory, then llama_state_set_data.
+                FILE* fp = fopen(restore_path.c_str(), "rb");
+                if (!fp) {
+                    cerr << "Error: Failed to open save file for restore: " << restore_path << endl;
+                    return 1; }
+                if (fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0) {
+                    fclose(fp);
+                    cerr << "Error: Failed to seek past header in save file" << endl;
+                    return 1; }
+                fseek(fp, 0, SEEK_END);
+                long fsize = ftell(fp);
+                fclose(fp);
+                size_t state_size = static_cast<size_t>(fsize) - header_size;
+
+                std::vector<uint8_t> state_buf(state_size);
+                fp = fopen(restore_path.c_str(), "rb");
+                if (!fp || fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0 ||
+                    fread(state_buf.data(), 1, state_size, fp) != state_size) {
+                    if (fp) fclose(fp);
+                    cerr << "Error: Failed to read state data from save file" << endl;
+                    return 1; }
+                fclose(fp);
+
+                size_t n_loaded = llama_state_set_data(ctx, state_buf.data(), state_size);
+                if (n_loaded != state_size) {
+                    cerr << "Error: llama_state_set_data loaded " << n_loaded << " of " << state_size << " bytes" << endl;
+                    return 1; }
+
+                // V1 doesn't carry token IDs; use KV cache position.
+                llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+                n_past = (int)(actual_max + 1);
+                n_restored = n_past;
+            } else {
+                // Old-style: load directly via llama_state_load_file.
+                if (access(restore_path.c_str(), F_OK) != 0) {
+                    cerr << "Error: Save file not found: " << restore_path << endl;
+                    return 1; }
+                bool ok = llama_state_load_file(ctx, restore_path.c_str(),
+                                                 legacy_tokens.data(), legacy_tokens.size(), &n_legacy);
+                if (!ok) {
+                    cerr << "Error: Failed to load save file (corrupt or incompatible): " << restore_path << endl;
+                    return 1; }
+                // Use the actual KV cache position.
+                llama_pos actual_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+                n_past = (int)(actual_max + 1);
+                n_restored = (int)n_legacy;
+                restored_tokens = legacy_tokens;
+                restored_tokens.resize(n_legacy);
+            }
         }
 
-        // Trim restored_tokens to the actual count returned
+        // Trim restored_tokens to the actual count
         restored_tokens.resize(n_restored);
 
         // Show git HEAD status if a SHA was recorded in the save file.
