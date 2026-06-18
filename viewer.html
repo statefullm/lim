@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LLLM Viewer</title>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="libs/marked.min.js"></script>
 
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
-    <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+    <link rel="stylesheet" href="libs/katex.min.css">
+    <script defer src="libs/katex.min.js"></script>
+    <script defer src="libs/auto-render.min.js"></script>
 
     <style>
         body {
@@ -202,15 +202,27 @@
         // Convert a single segment to HTML string.
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
+                // Extract $$...$$ blocks before markdown processing so marked
+                // doesn't corrupt the delimiters or split them across paragraphs.
+                var mathBlocks = [];
+                var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
+                    mathBlocks.push(m.trim());
+                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                });
+
+                var html;
                 if (typeof marked !== 'undefined') {
-                    return marked.parse(seg.content, { breaks: true });
+                    html = marked.parse(content, { breaks: true });
                 } else {
-                    const esc = seg.content
-                        .replace(/&/g, '&amp;')
-                        .replace(/</g, '&lt;')
-                        .replace(/>/g, '&gt;');
-                    return '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
+                    var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
+
+                // Restore math blocks as <div> elements so KaTeX can render them.
+                html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
+                    return '<div class="katex-block">$$' + mathBlocks[parseInt(idx)] + '$$</div>';
+                });
+                return html;
             } else {
                 // Tool labels and other HTML - insert directly
                 return seg.content;

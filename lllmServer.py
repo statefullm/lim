@@ -92,7 +92,9 @@ async def serve_viewer(request):
 async def main():
     # Single aiohttp server handling both HTTP and WebSocket
     app = web.Application()
+    script_path = Path(__file__).resolve()
     app.router.add_get('/viewer.html', serve_viewer)
+    app.router.add_static('/libs/', str(script_path.parent / 'libs'))
     app.router.add_get('/status', status_handler)
     app.router.add_get('/ws', websocket_handler)
 
