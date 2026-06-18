@@ -3,6 +3,10 @@
   "displayName": "LLLM Workspace",
   "description": "Embeds the LLLM browser viewer and terminal REPL inside VS Code as a single dockable panel.",
   "version": "0.1.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dealias/lllm"
+  },
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -26,6 +30,18 @@
         "args": { "text": "\u000c" },
         "key": "ctrl+j",
         "when": "terminalFocus"
+      },
+      {
+        "command": "workbench.action.terminal.sendSequence",
+        "args": { "text": "\u0005" },
+        "key": "ctrl+e",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "workbench.action.terminal.sendSequence",
+        "args": { "text": "\u000b" },
+        "key": "ctrl+k",
+        "when": "terminalFocus"
       }
     ],
     "configuration": {
@@ -40,8 +56,8 @@
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
-    "watch": "tsc -watch -p ./"
+    "compile": "node_modules/typescript/bin/tsc -p ./",
+    "watch": "node_modules/typescript/bin/tsc -watch -p ./"
   },
   "devDependencies": {
     "@types/vscode": "^1.85.0",
