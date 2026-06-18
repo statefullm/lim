@@ -15,9 +15,9 @@ $(TARGET): main.o $(FILES:=.o) $(FILES:=.h)
 all: $(TARGET) vscode
 
 vscode: FORCE
-	cd vscode-extension && npm install && npx tsc -p ./ && npx @vscode/vsce package --allow-missing-repository
+	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
-install: FORCE
+install: vscode
 	code --install-extension vscode-extension/vscode-extension-*.vsix
 
 vscode-uninstall: FORCE
