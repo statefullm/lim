@@ -17,7 +17,8 @@ all: $(TARGET) vscode
 vscode: FORCE
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
-install: vscode
+install: FORCE
+	test -f vscode-extension/vscode-extension-*.vsix || $(MAKE) vscode
 	code --install-extension vscode-extension/vscode-extension-*.vsix
 
 vscode-uninstall: FORCE
