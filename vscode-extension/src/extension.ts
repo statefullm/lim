@@ -21,7 +21,7 @@ function startWorkspace() {
     // Create an integrated terminal for the LLLM REPL and show it at the bottom.
     const terminal = vscode.window.createTerminal({
         name: 'LLLM',
-        cwd: '/home/ai/lllm'
+        cwd: process.env.HOME
     });
 
     if (modelPath) {
