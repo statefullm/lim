@@ -20,8 +20,15 @@
         "title": "LLLM: Open Workspace"
       }
     ],
+    "keybindings": [
+      {
+        "command": "workbench.action.terminal.sendSequence",
+        "args": { "text": "\u000c" },
+        "key": "ctrl+j",
+        "when": "terminalFocus"
+      }
+    ],
     "configuration": {
-      "title": "LLLM Workspace",
       "properties": {
         "lllm.workspace.browserPort": {
           "type": "number",

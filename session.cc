@@ -299,10 +299,12 @@ string ChatSession::get_user_input() {
 
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
 
-        // Bind Ctrl+J (\n) to insert a literal newline instead of accepting the line.
-        // In callback mode, \r (Enter/Return) and \n (Ctrl+J) are distinct.
-        // \r remains bound to accept-line (submit), \n inserts a newline character.
+        // Bind Ctrl+J to insert a literal newline instead of accepting the line.
+        // In callback mode, \r (Enter/Return) remains bound to accept-line (submit).
+        // rl_bind_key('\n') works in xterm but not VS Code (pty translates \n -> \r).
+        // For VS Code, the extension sends \x0c (form feed) for Ctrl+J.
         rl_bind_key('\n', rl_insert_newline);
+        rl_bind_key('\x0c', rl_insert_newline);  // Form feed = Ctrl+J in VS Code
 
         bool input_complete = false;
         string captured_line;
