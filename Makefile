@@ -41,7 +41,11 @@ clean:	FORCE
 	sed 's,\($*\)\.o[ :]*,\1.o \1.pic.o $@ : ,g' < $@.$$$$ > $@; \
 	rm -f $@.$$$$
 
-ifeq (,$(findstring clean,${MAKECMDGOALS}))
+ifneq ($(filter clean install,${MAKECMDGOALS}),)
+SKIP_DEPS = 1
+endif
+
+ifndef SKIP_DEPS
 -include $(FILES:=.d)
 endif
 
