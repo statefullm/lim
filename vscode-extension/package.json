@@ -1,0 +1,44 @@
+{
+  "name": "vscode-extension",
+  "displayName": "LLLM Workspace",
+  "description": "Embeds the LLLM browser viewer and terminal REPL inside VS Code as a single dockable panel.",
+  "version": "0.1.0",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:lllm.workspace.start"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "lllm.workspace.start",
+        "title": "LLLM: Open Workspace"
+      }
+    ],
+    "configuration": {
+      "title": "LLLM Workspace",
+      "properties": {
+        "lllm.workspace.browserPort": {
+          "type": "number",
+          "default": 8765,
+          "description": "Port of the LLLM browser server (lllmServer.py)."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}

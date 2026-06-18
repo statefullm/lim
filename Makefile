@@ -12,8 +12,22 @@ TARGET = lllm
 $(TARGET): main.o $(FILES:=.o) $(FILES:=.h)
 	$(CXX) $(CXXFLAGS) main.o $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 
+all: $(TARGET) vscode
+
+vscode: FORCE
+	cd vscode-extension && npm install && npx tsc -p ./ && npx @vscode/vsce package --allow-missing-repository
+
+install: FORCE
+	code --install-extension vscode-extension/vscode-extension-*.vsix
+
+vscode-uninstall: FORCE
+	code --uninstall-extension undefined_publisher.vscode-extension
+
+uninstall: vscode-uninstall
+
 clean:	FORCE
 	rm -f $(TARGET) *.o *.d
+	rm -rf vscode-extension/out vscode-extension/node_modules vscode-extension/*.vsix
 
 .SUFFIXES: .cc .o .d
 %.o: %.cc $(FILES:=.cc)

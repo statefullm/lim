@@ -365,6 +365,26 @@ http://<hostname>:8765/viewer.html
 
 The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores (auto-detected, or all cores on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
 
+### VS Code Extension
+
+For a more integrated experience, the LLLM Workspace extension embeds the browser viewer inside VS Code as a dockable panel. This keeps the viewer and terminal together in one window.
+
+**Install:**
+
+```bash
+cd /home/ai/lllm
+make vscode          # builds and packages the extension
+make install         # installs the extension into VS Code
+```
+
+Then in VS Code: **Ctrl+Shift+P** → `LLLM: Open Workspace`. This opens the browser viewer in a webview panel. Start LLLM separately as user `ai` (e.g., run your `coder` alias) and the viewer will connect automatically.
+
+To rebuild both the C++ binary and the extension together:
+
+```bash
+make all
+```
+
 ---
 
 ## Session History
