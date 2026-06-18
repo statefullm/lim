@@ -1,6 +1,6 @@
 # LLLM: Stateful, O(1) Local LLM Controller
 
-**LLLM** is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggerganov/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn.
+**LLLM** is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn.
 
 ## Why O(1)? The Fundamental Difference
 
@@ -41,7 +41,7 @@ This means long-running coding sessions stay fast regardless of how many tool ca
 ## Prerequisites
 
 1. A GPU with CUDA support (NVIDIA recommended) and the CUDA toolkit installed.
-2. [llama.cpp](https://github.com/ggerganov/llama.cpp) compiled from source in a sibling directory (`../llama.cpp`).
+2. [llama.cpp](https://github.com/ggml-org/llama.cpp) compiled from source in a sibling directory (`../llama.cpp`).
 3. Python 3 with `aiohttp` for the browser server: `pip3 install aiohttp`.
 4. A GGUF model file (e.g., Qwen, Llama, Mistral).
 
