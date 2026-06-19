@@ -234,6 +234,8 @@ Set via `LLLM_OUTPUT`:
 | `LLLM_THREADS` | `8` | Threads for inference |
 | `LLLM_THREADS_BATCH` | `8` | Threads for batch processing |
 | `LLLM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
+| `LLLM_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
+| `LLLM_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LLLM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
 | `LLLM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LLLM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |

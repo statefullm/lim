@@ -250,8 +250,22 @@ int main(int argc, char ** argv) {
     }
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
-    cparams.type_k = GGML_TYPE_Q8_0;
-    cparams.type_v = GGML_TYPE_Q8_0;
+
+    // KV-cache types: override via LLLM_TYPE_K / LLLM_TYPE_V
+    // Accepted values: F16, Q8_0, Q4_0, Q5_0, Q5_1, Q8_1 (default Q8_0)
+    auto parse_kv_type = [](const char* env, ggml_type fallback) -> ggml_type {
+        if (!env || !env[0]) return fallback;
+        if (strcmp(env, "F16") == 0) return GGML_TYPE_F16;
+        if (strcmp(env, "Q4_0") == 0) return GGML_TYPE_Q4_0;
+        if (strcmp(env, "Q5_0") == 0) return GGML_TYPE_Q5_0;
+        if (strcmp(env, "Q5_1") == 0) return GGML_TYPE_Q5_1;
+        if (strcmp(env, "Q8_0") == 0) return GGML_TYPE_Q8_0;
+        if (strcmp(env, "Q8_1") == 0) return GGML_TYPE_Q8_1;
+        cerr << "Warning: unknown LLLM_TYPE value '" << env << "', using default." << endl;
+        return fallback;
+    };
+    cparams.type_k = parse_kv_type(getenv("LLLM_TYPE_K"), GGML_TYPE_Q8_0);
+    cparams.type_v = parse_kv_type(getenv("LLLM_TYPE_V"), GGML_TYPE_Q8_0);
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
