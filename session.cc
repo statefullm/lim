@@ -402,37 +402,39 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
     // Strip the leading '/'
     string rest = input.substr(1);
 
-    // "/save" may have an optional argument
-    if (rest.substr(0, 4) == "save") {
-        rest.erase(0, 4);
-        save_prefix_ = trim(rest);
-        return Command::SAVE;
+    // Helper function to check command with optional argument support
+    static auto check_command = [](const string& rest, const char* name, int len, Command cmd) -> Command {
+        if (rest.size() == len || (rest.size() > len && isspace(rest[len]))) {
+            if (rest.substr(0, len) == name) {
+                return cmd;
+            }
+        }
+        return Command::NONE;
+    };
+
+    // Define command patterns with optional argument support: {name, length, command}
+    static const struct CmdPattern {
+        const char* name;
+        int len;
+        Command cmd;
+    } patterns[] = {
+        {"quit", 4, Command::QUIT},
+        {"exit", 4, Command::QUIT},
+        {"clear", 5, Command::CLEAR},
+        {"reincarnate", 12, Command::REINCARNATE},
+        {"save", 4, Command::SAVE}
+    };
+
+    // Check patterns with optional argument support
+    for (const auto& p : patterns) {
+        Command result = check_command(rest, p.name, p.len, p.cmd);
+        if (result != Command::NONE) {
+            save_prefix_ = trim(rest.substr(p.len));
+            return result;
+        }
     }
 
-    save_prefix_.clear();
-
-    // "/quit", "/exit", "/clear", "/reincarnate" may have an optional save path argument
-    if (rest.substr(0, 4) == "quit") {
-        rest.erase(0, 4);
-        save_prefix_ = trim(rest);
-        return Command::QUIT;
-    }
-    if (rest.substr(0, 4) == "exit") {
-        rest.erase(0, 4);
-        save_prefix_ = trim(rest);
-        return Command::QUIT;
-    }
-    if (rest.substr(0, 5) == "clear") {
-        rest.erase(0, 5);
-        save_prefix_ = trim(rest);
-        return Command::CLEAR;
-    }
-    if (rest.substr(0, 12) == "reincarnate") {
-        rest.erase(0, 12);
-        save_prefix_ = trim(rest);
-        return Command::REINCARNATE;
-    }
-
+    // Exact match commands (no optional arguments)
     if (rest == "reset") return Command::RESET;
     if (rest == "continue") return Command::CONTINUE;
     if (rest == "help") return Command::HELP;
