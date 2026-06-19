@@ -9,7 +9,6 @@ export function activate(context: vscode.ExtensionContext) {
 function startWorkspace() {
     const config = vscode.workspace.getConfiguration('lllm.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
-    const modelPath = config.get<string>('modelPath', '');
 
     // Get the actual hostname so the viewer's WebSocket connects correctly.
     const host = process.env.LLLM_HOST || getHostname();
@@ -19,13 +18,14 @@ function startWorkspace() {
     vscode.commands.executeCommand('simpleBrowser.show', viewerUrl);
 
     // Create an integrated terminal for the LLLM REPL and show it at the bottom.
+    const lllmHost = process.env.LLLM_HOST;
     const terminal = vscode.window.createTerminal({
         name: 'LLLM',
         cwd: process.env.HOME
     });
 
-    if (modelPath) {
-        terminal.sendText(`sudo -u ai -E /home/ai/bin/lllm ${modelPath}`);
+    if (lllmHost && lllmHost !== getHostname()) {
+        terminal.sendText(`ssh ai@${lllmHost}`);
     }
 
     terminal.show();
