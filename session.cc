@@ -39,6 +39,9 @@ extern std::string g_model_path;
 #include <readline/readline.h>
 #include <readline/history.h>
 
+// Internal readline variable: suppress _rl_callback_newline() after accept.
+extern "C" { extern void (*rl_linefunc)(char *); }
+
 // --- Custom readline function: insert literal newline (Ctrl+J) ---
 static int rl_insert_newline(int /*count*/, int /*key*/) {
     rl_insert_text("\n");
@@ -322,18 +325,23 @@ string ChatSession::get_user_input() {
         auto storing_callback = [](char* line) {
             g_captured_line = line ? line : "";
             g_input_complete = true;
+            // Suppress _rl_callback_newline() so readline doesn't redraw the
+            // prompt after accepting the line.
+            rl_linefunc = nullptr;
         };
 
-        rl_callback_handler_install(main_p, storing_callback);
-
-        // Tell readline the current terminal width so it handles line wrapping
-        // and backspace correctly across wrapped lines.
+        // Set screen size BEFORE installing the handler so readline knows
+        // the terminal width from the start.  This avoids needing
+        // rl_forced_update_display() afterward (which would duplicate the prompt).
+        // SIGWINCH resizes during the session are handled by readline internally.
         {
             struct winsize ws;
             if (ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
                 rl_set_screen_size(ws.ws_row, ws.ws_col);
             }
         }
+
+        rl_callback_handler_install(main_p, storing_callback);
 
         // Event loop: poll for input with select(), check for interrupts
         while (!input_complete) {
@@ -370,9 +378,10 @@ string ChatSession::get_user_input() {
         rl_callback_handler_remove();
         rl_unbind_key('\n');  // Restore default \n binding
 
-        // _rl_callback_newline() redisplayed the prompt before invoking our callback.
-        // Erase that redundant prompt line, then reset color and print newline.
-        cout << "\r\033[K\033[0m" << endl;
+        // _rl_callback_newline() was suppressed (rl_linefunc = nullptr), so
+        // readline left the cursor at the end of the accepted input.
+        // Move to a fresh line and reset any leftover ANSI colors.
+        cout << "\033[0m" << endl;
 
         captured_line = g_captured_line;
         if (!captured_line.empty()) {
