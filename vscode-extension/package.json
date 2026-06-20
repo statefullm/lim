@@ -26,8 +26,7 @@
     ],
     "keybindings": [
       {
-        "command": "workbench.action.terminal.sendSequence",
-        "args": { "text": "\u000c" },
+        "command": "_lllm.ctrlJ",
         "key": "ctrl+j",
         "when": "terminalFocus"
       },
@@ -41,6 +40,12 @@
         "command": "workbench.action.terminal.sendSequence",
         "args": { "text": "\u000b" },
         "key": "ctrl+k",
+        "when": "terminalFocus"
+      },
+      {
+        "command": "workbench.action.terminal.sendSequence",
+        "args": { "text": "\u000c" },
+        "key": "ctrl+l",
         "when": "terminalFocus"
       }
     ],

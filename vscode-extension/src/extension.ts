@@ -4,11 +4,22 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('lllm.workspace.start', startWorkspace)
     );
+
+    // Handle Ctrl+J in terminal: send file separator directly to the active terminal.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('_lllm.ctrlJ', () => {
+            const terminal = vscode.window.activeTerminal;
+            if (terminal) {
+                terminal.sendText('\x1c', false);
+            }
+        })
+    );
 }
 
 function startWorkspace() {
     const config = vscode.workspace.getConfiguration('lllm.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
+    const modelPath = config.get<string>('modelPath', '');
 
     // Get the actual hostname so the viewer's WebSocket connects correctly.
     const host = process.env.LLLM_HOST || getHostname();
@@ -26,6 +37,8 @@ function startWorkspace() {
 
     if (lllmHost && lllmHost !== getHostname()) {
         terminal.sendText(`ssh ai@${lllmHost}`);
+    } else if (modelPath) {
+        terminal.sendText(`sudo -u ai -E /home/ai/bin/lllm ${modelPath}`);
     }
 
     terminal.show();
