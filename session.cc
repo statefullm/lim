@@ -32,6 +32,7 @@ extern std::string g_model_path;
 #include <functional>
 #include <iomanip>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <sys/select.h>
 
 // --- Readline Headers ---
@@ -324,6 +325,15 @@ string ChatSession::get_user_input() {
         };
 
         rl_callback_handler_install(main_p, storing_callback);
+
+        // Tell readline the current terminal width so it handles line wrapping
+        // and backspace correctly across wrapped lines.
+        {
+            struct winsize ws;
+            if (ioctl(0, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) {
+                rl_set_screen_size(ws.ws_row, ws.ws_col);
+            }
+        }
 
         // Event loop: poll for input with select(), check for interrupts
         while (!input_complete) {
