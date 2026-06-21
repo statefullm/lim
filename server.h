@@ -19,6 +19,7 @@ extern pid_t g_lllm_server_pid;
 
 bool is_lllm_server_running();
 void start_lllm_server_if_needed();
+bool wait_for_server_ready();
 void cleanup_lllm_server();
 
 // --- Browser Connection ---

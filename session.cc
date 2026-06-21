@@ -922,8 +922,11 @@ bool ChatSession::run() {
                 state_.auto_continue_depth_val = 0;
                 user_input = "";
             } else {
-                // No active interruption -- fall through as a regular message.
-                last_cmd_ = Command::NONE;
+                // Not interrupted, but user wants to keep the model going.
+                diag("Continuing generation...", "\033[1;33m");
+                state_.auto_continue = true;
+                state_.auto_continue_depth_val = 0;
+                user_input = "";
             }
         }
 

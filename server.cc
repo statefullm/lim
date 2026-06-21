@@ -3,13 +3,87 @@
 #include "filesystem.h"
 #include "taskset.h"
 #include <sys/wait.h>
+#include <sys/stat.h>
+#include <sys/inotify.h>
 #include <cstdlib>
 
 // --- LLLM Server Process Management ---
 pid_t g_lllm_server_pid = -1;
 
-// Forward declaration for HOME from filesystem.h
-extern const string HOME;  // Actually FileSystemTools::HOME, but we need it
+extern const string HOME;
+
+static const char* INOTIFY_DIR = "/tmp";
+static const char* SERVER_READY_PATH = "/tmp/lllm.server_ready";
+static const char* BROWSER_READY_PATH = "/tmp/lllm.browser_ready";
+static const char* SERVER_PID_PATH = "/tmp/lllm.server.pid";
+static bool marker_file_valid(const char* path) {
+    FILE* fp = fopen(path, "r");
+    if (!fp) return false;
+    int ch = fgetc(fp);
+    fclose(fp);
+    return ch != EOF;
+}
+
+static bool wait_for_file(const char* dir, const char* filename, bool check_existing) {
+    if (check_existing) {
+        string path = string(dir) + "/" + filename;
+        if (marker_file_valid(path.c_str())) return true;
+    }
+
+    int fd = inotify_init();
+    if (fd < 0) return false;
+
+    int wd = inotify_add_watch(fd, dir, IN_CREATE | IN_MODIFY);
+    if (wd < 0) {
+        close(fd);
+        return false;
+    }
+
+    string path = string(dir) + "/" + filename;
+
+    while (true) {
+        char buf[4096];
+        ssize_t len = read(fd, buf, sizeof(buf));
+        if (len < 0) {
+            if (errno == EINTR) {
+                inotify_rm_watch(fd, wd);
+                close(fd);
+                return false;
+            }
+            inotify_rm_watch(fd, wd);
+            close(fd);
+            return false;
+        }
+
+        for (char* p = buf; p < buf + len; ) {
+            struct inotify_event* event = (struct inotify_event*)p;
+            if (event->len) {
+                string name(event->name);
+                if (name == filename && marker_file_valid(path.c_str())) {
+                    inotify_rm_watch(fd, wd);
+                    close(fd);
+                    return true;
+                }
+            }
+            p += sizeof(struct inotify_event) + event->len;
+        }
+    }
+}
+
+static void kill_stale_server() {
+    FILE* fp = fopen(SERVER_PID_PATH, "r");
+    if (!fp) return;
+    char buf[32];
+    if (fgets(buf, sizeof(buf), fp)) {
+        pid_t pid = strtol(buf, nullptr, 10);
+        if (pid > 1 && kill(pid, 0) == 0) {
+            kill(pid, SIGKILL);
+            usleep(100000);
+            waitpid(pid, NULL, WNOHANG);
+        }
+    }
+    fclose(fp);
+}
 
 bool is_lllm_server_running() {
     const char* commands[] = {
@@ -44,7 +118,11 @@ bool is_lllm_server_running() {
 void start_lllm_server_if_needed() {
     if (g_lllm_server_pid != -1) return;
 
-    if (is_lllm_server_running()) {
+    // If the port is free but a PID file exists, the server crashed — kill any
+    // zombie process and clean up. If the port is in use, leave it alone.
+    if (!is_lllm_server_running()) {
+        kill_stale_server();
+    } else {
         log_diagnostic("lllmServer is already running on port 8765. Skipping startup.");
         g_lllm_server_pid = -2;
         return;
@@ -59,15 +137,23 @@ void start_lllm_server_if_needed() {
         return;
     }
 
+    unlink(SERVER_READY_PATH);
+    unlink(BROWSER_READY_PATH);
+    unlink(SERVER_PID_PATH);
+
     pid_t pid = fork();
     if (pid == 0) {
         setpgid(0, 0);
-        string cmd = "exec "+Taskset::e_core_taskset()+"/usr/bin/python "+string(home_env)+"/lllm/lllmServer.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+string(home_env)+"/lllm/lllmServer.py";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
         g_lllm_server_pid = pid;
     }
+}
+
+bool wait_for_server_ready() {
+    return wait_for_file(INOTIFY_DIR, "lllm.server_ready", true);
 }
 
 void cleanup_lllm_server() {
@@ -77,6 +163,9 @@ void cleanup_lllm_server() {
         g_lllm_server_pid = -1;
     }
     unlink(FIFO_PATH);
+    unlink(SERVER_READY_PATH);
+    unlink(BROWSER_READY_PATH);
+    unlink(SERVER_PID_PATH);
 }
 
 // --- Browser Connection Status Checking ---
@@ -155,41 +244,27 @@ void disable_browser_output() {
 }
 
 bool prompt_for_browser_connection() {
-    message("\n\033[1;35m[WARNING: No browser connected!]\033[0m\n");
-    message("Output will be lost if you don't view it in the browser.\n");
-    message("Please load or reload:\n");
-    message("  \033[1;35m[" + get_viewer_url() + "\033[0m\n");
-    message("Press Enter when ready... ");
-    cout.flush();
+    bool vscode_mode = getenv("LLLM_VSCODE") != nullptr && getenv("LLLM_VSCODE")[0] != '\0';
 
-    char input[256];
-    if (!fgets(input, sizeof(input), stdin)) {
-        disable_browser_output();
-        stop_generation = 0;
-        return false;
+    if (vscode_mode) {
+        message("\033[1;35m[Press reload in the browser panel]\033[0m\n");
+    } else {
+        message("\n\033[1;35m[Waiting for browser connection...]\033[0m\n");
+        message("Load this URL in your browser:\n");
+        message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
     }
 
-    int retries = 5;
-    while (retries > 0) {
-        if (check_browser_connected()) {
-            message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
-            return true;
-        }
-
-        if (get_output_mode() == 3) break;
-
-        message("\033[1;35mStill disconnected. Press Enter to check again...\033[0m ");
-        cout.flush();
-
-        if (!fgets(input, sizeof(input), stdin)) {
-            disable_browser_output();
-            stop_generation = 0;
-            return false;
-        }
-        retries--;
+    if (wait_for_file(INOTIFY_DIR, "lllm.browser_ready", false)) {
+        message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
+        return true;
     }
 
-    message("\n\033[1;35m[No browser detected. Output may be lost.]\033[0m\n");
+    if (get_output_mode() == 3) {
+        message("\n\033[1;35m[Interrupted, but stdout output is enabled. Proceeding.]\033[0m\n");
+        return true;
+    }
+
+    message("\n\033[1;35m[Browser wait cancelled. Output may be lost.]\033[0m\n");
     g_browser_warning_suppressed = true;
     return false;
 }

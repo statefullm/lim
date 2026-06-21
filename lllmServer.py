@@ -13,18 +13,28 @@ LLLM_PORT = int(os.environ.get('LLLM_PORT', '8765'))
 # Keep track of connected browsers
 clients = set()
 
+# Marker file for browser connection signaling.
+BROWSER_READY_PATH = "/tmp/lllm.browser_ready"
+
+def _update_browser_ready():
+    """Write/remove the browser-ready marker file."""
+    try:
+        if clients:
+            with open(BROWSER_READY_PATH, 'w') as f:
+                f.write(str(len(clients)))
+        else:
+            os.unlink(BROWSER_READY_PATH)
+    except FileNotFoundError:
+        pass  # File already gone
+    except Exception:
+        pass  # Best effort; don't crash the server
+
 async def broadcast_llm_stream():
     """Reads from the FIFO and broadcasts to all connected WebSockets."""
     if not os.path.exists(FIFO_PATH):
         os.mkfifo(FIFO_PATH)
 
 #    print(f"Listening to {FIFO_PATH}...")
-
-    # Get the actual path of this script (resolves symlinks)
-    script_path = Path(__file__).resolve()
-    viewer_html_path = script_path.parent / 'viewer.html'
-    hostname = socket.gethostname().split('.')[0]  # Use short hostname only
-    print(f"Load in your browser:\nhttp://{hostname}:{LLLM_PORT}/viewer.html")
 
     # Open non-blocking
     fd = os.open(FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)
@@ -58,7 +68,7 @@ async def websocket_handler(request):
     ws = web.WebSocketResponse(heartbeat=10)  # Enable ping/pong every 10 seconds to prevent timeout
     await ws.prepare(request)
     clients.add(ws)
-#    print(f"\n[Browser connected!] Total clients: {len(clients)}")
+    _update_browser_ready()
 
     try:
         async for msg in ws:
@@ -68,7 +78,7 @@ async def websocket_handler(request):
         raise
     finally:
         clients.discard(ws)
-#        print(f"Browser disconnected. Remaining clients: {len(clients)}")
+        _update_browser_ready()
 
     return ws
 
@@ -102,6 +112,14 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', LLLM_PORT)
     await site.start()
+
+    try:
+        with open("/tmp/lllm.server_ready", 'w') as f:
+            f.write(str(LLLM_PORT))
+        with open("/tmp/lllm.server.pid", 'w') as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
 
     # Run the pipe reader concurrently
     await broadcast_llm_stream()

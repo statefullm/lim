@@ -14,14 +14,17 @@ $(TARGET): main.o $(FILES:=.o) $(FILES:=.h)
 
 all: $(TARGET) vscode
 
-vscode: FORCE
+VSIX = vscode-extension/vscode-extension-0.1.0.vsix
+
+vscode: $(VSIX)
+
+$(VSIX): vscode-extension/src/extension.ts vscode-extension/package.json vscode-extension/tsconfig.json
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
-install: FORCE
-	test -f vscode-extension/vscode-extension-*.vsix || (cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package)
-	code --install-extension vscode-extension/vscode-extension-*.vsix
+install: vscode
+	code --install-extension $(VSIX)
 
-vscode-uninstall: FORCE
+vscode-uninstall: vscode FORCE
 	code --uninstall-extension undefined_publisher.vscode-extension
 
 uninstall: vscode-uninstall

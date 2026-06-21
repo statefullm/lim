@@ -175,6 +175,11 @@ int main(int argc, char ** argv) {
     // Start lllmServer.py if browser output is enabled
     if (should_output_to_browser()) {
         start_lllm_server_if_needed();
+        // Wait for the server only if we just started it. If it was pre-existing
+        // (g_lllm_server_pid == -2), it's already listening — no marker to wait for.
+        if (g_lllm_server_pid > 0 && !wait_for_server_ready()) {
+            log_diagnostic("WARNING: lllmServer did not become ready. Browser output may fail.", true);
+        }
     }
 
     auto log_entry = [&](const string& role, const string& text) {
