@@ -24,7 +24,7 @@ function startWorkspace() {
     const viewerUrl = `http://${host}:${browserPort}/viewer.html`;
 
     // Wait for the server to be up before opening the browser. Uses an async
-    // fetch that resolves on first success — not a busy loop, just event-driven
+    // fetch that resolves on first success -- not a busy loop, just event-driven
     // retries via setTimeout. Opens the browser only when viewer.html will load.
     waitForServer(host, browserPort).then(() => {
         vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
@@ -56,7 +56,7 @@ function getHostname(): string {
 export function deactivate() {}
 
 // Wait for the server to respond via /status. Resolves on first success.
-// Uses setTimeout between attempts — event-driven, not a busy loop.
+// Uses setTimeout between attempts -- event-driven, not a busy loop.
 function waitForServer(host: string, port: number): Promise<void> {
     return new Promise((resolve) => {
         const url = `http://${host}:${port}/status`;

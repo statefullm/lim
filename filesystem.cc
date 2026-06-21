@@ -204,12 +204,19 @@ static std::string get_cache_dir_internal() {
 
 std::string get_cache_dir() { return get_cache_dir_internal(); }
 
+static std::string model_identifier(const std::string& model_path) {
+    // Use just the filename. Qwen3.6-27B-UD-Q5_K_XL.gguf is already a unique
+    // enough identifier -- encodes model, size, and quantization.
+    size_t slash = model_path.rfind('/');
+    return slash != std::string::npos ? model_path.substr(slash + 1) : model_path;
+}
+
 static std::string cache_key(const std::string& v2_path, const std::string& model_path,
                              const std::string& git_sha) {
     // Hash the combination of v2 path, model path, and git sha.
     // If git_sha is empty (no git repo), fall back to hashing just path + model.
     // This ensures cache works even outside a git repository.
-    return sha256_hex(v2_path + "|" + model_path + "|" + git_sha).substr(0, 12);
+    return sha256_hex(v2_path + "|" + model_identifier(model_path) + "|" + git_sha).substr(0, 12);
 }
 
 static long file_mtime(const std::string& path) {

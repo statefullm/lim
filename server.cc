@@ -118,7 +118,7 @@ bool is_lllm_server_running() {
 void start_lllm_server_if_needed() {
     if (g_lllm_server_pid != -1) return;
 
-    // If the port is free but a PID file exists, the server crashed — kill any
+    // If the port is free but a PID file exists, the server crashed -- kill any
     // zombie process and clean up. If the port is in use, leave it alone.
     if (!is_lllm_server_running()) {
         kill_stale_server();
