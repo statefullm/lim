@@ -14,6 +14,17 @@ export function activate(context: vscode.ExtensionContext) {
             }
         })
     );
+
+    // Add a status bar item with the rocket icon to quickly open the workspace.
+    const statusBar = vscode.window.createStatusBarItem(
+        vscode.StatusBarAlignment.Right,
+        100
+    );
+    statusBar.tooltip = 'Open LLLM Workspace';
+    statusBar.command = 'lllm.workspace.start';
+    statusBar.text = '$(rocket) LLLM';
+    statusBar.show();
+    context.subscriptions.push(statusBar);
 }
 
 function startWorkspace() {

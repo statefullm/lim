@@ -14,14 +14,17 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:lllm.workspace.start"
+    "onCommand:lllm.workspace.start",
+    "onStartupFinished"
   ],
   "main": "./out/extension.js",
+  "icon": "resources/lllm.png",
   "contributes": {
     "commands": [
       {
         "command": "lllm.workspace.start",
-        "title": "LLLM: Open Workspace"
+        "title": "LLLM: Open Workspace",
+        "icon": "$(rocket)"
       }
     ],
     "keybindings": [

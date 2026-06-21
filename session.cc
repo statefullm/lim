@@ -515,7 +515,6 @@ TokenGenerator::Result ChatSession::generate_response() {
     if (!state_.auto_continue) {
         console("\n\033[1;90m--- Generating (Ctrl+C to interrupt) ---\033[0m\n");
         consoleFlush();
-        stream("\n\n<div class='generation-start'>-- Generating --</div>\n\n");
     }
 
     g_auto_continue_depth_ = state_.auto_continue ? g_auto_continue_depth_ : 0;
