@@ -387,8 +387,9 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                     print_pos_ = think_block_end;
                 }
-                // If the think block was empty, skip surrounding newlines too.
-                if (was_empty) {
+                // Only skip newlines right after advancing past the think block end,
+                // not on every subsequent token.
+                if (was_empty && print_pos_ == think_block_end) {
                     while (print_pos_ < generated_text_.length() && generated_text_[print_pos_] == '\n') {
                         print_pos_++;
                     }

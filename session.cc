@@ -304,6 +304,13 @@ string ChatSession::get_user_input() {
             diag_speed_impl(speed_str + " | " + ctx_str);
         }
 
+        // If stdout didn't end with a newline, ensure we start on a fresh line
+        // before printing the speed diagnostic.
+        if (should_output_to_stdout() && !prev_stdout_ended_with_newline_) {
+            cout << "\n";
+            cout.flush();
+        }
+
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
 
         // Bind Ctrl+J to insert a literal newline instead of accepting the line.
@@ -383,12 +390,6 @@ string ChatSession::get_user_input() {
 
         // _rl_callback_newline() was suppressed (rl_linefunc = nullptr), so
         // readline left the cursor at the end of the accepted input.
-        // Reset terminal color — readline's prompt uses cyan which would
-        // otherwise bleed into LLM output. Also move to a fresh line.
-        if (should_output_to_stdout()) {
-            cout << "\033[0m\n";
-            cout.flush();
-        }
 
         captured_line = g_captured_line;
         if (!captured_line.empty()) {
@@ -517,6 +518,14 @@ bool ChatSession::feed_user_message(const string& input) {
 
 // --- generate_response: invoke TokenGenerator and update state ---
 TokenGenerator::Result ChatSession::generate_response() {
+    // Reset terminal color to default before LLM text starts printing.
+    // Readline draws the >>> prompt in cyan; without this reset, all LLM output
+    // would appear in cyan.
+    if (should_output_to_stdout()) {
+        cout << "\033[0m";
+        cout.flush();
+    }
+
     g_auto_continue_depth_ = state_.auto_continue ? g_auto_continue_depth_ : 0;
     allow_continue_resume_ = false;
 
@@ -585,6 +594,7 @@ TokenGenerator::Result ChatSession::generate_response() {
     if (!stdout_ended_with_newline && should_output_to_stdout()) {
         console("\n");
         consoleFlush();
+        stdout_ended_with_newline = true;
     }
 
     state_.last_t_count = t_count_;
@@ -592,7 +602,7 @@ TokenGenerator::Result ChatSession::generate_response() {
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
 
-    prev_stdout_ended_with_newline_ = true;
+    prev_stdout_ended_with_newline_ = stdout_ended_with_newline;
 
     if (stop_generation) {
         stop_generation = 0;
