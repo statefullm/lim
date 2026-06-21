@@ -24,7 +24,12 @@ function startWorkspace() {
     const host = process.env.LLLM_HOST || getHostname();
     const viewerUrl = `http://${host}:${browserPort}/viewer.html`;
 
-    vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
+    // Wait for the server to be up before opening the browser. Uses an async
+    // fetch that resolves on first success — not a busy loop, just event-driven
+    // retries via setTimeout. Opens the browser only when viewer.html will load.
+    waitForServer(host, browserPort).then(() => {
+        vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
+    });
 
     // Create an integrated terminal for the LLLM REPL and show it at the bottom.
     const lllmHost = process.env.LLLM_HOST;
@@ -55,3 +60,17 @@ function getHostname(): string {
 }
 
 export function deactivate() {}
+
+// Wait for the server to respond via /status. Resolves on first success.
+// Uses setTimeout between attempts — event-driven, not a busy loop.
+function waitForServer(host: string, port: number): Promise<void> {
+    return new Promise((resolve) => {
+        const url = `http://${host}:${port}/status`;
+        const tryFetch = () => {
+            fetch(url, { mode: 'cors' }).then(() => resolve()).catch(() => {
+                setTimeout(tryFetch, 1000);
+            });
+        };
+        tryFetch();
+    });
+}

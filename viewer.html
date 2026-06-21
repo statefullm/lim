@@ -129,7 +129,6 @@
     <script>
         const outputDiv = document.getElementById('output');
         const statusDiv = document.getElementById('status');
-        let isFirstConnect = true;
 
         /* ------------------------------------------------------------------ */
         /*  Segment-based renderer                                            */
@@ -422,13 +421,8 @@
             };
 
             ws.onclose = () => {
-                if (isFirstConnect) {
-                    statusDiv.textContent = 'Connecting...';
-                    setTimeout(connect, 2000);
-                } else {
-                    statusDiv.textContent = 'Disconnected';
-                    statusDiv.className = 'status disconnected';
-                }
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
             };
         }
 
