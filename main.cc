@@ -46,7 +46,9 @@ ofstream token_log;
 string INITIAL_CWD;
 
 static void diag_impl(const string& formatted_line, const string& msg) {
-    cout << formatted_line << endl;
+    if (should_output_to_stdout()) {
+        cout << formatted_line << "\n";
+    }
     if (chat_log.is_open()) {
         chat_log << "[" << msg << "]" << "\n\n";
         chat_log.flush();

@@ -57,6 +57,7 @@
             border-radius: 5px;
             font-size: 0.8em;
             font-family: monospace;
+            white-space: nowrap;
         }
         .connected { background-color: #28a745; color: white; }
         .disconnected { background-color: #dc3545; color: white; }
@@ -129,6 +130,7 @@
     <script>
         const outputDiv = document.getElementById('output');
         const statusDiv = document.getElementById('status');
+        let speedInfo = '';
 
         /* ------------------------------------------------------------------ */
         /*  Segment-based renderer                                            */
@@ -145,6 +147,7 @@
         const SEG_LLM_TEXT   = '\x02';
         const SEG_TOOL_LABEL = '\x03';
         const SEG_HTML       = '\x04';
+        const SEG_SPEED      = '\x05';
 
         /* Fallback copy for insecure (HTTP) contexts where navigator.clipboard is unavailable. */
         function fallbackCopy(text, btn) {
@@ -362,7 +365,7 @@
             }
 
             ws.onopen = () => {
-                statusDiv.textContent = 'Connected';
+                statusDiv.textContent = speedInfo || 'Ready';
                 statusDiv.className = 'status connected';
                 isFirstConnect = false;
             };
@@ -383,7 +386,7 @@
 
                 for (let i = 0; i < data.length; i++) {
                     const ch = data[i];
-                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML) {
+                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML || ch === SEG_SPEED) {
                         // Append any text between the last prefix and this one to the
                         // segment that was opened by the last prefix.  When multiple
                         // prefixes arrive in a single WebSocket frame (e.g., three
@@ -416,6 +419,17 @@
                 // LLM-text tokens (each prefixed with \x02) merge into one block rather
                 // than each getting its own independent markdown render pass.
                 coalesceSegments();
+
+                // Extract speed/context diagnostics and update the status bar.
+                for (const seg of segments) {
+                    if (seg.type === SEG_SPEED && seg.content.length > 0) {
+                        speedInfo = seg.content;
+                        statusDiv.textContent = speedInfo;
+                        statusDiv.className = 'status connected';
+                    }
+                }
+                // Remove speed segments so they don't render as content.
+                segments = segments.filter(seg => seg.type !== SEG_SPEED);
 
                 render();
             };

@@ -134,10 +134,17 @@ static string context_limit_diag(int n_past, int last_n_past, size_t needed, int
 
 // Local diag_speed implementation for session.cc
 static void diag_speed_impl(const string& msg) {
-    cout << "\033[0m[" << msg << "]\033[0m" << endl;
+    if (should_output_to_stdout()) {
+        cout << "\033[35m[" << msg << "]\033[0m\n";
+    }
     if (chat_log.is_open()) {
         chat_log << "[" << msg << "]" << "\n\n";
         chat_log.flush();
+    }
+    // Send Speed/Context to browser status bar (compact: no labels)
+    if (should_output_to_browser()) {
+        string speed_ctx = msg;
+        stream_speed(speed_ctx);
     }
 }
 
@@ -291,15 +298,11 @@ string ChatSession::get_user_input() {
             double context_percent = (state_.last_n_past / (double)cparams_.n_ctx) * 100.0;
             ostringstream oss;
             oss << fixed << setprecision(1);
-            oss << "Speed: " << (state_.last_t_count / state_.last_elapsed) << " t/s | Context: " << state_.last_n_past << "/" << cparams_.n_ctx << " (" << context_percent << "%) | Elapsed: " << state_.last_elapsed << "s";
-            string speed_line = oss.str();
-            diag_speed_impl(speed_line);
+            double speed = state_.last_t_count / state_.last_elapsed;
+            string ctx_str = std::to_string(state_.last_n_past) + " (" + std::to_string((int)context_percent) + "%)";
+            string speed_str = std::to_string((int)speed) + " t/s";
+            diag_speed_impl(speed_str + " | " + ctx_str);
         }
-
-        // Clear any leftover terminal state from previous interrupt
-        console("\r\033[K");
-        consoleFlush();
-        console("\n");
 
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
 
@@ -380,8 +383,12 @@ string ChatSession::get_user_input() {
 
         // _rl_callback_newline() was suppressed (rl_linefunc = nullptr), so
         // readline left the cursor at the end of the accepted input.
-        // Move to a fresh line and reset any leftover ANSI colors.
-        cout << "\033[0m" << endl;
+        // Reset terminal color — readline's prompt uses cyan which would
+        // otherwise bleed into LLM output. Also move to a fresh line.
+        if (should_output_to_stdout()) {
+            cout << "\033[0m\n";
+            cout.flush();
+        }
 
         captured_line = g_captured_line;
         if (!captured_line.empty()) {
@@ -394,8 +401,6 @@ string ChatSession::get_user_input() {
         } else {
             // EOF (Ctrl+D on empty line) -- treat as interrupt/break
             g_was_interrupted = 0;
-            console("\r\033[K");
-            consoleFlush();
         }
     }
 
@@ -512,11 +517,6 @@ bool ChatSession::feed_user_message(const string& input) {
 
 // --- generate_response: invoke TokenGenerator and update state ---
 TokenGenerator::Result ChatSession::generate_response() {
-    if (!state_.auto_continue) {
-        console("\n");
-        consoleFlush();
-    }
-
     g_auto_continue_depth_ = state_.auto_continue ? g_auto_continue_depth_ : 0;
     allow_continue_resume_ = false;
 
@@ -579,11 +579,12 @@ TokenGenerator::Result ChatSession::generate_response() {
     elapsed_ = chrono::duration<double>(end - start).count();
 
     bool stdout_ended_with_newline = prev_stdout_ended_with_newline_;
-    if (stdout_ended_with_newline || !generated_text_.empty()) {
+    if (!generated_text_.empty() && generated_text_.back() == '\n') {
         stdout_ended_with_newline = true;
     }
-    if (!stdout_ended_with_newline) {
-        cout << "\n";
+    if (!stdout_ended_with_newline && should_output_to_stdout()) {
+        console("\n");
+        consoleFlush();
     }
 
     state_.last_t_count = t_count_;

@@ -11,8 +11,8 @@ volatile sig_atomic_t g_was_interrupted = 0;  // Track interrupt across loop ite
 void sigint_handler(int sig) {
   stop_generation = 1;
   g_was_interrupted = 1;  // Track that we were interrupted (persists across loop iterations)
-  // Clear any partial line and reset terminal state
-  message("\r\033[K\033[0m\n");
+  // Reset terminal color state
+  message("\033[0m\n");
   cout.flush();
 }
 

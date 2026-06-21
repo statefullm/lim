@@ -36,6 +36,7 @@ void pipe_write(const char* data, size_t len);
 void stream(const string& raw_token);
 void stream_tool_result(const string& html);
 void stream_html(const string& html);
+void stream_speed(const string& speed_text);
 void clear_viewer();
 
 // --- Console Output Helpers ---

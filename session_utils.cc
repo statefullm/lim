@@ -1,6 +1,7 @@
 #include "session_utils.h"
 #include "common.h"
 #include "token_generator.h"
+#include "output.h"
 #include <fstream>
 #include <string>
 #include <vector>
@@ -45,11 +46,20 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags) {
 
 void diag_speed(int n_past, int n_ctx, int t_count, double elapsed) {
     if (t_count <= 0 || elapsed <= 0.0) return;
-    std::ostringstream oss;
     double context_percent = (n_past / (double)n_ctx) * 100.0;
+    std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
-    oss << "\033[0m[" << "Speed: " << (t_count / elapsed) << " t/s | Context: " << n_past << "/" << n_ctx << " (" << context_percent << "%) | Elapsed: " << elapsed << "s]\033[0m" << std::endl;
-    std::cout << oss.str();
-    std::fflush(stdout);
+    oss << "\033[35m[" << (int)(t_count / elapsed) << " t/s | " << n_past << " (" << (int)context_percent << "%)" << "]\033[0m" << std::endl;
+    if (should_output_to_stdout()) {
+        std::cout << oss.str();
+        std::fflush(stdout);
+    }
+
+    // Send to browser status bar (compact: no labels)
+    if (should_output_to_browser()) {
+        std::ostringstream oss2;
+        oss2 << (int)(t_count / elapsed) << " t/s | " << n_past << " (" << (int)context_percent << "%)";
+        stream_speed(oss2.str());
+    }
 }
 

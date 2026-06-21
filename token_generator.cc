@@ -376,6 +376,7 @@ TokenGenerator::Result TokenGenerator::generate() {
 
             if (think_start_ != string::npos && think_end_ != string::npos) {
                 size_t think_block_end = think_end_ + string(Tokens::THINK_END).length();
+                bool was_empty = think_buffering_;
                 think_buffer_.clear();
                 think_buffering_ = true;
                 if (print_pos_ < think_block_end) {
@@ -385,6 +386,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                         consoleThinkFlush();
                     }
                     print_pos_ = think_block_end;
+                }
+                // If the think block was empty, skip surrounding newlines too.
+                if (was_empty) {
+                    while (print_pos_ < generated_text_.length() && generated_text_[print_pos_] == '\n') {
+                        print_pos_++;
+                    }
                 }
             }
 
@@ -484,8 +491,7 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
     } // END INNER TOKEN LOOP
 
-    // Flush remaining unprinted text and clear progress line
-    cerr << "\r\033[K";
+    // Flush remaining unprinted text
     if (!unprinted_text_.empty()) {
         if (unprinted_text_.back() != '\n') {
             console((unprinted_text_ + "\n").c_str());
