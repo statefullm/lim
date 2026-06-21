@@ -369,7 +369,13 @@ The Python server (`lllmServer.py`) is auto-started by the C++ binary when brows
 
 ### VS Code Extension
 
-For a more integrated experience, the LLLM Workspace extension embeds the browser viewer inside VS Code as a dockable panel. This keeps the viewer and terminal together in one window.
+The LLLM Workspace extension provides a convenient way to set up your workspace: it opens an integrated terminal and a browser viewer, then waits for the server. There is no separate "VS Code mode" — the C++ binary behaves identically whether launched from VS Code or any other terminal.
+
+The extension does two things:
+- **Opens a browser** pointing to `LLLM_HOST` (or localhost) on the configured port, after waiting for the server to respond.
+- **Creates a terminal** at `$HOME`. If `LLLM_HOST` is set and remote, it SSHs into that host; otherwise it opens a local shell.
+
+You then run your `coder` alias in that terminal as usual.
 
 **Install:**
 
@@ -379,7 +385,7 @@ make vscode          # builds and packages the extension
 make install         # installs the extension into VS Code
 ```
 
-Then in VS Code: **Ctrl+Shift+P** → `LLLM: Open Workspace`. This opens the browser viewer in a webview panel. Start LLLM separately as user `ai` (e.g., run your `coder` alias) and the viewer will connect automatically.
+Then in VS Code: **Ctrl+Shift+P** → `LLLM: Open Workspace`. This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
 
 To rebuild both the C++ binary and the extension together:
 
