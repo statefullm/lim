@@ -344,8 +344,6 @@ int main(int argc, char ** argv) {
         // Restore from save file.
         // V2 format: compact token sequence -- re-decode through model to rebuild KV cache.
         //   Header: "LLLM_SAVE_V2 git_sha=<sha> n_tokens=<N>\n<token_ids_as_int32>"
-        diag("Restoring session from " + restore_path + "...", "\033[35m");
-
         vector<llama_token> restored_tokens;
         string saved_sha;
         int n_restored = 0;
@@ -375,20 +373,25 @@ int main(int argc, char ** argv) {
             bool cache_hit = false;
             if (!restore_path_abs.empty()) {
                 cache_hit = try_load_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
-                if (cache_hit) {
+                if (cache_hit && is_debug) {
                     std::string key = get_cache_dir() + "/"; // just to trigger dir creation check
-                    diag("V1 cache hit", "\033[35m");
+                    diag("Restore from cache.", "\033[35m");
                 }
             }
+
+            auto log_restore = [&](const string& path, int count) {
+                diag("Restoring session from " + path + "... (" + to_string(count) + " tokens)", "\033[35m");
+            };
 
             if (cache_hit) {
                 n_past = (int)llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
                 n_restored = n_past;
                 used_v2 = true;
+                log_restore(restore_path, n_restored);
             } else {
                 used_v2 = true;
                 n_restored = (int)restored_tokens.size();
-                diag("Loading " + to_string(n_restored) + " tokens from compact save...", "\033[35m");
+                log_restore(restore_path, n_restored);
 
                 // Re-decode all tokens through the model to rebuild the KV cache.
                 // This is deterministic: same tokens + same model = identical KV cache.
@@ -417,7 +420,9 @@ int main(int argc, char ** argv) {
 
                 // Auto-write V1 cache for instant future restores
                 if (!restore_path_abs.empty()) {
-                    diag("Writing V1 cache...", "\033[35m");
+                    if (is_debug) {
+                        diag("Save to cache.", "\033[35m");
+                    }
                     write_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 }
             }

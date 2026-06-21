@@ -433,7 +433,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
     };
 
     // Define command patterns with optional argument support
-    // STR_CMD(name, cmd) derives len from the literal at compile time — string appears once.
+    // STR_CMD(name, cmd) derives len from the literal at compile time -- string appears once.
 #define STR_CMD(name, cmd) { name, (int)(sizeof(name) - 1), cmd }
 
     static const struct CmdPattern {
@@ -738,11 +738,11 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
             pclose(pipe);
         }
         if (!git_sha.empty()) {
-            diag("Writing V1 cache...", "\033[35m");
+            if (is_debug) diag("Save to cache.", "\033[35m");
             write_v1_cache(abs_path, g_model_path, git_sha, ctx);
         } else {
-            // No git repo — still cache using just path + model hash
-            diag("Writing V1 cache (no git)...", "\033[35m");
+            // No git repo -- still cache using just path + model hash
+            if (is_debug) diag("Save to cache.", "\033[35m");
             write_v1_cache(abs_path, g_model_path, "", ctx);
         }
     }

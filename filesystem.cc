@@ -219,7 +219,7 @@ static long file_mtime(const std::string& path) {
 }
 
 // Minimal JSON registry: just track mtime of v2 source for staleness detection.
-// Full registry.json is overkill — we embed metadata in the V1 cache header instead.
+// Full registry.json is overkill -- we embed metadata in the V1 cache header instead.
 
 bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path,
                        const std::string& git_sha, struct llama_context* ctx) {
