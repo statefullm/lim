@@ -513,7 +513,7 @@ bool ChatSession::feed_user_message(const string& input) {
 // --- generate_response: invoke TokenGenerator and update state ---
 TokenGenerator::Result ChatSession::generate_response() {
     if (!state_.auto_continue) {
-        console("\n\033[1;90m--- Generating (Ctrl+C to interrupt) ---\033[0m\n");
+        console("\n");
         consoleFlush();
     }
 

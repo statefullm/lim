@@ -460,11 +460,6 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         t_count_++;
 
-        if (t_count_ % 50 == 0 && !in_tool_call_stream_ && !in_thinking_block_) {
-            cerr << "\r\033[K[Generating... " << t_count_ << " tokens]";
-            cerr.flush();
-        }
-
         {
             recent_token_count_tg++;
             auto now = chrono::high_resolution_clock::now();
