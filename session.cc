@@ -415,6 +415,7 @@ string ChatSession::get_user_input() {
 //   /save              -> SAVE with empty path (saves to log/<N>.save)
 //   /save cats         -> SAVE with path "cats" (saves to cats.save)
 //   /save /tmp/check   -> SAVE with path "/tmp/check" (saves to /tmp/check.save)
+
 ChatSession::Command ChatSession::handle_command(const string& input) {
     if (input.empty() || input[0] != '/') return Command::NONE;
 
@@ -431,18 +432,26 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
         return Command::NONE;
     };
 
-    // Define command patterns with optional argument support: {name, length, command}
+    // Define command patterns with optional argument support
+    // STR_CMD(name, cmd) derives len from the literal at compile time — string appears once.
+#define STR_CMD(name, cmd) { name, (int)(sizeof(name) - 1), cmd }
+
     static const struct CmdPattern {
         const char* name;
         int len;
         Command cmd;
     } patterns[] = {
-        {"quit", 4, Command::QUIT},
-        {"exit", 4, Command::QUIT},
-        {"clear", 5, Command::CLEAR},
-        {"reincarnate", 12, Command::REINCARNATE},
-        {"save", 4, Command::SAVE}
+        STR_CMD("quit", Command::QUIT),
+        STR_CMD("exit", Command::QUIT),
+        STR_CMD("clear", Command::CLEAR),
+        STR_CMD("reincarnate", Command::REINCARNATE),
+        STR_CMD("save", Command::SAVE),
+        STR_CMD("reset", Command::RESET),
+        STR_CMD("continue", Command::CONTINUE),
+        STR_CMD("help", Command::HELP)
     };
+
+#undef STR_CMD
 
     // Check patterns with optional argument support
     for (const auto& p : patterns) {
@@ -453,10 +462,6 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
         }
     }
 
-    // Exact match commands (no optional arguments)
-    if (rest == "reset") return Command::RESET;
-    if (rest == "continue") return Command::CONTINUE;
-    if (rest == "help") return Command::HELP;
     return Command::NONE;
 }
 
@@ -735,6 +740,10 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
         if (!git_sha.empty()) {
             diag("Writing V1 cache...", "\033[35m");
             write_v1_cache(abs_path, g_model_path, git_sha, ctx);
+        } else {
+            // No git repo — still cache using just path + model hash
+            diag("Writing V1 cache (no git)...", "\033[35m");
+            write_v1_cache(abs_path, g_model_path, "", ctx);
         }
     }
     return ok;

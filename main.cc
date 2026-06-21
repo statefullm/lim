@@ -373,7 +373,7 @@ int main(int argc, char ** argv) {
 
             // Try instant restore from V1 cache before slow token decode
             bool cache_hit = false;
-            if (!saved_sha.empty() && !restore_path_abs.empty()) {
+            if (!restore_path_abs.empty()) {
                 cache_hit = try_load_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 if (cache_hit) {
                     std::string key = get_cache_dir() + "/"; // just to trigger dir creation check
@@ -416,7 +416,7 @@ int main(int argc, char ** argv) {
                      std::to_string((int)restore_elapsed) + "s)", "\033[35m");
 
                 // Auto-write V1 cache for instant future restores
-                if (!saved_sha.empty() && !restore_path_abs.empty()) {
+                if (!restore_path_abs.empty()) {
                     diag("Writing V1 cache...", "\033[35m");
                     write_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 }

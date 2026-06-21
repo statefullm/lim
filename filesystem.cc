@@ -207,7 +207,8 @@ std::string get_cache_dir() { return get_cache_dir_internal(); }
 static std::string cache_key(const std::string& v2_path, const std::string& model_path,
                              const std::string& git_sha) {
     // Hash the combination of v2 path, model path, and git sha.
-    // This ensures cache invalidation on any change.
+    // If git_sha is empty (no git repo), fall back to hashing just path + model.
+    // This ensures cache works even outside a git repository.
     return sha256_hex(v2_path + "|" + model_path + "|" + git_sha).substr(0, 12);
 }
 
@@ -222,8 +223,6 @@ static long file_mtime(const std::string& path) {
 
 bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path,
                        const std::string& git_sha, struct llama_context* ctx) {
-    if (git_sha.empty()) return false; // No SHA means no cache key
-
     std::string dir = get_cache_dir_internal();
     std::string key = cache_key(v2_path, model_path, git_sha);
     std::string cache_path = dir + "/" + key;
@@ -263,8 +262,6 @@ bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path
 
 bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
                     const std::string& git_sha, struct llama_context* ctx) {
-    if (git_sha.empty()) return false;
-
     std::string dir = get_cache_dir_internal();
     std::string key = cache_key(v2_path, model_path, git_sha);
     std::string cache_path = dir + "/" + key;
