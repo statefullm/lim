@@ -244,15 +244,9 @@ void disable_browser_output() {
 }
 
 bool prompt_for_browser_connection() {
-    bool vscode_mode = getenv("LLLM_VSCODE") != nullptr && getenv("LLLM_VSCODE")[0] != '\0';
-
-    if (vscode_mode) {
-        message("\033[1;35m[Press reload in the browser panel]\033[0m\n");
-    } else {
-        message("\n\033[1;35m[Waiting for browser connection...]\033[0m\n");
-        message("Load this URL in your browser:\n");
-        message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
-    }
+    message("\n\033[1;35m[Waiting for browser connection...]\033[0m\n");
+    message("Load this URL in your browser:\n");
+    message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
 
     if (wait_for_file(INOTIFY_DIR, "lllm.browser_ready", false)) {
         message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");

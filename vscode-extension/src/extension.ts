@@ -19,7 +19,6 @@ export function activate(context: vscode.ExtensionContext) {
 function startWorkspace() {
     const config = vscode.workspace.getConfiguration('lllm.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
-    const modelPath = config.get<string>('modelPath', '');
 
     const host = process.env.LLLM_HOST || getHostname();
     const viewerUrl = `http://${host}:${browserPort}/viewer.html`;
@@ -39,12 +38,7 @@ function startWorkspace() {
     });
 
     if (lllmHost && lllmHost !== getHostname()) {
-        terminal.sendText(`ssh -t ai@${lllmHost} 'LLLM_VSCODE=1 exec bash --login'`);
-    } else {
-        terminal.sendText('export LLLM_VSCODE=1');
-        if (modelPath) {
-            terminal.sendText(`sudo -u ai -E /home/ai/bin/lllm ${modelPath}`);
-        }
+        terminal.sendText(`ssh -t ai@${lllmHost}`);
     }
 
     terminal.show();
