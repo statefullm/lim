@@ -46,9 +46,10 @@ ofstream token_log;
 string INITIAL_CWD;
 
 static void diag_impl(const string& formatted_line, const string& msg) {
-    if (should_output_to_stdout()) {
-        cout << formatted_line << "\n";
-    }
+    // Diagnostic messages (session status, errors, etc.) always go to the
+    // terminal regardless of LLLM_OUTPUT mode.
+    cout << formatted_line << "\n";
+    cout.flush();
     if (chat_log.is_open()) {
         chat_log << "[" << msg << "]" << "\n\n";
         chat_log.flush();

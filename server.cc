@@ -128,8 +128,6 @@ void start_lllm_server_if_needed() {
         return;
     }
 
-    log_diagnostic("Spinning up local lllmServer.py...");
-
     const char* home_env = getenv("HOME");
     if (home_env == nullptr) {
         log_diagnostic("ERROR: HOME is not set. Cannot start lllmServer.", true);
