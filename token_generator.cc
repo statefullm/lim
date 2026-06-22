@@ -482,13 +482,10 @@ TokenGenerator::Result TokenGenerator::generate() {
                 last_rate_check_tg = now;
             }
 
-            // Periodic speed/context diagnostic for the browser status bar.
-            // Update every ~2 seconds so the user sees live progress during long turns.
-            static auto last_speed_update_tg = chrono::high_resolution_clock::now();
-            double elapsed_since_speed = chrono::duration<double>(now - last_speed_update_tg).count();
-            if (elapsed_since_speed >= 2.0 && t_count_ > 5) {
-                last_speed_update_tg = now;
-
+            // Speed/context diagnostic for the browser status bar.
+            // Update every N tokens so progress stays visible at any generation rate.
+            static constexpr int SPEED_UPDATE_INTERVAL = 100;
+            if (t_count_ > 5 && t_count_ % SPEED_UPDATE_INTERVAL == 0) {
                 double total_elapsed = chrono::duration<double>(now - start).count();
                 if (total_elapsed > 0) {
                     double speed = t_count_ / total_elapsed;
