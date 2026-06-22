@@ -60,7 +60,7 @@
             white-space: nowrap;
             z-index: 9999;
         }
-        .connected { background-color: #28a745; color: white; }
+        .connected { background-color: #28a745; color: black; font-weight: bold; }
         .disconnected { background-color: #dc3545; color: white; }
 
         /* Tool label / result styling (sent as raw HTML from C++) */
@@ -372,17 +372,21 @@
             };
 
             ws.onmessage = (event) => {
-                // Clear command (SOH control char 0x01)
-                if (event.data.includes('\x01')) {
-                    segments = [];
-                    segRenderedContent = [];
-                    outputDiv.innerHTML = '';
-                    return;
-                }
-
                 // Split incoming data by segment prefix characters.
                 // Data may contain multiple segments or partial segments.
                 let data = event.data;
+
+                // Clear command (SOH control char 0x01): resets segments but does
+                // NOT discard the rest of the frame (e.g., a speed diagnostic sent
+                // immediately after clear).  Strip the marker and continue parsing.
+                if (data.includes('\x01')) {
+                    segments = [];
+                    segRenderedContent = [];
+                    outputDiv.innerHTML = '';
+                    data = data.replace(/\x01/g, '');
+                    if (data.length === 0) return;
+                }
+
                 let lastIdx = 0;
 
                 for (let i = 0; i < data.length; i++) {

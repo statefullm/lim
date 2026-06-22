@@ -12,6 +12,7 @@ using namespace std;
 // Segment prefix characters for viewer.html segment-based rendering.
 extern const char SEG_LLM_TEXT;  // LLM-generated text (rendered through marked)
 extern const char SEG_HTML;      // Any other raw HTML (tool results, user input, dividers)
+extern const char SEG_SPEED;     // Speed/context diagnostic for status bar
 
 // --- FIFO / Pipe Management ---
 extern int pipe_fd;

@@ -810,9 +810,21 @@ bool ChatSession::run() {
             reset_session_state();
             state_.last_t_count = 0;
             state_.last_elapsed = 0.0;
-            state_.last_n_past = 0;
+            state_.last_n_past = n_past_;
             log_entry("SYSTEM", "Context Cleared");
-            clear_viewer();
+
+            // Update browser: clear the viewer and immediately set the new
+            // context diagnostic in a single pipe write so they arrive together.
+            if (should_output_to_browser()) {
+                double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+                string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+                const char soh = 0x01;
+                pipe_write(&soh, 1);
+                pipe_write(&SEG_SPEED, 1);
+                string speed_msg = "Cleared | " + ctx_str;
+                pipe_write(speed_msg.c_str(), speed_msg.length());
+            }
+
             diag("Context Cleared Successfully", "\033[32m");
             continue;
         }
