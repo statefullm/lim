@@ -78,8 +78,14 @@ static void kill_stale_server() {
         pid_t pid = strtol(buf, nullptr, 10);
         if (pid > 1 && kill(pid, 0) == 0) {
             kill(pid, SIGKILL);
-            usleep(100000);
-            waitpid(pid, NULL, WNOHANG);
+            struct timespec ts{};
+            ts.tv_sec = 3;
+            while (true) {
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, &ts);
+                int status = 0;
+                pid_t result = waitpid(pid, &status, WNOHANG);
+                if (result == pid || result == -1) break;
+            }
         }
     }
     fclose(fp);
@@ -119,13 +125,82 @@ void start_lllm_server_if_needed() {
     if (g_lllm_server_pid != -1) return;
 
     // If the port is free but a PID file exists, the server crashed -- kill any
-    // zombie process and clean up. If the port is in use, leave it alone.
+    // zombie process and clean up. If the port is in use, try to kill it first
+    // (e.g., stale server from a previous session that was cleaned up but the
+    // socket hasn't fully released yet), then wait for the port to free up.
     if (!is_lllm_server_running()) {
         kill_stale_server();
     } else {
-        log_diagnostic("lllmServer is already running on port 8765. Skipping startup.");
-        g_lllm_server_pid = -2;
-        return;
+        log_diagnostic("lllmServer appears to be running on port 8765. Checking for stale process...");
+
+        // Collect PIDs to kill: first via PID file, then via fuser fallback.
+        vector<pid_t> pids_to_kill;
+
+        // Attempt 1: read the PID file (may have been cleaned up by previous session).
+        FILE* fp = fopen(SERVER_PID_PATH, "r");
+        if (fp) {
+            char buf[32];
+            if (fgets(buf, sizeof(buf), fp)) {
+                pid_t pid = strtol(buf, nullptr, 10);
+                if (pid > 1 && kill(pid, 0) == 0) {
+                    log_diagnostic("Killing stale server from PID file (pid " + std::to_string(pid) + ")");
+                    pids_to_kill.push_back(pid);
+                }
+            }
+            fclose(fp);
+        }
+
+        // Attempt 2: use fuser to find any process on the port.
+        if (pids_to_kill.empty()) {
+            const char* port_str = "8765";
+            const char* env_port = getenv("LLLM_PORT");
+            if (env_port && strlen(env_port) > 0) port_str = env_port;
+
+            string fuser_cmd = "fuser " + string(port_str) + "/tcp 2>/dev/null";
+            FILE* ffp = popen(fuser_cmd.c_str(), "r");
+            if (ffp) {
+                char line[256];
+                while (fgets(line, sizeof(line), ffp)) {
+                    char* tok = strtok(line, " \t\n");
+                    while (tok) {
+                        pid_t pid = strtol(tok, nullptr, 10);
+                        if (pid > 1 && kill(pid, 0) == 0) {
+                            log_diagnostic("Killing stale server from fuser (pid " + std::to_string(pid) + ")");
+                            pids_to_kill.push_back(pid);
+                        }
+                        tok = strtok(nullptr, " \t\n");
+                    }
+                }
+                pclose(ffp);
+            }
+        }
+
+        // Send SIGKILL to all found processes.
+        for (pid_t pid : pids_to_kill) {
+            kill(pid, SIGKILL);
+        }
+
+        // Block until each process exits, with a 3-second timeout per PID.
+        for (pid_t pid : pids_to_kill) {
+            struct timespec ts{};
+            ts.tv_sec = 3;
+            while (true) {
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, &ts);
+                int status = 0;
+                pid_t result = waitpid(pid, &status, WNOHANG);
+                if (result == pid || result == -1) break;
+            }
+        }
+
+        // Single final check: if the port is still occupied, something else
+        // is genuinely listening. Fall back gracefully.
+        if (is_lllm_server_running()) {
+            log_diagnostic("Port 8765 still in use. Attempting to reuse existing server...");
+            g_lllm_server_pid = -2;
+            return;
+        }
+
+        log_diagnostic("Stale server cleared, proceeding with startup.");
     }
 
     const char* home_env = getenv("HOME");
