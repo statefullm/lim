@@ -125,17 +125,29 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // Temperature from LLLM_TEMP environment variable
+    // Sampling parameters: all controlled via LLLM_* environment variables
     float temp = 0.7f;
+    float top_p = 0.8f;
+    int32_t top_k = 20;
+    float min_p = 0.0f;
+    float penalty_present = 1.5f;
+    float penalty_repeat = 1.0f;
+    float penalty_freq = 0.0f;
+    uint32_t seed = LLAMA_DEFAULT_SEED;
     bool use_dummy_thought = false;
     {
-        const char* env = getenv("LLLM_TEMP");
-        if (env != nullptr) {
-            temp = atof(env);
-        }
-        if (temp == 0.0f) {
-            use_dummy_thought = true;
-        }
+        const char* env;
+        if ((env = getenv("LLLM_TEMP")) != nullptr) temp = atof(env);
+        if ((env = getenv("LLLM_TOP_P")) != nullptr) top_p = atof(env);
+        if ((env = getenv("LLLM_TOP_K")) != nullptr) top_k = atoi(env);
+        if ((env = getenv("LLLM_MIN_P")) != nullptr) min_p = atof(env);
+        if ((env = getenv("LLLM_PENALTY_PRESENT")) != nullptr) penalty_present = atof(env);
+        if ((env = getenv("LLLM_PENALTY_REPEAT")) != nullptr) penalty_repeat = atof(env);
+        if ((env = getenv("LLLM_PENALTY_FREQ")) != nullptr) penalty_freq = atof(env);
+        if ((env = getenv("LLLM_SEED")) != nullptr) seed = (uint32_t)strtoul(env, nullptr, 10);
+    }
+    if (temp == 0.0f) {
+        use_dummy_thought = true;
     }
 
     const char* debug_env = getenv("LLLM_DEBUG");
@@ -315,13 +327,7 @@ int main(int argc, char ** argv) {
     string formatted_system_prompt = string(Tokens::TURN_START) + "system\n" + system_prompt + Tokens::TURN_END + "\n";
     vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
 
-    // Sampling parameters
-    float top_p = 0.8f;
-    int32_t top_k = 20;
-    float min_p = 0.0f;
-    float penalty_present = 1.5f;
-    float penalty_repeat = 1.0f;
-
+    // Override top_k/top_p when temperature is zero (greedy decoding)
     if (use_dummy_thought) {
         top_k = 1;
         top_p = 1.0f;
@@ -329,12 +335,12 @@ int main(int argc, char ** argv) {
 
     llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
     llama_sampler * smpl = llama_sampler_chain_init(lparams);
-    llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, penalty_repeat, 0.0f, penalty_present));
+    llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, penalty_repeat, penalty_freq, penalty_present));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
     llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
     llama_sampler_chain_add(smpl, llama_sampler_init_temp_ext(temp, 0.0f, 1.0f));
-    llama_sampler_chain_add(smpl, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
+    llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed));
 
     llama_batch batch = llama_batch_init(cparams.n_batch, 0, 1);
     int n_past = 0;

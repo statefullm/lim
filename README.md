@@ -234,25 +234,47 @@ Set via `LLLM_OUTPUT`:
 
 | Variable | Default | Description |
 |---|---|---|
+### Identity & Network
 | `AI_USER` | `ai` | Username that LLLM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
 | `LLLM_HOST` | unset | Hostname or IP of your LLM server. Used for SSH connection and browser viewer URL. |
 | `LLLM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LLLM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
+
+### Debugging & Output
 | `LLLM_DEBUG` | unset | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
 | `LLLM_SHOW_TOOLS` | `1` | Set to `0` to hide tool call details from the browser |
+
+### Model Loading
 | `LLLM_GPU_LAYERS` | `999` | Number of layers offloaded to GPU (`999` = all) |
-| `LLLM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
 | `LLLM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
-| `LLLM_CTX` | `262144` | Context window size (KV-cache token capacity) |
+| `LLLM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
+
+### Context & Performance
 | `LLLM_BATCH` | `2048` | Batch size for token feeding |
-| `LLLM_UBATCH` | `512` | Unbatched size |
+| `LLLM_CTX` | `262144` | Context window size (KV-cache token capacity) |
 | `LLLM_THREADS` | `8` | Threads for inference |
 | `LLLM_THREADS_BATCH` | `8` | Threads for batch processing |
+| `LLLM_UBATCH` | `512` | Unbatched size |
+
+### Sampling
+| `LLLM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P ≥ min_p × P(top) |
+| `LLLM_PENALTY_FREQ` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency |
+| `LLLM_PENALTY_PRESENT` | `1.5` | Presence penalty: discourages repeating previously used tokens |
+| `LLLM_PENALTY_REPEAT` | `1.0` | Repetition penalty multiplier (1.0 = no penalty) |
+| `LLLM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
 | `LLLM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
+| `LLLM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |
+| `LLLM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability ≤ top_p |
+
+### KV-Cache
 | `LLLM_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LLLM_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
-| `LLLM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
+
+### Session Control
 | `LLLM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
+| `LLLM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
+
+### Core Pinning
 | `LLLM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
 | `LLLM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
