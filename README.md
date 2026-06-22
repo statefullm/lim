@@ -1,3 +1,4 @@
+
 # LLLM: Stateful, O(1) Local LLM Controller
 
 **LLLM** is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn.
@@ -57,59 +58,71 @@ make
 
 ## User Setup
 
-### 1. The `ai` System User
+The dedicated LLM user is controlled by the `AI_USER` environment variable (defaults to `ai`). All references below use `$AI_USER`.
 
-LLLM **must** run as the system user `ai`. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
+### 1. Creating the AI User
+
+LLLM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
 
 Create the user and group if they don't exist:
 
 ```bash
-sudo groupadd -f ai
-sudo useradd -m -g ai -s /bin/bash ai
+export AI_USER=ai
+sudo groupadd -f $AI_USER
+sudo useradd -m -g $AI_USER -s /bin/bash $AI_USER
 ```
 
 ### 2. Git Safe Directories
 
-By default, Git refuses to operate in repositories owned by a different user. Since LLLM runs as `ai` but your project directories are owned by you, add the `[safe]` section to **your personal** `~/.gitconfig`:
+By default, Git refuses to operate in repositories owned by a different user. Since LLLM runs as `$AI_USER` but your project directories are owned by you, add the `[safe]` section to **your personal** `~/.gitconfig`:
 
 ```bash
 [safe]
-    directory = /home/ai
+    directory = /home/$AI_USER
 ```
 
-This prevents "fatal: detected dubious ownership in repository" errors when the `ai` user runs git commands.
+This prevents "fatal: detected dubious ownership in repository" errors when the LLM runs git commands.
 
 ### 3. Directory Permissions
 
-Your project directories should be group-writable by `ai` so the LLM can read and write files. The recommended layout for `/home/ai`:
+Your project directories should be group-writable by `$AI_USER` so the LLM can read and write files. The recommended layout for `/home/$AI_USER`:
 
 ```bash
-$ ls -ld /home/ai
-drwxrwsr-x+ 32 $USER ai 4096 Jun  6 11:53 /home/ai/
+$ ls -ld /home/$AI_USER
+drwxrwsr-x+ 32 $USER $AI_USER 4096 Jun  6 11:53 /home/$AI_USER/
 ```
 
-The setgid bit (`s`) ensures new files inherit the `ai` group.
+The setgid bit (`s`) ensures new files inherit the `$AI_USER` group.
 
-To set permissions in any project sandbox; add this alias to **your personal** `~/.bashrc`:
+To set permissions in any project sandbox, add this alias to **your personal** `~/.bashrc`:
 
 ```bash
-alias fixai='sudo chown -R $USER:ai .; chmod -R g+rw .; chmod -R -t .'
+alias fixai='sudo chown -R $USER:$AI_USER .; chmod -R g+rw .; chmod -R -t .'
 ```
 
-### 4. Running as User `ai`
+### 4. Connecting and Running LLLM
 
-You launch LLLM by switching to user `ai` while preserving your environment:
+LLLM must be run as user `$AI_USER`. The simplest approach is to SSH into the host as that user, then launch `lllm` directly. This keeps the workflow consistent whether you're using VS Code or a standalone terminal.
+
+Add this to the `~/.bashrc` of `$AI_USER`:
 
 ```bash
-alias coder='sudo -u ai -E ~/bin/lllm ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
+alias coder='lllm ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
 ```
 
-This alias does two things:
+Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LLM server `$LLLM_HOST`:
 
-- **`sudo -u ai -E`**: Runs as user `ai`, preserving your environment variables (`-E`).
-- **Model path**: Points to your preferred GGUF model.
+```bash
+ssh $AI_USER@$LLLM_HOST
+coder
+```
 
-Add this alias to your personal `~/.bashrc`.
+If running locally (no SSH needed), switch to the user first:
+
+```bash
+su - $AI_USER
+coder
+```
 
 #### Core Pinning (taskset)
 
@@ -146,12 +159,12 @@ Or write a custom wrapper script and set `LLLM_TASKSET_CMD` to its path. If the 
 
 The detected topology and pinning status are logged to stderr at startup.
 
-### 5. Setting Up `/home/ai/.bashrc`
+### 5. Setting Up `$HOME/.bashrc` for `$AI_USER`
 
-Add these lines to the `ai` user's `/home/ai/.bashrc`:
+Add these lines to `/home/$AI_USER/.bashrc`:
 
 ```bash
-# --- /home/ai/.bashrc ---
+# --- /home/$AI_USER/.bashrc ---
 
 umask 0002                    # Group-writable files by default
 
@@ -159,7 +172,7 @@ export MAKEFLAGS=-j8          # Parallel builds for exec_shell tool
 
 # Track current working directory so the LLM knows where you are.
 cd() {
-    builtin cd "$@" && pwd > /home/ai/.cwd
+    builtin cd "$@" && pwd > $HOME/.cwd
 }
 
 # Block git add -A / --all to prevent the LLM from staging untracked files
@@ -179,15 +192,15 @@ git() {
 export PATH="$HOME/bin:$PATH"
 ```
 
-The `cd` override writes the current directory to `/home/ai/.cwd`, which LLLM reads at startup so it knows your working directory. The `umask 0002` ensures files created by the `ai` user are group-readable/writable.
+The `cd` override writes the current directory to `$HOME/.cwd`, which LLLM reads at startup so it knows your working directory. The `umask 0002` ensures files created by `$AI_USER` are group-readable/writable.
 
 ### 6. The System Prompt
 
-Place your system prompt in `/home/ai/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
+Place your system prompt in `/home/$AI_USER/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
 
 ### 7. Message Shortcuts
 
-Create `/home/ai/.lllm_aliases` to define shorthand expansions at the `>>>` prompt:
+Create `/home/$AI_USER/.lllm_aliases` to define shorthand expansions at the `>>>` prompt:
 
 ```
 # ~/.lllm_aliases: one key=value per line; # comments are ignored
@@ -221,6 +234,8 @@ Set via `LLLM_OUTPUT`:
 
 | Variable | Default | Description |
 |---|---|---|
+| `AI_USER` | `ai` | Username that LLLM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
+| `LLLM_HOST` | unset | Hostname or IP of your LLM server. Used for SSH connection and browser viewer URL. |
 | `LLLM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LLLM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
 | `LLLM_DEBUG` | unset | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
@@ -245,20 +260,20 @@ Set via `LLLM_OUTPUT`:
 
 ## The AI Sandbox
 
-The `ai` user operates in a sandboxed environment:
+The `$AI_USER` operates in a sandboxed environment:
 
-- **File access** is limited to directories where the `ai` group has write permission. Use `fixai` to grant access to new project directories.
-- **Shell commands** executed via the `exec_shell` tool run as user `ai`. They inherit the `ai` user's PATH and environment.
-- **Git integration**: The sandbox repo is a separate git repository that is writable by user `ai` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
+- **File access** is limited to directories where the `$AI_USER` group has write permission. Use `fixai` to grant access to new project directories.
+- **Shell commands** executed via the `exec_shell` tool run as user `$AI_USER`. They inherit that user's PATH and environment.
+- **Git integration**: The sandbox repo is a separate git repository that is writable by `$AI_USER` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
 
-Set up a deploy key:
+Set up an SSH key:
 
 ```bash
-# As user ai, generate a dedicated key
-sudo -u ai ssh-keygen -t ed25519 -f /home/ai/.ssh/id_ed25519_lllm -N ""
+# As `$AI_USER`, generate a dedicated key
+ssh-keygen -N ""
 
-# Add the public key to your Git hosting provider as a deploy key with write access
-cat /home/ai/.ssh/id_ed25519_lllm.pub
+# Add the public key to your Git hosting provider
+cat ~/.ssh/id_ed25519.pub
 ```
 
 ---
@@ -267,7 +282,7 @@ cat /home/ai/.ssh/id_ed25519_lllm.pub
 
 ### Starting a Session
 
-Run your alias (e.g., `coder`). You'll see the `>>>` prompt. Type your request and press Enter.
+SSH in as `$AI_USER`, then run your `coder` alias. You'll see the `>>>` prompt. Type your request and press Enter.
 
 ### Available Tools
 
@@ -277,7 +292,7 @@ The LLM has access to six tools. You don't call them directly; just describe wha
 - **`search_file`**: Search for text within a file, with optional line range
 - **`edit_file`**: Replace exact text within a file (surgical editing)
 - **`write_file`**: Write or overwrite a file
-- **`exec_shell`**: Run a shell command as user `ai`
+- **`exec_shell`**: Run a shell command as `$AI_USER`
 - **`web_search`**: Search the web via SearXNG
 
 Tools are invoked via XML-structured tags in the LLM's output. Results are fed back as continuation tokens into the KV-cache, avoiding the overhead of re-tokenizing the full conversation history.
@@ -359,33 +374,35 @@ Press **Ctrl+C** during generation to interrupt. The partial output is preserved
 
 ### Browser Output
 
-By default (`LLLM_OUTPUT=2`), LLLM streams output to a browser via WebSocket. Load:
+By default (`LLLM_OUTPUT=2`), LLLM streams output to a browser via WebSocket. Start your LLLM session first, then load:
 
 ```
 http://<hostname>:8765/viewer.html
 ```
 
+This ensures the server is already running when the browser connects, avoiding any need to reload the page.
+
 The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores (auto-detected, or all cores on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
 
 ### VS Code Extension
 
-The LLLM Workspace extension provides a convenient way to set up your workspace: it opens an integrated terminal and a browser viewer, then waits for the server. There is no separate "VS Code mode" — the C++ binary behaves identically whether launched from VS Code or any other terminal.
+The LLLM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
 
 The extension does two things:
-- **Opens a browser** pointing to `LLLM_HOST` (or localhost) on the configured port, after waiting for the server to respond.
-- **Creates a terminal** at `$HOME`. If `LLLM_HOST` is set and remote, it SSHs into that host; otherwise it opens a local shell.
+- **Opens a browser** pointing to `$LLLM_HOST` (or localhost) on the configured port, after waiting for the server to respond.
+- **Creates a terminal** at `$HOME`. If `$LLLM_HOST` is set and remote, it SSHs into that host as user `$AI_USER`; otherwise it opens a local shell.
 
 You then run your `coder` alias in that terminal as usual.
 
 **Install:**
 
 ```bash
-cd /home/ai/lllm
+cd /home/$AI_USER/lllm
 make vscode          # builds and packages the extension
 make install         # installs the extension into VS Code
 ```
 
-Then in VS Code: **Ctrl+Shift+P** → `LLLM: Open Workspace`. This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
+Then in VS Code, click the LLLM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LLLM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
 
 To rebuild both the C++ binary and the extension together:
 
@@ -410,3 +427,5 @@ Each session writes a numbered log file in `log/<N>`. With `LLLM_DEBUG=1`, a com
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+---

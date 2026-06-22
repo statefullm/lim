@@ -49,7 +49,8 @@ function startWorkspace() {
     });
 
     if (lllmHost && lllmHost !== getHostname()) {
-        terminal.sendText(`ssh -t ai@${lllmHost}`);
+        const aiUser = process.env.AI_USER || 'ai';
+        terminal.sendText(`ssh -t ${aiUser}@${lllmHost}`);
     }
 
     terminal.show();

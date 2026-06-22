@@ -383,7 +383,7 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
     chat_log.flush();
 }
 
-const string FileSystemTools::HOME = "/home/ai";
+
 
 // Helper: extract the file extension (lowercased) from a path, or empty string.
 static string _file_ext(const string& path) {

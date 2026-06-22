@@ -66,10 +66,14 @@ std::string g_model_path;
 int main(int argc, char ** argv) {
     setlocale(LC_ALL, "");
 
+    // Read the required username from AI_USER env var (default: "ai")
+    const char* ai_user_env = getenv("AI_USER");
+    const char* required_user = ai_user_env && ai_user_env[0] ? ai_user_env : "ai";
+
     uid_t uid = getuid();
     struct passwd *pw = getpwuid(uid);
-    if (pw == nullptr || strcmp(pw->pw_name, "ai") != 0) {
-        cerr << "Error: This program must be run as user 'ai'" << endl;
+    if (pw == nullptr || strcmp(pw->pw_name, required_user) != 0) {
+        cerr << "Error: This program must be run as user '" << required_user << "'" << endl;
         return 1;
     }
 

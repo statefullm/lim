@@ -67,7 +67,6 @@ public:
 
 private:
   std::string _get_fullpath(const std::string& path);
-  static const std::string HOME;
 };
 
 // --- Consolidated Diagnostic Logging Function ---
