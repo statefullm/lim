@@ -145,9 +145,12 @@ int main(int argc, char ** argv) {
         if ((env = getenv("LLLM_PENALTY_REPEAT")) != nullptr) penalty_repeat = atof(env);
         if ((env = getenv("LLLM_PENALTY_FREQ")) != nullptr) penalty_freq = atof(env);
         if ((env = getenv("LLLM_SEED")) != nullptr) seed = (uint32_t)strtoul(env, nullptr, 10);
-    }
-    if (temp == 0.0f) {
-        use_dummy_thought = true;
+
+        // LLLM_THINKING: set to 0 to suppress thinking blocks for faster throughput.
+        // Not recommended for math or complex reasoning tasks.
+        if ((env = getenv("LLLM_THINKING")) != nullptr) {
+            use_dummy_thought = (atoi(env) == 0);
+        }
     }
 
     const char* debug_env = getenv("LLLM_DEBUG");
@@ -326,13 +329,6 @@ int main(int argc, char ** argv) {
 
     string formatted_system_prompt = string(Tokens::TURN_START) + "system\n" + system_prompt + Tokens::TURN_END + "\n";
     vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
-
-    // Override top_k/top_p when temperature is zero (greedy decoding)
-    if (use_dummy_thought) {
-        top_k = 1;
-        top_p = 1.0f;
-    }
-
     llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
     llama_sampler * smpl = llama_sampler_chain_init(lparams);
     llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, penalty_repeat, penalty_freq, penalty_present));
