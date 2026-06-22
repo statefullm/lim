@@ -66,8 +66,8 @@ std::string g_model_path;
 int main(int argc, char ** argv) {
     setlocale(LC_ALL, "");
 
-    // Read the required username from AI_USER env var (default: "ai")
-    const char* ai_user_env = getenv("AI_USER");
+    // Read the required username from LLLM_AI_USER env var (default: "ai")
+    const char* ai_user_env = getenv("LLLM_AI_USER");
     const char* required_user = ai_user_env && ai_user_env[0] ? ai_user_env : "ai";
 
     uid_t uid = getuid();

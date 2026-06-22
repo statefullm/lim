@@ -25,7 +25,6 @@ int get_output_mode();
 bool should_output_to_stdout();
 bool should_output_to_browser();
 bool should_output_think_blocks();
-bool should_show_tools();
 
 // --- Initialization ---
 void init_output_stream();

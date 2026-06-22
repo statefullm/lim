@@ -100,7 +100,7 @@ ToolExecutor::Result ToolExecutor::execute(
         if (!tool_out.recognized || !tool_out.params_valid) {
             state.invalid_tool_strikes++;
 
-            if (is_debug && should_show_tools() && should_output_to_browser()) {
+            if (is_debug && should_output_to_browser()) {
                 string safe = html_escape(tool_call);
                 string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
                 string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";

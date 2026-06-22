@@ -57,15 +57,6 @@ bool should_output_think_blocks() {
     return mode == 1 || mode == 2 || mode == 3;
 }
 
-bool should_show_tools() {
-    const char* env = getenv("LLLM_SHOW_TOOLS");
-    if (env == nullptr) return true;
-    char* endp = nullptr;
-    long val = strtol(env, &endp, 10);
-    if (*endp != '\0') return true;
-    return val != 0;
-}
-
 void init_output_stream() {
     mkfifo(FIFO_PATH, 0666);
     pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
