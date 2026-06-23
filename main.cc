@@ -267,12 +267,12 @@ int main(int argc, char ** argv) {
         if ((env = getenv("LLLM_THREADS")) != nullptr) {
             cparams.n_threads = atoi(env);
         } else {
-            cparams.n_threads = 8;
+            cparams.n_threads = Taskset::physical_core_count();
         }
         if ((env = getenv("LLLM_THREADS_BATCH")) != nullptr) {
             cparams.n_threads_batch = atoi(env);
         } else {
-            cparams.n_threads_batch = 8;
+            cparams.n_threads_batch = Taskset::physical_core_count();
         }
     }
     cparams.flash_attn_type = (llama_flash_attn_type)1;

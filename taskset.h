@@ -215,6 +215,66 @@ static std::string e_core_taskset() {
 }
 
 // ---------------------------------------------------------------------------
+// Return the number of physical cores (no hyperthreading duplicates).
+// On hybrid CPUs: count of P-core HT-siblings + E-cores.
+// On non-hybrid HT CPUs: nproc / 2.
+// Falls back to sysconf(_SC_NPROCESSORS_ONLN) if detection fails.
+// ---------------------------------------------------------------------------
+static int physical_core_count() {
+    FILE* fp = popen(
+        "bash -c '"
+        "shopt -s nullglob; "
+        "for d in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do "
+        "  n=$(basename $(dirname $(dirname $d)) | sed \"s/cpu//\"); "
+        "  s=$(cat $d 2>/dev/null); "
+        "  echo \"$n:$s\"; "
+        "done'",
+        "r"
+    );
+    if (!fp) return static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+
+    std::vector<int> ht_logical, non_ht;
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        std::string siblings(line);
+        size_t cp = siblings.find(':');
+        if (cp == std::string::npos) continue;
+
+        std::string cpu_str = siblings.substr(0, cp);
+        if (cpu_str.find_first_not_of("0123456789") != std::string::npos) continue;
+
+        std::string sib = siblings.substr(cp + 1);
+        while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
+
+        if (sib.find('-') != std::string::npos) {
+            // HT core: count the logical CPUs in the range
+            size_t dash = sib.find('-');
+            int lo = std::atoi(sib.substr(0, dash).c_str());
+            int hi = std::atoi(sib.substr(dash + 1).c_str());
+            ht_logical.push_back(hi - lo); // number of siblings per physical core
+        } else {
+            non_ht.push_back(std::atoi(cpu_str.c_str()));
+        }
+    }
+    pclose(fp);
+
+    if (ht_logical.empty() && non_ht.empty()) {
+        return static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+    }
+
+    // Count physical cores
+    int physical = 0;
+    if (!ht_logical.empty()) {
+        // All HT entries share the same sibling count (e.g., 2 for hyperthreading)
+        int siblings_per_core = ht_logical[0] + 1; // "0-1" means 2 logical per physical
+        physical += static_cast<int>(ht_logical.size()) / siblings_per_core;
+    }
+    physical += static_cast<int>(non_ht.size());
+
+    return physical > 0 ? physical : static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
+}
+
+// ---------------------------------------------------------------------------
 // Log a one-line diagnostic describing the detected topology.
 // ---------------------------------------------------------------------------
 static void log_core_detection(std::ostream& os) {

@@ -37,5 +37,9 @@
 *.out
 *.app
 
+# Build directories
+llama/build/
+build/
+
 # debug information files
 *.dwo

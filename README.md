@@ -42,16 +42,41 @@ This means long-running coding sessions stay fast regardless of how many tool ca
 ## Prerequisites
 
 1. A GPU with CUDA support (NVIDIA recommended) and the CUDA toolkit installed.
-2. [llama.cpp](https://github.com/ggml-org/llama.cpp) compiled from source in a sibling directory (`../llama.cpp`).
-3. Python 3 with `aiohttp` for the browser server: `pip3 install aiohttp`.
-4. A GGUF model file (e.g., Qwen, Llama, Mistral).
+2. Python 3 with `aiohttp` for the browser server: `pip3 install aiohttp`.
+3. A GGUF model file (e.g., Qwen, Llama, Mistral).
+
+> **Note:** llama.cpp is bundled as a git subrepo and will be built automatically by the Makefile.
 
 ---
 
 ## Building
 
 ```bash
+git clone https://github.com/your-org/lllm.git
+cd lllm
 make
+./lllm --help
+```
+
+The build will automatically detect your GPU (if any) and compile llama.cpp with the appropriate architecture flags. No manual setup of llama.cpp is required.
+
+### Custom Build Options
+
+All auto-detected values can be overridden via environment variables:
+
+| Variable | Purpose | Example |
+|---|---|---|
+| `CUDA_ARCH_FLAGS` | Override GPU architecture detection | `make CUDA_ARCH_FLAGS=120a` |
+| `LLAMA_CMAKE_FLAGS` | Extra cmake flags for llama.cpp | `make LLAMA_CMAKE_FLAGS="-DGGML_AVX512=off"` |
+| `GGML_CUDA` | Force CUDA on/off | `make GGML_CUDA=off` for CPU-only |
+| `LLAMA_CMAKE_FLAGS` | Extra cmake flags for llama.cpp | `make LLAMA_CMAKE_FLAGS="-DGGML_AVX512=off"` |
+| `GGML_CUDA` | Force CUDA on/off | `make GGML_CUDA=off` for CPU-only |
+| `GGML_HIPBLAS` | Enable ROCm/HIP build | `make GGML_HIPBLAS=on` |
+
+To clean only the llama.cpp build artifacts without touching lllm:
+
+```bash
+make llama-clean
 ```
 
 ---
