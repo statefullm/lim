@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <limits.h>
 #include <climits>
+#include <csignal>
 #include <openssl/sha.h>
 
 using namespace std;
@@ -487,6 +488,14 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   if (pid == 0) {
     // Child process: redirect stdout/stderr to the pipe, then exec.
     close(pipefd[0]); // Close read end
+
+    // Reset SIGPIPE to default so pipelines like `find | head` behave as they
+    // would in a normal terminal: the upstream process is silently killed by
+    // SIGPIPE when the downstream exits, rather than getting EPIPE from write()
+    // and printing a "write error" diagnostic.  (The parent lllm process ignores
+    // SIGPIPE to protect its own FIFO writes; this reset scopes that to us only.)
+    signal(SIGPIPE, SIG_DFL);
+
     dup2(pipefd[1], STDOUT_FILENO);
     dup2(pipefd[1], STDERR_FILENO);
     close(pipefd[1]);
