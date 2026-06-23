@@ -20,7 +20,7 @@ ifeq ($(CUDA_ARCH_FLAGS),)
 endif
 
 ifeq ($(CUDA_ARCH_FLAGS),)
-  $(error No GPU detected and CUDA_ARCH_FLAGS not set. Set it manually or build with GGML_CUDA=off for CPU-only.)
+  # No GPU detected and no override — will be checked at build time if needed
 endif
 
 # Determine GGML backend flags
@@ -68,6 +68,7 @@ $(LLAMA_BUILD_DIR):
 ifeq ($(LLAMA_BUILD_DIR),$(LLAMA_DIR)/build)
 # Auto-build llama.cpp from subrepo
 $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so: $(LLAMA_DIR)/CMakeLists.txt | $(LLAMA_BUILD_DIR)
+	@if [ -z "$(CUDA_ARCH_FLAGS)" ]; then echo "Error: No GPU detected and CUDA_ARCH_FLAGS not set. Set it manually or build with GGML_CUDA=off for CPU-only." >&2; exit 1; fi
 	@echo "[llama.cpp] Configuring with CUDA architectures: $(CUDA_ARCH_FLAGS)"
 	cd $(LLAMA_DIR) && cmake -B $(abspath $(LLAMA_BUILD_DIR)) \
 		-DCMAKE_CUDA_ARCHITECTURES="$(CUDA_ARCH_FLAGS)" \
