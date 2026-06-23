@@ -45,7 +45,7 @@ This means long-running coding sessions stay fast regardless of how many tool ca
 2. Python 3 with `aiohttp` for the browser server: `pip3 install aiohttp`.
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
 
-> **Note:** llama.cpp is bundled as a git subrepo and will be built automatically by the Makefile.
+> **Note:** llama is bundled as a git subrepo and will be built automatically by the Makefile.
 
 ---
 
@@ -58,7 +58,7 @@ make
 ./lllm --help
 ```
 
-The build will automatically detect your GPU (if any) and compile llama.cpp with the appropriate architecture flags. No manual setup of llama.cpp is required.
+The build will automatically detect your GPU (if any) and compile llama with the appropriate architecture flags. No manual setup is required.
 
 ### Custom Build Options
 
@@ -67,13 +67,12 @@ All auto-detected values can be overridden via environment variables:
 | Variable | Purpose | Example |
 |---|---|---|
 | `CUDA_ARCH_FLAGS` | Override GPU architecture detection | `make CUDA_ARCH_FLAGS=120a` |
-| `LLAMA_CMAKE_FLAGS` | Extra cmake flags for llama.cpp | `make LLAMA_CMAKE_FLAGS="-DGGML_AVX512=off"` |
-| `GGML_CUDA` | Force CUDA on/off | `make GGML_CUDA=off` for CPU-only |
-| `LLAMA_CMAKE_FLAGS` | Extra cmake flags for llama.cpp | `make LLAMA_CMAKE_FLAGS="-DGGML_AVX512=off"` |
+| `LLAMA_BUILD_DIR` | Use pre-built llama from external directory | `export LLAMA_BUILD_DIR=/path/to/llama/build` |
+| `LLAMA_CMAKE_FLAGS` | Extra cmake flags passed to the llama build | `make LLAMA_CMAKE_FLAGS="-DGGML_AVX512=off"` |
 | `GGML_CUDA` | Force CUDA on/off | `make GGML_CUDA=off` for CPU-only |
 | `GGML_HIPBLAS` | Enable ROCm/HIP build | `make GGML_HIPBLAS=on` |
 
-To clean only the llama.cpp build artifacts without touching lllm:
+To clean only the llama build artifacts without touching lllm:
 
 ```bash
 make llama-clean
@@ -193,8 +192,6 @@ Add these lines to `/home/$LLLM_AI_USER/.bashrc`:
 
 umask 0002                    # Group-writable files by default
 
-export MAKEFLAGS=-j8          # Parallel builds for exec_shell tool
-
 # Track current working directory so the LLM knows where you are.
 cd() {
     builtin cd "$@" && pwd > $HOME/.cwd
@@ -263,14 +260,14 @@ Set via `LLLM_OUTPUT`:
 | `LLLM_HOST` | unset | Hostname or IP of your LLM server. Used for SSH connection and browser viewer URL. |
 | `LLLM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LLLM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
-| `LLLM_DEBUG` | unset | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
+| `LLLM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
 | `LLLM_GPU_LAYERS` | `999` | Number of layers offloaded to GPU (`999` = all) |
 | `LLLM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
 | `LLLM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
 | `LLLM_BATCH` | `2048` | Batch size for token feeding |
 | `LLLM_CTX` | `262144` | Context window size (KV-cache token capacity) |
-| `LLLM_THREADS` | `8` | Threads for inference |
-| `LLLM_THREADS_BATCH` | `8` | Threads for batch processing |
+| `LLLM_THREADS` | *(auto)* | Threads for inference (physical core count) |
+| `LLLM_THREADS_BATCH` | *(auto)* | Threads for batch processing (physical core count) |
 | `LLLM_UBATCH` | `512` | Unbatched size |
 | `LLLM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P ≥ min_p × P(top) |
 | `LLLM_PENALTY_FREQ` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency |
@@ -429,7 +426,6 @@ You then run your `coder` alias in that terminal as usual.
 **Install:**
 
 ```bash
-cd /home/$LLLM_AI_USER/lllm
 make vscode          # builds and packages the extension
 make install         # installs the extension into VS Code
 ```
