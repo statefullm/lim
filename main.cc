@@ -1,5 +1,6 @@
 #include "llama.h"
 #include "common.h"
+#include "fit.h"
 #include "filesystem.h"
 #include "network.h"
 #include "tokens.h"
@@ -229,12 +230,16 @@ int main(int argc, char ** argv) {
 
     auto mparams = llama_model_default_params();
     // Allow overriding model params with LLLM_* environment variables
+    bool gpu_layers_explicit = false;
     {
         const char* env;
         if ((env = getenv("LLLM_GPU_LAYERS")) != nullptr) {
-            mparams.n_gpu_layers = atoi(env);
+            int val = atoi(env);
+            mparams.n_gpu_layers = val;
+            // Treat -1 as "not set" — it's the default and should trigger auto-fit.
+            gpu_layers_explicit = (val != -1);
         } else {
-            mparams.n_gpu_layers = 999;
+            mparams.n_gpu_layers = -1; // -1 means "all layers" (auto-fit)
         }
         if ((env = getenv("LLLM_USE_MMAP")) != nullptr) {
             mparams.use_mmap = atoi(env) != 0;
@@ -248,18 +253,14 @@ int main(int argc, char ** argv) {
         }
     }
 
-    llama_model * model = llama_model_load_from_file(argv[1], mparams);
-    if (!model) return 1;
-
-    const llama_vocab * vocab = llama_model_get_vocab(model);
-    ModelType model_type = detect_model_type(vocab);
-
     auto cparams = llama_context_default_params();
     // Allow overriding context params with LLLM_* environment variables
+    bool ctx_explicit = false;
     {
         const char* env;
         if ((env = getenv("LLLM_CTX")) != nullptr) {
             cparams.n_ctx = atoi(env);
+            ctx_explicit = true;
         } else {
             cparams.n_ctx = 262144;
         }
@@ -284,6 +285,65 @@ int main(int argc, char ** argv) {
             cparams.n_threads_batch = Taskset::physical_core_count();
         }
     }
+
+    // Vectors must live through model loading since mparams holds pointers into them.
+    const size_t ndevs = llama_max_devices();
+    std::vector<float> tensor_split(ndevs, 0.0f);
+    const size_t n_overrides = llama_max_tensor_buft_overrides();
+    std::vector<llama_model_tensor_buft_override> tensor_buft_overrides(n_overrides, {nullptr, nullptr});
+
+    // Try loading the model first with full GPU offload. If it fails (e.g., OOM),
+    // retry with common_fit_params which can do MoE-aware partial layer offloading.
+    llama_model * model = llama_model_load_from_file(argv[1], mparams);
+
+    if (!model && !gpu_layers_explicit && mparams.n_gpu_layers < 0) {
+        diag("Initial model load failed, attempting to fit parameters to device memory...", "\033[33m");
+
+        // Reset mparams to defaults so common_fit_params can adjust n_gpu_layers
+        mparams = llama_model_default_params();
+        // Re-apply non-fit-sensitive settings
+        if ((getenv("LLLM_USE_MMAP")) != nullptr) {
+            mparams.use_mmap = atoi(getenv("LLLM_USE_MMAP")) != 0;
+        } else {
+            mparams.use_mmap = false;
+        }
+        if ((getenv("LLLM_USE_MLOCK")) != nullptr) {
+            mparams.use_mlock = atoi(getenv("LLLM_USE_MLOCK")) != 0;
+        } else {
+            mparams.use_mlock = true;
+        }
+
+        std::vector<size_t> margins(ndevs, 1024 * 1024 * 1024);
+        mparams.tensor_split = tensor_split.data();
+        mparams.tensor_buft_overrides = tensor_buft_overrides.data();
+
+        uint32_t n_ctx_min = ctx_explicit ? cparams.n_ctx : 8192;
+
+        common_params_fit_status fit_status = common_fit_params(
+            argv[1], &mparams, &cparams,
+            tensor_split.data(),
+            tensor_buft_overrides.data(),
+            margins.data(),
+            n_ctx_min,
+            GGML_LOG_LEVEL_ERROR);
+
+        if (fit_status == COMMON_PARAMS_FIT_STATUS_SUCCESS) {
+            diag("Model fit successful: " + to_string(mparams.n_gpu_layers) + " layers on GPU", "\033[32m");
+        } else if (fit_status == COMMON_PARAMS_FIT_STATUS_FAILURE) {
+            diag("Warning: could not fully fit model to device memory, using fallback parameters", "\033[33m");
+        } else {
+            diag("Error during model fitting, proceeding with default parameters", "\033[31m");
+        }
+
+        model = llama_model_load_from_file(argv[1], mparams);
+    }
+
+    if (!model) return 1;
+
+    const llama_vocab * vocab = llama_model_get_vocab(model);
+    ModelType model_type = detect_model_type(vocab);
+
+    // Apply remaining context params that fit_params shouldn't touch
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
 
