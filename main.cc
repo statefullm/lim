@@ -106,6 +106,7 @@ int main(int argc, char ** argv) {
 
     g_model_path = argv[1];
 
+
     // Check if we are restoring from a save file
     bool restore_from_file = (argc == 3);
     string restore_path;
@@ -116,6 +117,14 @@ int main(int argc, char ** argv) {
         if (restore_path.size() < 5 || restore_path.substr(restore_path.size() - 5) != ".save") {
             restore_path += ".save";
         }
+
+        // Validate the save file exists before loading the model.
+        struct stat st;
+        if (stat(restore_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
+            cerr << "Error: Save file not found: " << restore_path << endl;
+            return 1;
+        }
+
         // Resolve to absolute path for cache key consistency
         char abs_buf[4096];
         if (realpath(restore_path.c_str(), abs_buf)) {
@@ -440,9 +449,10 @@ int main(int argc, char ** argv) {
                     write_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 }
             }
+
         } else {
-            // V2 read failed -- not a supported save format
-            cerr << "Error: Save file is not a valid token save: " << restore_path << endl;
+            // V2 read failed -- file exists (checked above) but has invalid format
+            cerr << "Error: Save file has an invalid format: " << restore_path << endl;
             return 1;
         }
 

@@ -72,6 +72,8 @@ all: $(TARGET) vscode
 $(LLAMA_BUILD_DIR):
 	mkdir -p $@
 
+ifeq ($(LLAMA_BUILD_DIR),$(LLAMA_DIR)/build)
+# Auto-build llama.cpp from subrepo
 $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so: $(LLAMA_DIR)/CMakeLists.txt | $(LLAMA_BUILD_DIR)
 	@echo "[llama.cpp] Configuring with CUDA architectures: $(CUDA_ARCH_FLAGS)"
 	cd $(LLAMA_DIR) && cmake -B $(abspath $(LLAMA_BUILD_DIR)) \
@@ -83,6 +85,10 @@ $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so: $(
 	cd $(LLAMA_DIR) && cmake --build $(abspath $(LLAMA_BUILD_DIR)) --target llama --target llama-common
 
 $(TARGET): main.o $(FILES:=.o) $(FILES:=.h) | $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so
+else
+# Use pre-built llama.cpp from external directory
+$(TARGET): main.o $(FILES:=.o) $(FILES:=.h)
+endif
 	$(CXX) $(CXXFLAGS) main.o $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 
 VSIX = vscode-extension/vscode-extension-0.1.0.vsix
