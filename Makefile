@@ -19,14 +19,7 @@ ifeq ($(CUDA_ARCH_FLAGS),)
   endif
 endif
 
-# If still empty after detection, default to a broad set of common architectures
-CUDA_ARCH_FLAGS ?=
 ifeq ($(CUDA_ARCH_FLAGS),)
-  NV_CAP := $(shell nvidia-smi --<think>
-
-</think>
-
-<function=edit_file><parameter=new>ifeq ($(CUDA_ARCH_FLAGS),)
   $(error No GPU detected and CUDA_ARCH_FLAGS not set. Set it manually or build with GGML_CUDA=off for CPU-only.)
 endif
 
@@ -67,7 +60,7 @@ TARGET = lllm
 # Default target: build llama.cpp first, then lllm
 all: $(TARGET) vscode
 
-.PHONY: clean llama-clean FORCE
+.PHONY: all clean llama-clean FORCE
 
 $(LLAMA_BUILD_DIR):
 	mkdir -p $@
@@ -85,11 +78,12 @@ $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so: $(
 	cd $(LLAMA_DIR) && cmake --build $(abspath $(LLAMA_BUILD_DIR)) --target llama --target llama-common
 
 $(TARGET): main.o $(FILES:=.o) $(FILES:=.h) | $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so
+	$(CXX) $(CXXFLAGS) main.o $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 else
 # Use pre-built llama.cpp from external directory
 $(TARGET): main.o $(FILES:=.o) $(FILES:=.h)
-endif
 	$(CXX) $(CXXFLAGS) main.o $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
+endif
 
 VSIX = vscode-extension/vscode-extension-0.1.0.vsix
 
@@ -115,8 +109,6 @@ llama-clean:
 
 distclean: clean llama-clean
 
-.PHONY: all clean llama-clean FORCE
-
 .SUFFIXES: .cc .o .d
 %.o: %.cc $(FILES:=.cc)
 	$(CXX) $(CXXFLAGS) -o $@ -c $<
@@ -135,4 +127,3 @@ endif
 ifndef SKIP_DEPS
 -include $(FILES:=.d)
 endif
-
