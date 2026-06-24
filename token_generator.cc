@@ -12,6 +12,7 @@
 #include <cctype>
 #include <algorithm>
 #include <iomanip>
+#include <string_view>
 #include <readline/readline.h>
 
 using namespace std;
@@ -405,11 +406,19 @@ TokenGenerator::Result TokenGenerator::generate() {
                 }
             }
 
-            for (size_t len = 1; len <= max(fstart.length(), tstart.length()) && len <= generated_text_.length(); ++len) {
-                if (generated_text_.compare(generated_text_.length() - len, len, fstart, 0, len) == 0 ||
-                    generated_text_.compare(generated_text_.length() - len, len, tstart, 0, len) == 0) {
-                    safe_len = generated_text_.length() - len;
-                    break;
+            // Only check the last N characters for tag prefixes via a small window.
+            // Avoids touching the potentially-megabyte generated_text_ on every token.
+            {
+                size_t max_tag_len = max(fstart.length(), tstart.length());
+                if (generated_text_.length() >= max_tag_len) {
+                    string_view tail(generated_text_.data() + generated_text_.length() - max_tag_len, max_tag_len);
+                    for (size_t len = 1; len <= max_tag_len; ++len) {
+                        if ((tail.length() >= len && tail.compare(tail.length() - len, len, fstart.data(), len) == 0) ||
+                            (tail.length() >= len && tail.compare(tail.length() - len, len, tstart.data(), len) == 0)) {
+                            safe_len = generated_text_.length() - len;
+                            break;
+                        }
+                    }
                 }
             }
 
