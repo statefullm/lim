@@ -301,11 +301,17 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
         }
 
-        string token_str = common_token_to_piece(ctx_, next_token).c_str();
-        generated_text_ += token_str;
-        full_response_ += token_str;
+        // Detokenize directly into a pre-allocated buffer to avoid per-token allocation.
+        static constexpr int TOKEN_BUF_SIZE = 64;
+        char token_buf[TOKEN_BUF_SIZE];
+        const int n_chars = llama_token_to_piece(vocab_, next_token, token_buf, TOKEN_BUF_SIZE, 0, true);
+        GGML_ASSERT(n_chars > 0 && "token piece exceeded buffer size");
+        string_view token_sv(token_buf, n_chars);
+        generated_text_.append(token_sv.data(), token_sv.size());
+        full_response_.append(token_sv.data(), token_sv.size());
 
         if (is_debug && token_log.is_open()) {
+            string token_str(token_sv);
             token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_str) << "\"\n";
             token_log.flush();
         }
