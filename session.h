@@ -23,6 +23,7 @@ struct SessionState {
     bool first_turn_done = false;
     int last_t_count = 0;
     double last_elapsed = 0.0;
+    double last_decode_time = 0.0;  // Sum of per-token decode intervals (for benchmark-style speed)
     int last_n_past = 0;
     map<string, string> file_cache;  // path -> content hash (for cache validation)
     LoopDetector loop_guard;

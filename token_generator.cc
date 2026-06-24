@@ -22,6 +22,8 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
+extern bool honest_speed;
+extern int speed_update_interval;
 
 // --- Helper to escape token piece strings for token log ---
 string escape_token_piece(const string& s) {
@@ -145,6 +147,13 @@ TokenGenerator::Result TokenGenerator::generate() {
 
     bool was_interrupted = false;
     bool early_exit = false;
+
+    // Decode timing: measure pure GPU compute time per token.
+    // Per-token timing isolates GPU decode from CPU overhead (sampling, output,
+    // tool detection). llama_synchronize() is effectively free here since
+    // llama_sampler_sample already blocks waiting for the previous token's logits.
+    double decode_time_sum = 0.0;
+    auto t_dec_start = chrono::high_resolution_clock::now();
 
     while (true) {
         if (stop_generation) {
@@ -484,17 +493,24 @@ TokenGenerator::Result TokenGenerator::generate() {
 
             // Speed/context diagnostic for the browser status bar.
             // Update every N tokens so progress stays visible at any generation rate.
-            static constexpr int SPEED_UPDATE_INTERVAL = 100;
-            if (t_count_ > 5 && t_count_ % SPEED_UPDATE_INTERVAL == 0) {
+            if (t_count_ > 5 && t_count_ % speed_update_interval == 0) {
                 double total_elapsed = chrono::duration<double>(now - start).count();
                 if (total_elapsed > 0) {
-                    double speed = t_count_ / total_elapsed;
+                    // Pick denominator based on honest_speed global
+                    double denom = total_elapsed;  // default: wall clock ("honest")
+                    if (!honest_speed && decode_time_sum > 0.0) {
+                        denom = decode_time_sum;
+                    }
+                    double speed = t_count_ / denom;
                     double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
                     string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
                     string speed_str = std::to_string((int)speed) + " t/s";
 
                     if (should_output_to_browser()) {
                         stream_speed(speed_str + " | " + ctx_str);
+                    } else {
+                        cout << "\033[35m[" << speed_str << " | " << ctx_str << "]\033[0m\n";
+                        cout.flush();
                     }
                 }
             }
@@ -502,10 +518,19 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         batch_.n_tokens = 0;
         common_batch_add(batch_, next_token, n_past_++, {0}, true);
+
+        // Time pure GPU decode (only when benchmark-style speed is enabled)
+        if (!honest_speed) {
+            t_dec_start = chrono::high_resolution_clock::now();
+        }
         if (!handle_llama_decode_error(ctx_, batch_)) {
             sync_n_past(ctx_, n_past_);
             early_exit = true;
             break;
+        }
+        if (!honest_speed) {
+            llama_synchronize(ctx_);
+            decode_time_sum += chrono::duration<double>(chrono::high_resolution_clock::now() - t_dec_start).count();
         }
     } // END INNER TOKEN LOOP
 
@@ -532,5 +557,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.has_tool_call = trigger_tool_execution_ && tool_start_ != string::npos && tool_end_ != string::npos;
     result.was_interrupted = was_interrupted;
     result.early_exit = early_exit;
+    result.decode_time = decode_time_sum;
+
     return result;
 }

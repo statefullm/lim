@@ -12,6 +12,7 @@ using namespace std;
 // Forward declarations for globals in main.cc
 extern bool is_debug;
 extern std::ofstream token_log;
+extern bool honest_speed;
 
 std::string html_escape(const std::string& s) {
     std::string out;
@@ -44,12 +45,19 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags) {
     }
 }
 
-void diag_speed(int n_past, int n_ctx, int t_count, double elapsed) {
+void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time) {
     if (t_count <= 0 || elapsed <= 0.0) return;
     double context_percent = (n_past / (double)n_ctx) * 100.0;
+
+    // Pick denominator based on honest_speed global
+    double denom = elapsed;  // default: wall clock ("honest")
+    if (!honest_speed && decode_time > 0.0) {
+        denom = decode_time;
+    }
+
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
-    oss << "\033[35m[" << (int)(t_count / elapsed) << " t/s | " << n_past << " (" << (int)context_percent << "%)" << "]\033[0m" << std::endl;
+    oss << "\033[35m[" << (int)(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)" << "]\033[0m" << std::endl;
     if (should_output_to_stdout()) {
         std::cout << oss.str();
         std::fflush(stdout);
@@ -58,7 +66,7 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed) {
     // Send to browser status bar (compact: no labels)
     if (should_output_to_browser()) {
         std::ostringstream oss2;
-        oss2 << (int)(t_count / elapsed) << " t/s | " << n_past << " (" << (int)context_percent << "%)";
+        oss2 << (int)(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)";
         stream_speed(oss2.str());
     }
 }

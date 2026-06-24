@@ -24,6 +24,7 @@ public:
         bool was_interrupted = false;
         int token_count = 0;
         bool early_exit = false;  // context exhaustion or decode error (not normal EOG)
+        double decode_time = 0.0;  // Sum of per-token decode intervals (seconds)
     };
 
     TokenGenerator(llama_context* ctx, const llama_vocab* vocab,

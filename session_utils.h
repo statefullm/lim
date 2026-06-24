@@ -17,7 +17,8 @@ void log_tokens(const std::string& label, const std::vector<llama_token>& toks, 
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
 
 // Print speed/context diagnostic to stdout (used during auto-continue chains)
-void diag_speed(int n_past, int n_ctx, int t_count, double elapsed);
+// When decode_time > 0 and honest_speed is false, uses decode_time as denominator.
+void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time = 0.0);
 
 #endif // SESSION_UTILS_H
 

@@ -46,6 +46,15 @@ ofstream chat_log;
 ofstream token_log;
 string INITIAL_CWD;
 
+// LLLM_HONEST_SPEED: how the t/s diagnostic is computed.
+//   0 (default): benchmark-style — tokens / decode-only time (excludes sampling,
+//                 output rendering, tool detection scanning). Matches llama-cli.
+//   1: "honest" speed — tokens / total wall clock time (includes all CPU overhead).
+bool honest_speed = false;  // default: benchmark-style
+
+// LLLM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
+int speed_update_interval = 100;
+
 static void diag_impl(const string& formatted_line, const string& msg) {
     // Diagnostic messages (session status, errors, etc.) always go to the
     // terminal regardless of LLLM_OUTPUT mode.
@@ -166,6 +175,23 @@ int main(int argc, char ** argv) {
     const char* debug_env = getenv("LLLM_DEBUG");
     if (debug_env != nullptr && strcmp(debug_env, "1") == 0) {
         is_debug = true;
+    }
+
+    // LLLM_HONEST_SPEED: 1 = honest wall-clock, 0 = benchmark-style (default)
+    {
+        const char* env = getenv("LLLM_HONEST_SPEED");
+        if (env != nullptr && strlen(env) > 0) {
+            honest_speed = (atoi(env) != 0);
+        }
+    }
+
+    // LLLM_SPEED_INTERVAL: tokens between speed diagnostic updates (default 100)
+    {
+        const char* env = getenv("LLLM_SPEED_INTERVAL");
+        if (env != nullptr && strlen(env) > 0) {
+            int val = atoi(env);
+            if (val > 0) speed_update_interval = val;
+        }
     }
 
     if (!is_debug) {

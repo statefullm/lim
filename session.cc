@@ -56,6 +56,7 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
+extern bool honest_speed;
 
 // HOME is declared as extern std::string HOME in network.h
 
@@ -298,7 +299,15 @@ string ChatSession::get_user_input() {
             double context_percent = (state_.last_n_past / (double)cparams_.n_ctx) * 100.0;
             ostringstream oss;
             oss << fixed << setprecision(1);
-            double speed = state_.last_t_count / state_.last_elapsed;
+
+            // Pick denominator based on honest_speed global:
+            //   false (default): benchmark-style — use decode_time only
+            //   true: honest wall-clock speed
+            double denom = state_.last_elapsed;  // default: wall clock ("honest")
+            if (!honest_speed && state_.last_decode_time > 0.0) {
+                denom = state_.last_decode_time;
+            }
+            double speed = state_.last_t_count / denom;
             string ctx_str = std::to_string(state_.last_n_past) + " (" + std::to_string((int)context_percent) + "%)";
             string speed_str = std::to_string((int)speed) + " t/s";
             diag_speed_impl(speed_str + " | " + ctx_str);
@@ -599,6 +608,7 @@ TokenGenerator::Result ChatSession::generate_response() {
 
     state_.last_t_count = t_count_;
     state_.last_elapsed = elapsed_;
+    state_.last_decode_time = gen_result_.decode_time;
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
 

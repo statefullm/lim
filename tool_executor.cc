@@ -251,7 +251,7 @@ ToolExecutor::Result ToolExecutor::execute(
                 state.tool_interrupt_pending = true;
                 state.auto_continue = false;
             } else {
-                diag_speed(n_past, cparams.n_ctx, state.last_t_count, state.last_elapsed);
+                diag_speed(n_past, cparams.n_ctx, state.last_t_count, state.last_elapsed, state.last_decode_time);
                 state.auto_continue = true;
                 result.should_auto_continue = true;
                 return result;

@@ -262,6 +262,8 @@ Set via `LLLM_OUTPUT`:
 | `LLLM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
 | `LLLM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
 | `LLLM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
+| `LLLM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic (includes all CPU overhead). Default `0` reports benchmark-style tokens/s matching llama-cli eval time. |
+| `LLLM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
 | `LLLM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
 | `LLLM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
 | `LLLM_BATCH` | `2048` | Batch size for token feeding |
