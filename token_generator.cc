@@ -423,7 +423,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
 
             if (safe_len > print_pos_) {
-                unprinted_text_ += generated_text_.substr(print_pos_, safe_len - print_pos_);
+                unprinted_text_.append(generated_text_.data() + print_pos_, safe_len - print_pos_);
                 print_pos_ = safe_len;
             }
 
