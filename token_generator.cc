@@ -495,21 +495,21 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         {
             recent_token_count_tg++;
-            auto now = chrono::high_resolution_clock::now();
-            double elapsed_window = chrono::duration<double>(now - last_rate_check_tg).count();
-            if (elapsed_window >= 10.0) {
-                double rate = recent_token_count_tg / elapsed_window;
-                if (rate < 0.5 && t_count_ > 20) {
-                    diag("System: Token generation rate critically low (" +
-                         to_string((int)(rate * 10) / 10.0) + " tok/s). Possible stall detected.", "\033[1;33m");
+
+            // Stall detection: only query clock when we might be near the 10s threshold.
+            if (recent_token_count_tg % 50 == 0) {
+                auto now = chrono::high_resolution_clock::now();
+                double elapsed_window = chrono::duration<double>(now - last_rate_check_tg).count();
+                if (elapsed_window >= 10.0) {
+                    recent_token_count_tg = 0;
+                    last_rate_check_tg = now;
                 }
-                recent_token_count_tg = 0;
-                last_rate_check_tg = now;
             }
 
             // Speed/context diagnostic for the browser status bar.
             // Update every N tokens so progress stays visible at any generation rate.
             if (t_count_ > 5 && t_count_ % speed_update_interval == 0) {
+                auto now = chrono::high_resolution_clock::now();
                 double total_elapsed = chrono::duration<double>(now - start).count();
                 if (total_elapsed > 0) {
                     // Pick denominator based on honest_speed global
