@@ -57,7 +57,7 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
 
     std::ostringstream oss;
     oss << std::fixed << std::setprecision(1);
-    oss << "\033[35m[" << (int)(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)" << "]\033[0m" << std::endl;
+    oss << "\033[35m[" << round_int(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)" << "]\033[0m" << std::endl;
     if (should_output_to_stdout()) {
         std::cout << oss.str();
         std::fflush(stdout);
@@ -66,7 +66,7 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
     // Send to browser status bar (compact: no labels)
     if (should_output_to_browser()) {
         std::ostringstream oss2;
-        oss2 << (int)(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)";
+        oss2 << round_int(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)";
         stream_speed(oss2.str());
     }
 }

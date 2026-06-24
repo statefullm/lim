@@ -1,6 +1,7 @@
 #include "token_generator.h"
 #include "tokens.h"
 #include "output.h"
+#include "session_utils.h"
 #include "signals.h"
 #include "model.h"
 #include <iostream>
@@ -518,13 +519,13 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                     double speed = t_count_ / denom;
                     double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-                    string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
-                    string speed_str = std::to_string((int)speed) + " t/s";
+                    char speed_buf[64];
+                    snprintf(speed_buf, sizeof(speed_buf), "%d t/s | %d (%d%%)", round_int(speed), n_past_, (int)context_percent);
 
                     if (should_output_to_browser()) {
-                        stream_speed(speed_str + " | " + ctx_str);
+                        stream_speed(string(speed_buf));
                     } else {
-                        cout << "\033[35m[" << speed_str << " | " << ctx_str << "]\033[0m\n";
+                        cout << "\033[35m[" << speed_buf << "]\033[0m\n";
                         cout.flush();
                     }
                 }

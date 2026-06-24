@@ -309,7 +309,7 @@ string ChatSession::get_user_input() {
             }
             double speed = state_.last_t_count / denom;
             string ctx_str = std::to_string(state_.last_n_past) + " (" + std::to_string((int)context_percent) + "%)";
-            string speed_str = std::to_string((int)speed) + " t/s";
+            string speed_str = std::to_string(round_int(speed)) + " t/s";
             diag_speed_impl(speed_str + " | " + ctx_str);
         }
 

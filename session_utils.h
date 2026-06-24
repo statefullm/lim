@@ -20,5 +20,7 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags);
 // When decode_time > 0 and honest_speed is false, uses decode_time as denominator.
 void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time = 0.0);
 
+inline int round_int(double d) { return (int)(d + 0.5); }
+
 #endif // SESSION_UTILS_H
 
