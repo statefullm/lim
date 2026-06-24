@@ -303,19 +303,35 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
 
         // Detokenize directly into a pre-allocated buffer to avoid per-token allocation.
-        static constexpr int TOKEN_BUF_SIZE = 64;
+        static constexpr int TOKEN_BUF_SIZE = 128;
         char token_buf[TOKEN_BUF_SIZE];
         const int n_chars = llama_token_to_piece(vocab_, next_token, token_buf, TOKEN_BUF_SIZE, 0, true);
-        GGML_ASSERT(n_chars > 0 && "token piece exceeded buffer size");
-        string_view token_sv(token_buf, n_chars);
-        generated_text_.append(token_sv.data(), token_sv.size());
-        full_response_.append(token_sv.data(), token_sv.size());
+        if (n_chars < 0) {
+            // Buffer too small: fall back to heap allocation.
+            // n_chars is negative and indicates the required size.
+            int needed = -n_chars;
+            string token_heap(needed + 1, '\0');
+            const int n2 = llama_token_to_piece(vocab_, next_token, &token_heap[0], needed + 1, 0, true);
+            GGML_ASSERT(n2 > 0 && "heap-allocated buffer still too small for token piece");
+            generated_text_.append(token_heap.data(), n2);
+            full_response_.append(token_heap.data(), n2);
 
-        if (is_debug && token_log.is_open()) {
-            string token_str(token_sv);
-            token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_str) << "\"\n";
-            token_log.flush();
+            if (is_debug && token_log.is_open()) {
+                token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_heap.substr(0, n2)) << "\"\n";
+                token_log.flush();
+            }
+        } else if (n_chars > 0) {
+            string_view token_sv(token_buf, n_chars);
+            generated_text_.append(token_sv.data(), token_sv.size());
+            full_response_.append(token_sv.data(), token_sv.size());
+
+            if (is_debug && token_log.is_open()) {
+                string token_str(token_sv);
+                token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_str) << "\"\n";
+                token_log.flush();
+            }
         }
+        // n_chars == 0 means unknown/out-of-range token; skip silently.
 
         if (think_start_ == string::npos) {
             think_start_ = generated_text_.find(Tokens::THINK_START);
