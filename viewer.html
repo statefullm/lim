@@ -233,6 +233,220 @@
         // Used to skip re-rendering unchanged segments (incremental rendering).
         let segRenderedContent = [];
 
+        /* ------------------------------------------------------------------ */
+        /*  O(1) streaming with progressive paragraph-boundary rendering       */
+        /* ------------------------------------------------------------------ */
+        /*  Every token previously triggered marked.parse() on the entire
+           accumulated segment plus a full renderMathInElement() DOM scan.
+           That's O(n^2) -- the n-th token re-parses and re-scans all n-1
+           previous tokens.
+        /*
+        /*  Fix: during streaming, append raw text to a <span> (O(1)).
+        /*       When a new paragraph boundary (\n\n) appears in the tail,
+        /*       render everything up to that boundary through marked + KaTeX
+        /*       and keep only the incomplete tail as raw text.
+        /*       Each character is parsed exactly once -> O(n) total.
+        /*       A 200 ms debounce renders whatever remains when the stream stops.
+        /* ------------------------------------------------------------------ */
+
+        // Timer handle for the deferred final render (renders leftover tail).
+        var renderTimer = null;
+
+        // How long to wait after the last token before rendering any remaining
+        // raw tail.  200 ms is enough to catch pauses between turns.
+        var RENDER_THROTTLE_MS = 200;
+
+        // Schedule a final render of all raw tails.  Repeated calls reset timer.
+        function scheduleFinalRender() {
+            if (renderTimer !== null) {
+                clearTimeout(renderTimer);
+            }
+            renderTimer = setTimeout(function () {
+                renderTimer = null;
+                finishAllRawSegments();
+            }, RENDER_THROTTLE_MS);
+        }
+
+        // Render the raw tail of a single segment.  Called by progressiveRender()
+        // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
+        // Only parses the new delta -- never re-parses already-rendered content.
+        function renderRawTail(wrapperDiv, segIndex) {
+            // The raw tail lives in <span class="raw-stream">.
+            var span = wrapperDiv.querySelector('span.raw-stream');
+            if (!span) return;
+
+            var tail = span.textContent;
+            if (tail.length === 0) {
+                wrapperDiv.removeAttribute('data-raw');
+                return;
+            }
+
+            // Parse only the tail text through markdown + KaTeX.
+            var html = rawTextToHtml(tail, segments[segIndex].type);
+
+            // Replace the raw span with the rendered HTML fragment.
+            var fragment = htmlFragment(html);
+            while (fragment.firstChild) {
+                span.parentNode.insertBefore(fragment.firstChild, span);
+            }
+            span.parentNode.removeChild(span);
+            wrapperDiv.removeAttribute('data-raw');
+
+            // If this was a THINK segment that just finished rendering,
+            // collapse it immediately -- thinking is done.
+            if (segments[segIndex].type === SEG_THINK) {
+                var th = wrapperDiv.querySelector('.think-header');
+                var tb = wrapperDiv.querySelector('.think-body');
+                if (th && tb) {
+                    tb.classList.add('hidden');
+                    th.classList.add('collapsed');
+                    wrapperDiv.setAttribute('data-think-collapsed', '1');
+                }
+            }
+
+            injectCopyButtons(wrapperDiv);
+            renderMathInDiv(wrapperDiv);
+
+            segRenderedContent[segIndex] = segments[segIndex].content;
+        }
+
+        // Render the raw tail of every segment that still has one.
+        function finishAllRawSegments() {
+            for (var i = 0; i < segments.length; i++) {
+                var wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
+                if (!wrapperDiv) continue;
+                if (!wrapperDiv.hasAttribute('data-raw')) continue;
+                renderRawTail(wrapperDiv, i);
+            }
+
+            // Auto-collapse think blocks when thinking is done.
+            autoCollapseThinkBlocks();
+        }
+
+        // Try to progressively render completed paragraphs from the raw tail.
+        // Splits at the last \n\n so that code fences spanning multiple
+        // paragraphs are not broken: we keep one incomplete paragraph as buffer.
+        // Only parses the new delta -- never re-parses already-rendered content.
+        function progressiveRender(wrapperDiv, segIndex) {
+            var span = wrapperDiv.querySelector('span.raw-stream');
+            if (!span) return;
+
+            var fullText = segments[segIndex].content;
+
+            // How much has already been rendered (i.e., is not in the raw span)?
+            var renderedPrefixLen = fullText.length - span.textContent.length;
+
+            // Find the first \n\n in the raw tail portion.
+            var searchPos = renderedPrefixLen;
+            var newBreak = fullText.indexOf('\n\n', searchPos);
+            if (newBreak < 0) return;  // No paragraph boundary in the tail yet.
+
+            // Find the LAST \n\n in the tail, so we render all completed
+            // paragraphs and keep only the current incomplete one as buffer.
+            var lastBreak = newBreak;
+            var scan = newBreak;
+            while (true) {
+                var nb = fullText.indexOf('\n\n', scan + 2);
+                if (nb < 0) break;
+                lastBreak = nb;
+                scan = nb;
+            }
+
+            // renderEnd: position after the last \n\n we want to consume.
+            var renderEnd = lastBreak + 2;
+
+            // The new delta to parse: text between the previous render point
+            // and the new render point.  This is O(delta), not O(total).
+            var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
+            var remainingTail = fullText.substring(renderEnd);
+
+            // Parse only the delta through markdown + KaTeX.
+            var html = rawTextToHtml(deltaText, segments[segIndex].type);
+
+            // Insert the rendered HTML fragment right before the raw span.
+            var fragment = htmlFragment(html);
+            while (fragment.firstChild) {
+                span.parentNode.insertBefore(fragment.firstChild, span);
+            }
+
+            // Update the raw span to contain only the remaining tail.
+            span.textContent = remainingTail;
+
+            injectCopyButtons(wrapperDiv);
+            renderMathInDiv(wrapperDiv);
+        }
+
+        // Convert raw markdown text to an HTML string for a given segment type.
+        // Handles $$...$$ math extraction and restoration for KaTeX.
+        function rawTextToHtml(text, segType) {
+            var mathBlocks = [];
+            var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
+                mathBlocks.push(m.trim());
+                return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+            });
+
+            var html;
+            if (typeof marked !== 'undefined') {
+                html = marked.parse(content, { breaks: true });
+            } else {
+                var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
+            }
+
+            html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
+                return '$$' + mathBlocks[parseInt(idx)] + '$$';
+            });
+
+            if (segType === SEG_THINK) {
+                // For think segments, wrap in the think-block structure.
+                // But only on the first render of a think segment -- subsequent
+                // delta renders should NOT re-wrap.  The caller handles this:
+                // the initial creation wraps, progressiveRender just inserts deltas.
+                // Actually, for correctness we return unwrapped HTML here and let
+                // the initial segment creation handle wrapping.
+            }
+
+            return html;
+        }
+
+        // Parse an HTML string into a DocumentFragment (no outerHTML wrapper).
+        function htmlFragment(htmlStr) {
+            var template = document.createElement('template');
+            template.innerHTML = htmlStr;
+            return template.content;
+        }
+
+        // Append raw text to the <span class="raw-stream"> inside a wrapper div.
+        // O(1) -- no markdown parsing, no DOM scan.  After appending, tries
+        // progressive paragraph-boundary rendering.
+        function appendRawText(wrapperDiv, delta, segIndex) {
+            var span = wrapperDiv.querySelector('span.raw-stream');
+            if (!span) {
+                span = document.createElement('span');
+                span.className = 'raw-stream';
+                wrapperDiv.appendChild(span);
+            }
+            span.textContent += delta;
+
+            // Try progressive render after each append.
+            progressiveRender(wrapperDiv, segIndex);
+        }
+
+        // Auto-collapse think blocks when a non-THINK segment appears.
+        function autoCollapseThinkBlocks() {
+            outputDiv.querySelectorAll('.think-block').forEach(function (block) {
+                if (!block.hasAttribute('data-think-collapsed')) {
+                    var th = block.querySelector('.think-header');
+                    var tb = block.querySelector('.think-body');
+                    if (th && tb) {
+                        tb.classList.add('hidden');
+                        th.classList.add('collapsed');
+                        block.setAttribute('data-think-collapsed', 'auto');
+                    }
+                }
+            });
+        }
+
         // Merge adjacent segments of the same type into one.
         // Critical: C++ sends \x02 before every small token; without this, each token
         // becomes its own segment and gets independently rendered through marked.parse(),
@@ -372,59 +586,130 @@
                     // Existing segment - check if content changed
                     if (segments[i].content !== segRenderedContent[i]) {
                         hasChanges = true;
-                        segRenderedContent[i] = segments[i].content;
 
                         const wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
                         if (wrapperDiv) {
-                            // Preserve collapsed state of think blocks across re-renders.
-                            var wasThinkCollapsed = wrapperDiv.getAttribute('data-think-collapsed') === '1';
-
-                            // Before replacing innerHTML, check whether each <pre>
-                            // inside this segment was scrolled to the bottom.  We'll
-                            // restore that state after re-rendering so that streaming
-                            // code blocks (e.g., exec_shell output) always stay at the
-                            // bottom like a terminal, unless the user scrolled up.
-                            const preWasAtBottom = [];
-                            wrapperDiv.querySelectorAll('pre').forEach(function(pre) {
-                                const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
-                                preWasAtBottom.push(nearBottom);
-                            });
-
-                            wrapperDiv.innerHTML = segToHtml(segments[i]);
-                            injectCopyButtons(wrapperDiv);
-                            renderMathInDiv(wrapperDiv);
-
-                            // Restore bottom-scroll on each <pre> that was at the bottom.
-                            const pres = wrapperDiv.querySelectorAll('pre');
-                            for (let p = 0; p < pres.length && p < preWasAtBottom.length; p++) {
-                                if (preWasAtBottom[p]) {
-                                    pres[p].scrollTop = pres[p].scrollHeight;
+                            // Streaming text/think segment in raw mode: O(1) append + progressive render.
+                            if (wrapperDiv.hasAttribute('data-raw')) {
+                                var oldContent = segRenderedContent[i];
+                                var newContent = segments[i].content;
+                                var delta = '';
+                                if (newContent.length >= oldContent.length) {
+                                    delta = newContent.substring(oldContent.length);
+                                } else {
+                                    // Content shrank (shouldn't happen normally, but handle it).
+                                    wrapperDiv.innerHTML = segToHtml(segments[i]);
+                                    wrapperDiv.removeAttribute('data-raw');
+                                    injectCopyButtons(wrapperDiv);
+                                    renderMathInDiv(wrapperDiv);
+                                    segRenderedContent[i] = segments[i].content;
                                 }
-                            }
-
-                            // Restore collapsed state of think blocks.
-                            if (wasThinkCollapsed) {
-                                var th = wrapperDiv.querySelector('.think-header');
-                                var tb = wrapperDiv.querySelector('.think-body');
-                                if (th && tb) {
-                                    tb.classList.add('hidden');
-                                    th.classList.add('collapsed');
-                                    wrapperDiv.setAttribute('data-think-collapsed', '1');
+                                if (delta.length > 0) {
+                                    appendRawText(wrapperDiv, delta, i);
+                                    segRenderedContent[i] = segments[i].content;
+                                    scheduleFinalRender();
                                 }
+                            } else {
+                                // Non-streaming segment changed -- full re-render.
+                                // Preserve collapsed state of think blocks across re-renders.
+                                var wasThinkCollapsed = wrapperDiv.getAttribute('data-think-collapsed') === '1';
+
+                                // Before replacing innerHTML, check whether each <pre>
+                                // inside this segment was scrolled to the bottom.  We'll
+                                // restore that state after re-rendering so that streaming
+                                // code blocks (e.g., exec_shell output) always stay at the
+                                // bottom like a terminal, unless the user scrolled up.
+                                const preWasAtBottom = [];
+                                wrapperDiv.querySelectorAll('pre').forEach(function(pre) {
+                                    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+                                    preWasAtBottom.push(nearBottom);
+                                });
+
+                                wrapperDiv.innerHTML = segToHtml(segments[i]);
+                                injectCopyButtons(wrapperDiv);
+                                renderMathInDiv(wrapperDiv);
+
+                                // Restore bottom-scroll on each <pre> that was at the bottom.
+                                const pres = wrapperDiv.querySelectorAll('pre');
+                                for (let p = 0; p < pres.length && p < preWasAtBottom.length; p++) {
+                                    if (preWasAtBottom[p]) {
+                                        pres[p].scrollTop = pres[p].scrollHeight;
+                                    }
+                                }
+
+                                // Restore collapsed state of think blocks.
+                                if (wasThinkCollapsed) {
+                                    var th = wrapperDiv.querySelector('.think-header');
+                                    var tb = wrapperDiv.querySelector('.think-body');
+                                    if (th && tb) {
+                                        tb.classList.add('hidden');
+                                        th.classList.add('collapsed');
+                                        wrapperDiv.setAttribute('data-think-collapsed', '1');
+                                    }
+                                }
+
+                                segRenderedContent[i] = segments[i].content;
                             }
                         }
                     }
                 } else {
-                    // New segment - create wrapper div and append
+                    // New segment -- create wrapper div.
+                    // LLM text and think segments start in raw-text streaming mode
+                    // so that incoming tokens are O(1) appends.  Progressive rendering
+                    // converts completed paragraphs to markdown/KaTeX as they appear.
                     hasChanges = true;
-                    segRenderedContent[i] = segments[i].content;
+                    segRenderedContent[i] = '';
 
                     const wrapperDiv = document.createElement('div');
                     wrapperDiv.setAttribute('data-seg', String(i));
-                    wrapperDiv.innerHTML = segToHtml(segments[i]);
-                    outputDiv.appendChild(wrapperDiv);
-                    injectCopyButtons(wrapperDiv);
-                    renderMathInDiv(wrapperDiv);
+
+                    if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
+                        // Raw-text streaming mode.
+                        wrapperDiv.setAttribute('data-raw', '1');
+
+                        if (segments[i].type === SEG_THINK) {
+                            // Think block: create the collapsible structure immediately,
+                            // but put raw text inside .think-body.
+                            wrapperDiv.className = 'think-block';
+                            var header = document.createElement('div');
+                            header.className = 'think-header';
+                            header.setAttribute('onclick', 'toggleThinkBlock(this)');
+                            var arrow = document.createElement('span');
+                            arrow.className = 'arrow';
+                            arrow.innerHTML = '&#9660;';
+                            header.appendChild(arrow);
+                            header.appendChild(document.createTextNode(' Thinking'));
+                            wrapperDiv.appendChild(header);
+
+                            var body = document.createElement('div');
+                            body.className = 'think-body';
+                            var span = document.createElement('span');
+                            span.className = 'raw-stream';
+                            span.textContent = segments[i].content;
+                            body.appendChild(span);
+                            wrapperDiv.appendChild(body);
+                        } else {
+                            // Plain LLM text: just a <span> with the initial text.
+                            var span = document.createElement('span');
+                            span.className = 'raw-stream';
+                            span.textContent = segments[i].content;
+                            wrapperDiv.appendChild(span);
+                        }
+                        // Try progressive render on the initial content (might already have paragraphs).
+                        progressiveRender(wrapperDiv, i);
+                        segRenderedContent[i] = segments[i].content;
+                        scheduleFinalRender();
+                    } else {
+                        // Non-text segments (tool labels, HTML) render immediately.
+                        wrapperDiv.innerHTML = segToHtml(segments[i]);
+                        outputDiv.appendChild(wrapperDiv);
+                        injectCopyButtons(wrapperDiv);
+                        renderMathInDiv(wrapperDiv);
+                    }
+
+                    if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
+                        outputDiv.appendChild(wrapperDiv);
+                    }
                 }
             }
 
@@ -497,6 +782,10 @@
                     segments = [];
                     segRenderedContent = [];
                     outputDiv.innerHTML = '';
+                    if (renderTimer !== null) {
+                        clearTimeout(renderTimer);
+                        renderTimer = null;
+                    }
                     data = data.replace(/\x01/g, '');
                     if (data.length === 0) return;
                 }
