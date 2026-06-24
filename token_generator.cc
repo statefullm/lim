@@ -470,6 +470,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                         think_output = think_output.substr(content_start);
                         console_think(think_output.c_str());
                         consoleThinkFlush();
+                        stream_think(think_output);
                         think_buffering_ = false;
                     } else {
                         think_buffer_ += think_output;
@@ -478,6 +479,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     _strip_think_and_tool_tags(think_output);
                     console_think(think_output.c_str());
                     consoleThinkFlush();
+                    stream_think(think_output);
                 }
                 print_pos_ = safe_len;
             }

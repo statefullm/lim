@@ -97,6 +97,49 @@
             overflow-y: auto;
         }
 
+        /* Think block styling */
+        .think-block {
+            margin: 12px 0;
+            border-radius: 6px;
+            border-left: 4px solid #8545c9;
+            background-color: #2a1e3a;
+            overflow: hidden;
+        }
+        .think-header {
+            display: flex;
+            align-items: center;
+            padding: 6px 15px;
+            cursor: pointer;
+            user-select: none;
+            color: #c4a5e8;
+            font-weight: bold;
+            font-size: 0.9em;
+            background-color: #352548;
+        }
+        .think-header:hover {
+            background-color: #403060;
+        }
+        .think-header .arrow {
+            margin-right: 8px;
+            transition: transform 0.2s;
+            font-size: 0.8em;
+        }
+        .think-header.collapsed .arrow {
+            transform: rotate(-90deg);
+        }
+        .think-body {
+            padding: 10px 15px;
+            color: #b8a0d8;
+            font-size: 0.9em;
+            line-height: 1.6;
+        }
+        .think-body.hidden {
+            display: none;
+        }
+        .think-body pre {
+            background-color: #352548;
+        }
+
         /* Copy button on code blocks */
         pre {
             position: relative;
@@ -149,6 +192,17 @@
         const SEG_TOOL_LABEL = '\x03';
         const SEG_HTML       = '\x04';
         const SEG_SPEED      = '\x05';
+        const SEG_THINK      = '\x06';
+
+        /* Toggle think block visibility.  Survives re-renders because the
+           wrapper div stores a data-think-collapsed attribute. */
+        function toggleThinkBlock(headerEl) {
+            var body = headerEl.nextElementSibling;
+            var block = headerEl.parentElement;
+            var collapsed = body.classList.toggle('hidden');
+            headerEl.classList.toggle('collapsed', collapsed);
+            block.setAttribute('data-think-collapsed', collapsed ? '1' : '0');
+        }
 
         /* Fallback copy for insecure (HTTP) contexts where navigator.clipboard is unavailable. */
         function fallbackCopy(text, btn) {
@@ -189,9 +243,6 @@
                 if (segments[i].type === segments[i - 1].type && segments[i].content.length > 0) {
                     segments[i - 1].content += segments[i].content;
                     segments.splice(i, 1);
-                } else if (segments[i].content.length === 0) {
-                    // Drop empty segments
-                    segments.splice(i, 1);
                 } else {
                     i++;
                 }
@@ -223,9 +274,37 @@
 
                 // Restore math blocks as <div> elements so KaTeX can render them.
                 html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                    return '<div class="katex-block">$$' + mathBlocks[parseInt(idx)] + '$$</div>';
+                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
                 });
                 return html;
+            } else if (seg.type === SEG_THINK) {
+                // Think block: collapsible box with markdown + KaTeX.
+                // Extract $$...$$ blocks before markdown processing.
+                var mathBlocks = [];
+                var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
+                    mathBlocks.push(m.trim());
+                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                });
+
+                var html;
+                if (typeof marked !== 'undefined') {
+                    html = marked.parse(content, { breaks: true });
+                } else {
+                    var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
+                }
+
+                // Restore math blocks as raw $$...$$ delimiters for KaTeX to find.
+                html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
+                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
+                });
+
+                return '<div class="think-block">' +
+                    '<div class="think-header" onclick="toggleThinkBlock(this)">' +
+                    '<span class="arrow">&#9660;</span> Thinking' +
+                    '</div>' +
+                    '<div class="think-body">' + html + '</div>' +
+                    '</div>';
             } else {
                 // Tool labels and other HTML - insert directly
                 return seg.content;
@@ -297,6 +376,9 @@
 
                         const wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
                         if (wrapperDiv) {
+                            // Preserve collapsed state of think blocks across re-renders.
+                            var wasThinkCollapsed = wrapperDiv.getAttribute('data-think-collapsed') === '1';
+
                             // Before replacing innerHTML, check whether each <pre>
                             // inside this segment was scrolled to the bottom.  We'll
                             // restore that state after re-rendering so that streaming
@@ -319,6 +401,17 @@
                                     pres[p].scrollTop = pres[p].scrollHeight;
                                 }
                             }
+
+                            // Restore collapsed state of think blocks.
+                            if (wasThinkCollapsed) {
+                                var th = wrapperDiv.querySelector('.think-header');
+                                var tb = wrapperDiv.querySelector('.think-body');
+                                if (th && tb) {
+                                    tb.classList.add('hidden');
+                                    th.classList.add('collapsed');
+                                    wrapperDiv.setAttribute('data-think-collapsed', '1');
+                                }
+                            }
                         }
                     }
                 } else {
@@ -333,6 +426,27 @@
                     injectCopyButtons(wrapperDiv);
                     renderMathInDiv(wrapperDiv);
                 }
+            }
+
+            // Auto-collapse think blocks when thinking is done.
+            // When a non-THINK segment appears after THINK segments, the LLM has
+            // finished reasoning -- collapse all think block bodies automatically.
+            if (segments.length > 0 && segments[segments.length - 1].type !== SEG_THINK) {
+                var autoCollapsed = false;
+                outputDiv.querySelectorAll('.think-block').forEach(function(block) {
+                    if (!block.hasAttribute('data-think-collapsed')) {
+                        // Only auto-collapse if the user hasn't manually toggled it.
+                        var th = block.querySelector('.think-header');
+                        var tb = block.querySelector('.think-body');
+                        if (th && tb) {
+                            tb.classList.add('hidden');
+                            th.classList.add('collapsed');
+                            block.setAttribute('data-think-collapsed', 'auto');
+                            autoCollapsed = true;
+                        }
+                    }
+                });
+                if (autoCollapsed) hasChanges = true;
             }
 
             // Remove trailing wrapper divs if segments were cleared/reduced.
@@ -388,10 +502,17 @@
                 }
 
                 let lastIdx = 0;
+                // Track a prefix that appeared at the end of the data with no content
+                // after it.  The next message's plain text (or the next prefix's
+                // payload) will be associated with this pending type.  This prevents
+                // empty segments from being created, which would cause DOM elements to
+                // be destroyed and recreated on every chunk (the root cause of the
+                // post-generation CPU spike).
+                let pendingType = null;
 
                 for (let i = 0; i < data.length; i++) {
                     const ch = data[i];
-                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML || ch === SEG_SPEED) {
+                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML || ch === SEG_SPEED || ch === SEG_THINK) {
                         // Append any text between the last prefix and this one to the
                         // segment that was opened by the last prefix.  When multiple
                         // prefixes arrive in a single WebSocket frame (e.g., three
@@ -399,26 +520,39 @@
                         // segment sits between its own prefix and the next prefix.
                         if (i > lastIdx) {
                             const payload = data.substring(lastIdx, i);
-                            if (segments.length > 0) {
+                            if (pendingType !== null) {
+                                // Content belongs to the pending type from a previous message.
+                                segments.push({ type: pendingType, content: payload });
+                                pendingType = null;
+                            } else if (segments.length > 0) {
                                 segments[segments.length - 1].content += payload;
                             } else {
                                 // Untagged text with no prior segment - treat as LLM text
                                 segments.push({ type: SEG_LLM_TEXT, content: payload });
                             }
                         }
-                        // Start a new segment
-                        segments.push({ type: ch, content: '' });
+                        // Remember this prefix; create the segment lazily when content arrives.
+                        pendingType = ch;
                         lastIdx = i + 1;
                     }
                 }
 
-                // Remaining text after last prefix goes to the current segment
+                // Remaining text after last prefix goes to the current segment (or creates one).
                 if (lastIdx < data.length) {
-                    segments[segments.length - 1].content += data.substring(lastIdx);
-                } else if (lastIdx === data.length && data.length > 0) {
-                    // Message ended exactly on a prefix with no content - shouldn't happen normally
-                    // but handle gracefully by adding empty segment
+                    const payload = data.substring(lastIdx);
+                    if (pendingType !== null) {
+                        segments.push({ type: pendingType, content: payload });
+                        pendingType = null;
+                    } else if (segments.length > 0) {
+                        segments[segments.length - 1].content += payload;
+                    } else {
+                        // Untagged trailing text with no prior segment - treat as LLM text
+                        segments.push({ type: SEG_LLM_TEXT, content: payload });
+                    }
                 }
+                // If pendingType is still set after processing the entire message,
+                // the message ended on a prefix.  Don't create an empty segment;
+                // just wait for the next message to supply content.
 
                 // Coalesce consecutive segments of the same type so that many small
                 // LLM-text tokens (each prefixed with \x02) merge into one block rather

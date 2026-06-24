@@ -13,6 +13,7 @@ using namespace std;
 extern const char SEG_LLM_TEXT;  // LLM-generated text (rendered through marked)
 extern const char SEG_HTML;      // Any other raw HTML (tool results, user input, dividers)
 extern const char SEG_SPEED;     // Speed/context diagnostic for status bar
+extern const char SEG_THINK;     // Think/reasoning block content (scrollable box with KaTeX)
 
 // --- FIFO / Pipe Management ---
 extern int pipe_fd;
@@ -37,6 +38,7 @@ void stream(const string& raw_token);
 void stream_tool_result(const string& html);
 void stream_html(const string& html);
 void stream_speed(const string& speed_text);
+void stream_think(const string& text);
 void clear_viewer();
 
 // --- Console Output Helpers ---
@@ -55,11 +57,12 @@ void console(Args&&... args) {
     ((cout << forward<Args>(args)), ...);
 }
 
-// Special function for think block output - always outputs to stdout in modes 1,2,3
-// IMPORTANT: Includes color reset at start to prevent thinking output from appearing blue
+// Special function for think block output - outputs to stdout only in mode 1 (stdout-only).
+// In modes 2 (browser) and 3 (both), think blocks are sent to the browser via stream_think()
+// rather than cluttering the console.  Includes color reset to prevent thinking from appearing blue.
 template<typename... Args>
 void console_think(Args&&... args) {
-  if (should_output_think_blocks()) {
+  if (should_output_to_stdout() && !should_output_to_browser()) {
     cout << "\033[0m";  // Reset colors - thinking should NOT be blue
     ((cout << forward<Args>(args)), ...);
   }

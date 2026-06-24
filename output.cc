@@ -12,6 +12,7 @@
 const char SEG_LLM_TEXT   = '\x02';  // LLM-generated text (rendered through marked)
 const char SEG_HTML       = '\x04';  // Any other raw HTML (tool results, user input, dividers)
 const char SEG_SPEED      = '\x05';  // Speed/context diagnostic for status bar
+const char SEG_THINK      = '\x06';  // Think/reasoning block content
 
 // --- FIFO / Pipe Management ---
 int pipe_fd = -1;
@@ -140,6 +141,12 @@ void stream_speed(const string& speed_text) {
     if (!should_output_to_browser()) return;
     pipe_write(&SEG_SPEED, 1);
     pipe_write(speed_text.c_str(), speed_text.length());
+}
+
+void stream_think(const string& text) {
+    if (!should_output_to_browser()) return;
+    pipe_write(&SEG_THINK, 1);
+    pipe_write(text.c_str(), text.length());
 }
 
 void clear_viewer() {
