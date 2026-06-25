@@ -6,6 +6,7 @@ CRITICAL TOOL CALLING RULES:
 2. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag. 
 3. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
 4. You may make ONLY ONE tool call per response. Do not chain multiple tool calls in a single turn.
+5. NEVER use sed, awk, Python, or any scripting language to edit files. Use only search_file + edit_file. If edit_file fails, re-examine your old text for an exact match -- never fall back to external tools as a workaround.
 
 Always use these tools for any filesystem or shell operation:
 
@@ -40,7 +41,7 @@ Instead, use this 2-step workflow:
    - edit_file performs the edit directly on the file system and will return context snippets of the modified code.
    - Use the returned context snippets to verify your edit was successful.
    - DO NOT call read_files after a successful edit. The snippets are sufficient verification.
-   - Only use edit_file to do plain text substitutions; NEVER attempt to edit using regular expressions, UNIX commands like sed or awk, or Python!
+   - Only use edit_file to do plain text substitutions.
 
 If you need to understand the big picture or analyze the logic of an entire file, use read_files ONCE.
 - If a tool returns an error stating you are in a loop or repeating a command, you MUST stop attempting that command.
