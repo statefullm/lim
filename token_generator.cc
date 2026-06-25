@@ -219,7 +219,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             if (n_past_ >= context_90pct && !context_warned_this_turn_) {
                 context_warned_this_turn_ = true;
                 if (!unprinted_text_.empty()) {
-                    _strip_think_and_tool_tags(unprinted_text_);
                     console(unprinted_text_.c_str());
                     consoleFlush();
                     stream(unprinted_text_);
@@ -238,7 +237,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
             diag("Context Window Exhausted!" + ctx_diag + ". Type '/clear' to reset.", "\033[31m");
             if (!unprinted_text_.empty()) {
-                _strip_think_and_tool_tags(unprinted_text_);
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);
@@ -475,7 +473,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
 
             if (!unprinted_text_.empty() && (t_count_ % 10 == 0 || unprinted_text_.back() == '\n')) {
-                _strip_think_and_tool_tags(unprinted_text_);
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);
@@ -526,7 +523,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
         } else {
             if (!unprinted_text_.empty()) {
-                _strip_think_and_tool_tags(unprinted_text_);
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);
@@ -596,7 +592,6 @@ TokenGenerator::Result TokenGenerator::generate() {
 
     // Flush remaining unprinted text
     if (!unprinted_text_.empty()) {
-        _strip_think_and_tool_tags(unprinted_text_);
         if (unprinted_text_.back() != '\n') {
             console((unprinted_text_ + "\n").c_str());
             consoleFlush();
