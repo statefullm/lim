@@ -1,7 +1,7 @@
 
 # LLLM: Stateful, O(1) Local LLM Controller
 
-**LLLM** is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn.
+**LLLM** (Local LLM) is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn. The O(1) claim refers to per-turn history injection cost, not attention complexity. LLLM has native filesystem tools for reading, searching, editing, and writing files, plus web searching and PDF reading.
 
 ## Why O(1)? The Fundamental Difference
 
@@ -12,8 +12,6 @@ LLLM takes full advantage of what a single-user local setup affords:
 - **The KV-cache is never discarded.** Each turn's tokens are simply appended to `n_past`. The model continues generating from exactly where it left off.
 - **New user input costs O(input tokens)**, not O(total history). Even after hundreds of turns, each new message processes only its own tokens plus the delta since last turn.
 - **No re-tokenization overhead.** The system prompt is tokenized once at startup and lives in the cache forever.
-
-This means long-running coding sessions stay fast regardless of how many tool calls, file edits, or searches accumulate.
 
 ---
 
@@ -28,9 +26,9 @@ This means long-running coding sessions stay fast regardless of how many tool ca
               +-------------+-------------+
               |             |             |
         +-----v-----+ +----v-----+ +-----v------+
-        | Filesystem| | Network  | |  Web       |
-        |  Tools    | | Search   | | Browser    |
-        |           | | & PDFs   | | (FIFO)     |
+        | Filesystem| | Web      | |  Browser   |
+        |  Tools    | | Search   | | (FIFO)     |
+        |           | | & PDFs   | |            |
         +-----------+ +----------+ +------------+
 ```
 
@@ -44,6 +42,7 @@ This means long-running coding sessions stay fast regardless of how many tool ca
 1. A GPU with CUDA support (NVIDIA recommended) and the CUDA toolkit installed.
 2. Python 3 with `aiohttp` for the browser server: `pip3 install aiohttp`.
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
+4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search, [Docling](https://github.com/DS4SD/docling) for PDF reading.
 
 > **Note:** llama is bundled as a git subrepo and will be built automatically by the Makefile.
 
@@ -52,7 +51,7 @@ This means long-running coding sessions stay fast regardless of how many tool ca
 ## Building
 
 ```bash
-git clone https://github.com/your-org/lllm.git
+git clone https://github.com/dealias/lllm.git
 cd lllm
 make
 ./lllm --help
