@@ -210,6 +210,7 @@ static string escape_for_log(const string &s) {
     return out;
 }
 
+
 // --- init_model_tokens: ask llama.cpp for the correct tokens ---
 
 void init_model_tokens(llama_context *ctx, const llama_model *model) {
@@ -315,16 +316,14 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
 }
 
 vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string &content) {
-    // Build full string then tokenize in one pass — avoids BPE boundary issues.
+    // Build full string then tokenize in one pass with add_bos=true.
+    // Critical: some models (e.g., Qwen3.6) share BOS and <|im_start|> token IDs,
+    // so manually prepending BOS would produce a duplicate. common_tokenize(add_bos=true)
+    // handles this correctly by letting the tokenizer decide.
     string msg = g_model_tokens.system_turn_start.text + content;
     if (g_model_tokens.has_explicit_turn_end())
         msg += g_model_tokens.turn_end.text;
-    auto result = common_tokenize(ctx, msg, false, true);
-
-    // Prepend BOS token (only for the very first system prompt).
-    llama_token bos = llama_vocab_bos(llama_model_get_vocab(llama_get_model(ctx)));
-    result.insert(result.begin(), bos);
-    return result;
+    return common_tokenize(ctx, msg, true, true);
 }
 
 vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content) {
