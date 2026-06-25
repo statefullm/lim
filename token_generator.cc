@@ -41,17 +41,49 @@ string escape_token_piece(const string& s) {
     return out;
 }
 
-// Find tool call end robustly, handling malformed closing tags and nested FUNC_START in content.
+// Find tool call end robustly, handling malformed closing tags, nested FUNC_START in content,
+// and FUNC_START/FUNC_END embedded within parameter values (ignored via in_parameter guard).
 size_t find_tool_end_robust(const string& text, size_t from_pos) {
     string fe_str(FUNC_END);
     string fs_str(FUNC_START);
+    string ps_str(PARAM_START);
+    string pe_str(PARAM_END);
     int depth = 1;
+    bool in_parameter = false;
     size_t pos = from_pos;
     while (pos != string::npos && pos < text.length()) {
         size_t next_start = text.find(fs_str, pos);
         size_t next_end = text.find(fe_str, pos);
-        if (next_end == string::npos) break;
-        if (next_start != string::npos && next_start < next_end) {
+        size_t next_ps = text.find(ps_str, pos);
+        size_t next_pe = in_parameter ? text.find(pe_str, pos) : string::npos;
+
+        // Determine the earliest event
+        size_t events[4] = {next_start, next_end, next_ps, next_pe};
+        int type = -1; // 0=start, 1=end, 2=param_start, 3=param_end
+        for (int i = 0; i < 4; i++) {
+            if (events[i] == string::npos) continue;
+            if (type == -1 || events[i] < events[type]) type = i;
+        }
+        if (type == -1) break;
+
+        if (type == 2) {
+            // Entered a parameter region
+            in_parameter = true;
+            pos = next_ps + ps_str.length();
+            continue;
+        }
+        if (type == 3) {
+            // Exited a parameter region
+            in_parameter = false;
+            pos = next_pe + pe_str.length();
+            continue;
+        }
+        if (in_parameter) {
+            // FUNC_START or FUNC_END inside parameter value — ignore
+            pos = events[type] + (type == 0 ? fs_str.length() : fe_str.length());
+            continue;
+        }
+        if (type == 0) {
             depth++;
             pos = next_start + fs_str.length();
         } else {
@@ -333,6 +365,9 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
         // n_chars == 0 means unknown/out-of-range token; skip silently.
 
+        // Think-tag detection for output rendering only.
+        // Never use think-tag positions to suppress tool-call detection:
+        // think blocks and tool calls are sequential, never nested.
         if (think_start_ == string::npos) {
             think_start_ = generated_text_.find(Tokens::THINK_START);
         }
@@ -343,17 +378,7 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         if (tool_start_ == string::npos) {
             size_t search_from = func_search_pos_;
-            while (true) {
-                tool_start_ = generated_text_.find(FUNC_START, search_from);
-                if (tool_start_ == string::npos) break;
-                if (think_start_ != string::npos &&
-                    tool_start_ >= think_start_ &&
-                    (think_end_ == string::npos || tool_start_ < think_end_)) {
-                    search_from = think_end_;
-                    continue;
-                }
-                break;
-            }
+            tool_start_ = generated_text_.find(FUNC_START, search_from);
             if (tool_start_ == string::npos) {
                 func_search_pos_ = generated_text_.length() > 20 ? generated_text_.length() - 20 : 0;
             }
