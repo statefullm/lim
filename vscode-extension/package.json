@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dealias/lllm"
+    "url": "https://github.com/statellm/lllm"
   },
   "engines": {
     "vscode": "^1.85.0"

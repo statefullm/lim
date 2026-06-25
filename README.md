@@ -51,7 +51,7 @@ LLLM takes full advantage of what a single-user local setup affords:
 ## Building
 
 ```bash
-git clone https://github.com/dealias/lllm.git
+git clone https://github.com/statellm/lllm.git
 cd lllm
 make
 ./lllm --help
