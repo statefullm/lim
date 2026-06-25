@@ -214,10 +214,8 @@ ToolExecutor::Result ToolExecutor::execute(
         }
         generated_text = "";
 
-        // Build tool result message using model-type-aware token vectors.
+        // Build tool result message as a string, then tokenize in one pass.
         vector<llama_token> t_tokens;
-        bool needs_assistant_prefill = !(tool_blocked_by_loop || inject_auto_user_msg);
-
         if (tool_blocked_by_loop || inject_auto_user_msg) {
             // Full user turn + assistant prefill, with optional intervention message.
             string tool_content = "[Tool Result]\n" + tool_out.content;
@@ -225,36 +223,20 @@ ToolExecutor::Result ToolExecutor::execute(
                 tool_content += "\n" + active_intervention_msg;
             }
 
-            // User turn start
-            t_tokens.insert(t_tokens.end(), g_model_tokens.user_turn_start.tokens.begin(),
-                            g_model_tokens.user_turn_start.tokens.end());
-            // Content (with parameter tag escaping)
-            string escaped_content = tool_content;
-            escape_parameter_tags(escaped_content);
-            auto content_tok = tokenize(escaped_content);
-            t_tokens.insert(t_tokens.end(), content_tok.begin(), content_tok.end());
-            // Turn end (already includes trailing newline) + assistant start
-            if (g_model_tokens.has_explicit_turn_end()) {
-                t_tokens.insert(t_tokens.end(), g_model_tokens.turn_end.tokens.begin(),
-                                g_model_tokens.turn_end.tokens.end());
-            }
-            t_tokens.insert(t_tokens.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
-                            g_model_tokens.assistant_turn_start.tokens.end());
+            string msg = g_model_tokens.user_turn_start.text + tool_content;
+            escape_parameter_tags(msg);
+            if (g_model_tokens.has_explicit_turn_end())
+                msg += g_model_tokens.turn_end.text;
+            msg += g_model_tokens.assistant_turn_start.text;
+            t_tokens = tokenize(msg);
         } else {
-            // User turn only (no assistant prefill — model will generate its own response).
-            string tool_content = "[Tool Result]\n" + tool_out.content;
-            escape_parameter_tags(tool_content);
-
-            t_tokens.insert(t_tokens.end(), g_model_tokens.user_turn_start.tokens.begin(),
-                            g_model_tokens.user_turn_start.tokens.end());
-            auto content_tok = tokenize(tool_content);
-            t_tokens.insert(t_tokens.end(), content_tok.begin(), content_tok.end());
-            if (g_model_tokens.has_explicit_turn_end()) {
-                t_tokens.insert(t_tokens.end(), g_model_tokens.turn_end.tokens.begin(),
-                                g_model_tokens.turn_end.tokens.end());
-            }
-            t_tokens.insert(t_tokens.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
-                            g_model_tokens.assistant_turn_start.tokens.end());
+            // User turn + assistant prefill.
+            string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + tool_out.content;
+            escape_parameter_tags(msg);
+            if (g_model_tokens.has_explicit_turn_end())
+                msg += g_model_tokens.turn_end.text;
+            msg += g_model_tokens.assistant_turn_start.text;
+            t_tokens = tokenize(msg);
         }
         if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
             double pct = (double)n_past / cparams.n_ctx * 100.0;

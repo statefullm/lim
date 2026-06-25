@@ -315,96 +315,39 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
 }
 
 vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string &content) {
-    vector<llama_token> result;
+    // Build full string then tokenize in one pass — avoids BPE boundary issues.
+    string msg = g_model_tokens.system_turn_start.text + content;
+    if (g_model_tokens.has_explicit_turn_end())
+        msg += g_model_tokens.turn_end.text;
+    auto result = common_tokenize(ctx, msg, false, true);
 
-    // BOS token (only for the very first system prompt)
+    // Prepend BOS token (only for the very first system prompt).
     llama_token bos = llama_vocab_bos(llama_model_get_vocab(llama_get_model(ctx)));
-    result.push_back(bos);
-
-    // System turn start
-    result.insert(result.end(), g_model_tokens.system_turn_start.tokens.begin(),
-                  g_model_tokens.system_turn_start.tokens.end());
-
-    // Content (tokenized fresh)
-    auto content_tok = tok(ctx, content);
-    result.insert(result.end(), content_tok.begin(), content_tok.end());
-
-    // Turn end
-    if (g_model_tokens.has_explicit_turn_end()) {
-        result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
-                      g_model_tokens.turn_end.tokens.end());
-    }
-
+    result.insert(result.begin(), bos);
     return result;
 }
 
 vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content) {
-    vector<llama_token> result;
-
-    // user_turn_start
-    result.insert(result.end(), g_model_tokens.user_turn_start.tokens.begin(),
-                  g_model_tokens.user_turn_start.tokens.end());
-
-    // User content
-    auto content_tok = tok(ctx, user_content);
-    result.insert(result.end(), content_tok.begin(), content_tok.end());
-
-    // turn_end (already includes its own trailing newline if the template needs one)
-    if (g_model_tokens.has_explicit_turn_end()) {
-        result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
-                      g_model_tokens.turn_end.tokens.end());
-    }
-
-    // assistant_turn_start
-    result.insert(result.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
-                  g_model_tokens.assistant_turn_start.tokens.end());
-
-    return result;
+    string msg = g_model_tokens.user_turn_start.text + user_content;
+    if (g_model_tokens.has_explicit_turn_end())
+        msg += g_model_tokens.turn_end.text;
+    msg += g_model_tokens.assistant_turn_start.text;
+    return common_tokenize(ctx, msg, false, true);
 }
 
 vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_content) {
-    vector<llama_token> result;
-
-    // user_turn_start
-    result.insert(result.end(), g_model_tokens.user_turn_start.tokens.begin(),
-                  g_model_tokens.user_turn_start.tokens.end());
-
-    // User content
-    auto content_tok = tok(ctx, user_content);
-    result.insert(result.end(), content_tok.begin(), content_tok.end());
-
-    // turn_end (already includes trailing newline)
-    if (g_model_tokens.has_explicit_turn_end()) {
-        result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
-                      g_model_tokens.turn_end.tokens.end());
-    }
-
-    return result;
+    string msg = g_model_tokens.user_turn_start.text + user_content;
+    if (g_model_tokens.has_explicit_turn_end())
+        msg += g_model_tokens.turn_end.text;
+    return common_tokenize(ctx, msg, false, true);
 }
 
 vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output) {
-    vector<llama_token> result;
-
-    // user_turn_start
-    result.insert(result.end(), g_model_tokens.user_turn_start.tokens.begin(),
-                  g_model_tokens.user_turn_start.tokens.end());
-
-    // "[Tool Result]\n" + content
-    string tool_content = "[Tool Result]\n" + tool_output;
-    auto content_tok = tok(ctx, tool_content);
-    result.insert(result.end(), content_tok.begin(), content_tok.end());
-
-    // turn_end (already includes trailing newline)
-    if (g_model_tokens.has_explicit_turn_end()) {
-        result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
-                      g_model_tokens.turn_end.tokens.end());
-    }
-
-    // assistant_turn_start
-    result.insert(result.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
-                  g_model_tokens.assistant_turn_start.tokens.end());
-
-    return result;
+    string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + tool_output;
+    if (g_model_tokens.has_explicit_turn_end())
+        msg += g_model_tokens.turn_end.text;
+    msg += g_model_tokens.assistant_turn_start.text;
+    return common_tokenize(ctx, msg, false, true);
 }
 
 vector<llama_token> build_forced_close_tokens(llama_context *ctx) {
