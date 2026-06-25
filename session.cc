@@ -192,7 +192,7 @@ private:
     void log_entry(const string& role, const string& text) {
         if (chat_log.is_open()) {
             string clean_text = text;
-            vector<string> tags_to_remove = {FUNC_START, FUNC_END, THINK_START, THINK_END};
+            vector<string> tags_to_remove = {FUNC_START, FUNC_END};
             // Strip model-specific turn markers from the log
             if (!g_model_tokens.user_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.user_turn_start.text);
             if (!g_model_tokens.assistant_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.assistant_turn_start.text);
