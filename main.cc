@@ -74,9 +74,11 @@ void diag(const string& msg, const char* color) {
 std::string g_model_path;
 
 int main(int argc, char ** argv) {
+    // this is the main function
     setlocale(LC_ALL, "");
 
     // Read the required username from LLLM_AI_USER env var (default: "ai")
+    // set user from env var
     const char* ai_user_env = getenv("LLLM_AI_USER");
     const char* required_user = ai_user_env && ai_user_env[0] ? ai_user_env : "ai";
 
@@ -367,7 +369,6 @@ int main(int argc, char ** argv) {
     if (!model) return 1;
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
-    ModelType model_type = detect_model_type(vocab);
 
     // Apply remaining context params that fit_params shouldn't touch
     cparams.flash_attn_type = (llama_flash_attn_type)1;
@@ -422,8 +423,11 @@ int main(int argc, char ** argv) {
         }
     }
 
-    string formatted_system_prompt = string(Tokens::TURN_START) + "system\n" + system_prompt + Tokens::TURN_END + "\n";
-    vector<llama_token> system_tokens = common_tokenize(ctx, formatted_system_prompt, true, true);
+    // Initialize model-specific turn delimiters by asking llama.cpp for the correct tokens.
+    init_model_tokens(ctx, model);
+
+    // Build system prompt using model-type-aware token vectors (BOS + system turn).
+    vector<llama_token> system_tokens = build_system_prompt_tokens(ctx, system_prompt);
     llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
     llama_sampler * smpl = llama_sampler_chain_init(lparams);
     llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, penalty_repeat, penalty_freq, penalty_present));

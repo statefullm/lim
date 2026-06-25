@@ -192,7 +192,12 @@ private:
     void log_entry(const string& role, const string& text) {
         if (chat_log.is_open()) {
             string clean_text = text;
-            const vector<string> tags_to_remove = {FUNC_START, FUNC_END, TURN_START, TURN_END};
+            vector<string> tags_to_remove = {FUNC_START, FUNC_END};
+            // Strip model-specific turn markers from the log
+            if (!g_model_tokens.user_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.user_turn_start.text);
+            if (!g_model_tokens.assistant_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.assistant_turn_start.text);
+            if (!g_model_tokens.system_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.system_turn_start.text);
+            if (!g_model_tokens.turn_end.text.empty()) tags_to_remove.push_back(g_model_tokens.turn_end.text);
             strip_tags(clean_text, tags_to_remove);
             while (!clean_text.empty() && isspace(clean_text.back())) clean_text.pop_back();
             chat_log << "=== " << role << " ===\n" << clean_text << "\n\n";
@@ -493,18 +498,24 @@ bool ChatSession::feed_user_message(const string& input) {
         }
     }
 
-    string user_message;
-    string turn_close = state_.prev_was_interrupted ? (string(TURN_END) + "\n") : "";
+    // Build user turn + assistant prefill using model-type-aware token vectors.
+    string turn_close_str = state_.prev_was_interrupted ? (g_model_tokens.turn_end.text + "\n") : "";
     state_.prev_was_interrupted = false;
 
-    if (use_dummy_thought_) {
-        user_message = turn_close + string(TURN_START) + "user\n" +
-                       input + TURN_END + "\n" +
-                       TURN_START + "assistant\n"+THINK_START+"\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n"+THINK_END+"\n";
-    } else {
-        user_message = turn_close + string(TURN_START) + "user\n" + input + TURN_END + "\n" + TURN_START + "assistant\n";
+    vector<llama_token> tokens;
+    if (!turn_close_str.empty()) {
+        auto close_tok = common_tokenize(ctx_, turn_close_str, false, true);
+        tokens.insert(tokens.end(), close_tok.begin(), close_tok.end());
     }
-    vector<llama_token> tokens = tokenize(user_message);
+    auto user_ass = build_user_assistant_turn(ctx_, input);
+    tokens.insert(tokens.end(), user_ass.begin(), user_ass.end());
+
+    // If using dummy thought, append the thinking block as content tokens.
+    if (use_dummy_thought_) {
+        string think_block = string(THINK_START) + "\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n" + THINK_END + "\n";
+        auto think_tok = common_tokenize(ctx_, think_block, false, true);
+        tokens.insert(tokens.end(), think_tok.begin(), think_tok.end());
+    }
 
     if (n_past_ + (int)tokens.size() >= (int)cparams_.n_ctx) {
         string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, (size_t)tokens.size(), (int)cparams_.n_ctx);
@@ -695,8 +706,7 @@ bool ChatSession::handle_reincarnate_completion() {
     string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";
     log_entry("USER", "[reincarnated session] " + follow_prompt);
 
-    string new_session_message = string(TURN_START) + "user\n" + follow_prompt + TURN_END + "\n" + TURN_START + "assistant\n";
-    vector<llama_token> new_session_tokens = tokenize(new_session_message);
+    vector<llama_token> new_session_tokens = build_user_assistant_turn(ctx_, follow_prompt);
 
     if (n_past_ + (int)new_session_tokens.size() >= (int)cparams_.n_ctx) {
         string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, (size_t)new_session_tokens.size(), (int)cparams_.n_ctx);
@@ -883,14 +893,15 @@ bool ChatSession::run() {
             diag("Sending reincarnate request to LLM...", "\033[35m");
             log_entry("USER", "[reincarnate] " + reincarnate_text);
 
-            string reincarnate_message;
+            vector<llama_token> reincarnate_tokens;
             if (state_.prev_was_interrupted) {
-                reincarnate_message = string(TURN_END) + "\n" + string(TURN_START) + "user\n" + reincarnate_text + TURN_END + "\n" + TURN_START + "assistant\n";
-            } else {
-                reincarnate_message = string(TURN_START) + "user\n" + reincarnate_text + TURN_END + "\n" + TURN_START + "assistant\n";
+                // Close the interrupted assistant turn first
+                auto close_tok = common_tokenize(ctx_, g_model_tokens.turn_end.text + "\n", false, true);
+                reincarnate_tokens.insert(reincarnate_tokens.end(), close_tok.begin(), close_tok.end());
             }
+            auto user_ass_reinc = build_user_assistant_turn(ctx_, reincarnate_text);
+            reincarnate_tokens.insert(reincarnate_tokens.end(), user_ass_reinc.begin(), user_ass_reinc.end());
             state_.prev_was_interrupted = false;
-            vector<llama_token> reincarnate_tokens = tokenize(reincarnate_message);
 
             if (n_past_ + (int)reincarnate_tokens.size() >= (int)cparams_.n_ctx) {
                 string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, (size_t)reincarnate_tokens.size(), (int)cparams_.n_ctx);

@@ -323,7 +323,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                         generated_text_.erase(trailing_slash);
                         full_response_.erase(full_response_.length() - drop_len);
                     }
-                    string forced_close = "\n" + string(TURN_END) + "\n" + string(FUNC_END) + "\n";
+                    string forced_close = "\n" + g_model_tokens.turn_end.text + "\n" + string(FUNC_END) + "\n";
                     generated_text_ += forced_close;
                     full_response_ += forced_close;
                     tool_start_ = active_ts;
@@ -406,10 +406,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 generated_text_.erase(bad_pos);
                 full_response_.erase(full_response_.length() - drop_len);
             }
-            string forced_close = "\n" + string(TURN_END) + "\n" + string(FUNC_END) + "\n";
-            generated_text_ += forced_close;
-            full_response_ += forced_close;
-            tool_end_ = find_tool_end_robust(generated_text_, was_mid_tool_call_ ? 0 : tool_start_);
+            string forced_close = "\n" + g_model_tokens.turn_end.text + "\n" + string(FUNC_END) + "\n";
             if (tool_end_ != string::npos) {
                 size_t exact_pos = generated_text_.find(FUNC_END, was_mid_tool_call_ ? 0 : tool_start_);
                 if (exact_pos == string::npos) {

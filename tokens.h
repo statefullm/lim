@@ -1,13 +1,6 @@
 #pragma once
 
 namespace Tokens {
-    // --- Model ChatML / System Tokens ---
-    constexpr const char* TURN_START = "<|im_start|>";
-    constexpr const char* TURN_END   = "<|im_end|>";
-    constexpr const char* HEADER_START = "<|start_header|>";
-    constexpr const char* HEADER_END   = "<|end_header|>";
-    constexpr const char* EOT          = "<|eot|>";
-
     // --- XML Parameter Schema ---
     constexpr const char* THINK_START = "<think>";
     constexpr const char* THINK_END   = "</think>";

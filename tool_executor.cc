@@ -1,4 +1,5 @@
 #include "tool_executor.h"
+#include "model.h"
 #include "session_utils.h"
 #include "output.h"
 #include "signals.h"
@@ -61,7 +62,10 @@ ToolExecutor::Result ToolExecutor::execute(
     string preamble = "";
     if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
 
-    const vector<string> strip_tags_vec = {TURN_START, TURN_END};
+    vector<string> strip_tags_vec;
+    if (!g_model_tokens.user_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.user_turn_start.text);
+    if (!g_model_tokens.assistant_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.assistant_turn_start.text);
+    if (!g_model_tokens.turn_end.text.empty()) strip_tags_vec.push_back(g_model_tokens.turn_end.text);
     strip_tags(tool_call, strip_tags_vec);
 
     ToolResult tool_out;
@@ -210,23 +214,52 @@ ToolExecutor::Result ToolExecutor::execute(
         }
         generated_text = "";
 
-        string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + tool_out.content + TURN_END + "\n";
-        escape_parameter_tags(tool_result_section);
-        string tool_msg = tool_result_section;
+        // Build tool result message using model-type-aware token vectors.
+        vector<llama_token> t_tokens;
+        bool needs_assistant_prefill = !(tool_blocked_by_loop || inject_auto_user_msg);
 
         if (tool_blocked_by_loop || inject_auto_user_msg) {
-            string clean_user_turn = string(TURN_START) + "user\n[Tool Result]\n" + tool_out.content;
-            escape_parameter_tags(clean_user_turn);
+            // Full user turn + assistant prefill, with optional intervention message.
+            string tool_content = "[Tool Result]\n" + tool_out.content;
             if (inject_auto_user_msg && !active_intervention_msg.empty()) {
-                clean_user_turn += "\n" + active_intervention_msg;
+                tool_content += "\n" + active_intervention_msg;
             }
-            clean_user_turn += string(TURN_END) + "\n";
-            tool_msg = clean_user_turn + string(TURN_START) + "assistant\n";
-        } else {
-            tool_msg += string(TURN_START) + "assistant\n";
-        }
 
-        vector<llama_token> t_tokens = tokenize(tool_msg);
+            // User turn start
+            t_tokens.insert(t_tokens.end(), g_model_tokens.user_turn_start.tokens.begin(),
+                            g_model_tokens.user_turn_start.tokens.end());
+            // Content (with parameter tag escaping)
+            string escaped_content = tool_content;
+            escape_parameter_tags(escaped_content);
+            auto content_tok = tokenize(escaped_content);
+            t_tokens.insert(t_tokens.end(), content_tok.begin(), content_tok.end());
+            // Turn end + newline + assistant start
+            if (g_model_tokens.has_explicit_turn_end()) {
+                t_tokens.insert(t_tokens.end(), g_model_tokens.turn_end.tokens.begin(),
+                                g_model_tokens.turn_end.tokens.end());
+            }
+            auto nl = tokenize("\n");
+            t_tokens.insert(t_tokens.end(), nl.begin(), nl.end());
+            t_tokens.insert(t_tokens.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
+                            g_model_tokens.assistant_turn_start.tokens.end());
+        } else {
+            // User turn only (no assistant prefill — model will generate its own response).
+            string tool_content = "[Tool Result]\n" + tool_out.content;
+            escape_parameter_tags(tool_content);
+
+            t_tokens.insert(t_tokens.end(), g_model_tokens.user_turn_start.tokens.begin(),
+                            g_model_tokens.user_turn_start.tokens.end());
+            auto content_tok = tokenize(tool_content);
+            t_tokens.insert(t_tokens.end(), content_tok.begin(), content_tok.end());
+            if (g_model_tokens.has_explicit_turn_end()) {
+                t_tokens.insert(t_tokens.end(), g_model_tokens.turn_end.tokens.begin(),
+                                g_model_tokens.turn_end.tokens.end());
+            }
+            auto nl = tokenize("\n");
+            t_tokens.insert(t_tokens.end(), nl.begin(), nl.end());
+            t_tokens.insert(t_tokens.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
+                            g_model_tokens.assistant_turn_start.tokens.end());
+        }
         if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
             double pct = (double)n_past / cparams.n_ctx * 100.0;
             char buf[32];
@@ -268,15 +301,13 @@ ToolExecutor::Result ToolExecutor::execute(
             } else {
                 abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
             }
-            string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + abort_msg + TURN_END + "\n";
-            string tool_msg = tool_result_section;
-
-            vector<llama_token> t_tokens = tokenize(tool_msg);
-            if (n_past + (int)t_tokens.size() < (int)cparams.n_ctx) {
-                feed_tokens(t_tokens);
+            vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
+            // build_tool_result_turn wraps: user_start + "[Tool Result]\n" + msg + turn_end + "\n" + assistant_start
+            if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
+                feed_tokens(abort_tokens);
 
                 // Log abort tool result tokens to token_log when debug is enabled
-                log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
+                log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
             }
         }
     } else {
@@ -289,15 +320,12 @@ ToolExecutor::Result ToolExecutor::execute(
         } else {
             abort_msg = "System Error: Tool call blocked -- you are repeating yourself. Stop retrying and try a different approach (e.g., use search_file instead of exec_shell for code searches).";
         }
-        string tool_result_section = string(TURN_START) + "user\n[Tool Result]\n" + abort_msg + TURN_END + "\n";
-        string tool_msg = tool_result_section;
-
-        vector<llama_token> t_tokens = tokenize(tool_msg);
-        if (n_past + (int)t_tokens.size() < (int)cparams.n_ctx) {
-            feed_tokens(t_tokens);
+        vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
+        if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
+            feed_tokens(abort_tokens);
 
             // Log abort tool result tokens to token_log when debug is enabled
-            log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
+            log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
         }
     }
 
