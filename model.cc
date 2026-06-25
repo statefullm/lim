@@ -349,15 +349,11 @@ vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &
     auto content_tok = tok(ctx, user_content);
     result.insert(result.end(), content_tok.begin(), content_tok.end());
 
-    // turn_end
+    // turn_end (already includes its own trailing newline if the template needs one)
     if (g_model_tokens.has_explicit_turn_end()) {
         result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
                       g_model_tokens.turn_end.tokens.end());
     }
-
-    // Newline separator between turns (most templates expect this)
-    auto nl = tok(ctx, "\n");
-    result.insert(result.end(), nl.begin(), nl.end());
 
     // assistant_turn_start
     result.insert(result.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
@@ -377,15 +373,11 @@ vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_
     auto content_tok = tok(ctx, user_content);
     result.insert(result.end(), content_tok.begin(), content_tok.end());
 
-    // turn_end
+    // turn_end (already includes trailing newline)
     if (g_model_tokens.has_explicit_turn_end()) {
         result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
                       g_model_tokens.turn_end.tokens.end());
     }
-
-    // Trailing newline
-    auto nl = tok(ctx, "\n");
-    result.insert(result.end(), nl.begin(), nl.end());
 
     return result;
 }
@@ -402,15 +394,13 @@ vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &too
     auto content_tok = tok(ctx, tool_content);
     result.insert(result.end(), content_tok.begin(), content_tok.end());
 
-    // turn_end
+    // turn_end (already includes trailing newline)
     if (g_model_tokens.has_explicit_turn_end()) {
         result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
                       g_model_tokens.turn_end.tokens.end());
     }
 
-    // Newline + assistant_turn_start
-    auto nl = tok(ctx, "\n");
-    result.insert(result.end(), nl.begin(), nl.end());
+    // assistant_turn_start
     result.insert(result.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
                   g_model_tokens.assistant_turn_start.tokens.end());
 

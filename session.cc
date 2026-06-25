@@ -499,7 +499,7 @@ bool ChatSession::feed_user_message(const string& input) {
     }
 
     // Build user turn + assistant prefill using model-type-aware token vectors.
-    string turn_close_str = state_.prev_was_interrupted ? (g_model_tokens.turn_end.text + "\n") : "";
+    string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
     state_.prev_was_interrupted = false;
 
     vector<llama_token> tokens;
@@ -896,7 +896,7 @@ bool ChatSession::run() {
             vector<llama_token> reincarnate_tokens;
             if (state_.prev_was_interrupted) {
                 // Close the interrupted assistant turn first
-                auto close_tok = common_tokenize(ctx_, g_model_tokens.turn_end.text + "\n", false, true);
+                auto close_tok = common_tokenize(ctx_, g_model_tokens.turn_end.text, false, true);
                 reincarnate_tokens.insert(reincarnate_tokens.end(), close_tok.begin(), close_tok.end());
             }
             auto user_ass_reinc = build_user_assistant_turn(ctx_, reincarnate_text);

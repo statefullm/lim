@@ -233,13 +233,11 @@ ToolExecutor::Result ToolExecutor::execute(
             escape_parameter_tags(escaped_content);
             auto content_tok = tokenize(escaped_content);
             t_tokens.insert(t_tokens.end(), content_tok.begin(), content_tok.end());
-            // Turn end + newline + assistant start
+            // Turn end (already includes trailing newline) + assistant start
             if (g_model_tokens.has_explicit_turn_end()) {
                 t_tokens.insert(t_tokens.end(), g_model_tokens.turn_end.tokens.begin(),
                                 g_model_tokens.turn_end.tokens.end());
             }
-            auto nl = tokenize("\n");
-            t_tokens.insert(t_tokens.end(), nl.begin(), nl.end());
             t_tokens.insert(t_tokens.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
                             g_model_tokens.assistant_turn_start.tokens.end());
         } else {
@@ -255,8 +253,6 @@ ToolExecutor::Result ToolExecutor::execute(
                 t_tokens.insert(t_tokens.end(), g_model_tokens.turn_end.tokens.begin(),
                                 g_model_tokens.turn_end.tokens.end());
             }
-            auto nl = tokenize("\n");
-            t_tokens.insert(t_tokens.end(), nl.begin(), nl.end());
             t_tokens.insert(t_tokens.end(), g_model_tokens.assistant_turn_start.tokens.begin(),
                             g_model_tokens.assistant_turn_start.tokens.end());
         }
