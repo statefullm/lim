@@ -1,119 +1,143 @@
+
 #include "parsers.h"
 #include "tokens.h"
+#include "model.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <cstring>
+#include <iostream>
 #include <sstream> // Required for stringstream
 
 using namespace std;
 using namespace Tokens;
+extern bool is_debug;
 
-// The suffix to match after '<' and optional backslashes, derived from PARAM_END.
-static const string param_end_suffix = string(PARAM_END + 1);
+// Generic escape: insert one '\' after first char of every occurrence of 'token'.
+// Handles recursive escaping: if already escaped, adds another '\'.
+static void escape_one_token(string& str, const string& token) {
+    if (token.size() < 2) return;
+    char first = token[0];
+    const string suffix = token.substr(1);
 
-void escape_parameter_tags(string& str) {
     size_t start_pos = 0;
     while (start_pos < str.length()) {
-        size_t lt_pos = str.find('<', start_pos);
-        if (lt_pos == string::npos) break;
+        size_t pos = str.find(first, start_pos);
+        if (pos == string::npos) break;
 
-        size_t scan = lt_pos + 1;
-        int num_backslashes = 0;
-        while (scan < str.length() && str[scan] == '\\') {
-            num_backslashes++;
-            scan++;
-        }
+        // Skip any backslashes after the first character.
+        size_t scan = pos + 1;
+        while (scan < str.length() && str[scan] == '\\') scan++;
 
+        // Check if suffix matches.
         bool match = true;
-        for (size_t k = 0; k < param_end_suffix.length(); k++) {
-            if (scan + k >= str.length() || str[scan + k] != param_end_suffix[k]) {
-                match = false;
-                break;
-            }
+        for (size_t k = 0; k < suffix.length(); k++) {
+            if (scan + k >= str.length() || str[scan + k] != suffix[k]) { match = false; break; }
         }
 
         if (match) {
-            size_t token_start = lt_pos;
-            size_t token_end = scan + param_end_suffix.length();
-
-            // Build replacement: PARAM_END with num_backslashes extra '\' inserted after '<'
-            string replacement("<");
-            for (int b = 0; b <= num_backslashes; b++) replacement += '\\';
-            replacement += param_end_suffix;
-
-            str.replace(token_start, token_end - token_start, replacement);
-            start_pos = token_start + replacement.length();
+            str.insert(pos + 1, 1, '\\');
+            start_pos = pos + 2 + suffix.length();
         } else {
-            start_pos = lt_pos + 1;
+            start_pos = pos + 1;
         }
     }
 }
 
-void unescape_parameter_tags(string& str) {
+// Generic unescape: remove one '\' after first char of every occurrence of 'token'.
+// If no extra backslash, leave alone (raw token — should not appear in practice).
+static void unescape_one_token(string& str, const string& token) {
+    if (token.size() < 2) return;
+    char first = token[0];
+    const string suffix = token.substr(1);
+
     size_t start_pos = 0;
     while (start_pos < str.length()) {
-        size_t lt_pos = str.find('<', start_pos);
-        if (lt_pos == string::npos) break;
+        size_t pos = str.find(first, start_pos);
+        if (pos == string::npos) break;
 
-        size_t scan = lt_pos + 1;
-        int num_backslashes = 0;
-        while (scan < str.length() && str[scan] == '\\') {
-            num_backslashes++;
-            scan++;
-        }
+        // Count backslashes after the first character.
+        size_t scan = pos + 1;
+        int num_bs = 0;
+        while (scan < str.length() && str[scan] == '\\') { num_bs++; scan++; }
 
+        // Check if suffix matches after the backslashes.
         bool match = true;
-        for (size_t k = 0; k < param_end_suffix.length(); k++) {
-            if (scan + k >= str.length() || str[scan + k] != param_end_suffix[k]) {
-                match = false;
-                break;
-            }
+        for (size_t k = 0; k < suffix.length(); k++) {
+            if (scan + k >= str.length() || str[scan + k] != suffix[k]) { match = false; break; }
         }
 
         if (match) {
-            size_t token_start = lt_pos;
-            size_t token_end = scan + param_end_suffix.length();
-
-            // Build replacement: PARAM_END with (num_backslashes-1) '\' after '<', min 0
-            int new_bs = (num_backslashes > 0) ? (num_backslashes - 1) : 0;
-            string replacement("<");
-            for (int b = 0; b < new_bs; b++) replacement += '\\';
-            replacement += param_end_suffix;
-
-            str.replace(token_start, token_end - token_start, replacement);
-            start_pos = token_start + replacement.length();
+            if (num_bs > 0) {
+                // Remove one backslash: first + (num_bs-1) backslashes + suffix.
+                string replacement(1, first);
+                for (int b = 0; b < num_bs - 1; b++) replacement += '\\';
+                replacement += suffix;
+                str.replace(pos, scan - pos + suffix.length(), replacement);
+                start_pos = pos + replacement.length();
+            } else {
+                // No backslashes — raw token, leave alone.
+                start_pos = pos + 1 + suffix.length();
+            }
         } else {
-            start_pos = lt_pos + 1;
+            start_pos = pos + 1;
         }
     }
+}
+
+void escape_parameter_tags(string& str)     { escape_one_token(str, PARAM_END); }
+void unescape_parameter_tags(string& str)   { unescape_one_token(str, PARAM_END); }
+
+// Extract base turn tokens from model turn markers.
+static void collect_base_turn_tokens(vector<string>& out) {
+    vector<string> markers;
+    if (!g_model_tokens.user_turn_start.text.empty()) markers.push_back(g_model_tokens.user_turn_start.text);
+    if (!g_model_tokens.assistant_turn_start.text.empty()) markers.push_back(g_model_tokens.assistant_turn_start.text);
+    if (!g_model_tokens.system_turn_start.text.empty()) markers.push_back(g_model_tokens.system_turn_start.text);
+    if (!g_model_tokens.turn_end.text.empty()) markers.push_back(g_model_tokens.turn_end.text);
+
+    for (auto &m : markers) {
+        size_t pos = 0;
+        while ((pos = m.find("<|", pos)) != string::npos) {
+            size_t end = m.find("|>", pos + 2);
+            if (end != string::npos) {
+                string token = m.substr(pos, end - pos + 2);
+                if (find(out.begin(), out.end(), token) == out.end())
+                    out.push_back(token);
+                pos = end + 2;
+            } else break;
+        }
+        if (m.find("<|") == string::npos && !m.empty()) {
+            if (find(out.begin(), out.end(), m) == out.end())
+                out.push_back(m);
+        }
+    }
+}
+
+static void _escape_turn_tokens_impl(string& str, bool do_escape) {
+    vector<string> tokens;
+    collect_base_turn_tokens(tokens);
+    for (auto &t : tokens) {
+        if (do_escape) escape_one_token(str, t);
+        else unescape_one_token(str, t);
+    }
+}
+
+void escape_turn_tags(string& str) {
+    _escape_turn_tokens_impl(str, true);
+}
+
+void unescape_turn_tags(string& str) {
+    _escape_turn_tokens_impl(str, false);
 }
 
 // Find the next unescaped PARAM_END starting from 'from'.
-// Skips over backslash-escaped forms (PARAM_END_ESC).
+// Skips over backslash-escaped forms (backslash after first char).
 // Returns string::npos if no unescaped PARAM_END is found.
 static size_t find_unescaped_param_end(const string& text, size_t from) {
-    size_t param_len = strlen(PARAM_END);
-    while (from + param_len <= text.length()) {
-        size_t pos = text.find(PARAM_END, from);
-        if (pos == string::npos) return string::npos;
-
-        // Check if there's a backslash immediately before the '<'
-        if (pos > 0 && text[pos - 1] == '\\') {
-            // Count consecutive backslashes before '<'
-            size_t bs_start = pos - 1;
-            while (bs_start > 0 && text[bs_start - 1] == '\\') {
-                bs_start--;
-            }
-            int num_bs = pos - bs_start;
-            if (num_bs % 2 == 1) {
-                // Odd number of backslashes => escaped, skip past this match
-                from = pos + param_len;
-                continue;
-            }
-        }
-        return pos; // Unescaped PARAM_END found
-    }
-    return string::npos;
+    // The escaped form has a '\' after the first character, so str.find(PARAM_END)
+    // naturally skips escaped occurrences. Just find the raw token.
+    return text.find(PARAM_END, from);
 }
 
 // Strip surrounding matching quotes (single or double) from a string.
@@ -242,3 +266,4 @@ string remove_trailing_spaces(const string& str) {
     size_t end = str.find_last_not_of(" \t\n\r");
     return (end == string::npos) ? "" : str.substr(0, end + 1);
 }
+

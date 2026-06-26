@@ -14,7 +14,10 @@ namespace Tokens {
     constexpr const char* PARAM_END   = "</parameter>";
 
     // --- Escaped Tokens (For protecting the C++ parser) ---
-    constexpr const char* PARAM_END_ESC = "<\\/parameter>";
+    // Escape contract: prepend '\' before first character of token.
+    // PARAM_END = "</parameter>"  -> escaped: "\</parameter>"
+    // Escaped form computed at runtime by escape_parameter_tags().
+    // Not needed as a compile-time constant.
 
     constexpr const char* DOUBLE_OPEN = "</</";
 }

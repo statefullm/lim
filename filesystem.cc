@@ -699,6 +699,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   // Unescape search text (LLM provides escaped content per prompt instructions)
   string unescaped_text = text;
   unescape_parameter_tags(unescaped_text);
+  unescape_turn_tags(unescaped_text);
 
   string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);
@@ -991,9 +992,10 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
 
   string fullpath = _get_fullpath(path);
 
-  // Unescape PARAM_END tokens before writing to disk (LLM provides escaped content)
+  // Unescape reserved tokens before writing to disk (LLM provides escaped content)
   string writable_content = content;
   unescape_parameter_tags(writable_content);
+  unescape_turn_tags(writable_content);
 
   ofstream out_file(fullpath);
   if (!out_file.is_open()) {
@@ -1041,11 +1043,13 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   log_diagnostic("OLD_TEXT: \"" + old_str + "\"", true /* logOnly */);
   log_diagnostic("NEW_TEXT: \"" + new_str + "\"", true /* logOnly */);
 
-  // Unescape PARAM_END (LLM provides escaped content per prompt instructions)
+  // Unescape reserved tokens (LLM provides escaped content per prompt instructions)
   string unescaped_old = old_str;
   string unescaped_new = new_str;
   unescape_parameter_tags(unescaped_old);
   unescape_parameter_tags(unescaped_new);
+  unescape_turn_tags(unescaped_old);
+  unescape_turn_tags(unescaped_new);
 
   string fullpath = _get_fullpath(path);
   ifstream in_file(fullpath);

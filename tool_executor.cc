@@ -62,11 +62,57 @@ ToolExecutor::Result ToolExecutor::execute(
     string preamble = "";
     if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
 
+    // Debug: log raw tool call before strip_tags
+    if (is_debug) {
+        cerr << "[DEBUG] Raw tool_call (" << tool_call.size() << " bytes):" << endl;
+        for (size_t i = 0; i < tool_call.size() && i < 512; i++) {
+            unsigned char c = tool_call[i];
+            if (c >= 32 && c < 127) cerr << (char)c;
+            else cerr << "[" << std::hex << (int)c << "]";
+        }
+        if (tool_call.size() > 512) cerr << "...";
+        cerr << endl;
+    }
+
     vector<string> strip_tags_vec;
     if (!g_model_tokens.user_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.user_turn_start.text);
     if (!g_model_tokens.assistant_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.assistant_turn_start.text);
     if (!g_model_tokens.turn_end.text.empty()) strip_tags_vec.push_back(g_model_tokens.turn_end.text);
+
+    // Debug: log what tags we're stripping
+    if (is_debug && !strip_tags_vec.empty()) {
+        cerr << "[DEBUG] strip_tags removing " << strip_tags_vec.size() << " tag(s):";
+        for (auto &t : strip_tags_vec) {
+            cerr << " [";
+            for (unsigned char c : t) {
+                if (c >= 32 && c < 127) cerr << (char)c;
+                else cerr << "\\x" << std::hex << (int)c;
+            }
+            cerr << "]";
+        }
+        cerr << endl;
+    }
+
+    string tool_call_before = tool_call;
     strip_tags(tool_call, strip_tags_vec);
+
+    // Debug: log if strip_tags changed anything
+    if (is_debug && tool_call != tool_call_before) {
+        cerr << "[DEBUG] strip_tags modified tool_call! Before (" << tool_call_before.size() << "):" << endl;
+        for (size_t i = 0; i < tool_call_before.size() && i < 512; i++) {
+            unsigned char c = tool_call_before[i];
+            if (c >= 32 && c < 127) cerr << (char)c;
+            else cerr << "[" << std::hex << (int)c << "]";
+        }
+        cerr << endl;
+        cerr << "[DEBUG] strip_tags modified tool_call! After (" << tool_call.size() << "):" << endl;
+        for (size_t i = 0; i < tool_call.size() && i < 512; i++) {
+            unsigned char c = tool_call[i];
+            if (c >= 32 && c < 127) cerr << (char)c;
+            else cerr << "[" << std::hex << (int)c << "]";
+        }
+        cerr << endl;
+    }
 
     ToolResult tool_out;
     bool was_loop = false;
@@ -223,16 +269,25 @@ ToolExecutor::Result ToolExecutor::execute(
                 tool_content += "\n" + active_intervention_msg;
             }
 
+            // Escape PARAM_END and model turn tokens in the content so they
+            // don't get misinterpreted as structural boundaries during tokenization.
+            escape_parameter_tags(tool_content);
+            escape_turn_tags(tool_content);
+
             string msg = g_model_tokens.user_turn_start.text + tool_content;
-            escape_parameter_tags(msg);
             if (g_model_tokens.has_explicit_turn_end())
                 msg += g_model_tokens.turn_end.text;
             msg += g_model_tokens.assistant_turn_start.text;
             t_tokens = tokenize(msg);
         } else {
             // User turn + assistant prefill.
-            string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + tool_out.content;
-            escape_parameter_tags(msg);
+            string tool_content = "[Tool Result]\n" + tool_out.content;
+
+            // Escape PARAM_END and model turn tokens in the content.
+            escape_parameter_tags(tool_content);
+            escape_turn_tags(tool_content);
+
+            string msg = g_model_tokens.user_turn_start.text + tool_content;
             if (g_model_tokens.has_explicit_turn_end())
                 msg += g_model_tokens.turn_end.text;
             msg += g_model_tokens.assistant_turn_start.text;

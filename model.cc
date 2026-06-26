@@ -1,7 +1,9 @@
 #include "model.h"
 #include "common.h"
 #include "filesystem.h"
+#include "parsers.h"
 #include "tokens.h"
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <cstring>
@@ -315,6 +317,107 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
     }
 }
 
+// Generate the complete reserved-token escape contract for the system prompt.
+// Covers PARAM_END (always active) plus model-specific turn delimiters.
+string generate_turn_escape_contract() {
+    // Helper: escape control characters for display in prompt.
+    // Also breaks up known special token strings so the tokenizer doesn't
+    // interpret them as structural boundaries when this contract is fed to the model.
+    auto display = [](const string &t) -> string {
+        string out;
+        for (char c : t) {
+            if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
+            else if (c < 32 && c > 0) {
+                char buf[8];
+                snprintf(buf, sizeof(buf), "\\x%02x", (unsigned char)c);
+                out += buf;
+            } else {
+                out += c;
+            }
+        }
+        // Break up special token strings so the tokenizer won't recognize them.
+        // Insert a zero-width space (U+200B) after '<|' to prevent tokenization.
+        string broken = out;
+        size_t pos = 0;
+        while ((pos = broken.find("<|", pos)) != string::npos) {
+            broken.insert(pos + 2, "\xe2\x80\x8b"); // UTF-8 for U+200B
+            pos += 4;
+        }
+        return broken;
+    };
+
+    // Helper: produce escaped form of a token (one '\' after first char).
+    auto esc = [](const string &t) -> string {
+        if (t.size() < 2) return t;
+        return t.substr(0, 1) + "\\" + t.substr(1);
+    };
+
+    // Helper: produce double-escaped form.
+    auto esc2 = [&esc](const string &t) -> string {
+        return esc(esc(t));
+    };
+
+    // Collect all active reserved tokens with labels.
+    struct TokenDesc { string label; string text; };
+    vector<TokenDesc> tokens;
+
+    // PARAM_END is always active.
+    tokens.push_back(TokenDesc{"parameter closing tag", Tokens::PARAM_END});
+
+    // Extract base turn tokens from model markers (strip role labels and newlines).
+    auto add_base_tokens = [&](const string &marker) {
+        size_t pos = 0;
+        while ((pos = marker.find("<|", pos)) != string::npos) {
+            size_t end = marker.find("|>", pos + 2);
+            if (end != string::npos) {
+                string token = marker.substr(pos, end - pos + 2);
+                bool seen = false;
+                for (auto &td : tokens) { if (td.text == token) { seen = true; break; } }
+                if (!seen) {
+                    tokens.push_back(TokenDesc{"turn token", token});
+                }
+                pos = end + 2;
+            } else break;
+        }
+    };
+
+    if (!g_model_tokens.user_turn_start.text.empty()) add_base_tokens(g_model_tokens.user_turn_start.text);
+    if (!g_model_tokens.assistant_turn_start.text.empty()) add_base_tokens(g_model_tokens.assistant_turn_start.text);
+    if (!g_model_tokens.system_turn_start.text.empty()) add_base_tokens(g_model_tokens.system_turn_start.text);
+    if (!g_model_tokens.turn_end.text.empty()) add_base_tokens(g_model_tokens.turn_end.text);
+
+    string contract = "RESERVED TOKEN ESCAPING CONTRACT:\n";
+    contract += "The following strings are reserved structural markers and can never\n";
+    contract += "appear literally in tool calls or tool responses. When they appear\n";
+    contract += "in file content, they are escaped with one additional backslash after\n";
+    contract += "the first character.\n\n";
+
+    for (auto &td : tokens) {
+        contract += "- " + display(td.text) + " (" + td.label + ")\n";
+    }
+
+    contract += "\n1. SYSTEM -> LLM: Any reserved tokens in file content arrive escaped\n";
+    contract += "   (one extra backslash after the first character). You will NEVER see\n";
+    contract += "   unescaped reserved tokens in tool responses.\n\n";
+    contract += "2. LLM -> SYSTEM: If you want to write text containing a reserved token,\n";
+    contract += "   use the escaped form with one extra backslash after the first character.\n";
+    contract += "   The system removes that backslash before writing to disk; any other\n";
+    contract += "   backslashes are preserved as-is.\n\n";
+    contract += "Examples (on disk -> in response):\n";
+
+    for (auto &td : tokens) {
+        contract += "  " + display(td.text) + " -> " + display(esc(td.text)) + "\n";
+        contract += "  " + display(esc(td.text)) + " -> " + display(esc2(td.text)) + "\n";
+    }
+
+    contract += "\nActionable shortcut: whatever form you see in a tool response, use that exact\n";
+    contract += "same text when writing it back. The system handles both directions symmetrically.\n";
+
+    return contract;
+}
+
 vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string &content) {
     // Build full string then tokenize in one pass with add_bos=true.
     // Critical: some models (e.g., Qwen3.6) share BOS and <|im_start|> token IDs,
@@ -342,7 +445,12 @@ vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_
 }
 
 vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output) {
-    string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + tool_output;
+    // Escape model turn tokens in the tool output so they don't get
+    // misinterpreted as structural boundaries during tokenization.
+    string escaped_output = tool_output;
+    escape_turn_tags(escaped_output);
+
+    string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + escaped_output;
     if (g_model_tokens.has_explicit_turn_end())
         msg += g_model_tokens.turn_end.text;
     msg += g_model_tokens.assistant_turn_start.text;

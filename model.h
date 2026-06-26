@@ -70,6 +70,11 @@ void init_model_tokens(llama_context *ctx, const llama_model *model);
 
 string get_chat_template_name(ModelType model_type);
 
+// Generate the complete reserved-token escape contract for the system prompt.
+// Covers PARAM_END (always active) plus model-specific turn delimiters.
+// Returns a string with explicit token list, rules, and examples.
+string generate_turn_escape_contract();
+
 // --- Convenience helpers for message construction (token-vector based) ---
 
 // Build system prompt tokens: BOS + system_turn_start + content + turn_end

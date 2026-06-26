@@ -426,6 +426,17 @@ int main(int argc, char ** argv) {
     // Initialize model-specific turn delimiters by asking llama.cpp for the correct tokens.
     init_model_tokens(ctx, model);
 
+    // Optionally append the reserved-token escape contract to the system prompt.
+    // Controlled by env var LLLM_ESCAPE_CONTRACT (default 1 = include).
+    {
+        const char* env = getenv("LLLM_ESCAPE_CONTRACT");
+        int include_contract = 1; // default: include
+        if (env) include_contract = atoi(env);
+        if (include_contract) {
+            system_prompt += "\n\n" + generate_turn_escape_contract();
+        }
+    }
+
     // Build system prompt using model-type-aware token vectors (BOS + system turn).
     vector<llama_token> system_tokens = build_system_prompt_tokens(ctx, system_prompt);
     llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
