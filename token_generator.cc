@@ -43,7 +43,7 @@ string escape_token_piece(const string& s) {
 
 // Find tool call end robustly, handling malformed closing tags, nested FUNC_START in content,
 // and FUNC_START/FUNC_END embedded within parameter values (ignored via in_parameter guard).
-size_t find_tool_end_robust(const string& text, size_t from_pos) {
+size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_parameter) {
     string fe_str(FUNC_END);
     string fs_str(FUNC_START);
     string ps_str(PARAM_START);
@@ -88,7 +88,10 @@ size_t find_tool_end_robust(const string& text, size_t from_pos) {
             pos = next_start + fs_str.length();
         } else {
             depth--;
-            if (depth == 0) return next_end;
+            if (depth == 0) {
+                if (out_in_parameter) *out_in_parameter = in_parameter;
+                return next_end;
+            }
             pos = next_end + fe_str.length();
         }
     }
@@ -97,14 +100,19 @@ size_t find_tool_end_robust(const string& text, size_t from_pos) {
     while ((p = text.find(partial, from_pos)) != string::npos) {
         if (p + partial.length() < text.length()) {
             char next_c = text[p + partial.length()];
-            if (next_c == '>') return p;
+            if (next_c == '>') {
+                if (out_in_parameter) *out_in_parameter = in_parameter;
+                return p;
+            }
             size_t garbage_end = text.find('>', p + partial.length());
             if (garbage_end != string::npos) {
+                if (out_in_parameter) *out_in_parameter = in_parameter;
                 return p + partial.length();
             }
         }
         from_pos = p + partial.length();
     }
+    if (out_in_parameter) *out_in_parameter = in_parameter;
     return string::npos;
 }
 
@@ -156,6 +164,7 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec),
       print_pos_(0),
       in_tool_call_stream_(was_mid_tool_call),
+      in_parameter_(false),
       tool_start_(was_mid_tool_call ? 0 : string::npos),
       tool_end_(string::npos),
       trigger_tool_execution_(false),
@@ -385,7 +394,7 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
         if (tool_start_ != string::npos && tool_end_ == string::npos) {
             size_t search_from = was_mid_tool_call_ ? 0 : tool_start_;
-            tool_end_ = find_tool_end_robust(generated_text_, search_from);
+            tool_end_ = find_tool_end_robust(generated_text_, search_from, &in_parameter_);
             if (tool_end_ != string::npos) {
                 size_t exact_pos = generated_text_.find(FUNC_END, search_from);
                 if (exact_pos == string::npos) {
@@ -397,7 +406,7 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         in_tool_call_stream_ = (tool_start_ != string::npos && tool_end_ == string::npos);
 
-        if (in_tool_call_stream_ && generated_text_.length() >= 4 &&
+        if (in_tool_call_stream_ && !in_parameter_ && generated_text_.length() >= 4 &&
             generated_text_.compare(generated_text_.length() - 4, 4, DOUBLE_OPEN) == 0) {
             diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
             size_t bad_pos = generated_text_.rfind(DOUBLE_OPEN);

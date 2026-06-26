@@ -10,7 +10,7 @@
 std::string escape_token_piece(const std::string& s);
 
 // Helper functions for tool call detection (shared between session.cc and token_generator.cc)
-size_t find_tool_end_robust(const std::string& text, size_t from_pos);
+size_t find_tool_end_robust(const std::string& text, size_t from_pos, bool* out_in_parameter = nullptr);
 void repair_malformed_tool_end(std::string& text, size_t pos);
 void _strip_think_and_tool_tags(std::string& str);
 
@@ -51,6 +51,7 @@ private:
     std::string full_response_;
     size_t print_pos_;
     bool in_tool_call_stream_;
+    bool in_parameter_;
     size_t tool_start_;
     size_t tool_end_;
     bool trigger_tool_execution_;
