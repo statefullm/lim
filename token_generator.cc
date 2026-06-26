@@ -100,45 +100,44 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
         }
     }
     // Partial-match fallback: look for an incomplete FUNC_END (e.g., split across tokens).
-    // Must skip matches that fall inside a parameter region.
-    auto is_inside_parameter = [&](size_t mp) {
-        bool inside = false;
-        size_t s = from_pos;
-        while (s <= mp) {
-            size_t ps = text.find(ps_str, s);
-            size_t pe = text.find(pe_str, s);
-            if (ps == string::npos) break;
-            if (pe != string::npos && pe < ps) {
-                inside = false;
-                s = pe + pe_str.length();
-                continue;
-            }
-            inside = true;
-            s = ps + ps_str.length();
-        }
-        return inside;
-    };
-
+    // Partial-match fallback: single forward pass from pos, O(n).
     string partial = fe_str.substr(0, fe_str.length() - 1);
-    size_t p;
-    while ((p = text.find(partial, from_pos)) != string::npos) {
-        if (is_inside_parameter(p)) {
-            from_pos = p + partial.length();
+    while (pos < text.length()) {
+        size_t ps = text.find(ps_str, pos);
+        size_t pe = in_parameter ? text.find(pe_str, pos) : string::npos;
+        size_t pp = text.find(partial, pos);
+
+        // Find earliest event
+        if (ps != string::npos && (pe == string::npos || ps < pe) && (pp == string::npos || ps < pp)) {
+            in_parameter = true;
+            pos = ps + ps_str.length();
             continue;
         }
-        if (p + partial.length() < text.length()) {
-            char next_c = text[p + partial.length()];
+        if (pe != string::npos && (pp == string::npos || pe < pp)) {
+            in_parameter = false;
+            pos = pe + pe_str.length();
+            continue;
+        }
+        if (pp == string::npos) break;
+
+        // Found partial FUNC_END match at pp.
+        if (in_parameter) {
+            pos = pp + partial.length();
+            continue;
+        }
+        if (pp + partial.length() < text.length()) {
+            char next_c = text[pp + partial.length()];
             if (next_c == '>') {
                 if (out_in_parameter) *out_in_parameter = in_parameter;
-                return p;
+                return pp;
             }
-            size_t garbage_end = text.find('>', p + partial.length());
+            size_t garbage_end = text.find('>', pp + partial.length());
             if (garbage_end != string::npos) {
                 if (out_in_parameter) *out_in_parameter = in_parameter;
-                return p + partial.length();
+                return pp + partial.length();
             }
         }
-        from_pos = p + partial.length();
+        pos = pp + partial.length();
     }
     if (out_in_parameter) *out_in_parameter = in_parameter;
     return string::npos;
