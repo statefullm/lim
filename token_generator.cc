@@ -51,6 +51,10 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
     int depth = 1;
     bool in_parameter = false;
     size_t pos = from_pos;
+    // Skip the FUNC_START at from_pos -- caller already knows it's there (depth starts at 1).
+    if (text.compare(pos, fs_str.length(), fs_str) == 0) {
+        pos += fs_str.length();
+    }
     while (pos != string::npos && pos < text.length()) {
         size_t next_start = text.find(fs_str, pos);
         size_t next_end = text.find(fe_str, pos);
@@ -95,9 +99,33 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
             pos = next_end + fe_str.length();
         }
     }
+    // Partial-match fallback: look for an incomplete FUNC_END (e.g., split across tokens).
+    // Must skip matches that fall inside a parameter region.
+    auto is_inside_parameter = [&](size_t mp) {
+        bool inside = false;
+        size_t s = from_pos;
+        while (s <= mp) {
+            size_t ps = text.find(ps_str, s);
+            size_t pe = text.find(pe_str, s);
+            if (ps == string::npos) break;
+            if (pe != string::npos && pe < ps) {
+                inside = false;
+                s = pe + pe_str.length();
+                continue;
+            }
+            inside = true;
+            s = ps + ps_str.length();
+        }
+        return inside;
+    };
+
     string partial = fe_str.substr(0, fe_str.length() - 1);
     size_t p;
     while ((p = text.find(partial, from_pos)) != string::npos) {
+        if (is_inside_parameter(p)) {
+            from_pos = p + partial.length();
+            continue;
+        }
         if (p + partial.length() < text.length()) {
             char next_c = text[p + partial.length()];
             if (next_c == '>') {
@@ -336,7 +364,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     generated_text_ += forced_close;
                     full_response_ += forced_close;
                     tool_start_ = active_ts;
-                    tool_end_ = generated_text_.find(FUNC_END, active_ts);
+                    tool_end_ = generated_text_.length() - string(FUNC_END).length();
                     trigger_tool_execution_ = true;
                 }
                 break;
