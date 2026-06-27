@@ -57,12 +57,10 @@ void console(Args&&... args) {
     ((cout << forward<Args>(args)), ...);
 }
 
-// Special function for think block output - outputs to stdout only in mode 1 (stdout-only).
-// In modes 2 (browser) and 3 (both), think blocks are sent to the browser via stream_think()
-// rather than cluttering the console.  Includes color reset to prevent thinking from appearing blue.
+// Special function for think block output - outputs to stdout when enabled (modes 1 and 3).
 template<typename... Args>
 void console_think(Args&&... args) {
-  if (should_output_to_stdout() && !should_output_to_browser()) {
+  if (should_output_to_stdout()) {
     cout << "\033[0m";  // Reset colors - thinking should NOT be blue
     ((cout << forward<Args>(args)), ...);
   }
