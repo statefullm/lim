@@ -40,6 +40,7 @@ static const vector<ToolSpec> tool_specs = {
 static vector<string> find_missing_params(const string& tool_name, const string& tool_call) {
     vector<string> missing;
     for (const auto& spec : tool_specs) {
+
         if (spec.name == tool_name) {
             for (const auto& param : spec.params) {
                 string key = string(PARAM_START) + param + ">";
@@ -47,17 +48,11 @@ static vector<string> find_missing_params(const string& tool_name, const string&
                 if (!found) {
                     missing.push_back(param);
                 }
-                // Debug: log each parameter check
-                if (is_debug) {
-                    cerr << "[DEBUG] find_missing_params: tool=" << tool_name
-                         << " param=" << param
-                         << " key=[" << key << "]"
-                         << " found=" << found
-                         << " tool_call_len=" << tool_call.size() << endl;
-                }
             }
             return missing;
         }
+
+
     }
     return missing;  // unknown tool returns empty
 }
