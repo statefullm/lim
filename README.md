@@ -242,12 +242,12 @@ At the `>>>` prompt, typing `/commit` expands to `run git commit -a` before bein
 
 Set via `LLLM_OUTPUT`:
 
-| Value | stdout | Browser | Think | Description |
-|-------|--------|---------|-------|-------------|
-| 3 | ✅ | ✅ | both | Both stdout and browser (think blocks go to both) |
-| 2 (default) | ❌ | ✅ | browser | Browser only; think blocks go to browser |
-| 1 | ✅ | ❌ | stdout | Stdout only; think blocks go to stdout |
-| 0 | ❌ | ❌ | ❌ | No output (system stderr still works) |
+| Value | stdout | Browser | Description |
+|-------|--------|---------|-------------|
+| 3 | ✅ | ✅ | Both stdout and browser |
+| 2 (default) | ❌ | ✅ | Browser only |
+| 1 | ✅ | ❌ | Stdout only |
+| 0 | ❌ | ❌ | No output (system stderr still works) |
 
 ---
 
