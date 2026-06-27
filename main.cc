@@ -557,7 +557,7 @@ int main(int argc, char ** argv) {
                         cerr << "\nRestore cancelled. Starting fresh session." << endl;
                         n_restored = -1; // sentinel: indicates cancelled restore
                         stop_generation = 0;
-                    } else if (!line || string(line).empty()) {
+                    } else if (!line) {
                         // Ctrl+D (EOF) — skip decode, start fresh session
                         cerr << "\nRestore cancelled. Starting fresh session." << endl;
                         n_restored = -1; // sentinel: indicates cancelled restore
