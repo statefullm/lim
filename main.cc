@@ -553,12 +553,10 @@ int main(int argc, char ** argv) {
                     // Treat this as a cancellation regardless of what readline returned.
                     if (stop_generation) {
                         if (line) free(line);
-                        cerr << "\nRestore cancelled. Starting fresh session." << endl;
                         n_restored = -1; // sentinel: indicates cancelled restore
                         stop_generation = 0;
                     } else if (!line) {
                         // Ctrl+D (EOF) — skip decode, start fresh session
-                        cerr << "\nRestore cancelled. Starting fresh session." << endl;
                         n_restored = -1; // sentinel: indicates cancelled restore
                     } else {
                         string input = line;
@@ -645,6 +643,7 @@ int main(int argc, char ** argv) {
 
         // If restore was cancelled (Ctrl+C/Ctrl+D at checkpoint prompt), start fresh.
         if (n_restored == -1) {
+            cerr << "Restore cancelled. Starting fresh session." << endl;
             log_entry("SYSTEM", "Restore cancelled, starting fresh session");
             SessionState state;
             state.all_context_tokens = system_tokens;
@@ -697,34 +696,6 @@ int main(int argc, char ** argv) {
             diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
         }
         log_entry("SYSTEM", "Restored session from " + restore_path);
-
-        // If restore was cancelled (Ctrl+C at checkpoint prompt), start fresh.
-        if (n_restored == -1) {
-            log_entry("SYSTEM", "Restore cancelled, starting fresh session");
-            SessionState state;
-            state.all_context_tokens = system_tokens;
-            state.log_index = log_index;
-
-            // Feed system prompt tokens into KV cache
-            batch.n_tokens = 0;
-            n_past = 0;
-            for (size_t i = 0; i < (int)system_tokens.size(); i++) {
-                common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
-            }
-            if (!handle_llama_decode_error(ctx, batch)) return 1;
-
-            bool result = run_chat_session(
-                ctx, vocab, smpl, batch, n_past, cparams,
-                system_tokens, use_dummy_thought,
-                state
-            );
-
-            // Cleanup
-            llama_free(ctx);
-            llama_model_free(model);
-            llama_backend_free();
-            return 0;
-        }
 
         // Session state with full conversation history for save/restore tracking.
         // system_tokens remains as the real system prompt only (for clear_context).
