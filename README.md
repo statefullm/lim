@@ -277,6 +277,7 @@ Set via `LLLM_OUTPUT`:
 | `LLLM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
 | `LLLM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
 | `LLLM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
+| `LLLM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |
 | `LLLM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |
 | `LLLM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability ≤ top_p |
 | `LLLM_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
