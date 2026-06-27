@@ -754,6 +754,11 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 
     if (search_with_newlines) {
       size_t pos = 0;
+      // Running line counter: avoid O(n^2) rescanning from position 0 on each match.
+      // scan_pos tracks how far we've already counted newlines.
+      size_t scan_pos = 0;
+      int running_line = 1;
+
       while ((pos = content.find(unescaped_text, pos)) != string::npos) {
         match_count++;
         if (match_count > 10) {
@@ -761,14 +766,16 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
             break;
         }
 
-        size_t start_pos = 0;
-        int start_line = 1, end_line_local = 1;
-        for (size_t i = 0; i < pos; i++) {
-          if (content[i] == '\n') start_line++;
+        // Advance the running line counter from where we left off.
+        while (scan_pos < pos && scan_pos < content.length()) {
+          if (content[scan_pos] == '\n') running_line++;
+          scan_pos++;
         }
+        int start_line = running_line;
 
         size_t end_pos = pos + unescaped_text.length();
-        for (size_t i = 0; i < end_pos && i < content.length(); i++) {
+        int end_line_local = start_line;
+        for (size_t i = pos; i < end_pos && i < content.length(); i++) {
           if (content[i] == '\n') end_line_local++;
         }
 
