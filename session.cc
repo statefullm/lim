@@ -68,7 +68,7 @@ static string trim(const string& s) {
     return s.substr(start, end - start + 1);
 }
 
-// --- Load aliases from ~/.lllm_aliases ---
+// --- Load aliases from ~/.lim_aliases ---
 static map<string, string> load_aliases() {
     // Built-in commands that cannot be overridden by aliases.
     static const set<string> builtin_commands = {
@@ -76,7 +76,7 @@ static map<string, string> load_aliases() {
     };
 
     map<string, string> aliases;
-    string path = string(HOME) + "/.lllm_aliases";
+    string path = string(HOME) + "/.lim_aliases";
     ifstream in(path);
     if (!in.is_open()) return aliases;
     string line;
@@ -97,7 +97,7 @@ static map<string, string> load_aliases() {
                 aliases[key] = value;
             }
         } else if (!key.empty()) {
-            cerr << "Warning: alias key '" << key << "' ignored: update "+HOME+"/.lllm_aliases to use '/key=value' syntax." << endl;
+            cerr << "Warning: alias key '" << key << "' ignored: update "+HOME+"/.lim_aliases to use '/key=value' syntax." << endl;
         }
     }
     return aliases;
@@ -413,7 +413,7 @@ string ChatSession::get_user_input() {
             user_input = captured_line;
 
             if (!user_input.empty()) {
-                save_history_safe(".lllm_history", user_input);
+                save_history_safe(".lim_history", user_input);
                 add_history(user_input.c_str());
             }
         } else {
@@ -562,7 +562,7 @@ TokenGenerator::Result ChatSession::generate_response() {
 
     // Compute turn timeout from environment
     static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 300.0;
-    const char* timeout_env = getenv("LLLM_TURN_TIMEOUT");
+    const char* timeout_env = getenv("LIM_TURN_TIMEOUT");
     double turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
     if (timeout_env != nullptr && strlen(timeout_env) > 0) {
         char* endp = nullptr;
@@ -572,7 +572,7 @@ TokenGenerator::Result ChatSession::generate_response() {
     if (turn_timeout_sec < 5.0) turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
 
     static constexpr int DEFAULT_MAX_AUTO_CONTINUE = 500;
-    const char* max_auto_env = getenv("LLLM_MAX_AUTO_CONTINUE");
+    const char* max_auto_env = getenv("LIM_MAX_AUTO_CONTINUE");
     max_auto_continue_ = (max_auto_env != nullptr && strlen(max_auto_env) > 0) ? atoi(max_auto_env) : DEFAULT_MAX_AUTO_CONTINUE;
     if (max_auto_continue_ < 5) max_auto_continue_ = DEFAULT_MAX_AUTO_CONTINUE;
 
@@ -794,10 +794,10 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
 
 // --- run: the main chat turn loop ---
 bool ChatSession::run() {
-    const char* history_file = ".lllm_history";
+    const char* history_file = ".lim_history";
     load_history_safe(history_file);
 
-    // Load user-defined aliases from ~/.lllm_aliases
+    // Load user-defined aliases from ~/.lim_aliases
     aliases_ = load_aliases();
 
     // --- MAIN CHAT TURN LOOP ---

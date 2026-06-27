@@ -41,7 +41,7 @@ string file_fingerprint(const string& path) {
 
 // Write a save file with a one-line text header containing the git SHA,
 // followed by the raw llama state.  The header format is:
-//     LLLM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
+//     LIM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
 bool write_llm_save(const string& save_path, const uint8_t* state_data, size_t state_size) {
     FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
     if (!pipe) return false;
@@ -59,7 +59,7 @@ bool write_llm_save(const string& save_path, const uint8_t* state_data, size_t s
     FILE* fp = fopen(save_path.c_str(), "wb");
     if (!fp) return false;
 
-    string header = "LLLM_SAVE_v1 git_sha=" + sha + "\n";
+    string header = "LIM_SAVE_v1 git_sha=" + sha + "\n";
     if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
     if (state_data && state_size > 0) {
         if (fwrite(state_data, 1, state_size, fp) != state_size) { fclose(fp); return false; }
@@ -75,15 +75,15 @@ string read_llm_save_header(const string& save_path, size_t* header_size) {
     FILE* fp = fopen(save_path.c_str(), "rb");
     if (!fp) return "";
 
-    // Read the first line (max ~80 bytes: "LLLM_SAVE_v1 git_sha=" + 40 hex + '\n')
+    // Read the first line (max ~80 bytes: "LIM_SAVE_v1 git_sha=" + 40 hex + '\n')
     static constexpr size_t MAX_HEAD = 96;
     char head[MAX_HEAD];
     size_t n = fread(head, 1, MAX_HEAD, fp);
     fclose(fp);
-    if (n < 14) return ""; // "LLLM_SAVE_v1" is 12 chars + space + at least 2 more
+    if (n < 14) return ""; // "LIM_SAVE_v1" is 12 chars + space + at least 2 more
 
     // Must start with the magic prefix
-    string magic = "LLLM_SAVE_v1 git_sha=";
+    string magic = "LIM_SAVE_v1 git_sha=";
     string first_chunk(head, n);
     if (first_chunk.substr(0, magic.size()) != magic) {
         return ""; // Old-style raw save file -- no header
@@ -96,7 +96,7 @@ string read_llm_save_header(const string& save_path, size_t* header_size) {
 }
 
 // --- Compact token-based save/restore ---
-// Save format: LLLM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
+// Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
 
 
 bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
@@ -111,7 +111,7 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
     string first_chunk(head, n);
 
     // Only accept V3 header
-    if (first_chunk.substr(0, 13) != "LLLM_SAVE_V3 ") { fclose(fp); return false; }
+    if (first_chunk.substr(0, 13) != "LIM_SAVE_V3 ") { fclose(fp); return false; }
 
     size_t nl = first_chunk.find('\n');
     if (nl == string::npos) { fclose(fp); return false; }
@@ -153,8 +153,8 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
         pclose(pipe);
     }
 
-    // Header: "LLLM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n"
-    string header = "LLLM_SAVE_V3 git_sha=" + sha +
+    // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n"
+    string header = "LIM_SAVE_V3 git_sha=" + sha +
                     " n_tokens=" + std::to_string(tokens.size()) +
                     " n_checkpoints=" + std::to_string(checkpoints.size()) + "\n";
 
@@ -193,7 +193,7 @@ vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
     string first_chunk(head, n);
 
     // Check for V3 magic
-    string v3_magic = "LLLM_SAVE_V3 ";
+    string v3_magic = "LIM_SAVE_V3 ";
     if (first_chunk.substr(0, v3_magic.size()) != v3_magic) {
         fclose(fp);
         return {};  // Not a V3 file
@@ -347,7 +347,7 @@ bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
     if (!fp) return false;
 
     // Header: same format as V1 save, includes source info for debugging
-    std::string header = "LLLM_SAVE_v1 git_sha=" + git_sha + "\n";
+    std::string header = "LIM_SAVE_v1 git_sha=" + git_sha + "\n";
     if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
     if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
 
@@ -376,7 +376,7 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
         // Styled HTML to browser pipe (uses .tool-label colors from viewer.html)
         if (should_output_to_browser()) {
             if (pipe_fd < 0) {
-                const char* FIFO_PATH = "/tmp/lllm.fifo";
+                const char* FIFO_PATH = "/tmp/lim.fifo";
                 pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
             }
             if (pipe_fd >= 0) {
@@ -418,7 +418,7 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
                 // Output to browser via FIFO pipe
                 if (pipe_fd < 0) {
                     // Try to initialize the pipe if not already done
-                    const char* FIFO_PATH = "/tmp/lllm.fifo";
+                    const char* FIFO_PATH = "/tmp/lim.fifo";
                     pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
                 }
                 if (pipe_fd >= 0) {
@@ -522,7 +522,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   // Capture exit code in a temp file to avoid collision with command output.
   // Mixing exit-code markers into stdout/stderr breaks when commands produce
   // text containing the marker (e.g., nested bash -c wrappers).
-  string exit_code_file = "/tmp/lllm_exitcode_XXXXXX";
+  string exit_code_file = "/tmp/lim.exitcode_XXXXXX";
   int fd = mkstemp(const_cast<char*>(exit_code_file.c_str()));
   if (fd >= 0) close(fd); // Close so bash can write to it
 
@@ -747,7 +747,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
     return out;
   }
 
-  // If LLLM_DEBUG=1, also output full text (truncated in stdout only)
+  // If LIM_DEBUG=1, also output full text (truncated in stdout only)
   if (is_debug) {
     string text_str = "\"" + (text.length() > 80 ? text.substr(0, 77) + "..." : text) + "\"";
     log_diagnostic("TEXT: " + text_str);
@@ -1098,7 +1098,7 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   // Build the function call label (logged at end with change count)
   string edit_label = "edit_file(" + path_str + ")";
 
-  // If LLLM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
+  // If LIM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
   if (is_debug) {
     string old_str_trunc = "\"" + (old_str.length() > 80 ? old_str.substr(0, 77) + "..." : old_str) + "\"";
     string new_str_trunc = "\"" + (new_str.length() > 80 ? new_str.substr(0, 77) + "..." : new_str) + "\"";

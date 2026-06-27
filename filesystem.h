@@ -12,7 +12,7 @@ std::string file_fingerprint(const std::string& path);
 
 // Write a save file with a one-line text header containing the git SHA,
 // followed by the raw llama state.  The header format is:
-//     LLLM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
+//     LIM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
 // Returns true on success.  Overwrites any existing file at save_path.
 bool write_llm_save(const std::string& save_path, const uint8_t* state_data, size_t state_size);
 
@@ -24,7 +24,7 @@ bool write_llm_save(const std::string& save_path, const uint8_t* state_data, siz
 std::string read_llm_save_header(const std::string& save_path, size_t* header_size);
 
 // --- Compact token-based save/restore ---
-// Save format: LLLM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_entries>
+// Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_entries>
 // Each checkpoint entry: <n_past as int32_le><prompt_len as uint16_le><prompt_bytes>
 bool read_token_save(const std::string& save_path, std::vector<llama_token>& tokens);
 
@@ -83,7 +83,7 @@ private:
 // Parameters:
 //   - message: The diagnostic message to output
 //   - logOnly: If true, only write to log file (not to session)
-//   - debugOnly: If true, only output when LLLM_DEBUG=1 environment variable is set
+//   - debugOnly: If true, only output when LIM_DEBUG=1 environment variable is set
 //   - tag: Optional tag to prepend to the message (e.g., "[Edit]")
 void log_diagnostic(const std::string& message, bool logOnly = false, bool debugOnly = false,
                     const std::string& tag = "");

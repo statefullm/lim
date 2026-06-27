@@ -7,15 +7,15 @@
 #include <sys/inotify.h>
 #include <cstdlib>
 
-// --- LLLM Server Process Management ---
-pid_t g_lllm_server_pid = -1;
+// --- LIM Server Process Management ---
+pid_t g_lim_server_pid = -1;
 
 extern const string HOME;
 
 static const char* INOTIFY_DIR = "/tmp";
-static const char* SERVER_READY_PATH = "/tmp/lllm.server_ready";
-static const char* BROWSER_READY_PATH = "/tmp/lllm.browser_ready";
-static const char* SERVER_PID_PATH = "/tmp/lllm.server.pid";
+static const char* SERVER_READY_PATH = "/tmp/lim.server_ready";
+static const char* BROWSER_READY_PATH = "/tmp/lim.browser_ready";
+static const char* SERVER_PID_PATH = "/tmp/lim.server.pid";
 static bool marker_file_valid(const char* path) {
     FILE* fp = fopen(path, "r");
     if (!fp) return false;
@@ -91,7 +91,7 @@ static void kill_stale_server() {
     fclose(fp);
 }
 
-bool is_lllm_server_running() {
+bool is_lim_server_running() {
     const char* commands[] = {
         "ss -tlnp 2>/dev/null | grep -q ':8765 '",
         "netstat -tlnp 2>/dev/null | grep -q ':8765 '",
@@ -121,17 +121,17 @@ bool is_lllm_server_running() {
     return false;
 }
 
-void start_lllm_server_if_needed() {
-    if (g_lllm_server_pid != -1) return;
+void start_lim_server_if_needed() {
+    if (g_lim_server_pid != -1) return;
 
     // If the port is free but a PID file exists, the server crashed -- kill any
     // zombie process and clean up. If the port is in use, try to kill it first
     // (e.g., stale server from a previous session that was cleaned up but the
     // socket hasn't fully released yet), then wait for the port to free up.
-    if (!is_lllm_server_running()) {
+    if (!is_lim_server_running()) {
         kill_stale_server();
     } else {
-        log_diagnostic("lllmServer appears to be running on port 8765. Checking for stale process...");
+        log_diagnostic("limServer appears to be running on port 8765. Checking for stale process...");
 
         // Collect PIDs to kill: first via PID file, then via fuser fallback.
         vector<pid_t> pids_to_kill;
@@ -153,7 +153,7 @@ void start_lllm_server_if_needed() {
         // Attempt 2: use fuser to find any process on the port.
         if (pids_to_kill.empty()) {
             const char* port_str = "8765";
-            const char* env_port = getenv("LLLM_PORT");
+            const char* env_port = getenv("LIM_PORT");
             if (env_port && strlen(env_port) > 0) port_str = env_port;
 
             string fuser_cmd = "fuser " + string(port_str) + "/tcp 2>/dev/null";
@@ -194,9 +194,9 @@ void start_lllm_server_if_needed() {
 
         // Single final check: if the port is still occupied, something else
         // is genuinely listening. Fall back gracefully.
-        if (is_lllm_server_running()) {
+        if (is_lim_server_running()) {
             log_diagnostic("Port 8765 still in use. Attempting to reuse existing server...");
-            g_lllm_server_pid = -2;
+            g_lim_server_pid = -2;
             return;
         }
 
@@ -205,8 +205,8 @@ void start_lllm_server_if_needed() {
 
     const char* home_env = getenv("HOME");
     if (home_env == nullptr) {
-        log_diagnostic("ERROR: HOME is not set. Cannot start lllmServer.", true);
-        g_lllm_server_pid = -2;
+        log_diagnostic("ERROR: HOME is not set. Cannot start limServer.", true);
+        g_lim_server_pid = -2;
         return;
     }
 
@@ -217,23 +217,23 @@ void start_lllm_server_if_needed() {
     pid_t pid = fork();
     if (pid == 0) {
         setpgid(0, 0);
-        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+string(home_env)+"/lllm/lllmServer.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+string(home_env)+"/lim/limServer.py";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
-        g_lllm_server_pid = pid;
+        g_lim_server_pid = pid;
     }
 }
 
 bool wait_for_server_ready() {
-    return wait_for_file(INOTIFY_DIR, "lllm.server_ready", true);
+    return wait_for_file(INOTIFY_DIR, "lim.server_ready", true);
 }
 
-void cleanup_lllm_server() {
-    if (g_lllm_server_pid > 0) {
-        kill(-g_lllm_server_pid, SIGKILL);
-        waitpid(g_lllm_server_pid, NULL, 0);
-        g_lllm_server_pid = -1;
+void cleanup_lim_server() {
+    if (g_lim_server_pid > 0) {
+        kill(-g_lim_server_pid, SIGKILL);
+        waitpid(g_lim_server_pid, NULL, 0);
+        g_lim_server_pid = -1;
     }
     unlink(FIFO_PATH);
     unlink(SERVER_READY_PATH);
@@ -279,7 +279,7 @@ bool check_browser_connected() {
 }
 
 int get_server_port() {
-    const char* env = getenv("LLLM_PORT");
+    const char* env = getenv("LIM_PORT");
     if (env != nullptr && strlen(env) > 0) {
         char* endp = nullptr;
         long val = strtol(env, &endp, 10);
@@ -302,7 +302,7 @@ string get_hostname() {
 }
 
 string get_viewer_url() {
-    const char* env = getenv("LLLM_VIEWER_URL");
+    const char* env = getenv("LIM_VIEWER_URL");
     if (env != nullptr && strlen(env) > 0) {
         return string(env);
     }
@@ -321,7 +321,7 @@ bool prompt_for_browser_connection() {
     message("Load this URL in your browser:\n");
     message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
 
-    if (wait_for_file(INOTIFY_DIR, "lllm.browser_ready", false)) {
+    if (wait_for_file(INOTIFY_DIR, "lim.browser_ready", false)) {
         message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
         return true;
     }

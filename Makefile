@@ -55,9 +55,9 @@ MAKEDEPEND = $(CXXFLAGS) -O0 -M -MG -DDEPEND
 
 FILES = output server tools filesystem network parsers signals model session token_generator tool_executor session_utils
 
-TARGET = lllm
+TARGET = lim
 
-# Default target: build llama.cpp first, then lllm
+# Default target: build llama.cpp first, then lim
 all: $(TARGET) vscode
 
 .PHONY: all clean llama-clean FORCE

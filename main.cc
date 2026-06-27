@@ -48,18 +48,18 @@ ofstream chat_log;
 ofstream token_log;
 string INITIAL_CWD;
 
-// LLLM_HONEST_SPEED: how the t/s diagnostic is computed.
+// LIM_HONEST_SPEED: how the t/s diagnostic is computed.
 //   0 (default): benchmark-style -- tokens / decode-only time (excludes sampling,
 //                 output rendering, tool detection scanning). Matches llama-cli.
 //   1: "honest" speed -- tokens / total wall clock time (includes all CPU overhead).
 bool honest_speed = false;  // default: benchmark-style
 
-// LLLM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
+// LIM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
 int speed_update_interval = 100;
 
 static void diag_impl(const string& formatted_line, const string& msg) {
     // Diagnostic messages (session status, errors, etc.) always go to the
-    // terminal regardless of LLLM_OUTPUT mode.
+    // terminal regardless of LIM_OUTPUT mode.
     cout << formatted_line << "\n";
     cout.flush();
     if (chat_log.is_open()) {
@@ -79,9 +79,9 @@ int main(int argc, char ** argv) {
     // this is the main function
     setlocale(LC_ALL, "");
 
-    // Read the required username from LLLM_AI_USER env var (default: "ai")
+    // Read the required username from LIM_AI_USER env var (default: "ai")
     // set user from env var
-    const char* ai_user_env = getenv("LLLM_AI_USER");
+    const char* ai_user_env = getenv("LIM_AI_USER");
     const char* required_user = ai_user_env && ai_user_env[0] ? ai_user_env : "ai";
 
     uid_t uid = getuid();
@@ -108,7 +108,7 @@ int main(int argc, char ** argv) {
     atexit([]() {
         cout << "\033[0m";  // Reset terminal colors on exit
         NetworkTools::cleanup_services();
-        cleanup_lllm_server();
+        cleanup_lim_server();
     });
 
     setup_signals();
@@ -160,7 +160,7 @@ int main(int argc, char ** argv) {
         }
     }
 
-    // Sampling parameters: all controlled via LLLM_* environment variables
+    // Sampling parameters: all controlled via LIM_* environment variables
     float temp = 0.7f;
     float top_p = 0.8f;
     int32_t top_k = 20;
@@ -172,38 +172,38 @@ int main(int argc, char ** argv) {
     bool use_dummy_thought = false;
     {
         const char* env;
-        if ((env = getenv("LLLM_TEMP")) != nullptr) temp = atof(env);
-        if ((env = getenv("LLLM_TOP_P")) != nullptr) top_p = atof(env);
-        if ((env = getenv("LLLM_TOP_K")) != nullptr) top_k = atoi(env);
-        if ((env = getenv("LLLM_MIN_P")) != nullptr) min_p = atof(env);
-        if ((env = getenv("LLLM_PENALTY_PRESENT")) != nullptr) penalty_present = atof(env);
-        if ((env = getenv("LLLM_PENALTY_REPEAT")) != nullptr) penalty_repeat = atof(env);
-        if ((env = getenv("LLLM_PENALTY_FREQ")) != nullptr) penalty_freq = atof(env);
-        if ((env = getenv("LLLM_SEED")) != nullptr) seed = (uint32_t)strtoul(env, nullptr, 10);
+        if ((env = getenv("LIM_TEMP")) != nullptr) temp = atof(env);
+        if ((env = getenv("LIM_TOP_P")) != nullptr) top_p = atof(env);
+        if ((env = getenv("LIM_TOP_K")) != nullptr) top_k = atoi(env);
+        if ((env = getenv("LIM_MIN_P")) != nullptr) min_p = atof(env);
+        if ((env = getenv("LIM_PENALTY_PRESENT")) != nullptr) penalty_present = atof(env);
+        if ((env = getenv("LIM_PENALTY_REPEAT")) != nullptr) penalty_repeat = atof(env);
+        if ((env = getenv("LIM_PENALTY_FREQ")) != nullptr) penalty_freq = atof(env);
+        if ((env = getenv("LIM_SEED")) != nullptr) seed = (uint32_t)strtoul(env, nullptr, 10);
 
-        // LLLM_THINKING: set to 0 to suppress thinking blocks for faster throughput.
+        // LIM_THINKING: set to 0 to suppress thinking blocks for faster throughput.
         // Not recommended for math or complex reasoning tasks.
-        if ((env = getenv("LLLM_THINKING")) != nullptr) {
+        if ((env = getenv("LIM_THINKING")) != nullptr) {
             use_dummy_thought = (atoi(env) == 0);
         }
     }
 
-    const char* debug_env = getenv("LLLM_DEBUG");
+    const char* debug_env = getenv("LIM_DEBUG");
     if (debug_env != nullptr && strcmp(debug_env, "1") == 0) {
         is_debug = true;
     }
 
-    // LLLM_HONEST_SPEED: 1 = honest wall-clock, 0 = benchmark-style (default)
+    // LIM_HONEST_SPEED: 1 = honest wall-clock, 0 = benchmark-style (default)
     {
-        const char* env = getenv("LLLM_HONEST_SPEED");
+        const char* env = getenv("LIM_HONEST_SPEED");
         if (env != nullptr && strlen(env) > 0) {
             honest_speed = (atoi(env) != 0);
         }
     }
 
-    // LLLM_SPEED_INTERVAL: tokens between speed diagnostic updates (default 100)
+    // LIM_SPEED_INTERVAL: tokens between speed diagnostic updates (default 100)
     {
-        const char* env = getenv("LLLM_SPEED_INTERVAL");
+        const char* env = getenv("LIM_SPEED_INTERVAL");
         if (env != nullptr && strlen(env) > 0) {
             int val = atoi(env);
             if (val > 0) speed_update_interval = val;
@@ -231,7 +231,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    // Open token log file (for LLLM_DEBUG=1)
+    // Open token log file (for LIM_DEBUG=1)
     string token_log_name = "log/" + to_string(log_index) + ".tokens";
     if (is_debug) {
         token_log.open(token_log_name, ios::trunc);
@@ -246,13 +246,13 @@ int main(int argc, char ** argv) {
     // Initialize the fast stream pipe
     init_output_stream();
 
-    // Start lllmServer.py if browser output is enabled
+    // Start limServer.py if browser output is enabled
     if (should_output_to_browser()) {
-        start_lllm_server_if_needed();
+        start_lim_server_if_needed();
         // Wait for the server only if we just started it. If it was pre-existing
-        // (g_lllm_server_pid == -2), it's already listening -- no marker to wait for.
-        if (g_lllm_server_pid > 0 && !wait_for_server_ready()) {
-            log_diagnostic("WARNING: lllmServer did not become ready. Browser output may fail.", true);
+        // (g_lim_server_pid == -2), it's already listening -- no marker to wait for.
+        if (g_lim_server_pid > 0 && !wait_for_server_ready()) {
+            log_diagnostic("WARNING: limServer did not become ready. Browser output may fail.", true);
         }
     }
 
@@ -271,11 +271,11 @@ int main(int argc, char ** argv) {
     llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
 
     auto mparams = llama_model_default_params();
-    // Allow overriding model params with LLLM_* environment variables
+    // Allow overriding model params with LIM_* environment variables
     bool gpu_layers_explicit = false;
     {
         const char* env;
-        if ((env = getenv("LLLM_GPU_LAYERS")) != nullptr) {
+        if ((env = getenv("LIM_GPU_LAYERS")) != nullptr) {
             int val = atoi(env);
             mparams.n_gpu_layers = val;
             // Treat -1 as "not set" -- it's the default and should trigger auto-fit.
@@ -283,12 +283,12 @@ int main(int argc, char ** argv) {
         } else {
             mparams.n_gpu_layers = -1; // -1 means "all layers" (auto-fit)
         }
-        if ((env = getenv("LLLM_USE_MMAP")) != nullptr) {
+        if ((env = getenv("LIM_USE_MMAP")) != nullptr) {
             mparams.use_mmap = atoi(env) != 0;
         } else {
             mparams.use_mmap = false;
         }
-        if ((env = getenv("LLLM_USE_MLOCK")) != nullptr) {
+        if ((env = getenv("LIM_USE_MLOCK")) != nullptr) {
             mparams.use_mlock = atoi(env) != 0;
         } else {
             mparams.use_mlock = true;
@@ -296,32 +296,32 @@ int main(int argc, char ** argv) {
     }
 
     auto cparams = llama_context_default_params();
-    // Allow overriding context params with LLLM_* environment variables
+    // Allow overriding context params with LIM_* environment variables
     bool ctx_explicit = false;
     {
         const char* env;
-        if ((env = getenv("LLLM_CTX")) != nullptr) {
+        if ((env = getenv("LIM_CTX")) != nullptr) {
             cparams.n_ctx = atoi(env);
             ctx_explicit = true;
         } else {
             cparams.n_ctx = 262144;
         }
-        if ((env = getenv("LLLM_BATCH")) != nullptr) {
+        if ((env = getenv("LIM_BATCH")) != nullptr) {
             cparams.n_batch = atoi(env);
         } else {
             cparams.n_batch = 2048;
         }
-        if ((env = getenv("LLLM_UBATCH")) != nullptr) {
+        if ((env = getenv("LIM_UBATCH")) != nullptr) {
             cparams.n_ubatch = atoi(env);
         } else {
             cparams.n_ubatch = 512;
         }
-        if ((env = getenv("LLLM_THREADS")) != nullptr) {
+        if ((env = getenv("LIM_THREADS")) != nullptr) {
             cparams.n_threads = atoi(env);
         } else {
             cparams.n_threads = Taskset::physical_core_count();
         }
-        if ((env = getenv("LLLM_THREADS_BATCH")) != nullptr) {
+        if ((env = getenv("LIM_THREADS_BATCH")) != nullptr) {
             cparams.n_threads_batch = atoi(env);
         } else {
             cparams.n_threads_batch = Taskset::physical_core_count();
@@ -344,13 +344,13 @@ int main(int argc, char ** argv) {
         // Reset mparams to defaults so common_fit_params can adjust n_gpu_layers
         mparams = llama_model_default_params();
         // Re-apply non-fit-sensitive settings
-        if ((getenv("LLLM_USE_MMAP")) != nullptr) {
-            mparams.use_mmap = atoi(getenv("LLLM_USE_MMAP")) != 0;
+        if ((getenv("LIM_USE_MMAP")) != nullptr) {
+            mparams.use_mmap = atoi(getenv("LIM_USE_MMAP")) != 0;
         } else {
             mparams.use_mmap = false;
         }
-        if ((getenv("LLLM_USE_MLOCK")) != nullptr) {
-            mparams.use_mlock = atoi(getenv("LLLM_USE_MLOCK")) != 0;
+        if ((getenv("LIM_USE_MLOCK")) != nullptr) {
+            mparams.use_mlock = atoi(getenv("LIM_USE_MLOCK")) != 0;
         } else {
             mparams.use_mlock = true;
         }
@@ -388,7 +388,7 @@ int main(int argc, char ** argv) {
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
 
-    // KV-cache types: override via LLLM_TYPE_K / LLLM_TYPE_V
+    // KV-cache types: override via LIM_TYPE_K / LIM_TYPE_V
     // Accepted values: F16, Q8_0, Q4_0, Q5_0, Q5_1, Q8_1 (default Q8_0)
     auto parse_kv_type = [](const char* env, ggml_type fallback) -> ggml_type {
         if (!env || !env[0]) return fallback;
@@ -398,11 +398,11 @@ int main(int argc, char ** argv) {
         if (strcmp(env, "Q5_1") == 0) return GGML_TYPE_Q5_1;
         if (strcmp(env, "Q8_0") == 0) return GGML_TYPE_Q8_0;
         if (strcmp(env, "Q8_1") == 0) return GGML_TYPE_Q8_1;
-        cerr << "Warning: unknown LLLM_TYPE value '" << env << "', using default." << endl;
+        cerr << "Warning: unknown LIM_TYPE value '" << env << "', using default." << endl;
         return fallback;
     };
-    cparams.type_k = parse_kv_type(getenv("LLLM_TYPE_K"), GGML_TYPE_Q8_0);
-    cparams.type_v = parse_kv_type(getenv("LLLM_TYPE_V"), GGML_TYPE_Q8_0);
+    cparams.type_k = parse_kv_type(getenv("LIM_TYPE_K"), GGML_TYPE_Q8_0);
+    cparams.type_v = parse_kv_type(getenv("LIM_TYPE_V"), GGML_TYPE_Q8_0);
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
@@ -441,9 +441,9 @@ int main(int argc, char ** argv) {
     init_model_tokens(ctx, model);
 
     // Optionally append the reserved-token escape contract to the system prompt.
-    // Controlled by env var LLLM_ESCAPE_CONTRACT (default 0 = hidden, 1 = included).
+    // Controlled by env var LIM_ESCAPE_CONTRACT (default 0 = hidden, 1 = included).
     {
-        const char* env = getenv("LLLM_ESCAPE_CONTRACT");
+        const char* env = getenv("LIM_ESCAPE_CONTRACT");
         int include_contract = 0; // default: hidden from prompt (still functional in code)
         if (env) include_contract = atoi(env);
         if (include_contract) {
@@ -481,7 +481,7 @@ int main(int argc, char ** argv) {
     } else {
         // Restore from save file.
         // V2 format: compact token sequence -- re-decode through model to rebuild KV cache.
-        //   Header: "LLLM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32><checkpoint_offsets_as_int32>"
+        //   Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32><checkpoint_offsets_as_int32>"
         vector<llama_token> restored_tokens;
         vector<PromptCheckpoint> restored_checkpoints;
         string saved_sha;

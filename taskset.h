@@ -17,21 +17,21 @@
 // hyperthreading (siblings like "0-1"), E-cores are single-threaded ("16").
 //
 // Environment variables:
-//   LLLM_TASKSET="P_CORES:E_CORES"
+//   LIM_TASKSET="P_CORES:E_CORES"
 //     Override auto-detection with explicit core masks.
 //     Examples:
-//       export LLLM_TASKSET="0-15:16-23"   // classic i9-12900K layout
-//       export LLLM_TASKSET="0-7:"         // P-cores 0-7, no E-core pinning
-//       export LLLM_TASKSET=":8-15"        // no P-core pinning, E-cores 8-15
-//       export LLLM_TASKSET="::"           // disable all taskset pinning
+//       export LIM_TASKSET="0-15:16-23"   // classic i9-12900K layout
+//       export LIM_TASKSET="0-7:"         // P-cores 0-7, no E-core pinning
+//       export LIM_TASKSET=":8-15"        // no P-core pinning, E-cores 8-15
+//       export LIM_TASKSET="::"           // disable all taskset pinning
 //
-//   LLLM_TASKSET_CMD="<command> <args>"
+//   LIM_TASKSET_CMD="<command> <args>"
 //     Override the pinning command. Default is "taskset -c".
 //     On macOS, you can install numactl via Homebrew and use:
-//       export LLLM_TASKSET="0-3:4-7"
-//       export LLLM_TASKSET_CMD="numactl --cpunodebind"
+//       export LIM_TASKSET="0-3:4-7"
+//       export LIM_TASKSET_CMD="numactl --cpunodebind"
 //     Or write a wrapper script and point to it:
-//       export LLLM_TASKSET_CMD="/path/to/pin_cores.sh"
+//       export LIM_TASKSET_CMD="/path/to/pin_cores.sh"
 //
 //     If the command doesn't exist on $PATH, pinning is silently skipped.
 // ============================================================================
@@ -45,7 +45,7 @@ static bool has_pinning_cmd() {
     static int cached = -1; // -1=unknown, 0=no, 1=yes
     if (cached != -1) return cached != 0;
 
-    const char* env = std::getenv("LLLM_TASKSET_CMD");
+    const char* env = std::getenv("LIM_TASKSET_CMD");
     std::string cmd = env ? env : "taskset";
 
     // Extract just the command name (first word) for which() check
@@ -70,7 +70,7 @@ static bool has_pinning_cmd() {
 static std::string pinning_cmd() {
     if (!has_pinning_cmd()) return "";
 
-    const char* env = std::getenv("LLLM_TASKSET_CMD");
+    const char* env = std::getenv("LIM_TASKSET_CMD");
     return env ? std::string(env) : "taskset -c";
 }
 
@@ -79,9 +79,9 @@ static std::string pinning_cmd() {
 // a usable core split (either user-specified or auto-detected hybrid).
 // ---------------------------------------------------------------------------
 static bool get_core_split(std::string& p_mask, std::string& e_mask) {
-    const char* env = std::getenv("LLLM_TASKSET");
+    const char* env = std::getenv("LIM_TASKSET");
 
-    // --- User override via LLLM_TASKSET="P:E" ---
+    // --- User override via LIM_TASKSET="P:E" ---
     if (env && std::strlen(env) > 0) {
         std::string spec(env);
         size_t first_colon = spec.find(':');
@@ -282,13 +282,13 @@ static void log_core_detection(std::ostream& os) {
     bool hybrid = get_core_split(p, e);
     std::string cmd = pinning_cmd();
 
-    const char* env = std::getenv("LLLM_TASKSET");
+    const char* env = std::getenv("LIM_TASKSET");
     if (env && std::strlen(env) > 0)
-        os << "LLLM_TASKSET=" << env << " (user override)" << std::endl;
+        os << "LIM_TASKSET=" << env << " (user override)" << std::endl;
 
-    const char* cmd_env = std::getenv("LLLM_TASKSET_CMD");
+    const char* cmd_env = std::getenv("LIM_TASKSET_CMD");
     if (cmd_env && std::strlen(cmd_env) > 0)
-        os << "LLLM_TASKSET_CMD=" << cmd_env << " (user override)" << std::endl;
+        os << "LIM_TASKSET_CMD=" << cmd_env << " (user override)" << std::endl;
 
     if (hybrid) {
         os << "Core topology: P-cores=[" << p

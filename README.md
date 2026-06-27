@@ -1,13 +1,12 @@
+# LIM: Stateful, O(1) Local Inference Manager
 
-# LLLM: Stateful, O(1) Local LLM Controller
-
-**LLLM** (Local LLM) is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn. The O(1) claim refers to per-turn history injection cost, not attention complexity. LLLM has native filesystem tools for reading, searching, editing, and writing files, plus web searching and PDF reading.
+**LIM** (Local Inference Manager) is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn. The O(1) claim refers to per-turn history injection cost, not attention complexity. LIM has native filesystem tools for reading, searching, editing, and writing files, plus web searching and PDF reading.
 
 ## Why O(1)? The Fundamental Difference
 
 Every mainstream chatbot (and most local LLM frontends) follows the *reprocess-every-turn* model: each time you send a message, the **entire conversation history** is re-transmitted in full and re-tokenized from scratch. Cost grows **quadratically with conversation length**.
 
-LLLM takes full advantage of what a single-user local setup affords:
+LIM takes full advantage of what a single-user local setup affords:
 
 - **The KV-cache is never discarded.** Each turn's tokens are simply appended to `n_past`. The model continues generating from exactly where it left off.
 - **New user input costs O(input tokens)**, not O(total history). Even after hundreds of turns, each new message processes only its own tokens plus the delta since last turn.
@@ -19,7 +18,7 @@ LLLM takes full advantage of what a single-user local setup affords:
 
 ```
 +-------------+     +---------------+     +---------------+
-|  Your TTY   |<--->|   lllm (C++)  |<--->|  llama.cpp    |
+|  Your TTY   |<--->|   lim (C++)   |<--->|  llama.cpp    |
 | (readline)  |     |  controller   |     |  inference    |
 +-------------+     +-------+-------+     +---------------+
                             |
@@ -32,8 +31,8 @@ LLLM takes full advantage of what a single-user local setup affords:
         +-----------+ +----------+ +------------+
 ```
 
-- **`lllm`**: The C++ binary. Handles the REPL, KV-cache management, tool dispatch, and signal handling.
-- **`lllmServer.py`**: An optional Python WebSocket server that streams output to a browser via `/tmp/lllm.fifo`.
+- **`lim`**: The C++ binary. Handles the REPL, KV-cache management, tool dispatch, and signal handling.
+- **`limServer.py`**: An optional Python WebSocket server that streams output to a browser via `/tmp/lim.fifo`.
 
 ---
 
@@ -51,10 +50,10 @@ LLLM takes full advantage of what a single-user local setup affords:
 ## Building
 
 ```bash
-git clone https://github.com/statellm/lllm.git
-cd lllm
+git clone https://github.com/statellm/lim.git
+cd lim
 make
-./lllm --help
+./lim --help
 ```
 
 The build will automatically detect your GPU (if any) and compile llama with the appropriate architecture flags. No manual setup is required.
@@ -71,7 +70,7 @@ All auto-detected values can be overridden via environment variables:
 | `GGML_CUDA` | Force CUDA on/off | `make GGML_CUDA=off` for CPU-only |
 | `GGML_HIPBLAS` | Enable ROCm/HIP build | `make GGML_HIPBLAS=on` |
 
-To clean only the llama build artifacts without touching lllm:
+To clean only the llama build artifacts without touching lim:
 
 ```bash
 make llama-clean
@@ -81,75 +80,75 @@ make llama-clean
 
 ## User Setup
 
-The dedicated LLM user is controlled by the `LLLM_AI_USER` environment variable (defaults to `ai`). All references below use `$LLLM_AI_USER`.
+The dedicated LLM user is controlled by the `LIM_AI_USER` environment variable (defaults to `ai`). All references below use `$LIM_AI_USER`.
 
 ### 1. Creating the AI User
 
-LLLM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
+LIM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
 
 Create the user and group if they don't exist:
 
 ```bash
-export LLLM_AI_USER=ai
-sudo groupadd -f $LLLM_AI_USER
-sudo useradd -m -g $LLLM_AI_USER -s /bin/bash $LLLM_AI_USER
+export LIM_AI_USER=ai
+sudo groupadd -f $LIM_AI_USER
+sudo useradd -m -g $LIM_AI_USER -s /bin/bash $LIM_AI_USER
 ```
 
 ### 2. Git Safe Directories
 
-By default, Git refuses to operate in repositories owned by a different user. Since LLLM runs as `$LLLM_AI_USER` but your project directories are owned by you, add the `[safe]` section to **your personal** `~/.gitconfig`:
+By default, Git refuses to operate in repositories owned by a different user. Since LIM runs as `$LIM_AI_USER` but your project directories are owned by you, add the `[safe]` section to **your personal** `~/.gitconfig`:
 
 ```bash
 [safe]
-    directory = /home/$LLLM_AI_USER
+    directory = /home/$LIM_AI_USER
 ```
 
 This prevents "fatal: detected dubious ownership in repository" errors when the LLM runs git commands.
 
 ### 3. Directory Permissions
 
-Your project directories should be group-writable by `$LLLM_AI_USER` so the LLM can read and write files. The recommended layout for `/home/$LLLM_AI_USER`:
+Your project directories should be group-writable by `$LIM_AI_USER` so the LLM can read and write files. The recommended layout for `/home/$LIM_AI_USER`:
 
 ```bash
-$ ls -ld /home/$LLLM_AI_USER
-drwxrwsr-x+ 32 $USER $LLLM_AI_USER 4096 Jun  6 11:53 /home/$LLLM_AI_USER/
+$ ls -ld /home/$LIM_AI_USER
+drwxrwsr-x+ 32 $USER $LIM_AI_USER 4096 Jun  6 11:53 /home/$LIM_AI_USER/
 ```
 
-The setgid bit (`s`) ensures new files inherit the `$LLLM_AI_USER` group.
+The setgid bit (`s`) ensures new files inherit the `$LIM_AI_USER` group.
 
 To set permissions in any project sandbox, add this alias to **your personal** `~/.bashrc`:
 
 ```bash
-alias fixai='sudo chown -R $USER:$LLLM_AI_USER .; chmod -R g+rw .; chmod -R -t .'
+alias fixai='sudo chown -R $USER:$LIM_AI_USER .; chmod -R g+rw .; chmod -R -t .'
 ```
 
-### 4. Connecting and Running LLLM
+### 4. Connecting and Running LIM
 
-LLLM must be run as user `$LLLM_AI_USER`. The simplest approach is to SSH into the host as that user, then launch `lllm` directly. This keeps the workflow consistent whether you're using VS Code or a standalone terminal.
+LIM must be run as user `$LIM_AI_USER`. The simplest approach is to SSH into the host as that user, then launch `lim` directly. This keeps the workflow consistent whether you're using VS Code or a standalone terminal.
 
-Add this to the `~/.bashrc` of `$LLLM_AI_USER`:
+Add this to the `~/.bashrc` of `$LIM_AI_USER`:
 
 ```bash
-alias coder='lllm ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
+alias coder='lim ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
 ```
 
-Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LLM server `$LLLM_HOST`:
+Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`:
 
 ```bash
-ssh $LLLM_AI_USER@$LLLM_HOST
+ssh $LIM_AI_USER@$LIM_HOST
 coder
 ```
 
 If running locally (no SSH needed), switch to the user first:
 
 ```bash
-su - $LLLM_AI_USER
+su - $LIM_AI_USER
 coder
 ```
 
 #### Core Pinning (taskset)
 
-LLLM automatically detects P-cores and E-cores on hybrid CPUs (Intel Alder Lake, Raptor Lake, etc.) by comparing `thread_siblings_list` from sysfs. It pins background services accordingly:
+LIM automatically detects P-cores and E-cores on hybrid CPUs (Intel Alder Lake, Raptor Lake, etc.) by comparing `thread_siblings_list` from sysfs. It pins background services accordingly:
 
 | Workload | Default Cores | Description |
 |---|---|---|
@@ -159,35 +158,35 @@ LLLM automatically detects P-cores and E-cores on hybrid CPUs (Intel Alder Lake,
 
 On non-hybrid CPUs (all cores identical), no taskset pinning is applied. If the pinning command isn't found on `$PATH` (e.g., macOS has no `taskset`), pinning is silently skipped.
 
-Override the auto-detected layout with `LLLM_TASKSET`:
+Override the auto-detected layout with `LIM_TASKSET`:
 
 ```bash
-# Format: LLLM_TASKSET="P_CORES:E_CORES"
-export LLLM_TASKSET="0-15:16-23"   # Classic i9-12900K layout
-export LLLM_TASKSET="0-7:"         # P-cores 0-7, no E-core pinning
-export LLLM_TASKSET=":8-15"        # No P-core pinning, E-cores 8-15
-export LLLM_TASKSET="::"           # Disable all taskset pinning
+# Format: LIM_TASKSET="P_CORES:E_CORES"
+export LIM_TASKSET="0-15:16-23"   # Classic i9-12900K layout
+export LIM_TASKSET="0-7:"         # P-cores 0-7, no E-core pinning
+export LIM_TASKSET=":8-15"        # No P-core pinning, E-cores 8-15
+export LIM_TASKSET="::"           # Disable all taskset pinning
 ```
 
-**macOS / non-Linux systems:** macOS has no `taskset` binary. To enable manual core pinning, install an alternative and point `LLLM_TASKSET_CMD` at it:
+**macOS / non-Linux systems:** macOS has no `taskset` binary. To enable manual core pinning, install an alternative and point `LIM_TASKSET_CMD` at it:
 
 ```bash
 # Install numactl via Homebrew, then use it as the pinning backend
 brew install numactl
-export LLLM_TASKSET="0-3:4-7"
-export LLLM_TASKSET_CMD="numactl --cpunodebind"
+export LIM_TASKSET="0-3:4-7"
+export LIM_TASKSET_CMD="numactl --cpunodebind"
 ```
 
-Or write a custom wrapper script and set `LLLM_TASKSET_CMD` to its path. If the command isn't on `$PATH`, pinning is silently skipped -- services still start normally, just unpinned.
+Or write a custom wrapper script and set `LIM_TASKSET_CMD` to its path. If the command isn't on `$PATH`, pinning is silently skipped -- services still start normally, just unpinned.
 
 The detected topology and pinning status are logged to stderr at startup.
 
-### 5. Setting Up `$HOME/.bashrc` for `$LLLM_AI_USER`
+### 5. Setting Up `$HOME/.bashrc` for `$LIM_AI_USER`
 
-Add these lines to `/home/$LLLM_AI_USER/.bashrc`:
+Add these lines to `/home/$LIM_AI_USER/.bashrc`:
 
 ```bash
-# --- /home/$LLLM_AI_USER/.bashrc ---
+# --- /home/$LIM_AI_USER/.bashrc ---
 
 umask 0002                    # Group-writable files by default
 
@@ -213,18 +212,18 @@ git() {
 export PATH="$HOME/bin:$PATH"
 ```
 
-The `cd` override writes the current directory to `$HOME/.cwd`, which LLLM reads at startup so it knows your working directory. The `umask 0002` ensures files created by `$LLLM_AI_USER` are group-readable/writable.
+The `cd` override writes the current directory to `$HOME/.cwd`, which LIM reads at startup so it knows your working directory. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
 
 ### 6. The System Prompt
 
-Place your system prompt in `/home/$LLLM_AI_USER/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
+Place your system prompt in `/home/$LIM_AI_USER/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
 
 ### 7. Message Shortcuts
 
-Create `/home/$LLLM_AI_USER/.lllm_aliases` to define shorthand expansions at the `>>>` prompt:
+Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `>>>` prompt:
 
 ```
-# ~/.lllm_aliases: one key=value per line; # comments are ignored
+# ~/.lim_aliases: one key=value per line; # comments are ignored
 # Keys must start with / to distinguish them from regular messages
 
 /test=test the filesystem tools and clean up after
@@ -240,7 +239,7 @@ At the `>>>` prompt, typing `/commit` expands to `run git commit -a` before bein
 
 ## Output Modes
 
-Set via `LLLM_OUTPUT`:
+Set via `LIM_OUTPUT`:
 
 | Value | stdout | Browser | Description |
 |-------|--------|---------|-------------|
@@ -255,52 +254,52 @@ Set via `LLLM_OUTPUT`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLLM_AI_USER` | `ai` | Username that LLLM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
-| `LLLM_HOST` | unset | Hostname or IP of your LLM server. Used for SSH connection and browser viewer URL. |
-| `LLLM_PORT` | `8765` | Port for the browser WebSocket server |
-| `LLLM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
-| `LLLM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
-| `LLLM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
-| `LLLM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic (includes all CPU overhead). Default `0` reports benchmark-style tokens/s matching llama-cli eval time. |
-| `LLLM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
-| `LLLM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
-| `LLLM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
-| `LLLM_BATCH` | `2048` | Batch size for token feeding |
-| `LLLM_CTX` | `262144` | Context window size (KV-cache token capacity) |
-| `LLLM_THREADS` | *(auto)* | Threads for inference (physical core count) |
-| `LLLM_THREADS_BATCH` | *(auto)* | Threads for batch processing (physical core count) |
-| `LLLM_UBATCH` | `512` | Unbatched size |
-| `LLLM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P >= min_p * P(top) |
-| `LLLM_PENALTY_FREQ` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency |
-| `LLLM_PENALTY_PRESENT` | `1.5` | Presence penalty: discourages repeating previously used tokens |
-| `LLLM_PENALTY_REPEAT` | `1.0` | Repetition penalty multiplier (1.0 = no penalty) |
-| `LLLM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
-| `LLLM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
-| `LLLM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
-| `LLLM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |
-| `LLLM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |
-| `LLLM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
-| `LLLM_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
-| `LLLM_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
-| `LLLM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
-| `LLLM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
-| `LLLM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
-| `LLLM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
+| `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
+| `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
+| `LIM_PORT` | `8765` | Port for the browser WebSocket server |
+| `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
+| `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
+| `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
+| `LIM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic (includes all CPU overhead). Default `0` reports benchmark-style tokens/s matching llama-cli eval time. |
+| `LIM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
+| `LIM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
+| `LIM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
+| `LIM_BATCH` | `2048` | Batch size for token feeding |
+| `LIM_CTX` | `262144` | Context window size (KV-cache token capacity) |
+| `LIM_THREADS` | *(auto)* | Threads for inference (physical core count) |
+| `LIM_THREADS_BATCH` | *(auto)* | Threads for batch processing (physical core count) |
+| `LIM_UBATCH` | `512` | Unbatched size |
+| `LIM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P >= min_p * P(top) |
+| `LIM_PENALTY_FREQ` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency |
+| `LIM_PENALTY_PRESENT` | `1.5` | Presence penalty: discourages repeating previously used tokens |
+| `LIM_PENALTY_REPEAT` | `1.0` | Repetition penalty multiplier (1.0 = no penalty) |
+| `LIM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
+| `LIM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
+| `LIM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
+| `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |
+| `LIM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |
+| `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
+| `LIM_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
+| `LIM_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
+| `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
+| `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
+| `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
+| `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
 ---
 
 ## The AI Sandbox
 
-The `$LLLM_AI_USER` operates in a sandboxed environment:
+The `$LIM_AI_USER` operates in a sandboxed environment:
 
-- **File access** is limited to directories where the `$LLLM_AI_USER` group has write permission. Use `fixai` to grant access to new project directories.
-- **Shell commands** executed via the `exec_shell` tool run as user `$LLLM_AI_USER`. They inherit that user's PATH and environment.
-- **Git integration**: The sandbox repo is a separate git repository that is writable by `$LLLM_AI_USER` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
+- **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `fixai` to grant access to new project directories.
+- **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment.
+- **Git integration**: The sandbox repo is a separate git repository that is writable by `$LIM_AI_USER` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
 
 Set up an SSH key:
 
 ```bash
-# As `$LLLM_AI_USER`, generate a dedicated key
+# As `$LIM_AI_USER`, generate a dedicated key
 ssh-keygen -N ""
 
 # Add the public key to your Git hosting provider
@@ -313,7 +312,7 @@ cat ~/.ssh/id_ed25519.pub
 
 ### Starting a Session
 
-SSH in as `$LLLM_AI_USER`, then run your `coder` alias. You'll see the `>>>` prompt. Type your request and press Enter.
+SSH in as `$LIM_AI_USER`, then run your `coder` alias. You'll see the `>>>` prompt. Type your request and press Enter.
 
 ### Available Tools
 
@@ -323,7 +322,7 @@ The LLM has access to six tools. You don't call them directly; just describe wha
 - **`search_file`**: Search for text within a file, with optional line range
 - **`edit_file`**: Replace exact text within a file (surgical editing)
 - **`write_file`**: Write or overwrite a file
-- **`exec_shell`**: Run a shell command as `$LLLM_AI_USER`
+- **`exec_shell`**: Run a shell command as `$LIM_AI_USER`
 - **`web_search`**: Search the web via SearXNG
 
 Tools are invoked via XML-structured tags in the LLM's output. Results are fed back as continuation tokens into the KV-cache, avoiding the overhead of re-tokenizing the full conversation history.
@@ -392,7 +391,7 @@ coder cats          # restores from cats.save
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LLLM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn — as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn — as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
 **Force decode:** Add `--decode` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
 
@@ -405,7 +404,7 @@ Press Ctrl+C during the restore prompt to cancel without decoding.
 
 **Instant restore cache:** Save files contain only the token sequence, keeping them small and model-agnostic. On first restore, tokens are decoded through the model to rebuild the KV-cache. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are instant. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for instant future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
-**Auto-save on clear and quit:** Before clearing the context, LLLM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
+**Auto-save on clear and quit:** Before clearing the context, LIM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 
 ### Interrupting Generation
 
@@ -413,7 +412,7 @@ Press **Ctrl+C** during generation to interrupt. The partial output is preserved
 
 ### Browser Output
 
-By default (`LLLM_OUTPUT=2`), LLLM streams output to a browser via WebSocket. Start your LLLM session first, then load:
+By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. Start your LIM session first, then load:
 
 ```
 http://<hostname>:8765/viewer.html
@@ -421,15 +420,15 @@ http://<hostname>:8765/viewer.html
 
 This ensures the server is already running when the browser connects, avoiding any need to reload the page.
 
-The Python server (`lllmServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores (auto-detected, or all cores on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lllm.fifo` and broadcasts to all connected WebSocket clients.
+The Python server (`limServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores (auto-detected, or all cores on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients.
 
 ### VS Code Extension
 
-The LLLM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
+The LIM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
 
 The extension does two things:
-- **Opens a browser** pointing to `$LLLM_HOST` (or localhost) on the configured port, after waiting for the server to respond.
-- **Creates a terminal** at `$HOME`. If `$LLLM_HOST` is set and remote, it SSHs into that host as user `$LLLM_AI_USER`; otherwise it opens a local shell.
+- **Opens a browser** pointing to `$LIM_HOST` (or localhost) on the configured port, after waiting for the server to respond.
+- **Creates a terminal** at `$HOME`. If `$LIM_HOST` is set and remote, it SSHs into that host as user `$LIM_AI_USER`; otherwise it opens a local shell.
 
 You then run your `coder` alias in that terminal as usual.
 
@@ -440,7 +439,7 @@ make vscode          # builds and packages the extension
 make install         # installs the extension into VS Code
 ```
 
-Then in VS Code, click the LLLM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LLLM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
+Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
 
 To rebuild both the C++ binary and the extension together:
 
@@ -452,16 +451,18 @@ make all
 
 ## Session History
 
-Input history is persisted to `.lllm_history` in the current working directory and survives across sessions. Use the Up/Down arrow keys to navigate previous inputs.
+Input history is persisted to `.lim_history` in the current working directory and survives across sessions. Use the Up/Down arrow keys to navigate previous inputs.
 
 ---
 
 ## Logging
 
-Each session writes a numbered log file in `log/<N>`. With `LLLM_DEBUG=1`, a companion token-level trace is written to `log/<N>.tokens` showing every token fed into and generated by the model, with labels like `FEED SYSTEM_PROMPT_INIT`, `FEED USER_INPUT`, etc.
+Each session writes a numbered log file in `log/<N>`. With `LIM_DEBUG=1`, a companion token-level trace is written to `log/<N>.tokens` showing every token fed into and generated by the model, with labels like `FEED SYSTEM_PROMPT_INIT`, `FEED USER_INPUT`, etc.
 
 ---
 
 ## License
 
 See [LICENSE](LICENSE) for details.
+
+---

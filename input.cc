@@ -11,11 +11,11 @@
 extern volatile sig_atomic_t stop_generation;
 extern volatile sig_atomic_t g_was_interrupted;
 
-const char* INPUT_FIFO_PATH = "/tmp/lllm.input.fifo";
+const char* INPUT_FIFO_PATH = "/tmp/lim.input.fifo";
 int input_fd = -1;
 
 bool use_browser_input() {
-    const char* env = getenv("LLLM_INPUT");
+    const char* env = getenv("LIM_INPUT");
     if (env == nullptr) return false;
     return atoi(env) == 1;
 }

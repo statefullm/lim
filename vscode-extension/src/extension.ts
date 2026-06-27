@@ -2,12 +2,12 @@ import * as vscode from 'vscode';
 
 export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
-        vscode.commands.registerCommand('lllm.workspace.start', startWorkspace)
+        vscode.commands.registerCommand('lim.workspace.start', startWorkspace)
     );
 
     // Handle Ctrl+J in terminal: send file separator directly to the active terminal.
     context.subscriptions.push(
-        vscode.commands.registerCommand('_lllm.ctrlJ', () => {
+        vscode.commands.registerCommand('_lim.ctrlJ', () => {
             const terminal = vscode.window.activeTerminal;
             if (terminal) {
                 terminal.sendText('\x1c', false);
@@ -20,18 +20,18 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.StatusBarAlignment.Right,
         100
     );
-    statusBar.tooltip = 'Open LLLM Workspace';
-    statusBar.command = 'lllm.workspace.start';
-    statusBar.text = '$(rocket) LLLM';
+    statusBar.tooltip = 'Open LIM Workspace';
+    statusBar.command = 'lim.workspace.start';
+    statusBar.text = '$(rocket) LIM';
     statusBar.show();
     context.subscriptions.push(statusBar);
 }
 
 function startWorkspace() {
-    const config = vscode.workspace.getConfiguration('lllm.workspace');
+    const config = vscode.workspace.getConfiguration('lim.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
 
-    const host = process.env.LLLM_HOST || getHostname();
+    const host = process.env.LIM_HOST || getHostname();
     const viewerUrl = `http://${host}:${browserPort}/viewer.html`;
 
     // Wait for the server to be up before opening the browser. Uses an async
@@ -41,16 +41,16 @@ function startWorkspace() {
         vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
     });
 
-    // Create an integrated terminal for the LLLM REPL and show it at the bottom.
-    const lllmHost = process.env.LLLM_HOST;
+    // Create an integrated terminal for the LIM REPL and show it at the bottom.
+    const limHost = process.env.LIM_HOST;
     const terminal = vscode.window.createTerminal({
-        name: 'LLLM',
+        name: 'LIM',
         cwd: process.env.HOME
     });
 
-    if (lllmHost && lllmHost !== getHostname()) {
+    if (limHost && limHost !== getHostname()) {
         const aiUser = process.env.AI_USER || 'ai';
-        terminal.sendText(`ssh -t ${aiUser}@${lllmHost}`);
+        terminal.sendText(`ssh -t ${aiUser}@${limHost}`);
     }
 
     terminal.show();

@@ -1,11 +1,11 @@
 {
   "name": "vscode-extension",
-  "displayName": "LLLM Workspace",
-  "description": "Embeds the LLLM browser viewer and terminal REPL inside VS Code as a single dockable panel.",
+  "displayName": "LIM Workspace",
+  "description": "Embeds the LIM browser viewer and terminal REPL inside VS Code as a single dockable panel.",
   "version": "0.1.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/statellm/lllm"
+    "url": "https://github.com/statellm/lim"
   },
   "engines": {
     "vscode": "^1.85.0"
@@ -14,22 +14,22 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:lllm.workspace.start",
+    "onCommand:lim.workspace.start",
     "onStartupFinished"
   ],
   "main": "./out/extension.js",
-  "icon": "resources/lllm.png",
+  "icon": "resources/lim.png",
   "contributes": {
     "commands": [
       {
-        "command": "lllm.workspace.start",
-        "title": "LLLM: Open Workspace",
+        "command": "lim.workspace.start",
+        "title": "LIM: Open Workspace",
         "icon": "$(rocket)"
       }
     ],
     "keybindings": [
       {
-        "command": "_lllm.ctrlJ",
+        "command": "_lim.ctrlJ",
         "key": "ctrl+j",
         "when": "terminalFocus"
       },
@@ -54,10 +54,10 @@
     ],
     "configuration": {
       "properties": {
-        "lllm.workspace.browserPort": {
+        "lim.workspace.browserPort": {
           "type": "number",
           "default": 8765,
-          "description": "Port of the LLLM browser server (lllmServer.py)."
+          "description": "Port of the LIM browser server (limServer.py)."
         }
       }
     }

@@ -14,13 +14,13 @@
 
 using namespace std;
 
-// --- LLLM Server Process Management ---
-extern pid_t g_lllm_server_pid;
+// --- LIM Server Process Management ---
+extern pid_t g_lim_server_pid;
 
-bool is_lllm_server_running();
-void start_lllm_server_if_needed();
+bool is_lim_server_running();
+void start_lim_server_if_needed();
 bool wait_for_server_ready();
-void cleanup_lllm_server();
+void cleanup_lim_server();
 
 // --- Browser Connection ---
 bool check_browser_connected();

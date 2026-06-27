@@ -10,7 +10,7 @@ using namespace std;
 // --- Model Detection and Chat Template Selection ---
 
 // Mirror of llama.cpp's internal llm_chat_template enum (from llama/src/llama-chat.h).
-// We only need the families that lllm supports for incremental KV-cache appending.
+// We only need the families that lim supports for incremental KV-cache appending.
 enum class ModelType {
     UNKNOWN,
     CHATML,       // Standard ChatML (Nemotron, Mistral, etc.)
@@ -93,7 +93,7 @@ vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_
 vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output);
 
 // Build forced-close tokens for EOG recovery / loop detection:
-//   "\n" + turn_end + "\n"  (FUNC_END is added separately since it's lllm protocol)
+//   "\n" + turn_end + "\n"  (FUNC_END is added separately since it's lim protocol)
 vector<llama_token> build_forced_close_tokens(llama_context *ctx);
 
 // --- Decode Error Handling ---

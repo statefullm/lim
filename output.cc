@@ -16,13 +16,13 @@ const char SEG_THINK      = '\x06';  // Think/reasoning block content
 
 // --- FIFO / Pipe Management ---
 int pipe_fd = -1;
-const char* FIFO_PATH = "/tmp/lllm.fifo";
+const char* FIFO_PATH = "/tmp/lim.fifo";
 
 // --- Output Mode Control ---
 bool g_browser_warning_suppressed = false;
 
 static int get_server_port() {
-    const char* env = getenv("LLLM_PORT");
+    const char* env = getenv("LIM_PORT");
     if (env != nullptr && strlen(env) > 0) {
         char* endp = nullptr;
         long val = strtol(env, &endp, 10);
@@ -33,7 +33,7 @@ static int get_server_port() {
 
 int get_output_mode() {
     if (g_browser_warning_suppressed) return 1;
-    const char* env = getenv("LLLM_OUTPUT");
+    const char* env = getenv("LIM_OUTPUT");
     if (env == nullptr) return 2;  // Default: browser
     char* endp = nullptr;
     long val = strtol(env, &endp, 10);
