@@ -393,11 +393,11 @@ This restores the session exactly as it was: the full conversation, KV-cache pos
 
 **Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn — as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
-**Force decode:** Add `--decode` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
+**Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
 
 ```bash
-coder cats --decode
-coder --decode cats
+coder cats --checkpoints
+coder --checkpoints cats
 ```
 
 Press Ctrl+C during the restore prompt to cancel without decoding.

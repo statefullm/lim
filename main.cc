@@ -114,22 +114,21 @@ int main(int argc, char ** argv) {
     setup_signals();
 
     if (argc < 2) {
-        cerr << "Usage: " << argv[0] << " <model_path> [--decode] [restore_file]" << endl;
+        cerr << "Usage: " << argv[0] << " <model_path> [--checkpoints] [restore_file]" << endl;
         return 1;
     }
 
     g_model_path = argv[1];
 
 
-    // Check if we are restoring from a save file
-    // --decode can appear before or after the save path.
+    // --checkpoints can appear before or after the save path.
     bool restore_from_file = false;
-    bool force_decode = false;
+    bool show_checkpoints = false;
     string restore_path;
     string restore_path_abs;
     for (int i = 2; i < argc; i++) {
-        if (strcmp(argv[i], "--decode") == 0) {
-            force_decode = true;
+        if (strcmp(argv[i], "--checkpoints") == 0) {
+            show_checkpoints = true;
         } else {
             if (!restore_path.empty()) {
                 cerr << "Error: Unexpected argument: " << argv[i] << endl;
@@ -512,7 +511,7 @@ int main(int argc, char ** argv) {
 
             // Try instant restore from V1 cache before slow token decode
             bool cache_hit = false;
-            if (!restore_path_abs.empty() && !force_decode) {
+            if (!restore_path_abs.empty() && !show_checkpoints) {
                 cache_hit = try_load_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 if (cache_hit && is_debug) {
                     std::string key = get_cache_dir() + "/"; // just to trigger dir creation check
@@ -618,8 +617,8 @@ int main(int argc, char ** argv) {
                      std::to_string((int)restore_speed) + " t/s (" +
                      std::to_string((int)restore_elapsed) + "s)", "\033[35m");
 
-                // Auto-write V1 cache for instant future restores (full restore only)
-                if (!restore_path_abs.empty() && restore_limit == (int)restored_tokens.size()) {
+                // Auto-write V1 cache for instant future restores (full restore only, skip with --checkpoints)
+                if (!show_checkpoints && !restore_path_abs.empty() && restore_limit == (int)restored_tokens.size()) {
                     if (is_debug) {
                         diag("Save to cache.", "\033[35m");
                     }
