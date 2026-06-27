@@ -183,6 +183,8 @@ private:
     // Parsed command and optional save prefix
     Command last_cmd_ = Command::NONE;
     string save_prefix_;
+    // Last non-empty user input, used as checkpoint label for tool-call turns
+    string last_user_input_;
 
     // --- Helper methods (extracted from lambdas) ---
     vector<llama_token> tokenize(string text) {
@@ -753,14 +755,17 @@ static string make_save_path(const string& prefix, const string& default_path) {
 // Helper: compact save -- write only the token sequence (not the raw KV cache).
 // On restore, tokens are re-decoded through the model to regenerate the KV cache.
 // For a 75K-token session this produces ~300 KB instead of ~2 GB.
+// When checkpoints are available, writes V3 format with prompt-return positions.
 static bool save_session_with_header(const vector<llama_token>& tokens, const string& path,
-                                     bool write_v1 = false, llama_context* ctx = nullptr) {
+                                     bool write_v1 = false, llama_context* ctx = nullptr,
+                                     const vector<PromptCheckpoint>* checkpoints = nullptr) {
     if (tokens.empty()) return false;
-    bool ok = write_token_save(path, tokens);
+
+    // Always write V3 format (V2 is obsolete).
+    bool ok = write_token_save_v3(path, tokens, *checkpoints);
 
     // Also write V1 cache for instant future restores (only on explicit /save)
     if (ok && write_v1) {
-        // Resolve to absolute path for consistent cache key
         char abs_buf[4096];
         string abs_path = path;
         if (realpath(path.c_str(), abs_buf)) abs_path = abs_buf;
@@ -780,7 +785,6 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
             if (is_debug) diag("Save to cache.", "\033[35m");
             write_v1_cache(abs_path, g_model_path, git_sha, ctx);
         } else {
-            // No git repo -- still cache using just path + model hash
             if (is_debug) diag("Save to cache.", "\033[35m");
             write_v1_cache(abs_path, g_model_path, "", ctx);
         }
@@ -808,13 +812,15 @@ bool ChatSession::run() {
         last_cmd_ = handle_command(user_input);
 
         if (last_cmd_ == Command::QUIT) {
-            // Auto-save before exiting so the user's current work is preserved.
-            string autosave_path = "log/" + to_string(state_.log_index) + ".save";
-            bool ok = save_session_with_header(state_.all_context_tokens, autosave_path);
-            if (!ok) {
-                diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
-            } else {
-                diag("Auto-saved to " + autosave_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[35m");
+            // If there's actual conversation to preserve, auto-save before exiting.
+            if (!state_.prompt_checkpoints.empty()) {
+                string autosave_path = "log/" + to_string(state_.log_index) + ".save";
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
+                if (!ok) {
+                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+                } else {
+                    diag("Auto-saved to " + autosave_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[35m");
+                }
             }
             return false;
         }
@@ -825,7 +831,7 @@ bool ChatSession::run() {
             // with the regular save file that /quit or /exit will overwrite.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path);
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
@@ -870,7 +876,7 @@ bool ChatSession::run() {
             // Uses the same -clear.save name since reincarnate calls clear_context internally.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path);
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
@@ -942,7 +948,7 @@ bool ChatSession::run() {
 
             diag("Saving session to " + save_path + "...", "\033[35m");
 
-            bool ok = save_session_with_header(state_.all_context_tokens, save_path, write_v1, ctx_);
+            bool ok = save_session_with_header(state_.all_context_tokens, save_path, write_v1, ctx_, &state_.prompt_checkpoints);
             if (!ok) {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
@@ -1018,13 +1024,28 @@ bool ChatSession::run() {
         auto gen_result = generate_response();
 
         // 11. Process tool call
-        if (process_tool_call()) continue;
+        if (process_tool_call()) {
+            // Record checkpoint after tool output is fed back, so "restore all"
+            // and the last checkpoint align when no further conversation turns follow.
+            if (!last_user_input_.empty()) {
+                state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
+            }
+            continue;
+        }
 
         // 12. Log assistant output
         if (!state_.auto_continue && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
 
         // 13. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;
+
+        // Record checkpoint at every prompt return for partial restore.
+        if (!user_input.empty()) {
+            last_user_input_ = user_input;
+        }
+        if (!last_user_input_.empty()) {
+            state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
+        }
     }
 
     return true;

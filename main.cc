@@ -10,6 +10,8 @@
 #include "model.h"
 #include "session.h"
 #include "taskset.h"
+#include <readline/readline.h>
+#include <readline/history.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -111,8 +113,8 @@ int main(int argc, char ** argv) {
 
     setup_signals();
 
-    if (argc < 2 || argc > 3) {
-        cerr << "Usage: " << argv[0] << " <model_path> [restore_file]" << endl;
+    if (argc < 2) {
+        cerr << "Usage: " << argv[0] << " <model_path> [--decode] [restore_file]" << endl;
         return 1;
     }
 
@@ -120,16 +122,28 @@ int main(int argc, char ** argv) {
 
 
     // Check if we are restoring from a save file
-    bool restore_from_file = (argc == 3);
+    // --decode can appear before or after the save path.
+    bool restore_from_file = false;
+    bool force_decode = false;
     string restore_path;
     string restore_path_abs;
-    if (restore_from_file) {
-        restore_path = argv[2];
-        // Match /save behavior: append .save if not already present
-        if (restore_path.size() < 5 || restore_path.substr(restore_path.size() - 5) != ".save") {
-            restore_path += ".save";
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--decode") == 0) {
+            force_decode = true;
+        } else {
+            if (!restore_path.empty()) {
+                cerr << "Error: Unexpected argument: " << argv[i] << endl;
+                return 1;
+            }
+            restore_path = argv[i];
+            // Match /save behavior: append .save if not already present
+            if (restore_path.size() < 5 || restore_path.substr(restore_path.size() - 5) != ".save") {
+                restore_path += ".save";
+            }
         }
-
+    }
+    restore_from_file = !restore_path.empty();
+    if (restore_from_file) {
         // Validate the save file exists before loading the model.
         struct stat st;
         if (stat(restore_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
@@ -467,13 +481,14 @@ int main(int argc, char ** argv) {
     } else {
         // Restore from save file.
         // V2 format: compact token sequence -- re-decode through model to rebuild KV cache.
-        //   Header: "LLLM_SAVE_V2 git_sha=<sha> n_tokens=<N>\n<token_ids_as_int32>"
+        //   Header: "LLLM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32><checkpoint_offsets_as_int32>"
         vector<llama_token> restored_tokens;
+        vector<PromptCheckpoint> restored_checkpoints;
         string saved_sha;
         int n_restored = 0;
         bool used_v2 = false;
 
-        // Try V2 (compact token save) first
+        // Try compact token save (V2 or V3)
         if (read_token_save(restore_path, restored_tokens)) {
             // Parse git SHA from the header by reading just the first line
             FILE* fp = fopen(restore_path.c_str(), "rb");
@@ -493,9 +508,12 @@ int main(int argc, char ** argv) {
                 }
             }
 
+            // Read checkpoint offsets from V3 save file
+            restored_checkpoints = read_checkpoint_offsets(restore_path);
+
             // Try instant restore from V1 cache before slow token decode
             bool cache_hit = false;
-            if (!restore_path_abs.empty()) {
+            if (!restore_path_abs.empty() && !force_decode) {
                 cache_hit = try_load_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 if (cache_hit && is_debug) {
                     std::string key = get_cache_dir() + "/"; // just to trigger dir creation check
@@ -514,10 +532,69 @@ int main(int argc, char ** argv) {
                 log_restore(restore_path, n_restored);
             } else {
                 used_v2 = true;
-                n_restored = (int)restored_tokens.size();
-                log_restore(restore_path, n_restored);
 
-                // Re-decode all tokens through the model to rebuild the KV cache.
+                // If checkpoints exist, offer partial restore via readline history navigation
+                int restore_limit = (int)restored_tokens.size();
+                if (!restored_checkpoints.empty()) {
+                    diag("Save contains " + to_string(restored_checkpoints.size()) + " prompt checkpoint(s).", "\033[35m");
+                    diag("Up/down arrows to navigate, Enter to confirm.", "\033[37m");
+
+                    using_history();
+                    clear_history();
+
+                    // Add checkpoints oldest-to-newest.
+                    // Pressing up from empty line shows the most recent checkpoint first.
+                    for (const auto& cp : restored_checkpoints) {
+                        string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
+                        string entry = label + " (" + to_string(cp.n_past) + " tokens)";
+                        add_history(entry.c_str());
+                    }
+
+                    char* line = readline("Restore> ");
+                    // If Ctrl+C was pressed during readline, stop_generation will be set.
+                    // Treat this as a cancellation regardless of what readline returned.
+                    if (stop_generation) {
+                        if (line) free(line);
+                        cerr << "\nRestore cancelled. Starting fresh session." << endl;
+                        n_restored = -1; // sentinel: indicates cancelled restore
+                        stop_generation = 0;
+                    } else if (!line || string(line).empty()) {
+                        // Ctrl+D (EOF) — skip decode, start fresh session
+                        cerr << "\nRestore cancelled. Starting fresh session." << endl;
+                        n_restored = -1; // sentinel: indicates cancelled restore
+                    } else {
+                        string input = line;
+                        free(line);
+                        if (input == "/quit" || input == "/exit") {
+                            cerr << "\nExiting." << endl;
+                            llama_free(ctx);
+                            llama_model_free(model);
+                            llama_backend_free();
+                            return 0;
+                        }
+                        try {
+                            // Match against checkpoint display strings.
+                            for (const auto& cp : restored_checkpoints) {
+                                string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
+                                string expected = label + " (" + to_string(cp.n_past) + " tokens)";
+                                if (input == expected) {
+                                    restore_limit = cp.n_past;
+                                    break;
+                                }
+                            }
+                        } catch (...) {}
+                    }
+
+                    if (restore_limit < (int)restored_tokens.size()) {
+                        diag("Restoring to checkpoint: " + to_string(restore_limit) + " tokens", "\033[35m");
+                    }
+                }
+
+                if (n_restored != -1) {
+                    n_restored = restore_limit;
+                    log_restore(restore_path, n_restored);
+
+                    // Re-decode all tokens through the model to rebuild the KV cache.
                 // This is deterministic: same tokens + same model = identical KV cache.
                 // Decode in n_batch-sized chunks to stay within llama.cpp's batch limit.
                 auto restore_start = chrono::high_resolution_clock::now();
@@ -542,23 +619,57 @@ int main(int argc, char ** argv) {
                      std::to_string((int)restore_speed) + " t/s (" +
                      std::to_string((int)restore_elapsed) + "s)", "\033[35m");
 
-                // Auto-write V1 cache for instant future restores
-                if (!restore_path_abs.empty()) {
+                // Auto-write V1 cache for instant future restores (full restore only)
+                if (!restore_path_abs.empty() && restore_limit == (int)restored_tokens.size()) {
                     if (is_debug) {
                         diag("Save to cache.", "\033[35m");
                     }
                     write_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
                 }
+                }
             }
 
         } else {
-            // V2 read failed -- file exists (checked above) but has invalid format
             cerr << "Error: Save file has an invalid format: " << restore_path << endl;
             return 1;
         }
 
-        // Trim restored_tokens to the actual count
-        restored_tokens.resize(n_restored);
+        // Trim restored_tokens to the actual count (skip if cancelled)
+        if (n_restored >= 0) {
+            restored_tokens.resize(n_restored);
+
+            // Keep only checkpoints within the restored range.
+            restored_checkpoints.erase(
+                std::remove_if(restored_checkpoints.begin(), restored_checkpoints.end(),
+                    [n_restored](const PromptCheckpoint& cp) { return cp.n_past > n_restored; }),
+                restored_checkpoints.end());
+        }
+
+        // If restore was cancelled (Ctrl+C/Ctrl+D at checkpoint prompt), start fresh.
+        if (n_restored == -1) {
+            log_entry("SYSTEM", "Restore cancelled, starting fresh session");
+            SessionState state;
+            state.all_context_tokens = system_tokens;
+            state.log_index = log_index;
+
+            batch.n_tokens = 0;
+            n_past = 0;
+            for (size_t i = 0; i < (int)system_tokens.size(); i++) {
+                common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
+            }
+            if (!handle_llama_decode_error(ctx, batch)) return 1;
+
+            bool result = run_chat_session(
+                ctx, vocab, smpl, batch, n_past, cparams,
+                system_tokens, use_dummy_thought,
+                state
+            );
+
+            llama_free(ctx);
+            llama_model_free(model);
+            llama_backend_free();
+            return 0;
+        }
 
         // Show git HEAD status if a SHA was recorded in the save file.
         if (!saved_sha.empty()) {
@@ -589,10 +700,41 @@ int main(int argc, char ** argv) {
         }
         log_entry("SYSTEM", "Restored session from " + restore_path);
 
+        // If restore was cancelled (Ctrl+C at checkpoint prompt), start fresh.
+        if (n_restored == -1) {
+            log_entry("SYSTEM", "Restore cancelled, starting fresh session");
+            SessionState state;
+            state.all_context_tokens = system_tokens;
+            state.log_index = log_index;
+
+            // Feed system prompt tokens into KV cache
+            batch.n_tokens = 0;
+            n_past = 0;
+            for (size_t i = 0; i < (int)system_tokens.size(); i++) {
+                common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
+            }
+            if (!handle_llama_decode_error(ctx, batch)) return 1;
+
+            bool result = run_chat_session(
+                ctx, vocab, smpl, batch, n_past, cparams,
+                system_tokens, use_dummy_thought,
+                state
+            );
+
+            // Cleanup
+            llama_free(ctx);
+            llama_model_free(model);
+            llama_backend_free();
+            return 0;
+        }
+
         // Session state with full conversation history for save/restore tracking.
         // system_tokens remains as the real system prompt only (for clear_context).
+        // Filtered checkpoints (up to restore point) are preserved so they're
+        // retained in future autosaves.
         SessionState state;
         state.all_context_tokens = restored_tokens;
+        state.prompt_checkpoints = restored_checkpoints;
         state.log_index = log_index;
 
         // --- Run the main chat session loop ---

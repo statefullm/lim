@@ -11,6 +11,7 @@
 #include <functional>
 #include <chrono>
 #include "loop_detector.h"
+#include "filesystem.h"
 using namespace std;
 
 // Forward declaration for INITIAL_CWD from main.cc
@@ -34,6 +35,8 @@ struct SessionState {
     string partial_tool_text;
     // All tokens fed into context, for save/restore
     vector<llama_token> all_context_tokens;
+    // Token positions and prompt text at each prompt return, for partial restore
+    vector<PromptCheckpoint> prompt_checkpoints;
     // Log file index (set by main.cc), so save files match chat log numbering
     int log_index = 0;
 };

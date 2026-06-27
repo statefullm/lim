@@ -102,66 +102,36 @@ string read_llm_save_header(const string& save_path, size_t* header_size) {
 // ~300 KB instead of ~2 GB (raw KV cache).
 
 bool write_token_save(const string& save_path, const vector<llama_token>& tokens) {
-    // Git SHA is nice-to-have for change detection but not required.
-    FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
-    char buf[48];
-    string sha;
-    if (pipe) {
-        if (fgets(buf, sizeof(buf), pipe)) {
-            sha = buf;
-            while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
-        }
-        pclose(pipe);
-    }
-
-    // Build header: "LLLM_SAVE_V2 git_sha=<sha> n_tokens=<N>\n"
-    // (git_sha may be empty if not in a git repo)
-    string header = "LLLM_SAVE_V2 git_sha=" + sha + " n_tokens=" + std::to_string(tokens.size()) + "\n";
-
-    FILE* fp = fopen(save_path.c_str(), "wb");
-    if (!fp) return false;
-
-    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
-    if (!tokens.empty()) {
-        size_t written = fwrite(tokens.data(), sizeof(llama_token), tokens.size(), fp);
-        if (written != tokens.size()) { fclose(fp); return false; }
-    }
-    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
-    return ok;
+    return write_token_save_v3(save_path, tokens, {});
 }
 
 bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
     FILE* fp = fopen(save_path.c_str(), "rb");
     if (!fp) return false;
 
-    // Read enough to cover the header line
     static constexpr size_t MAX_HEAD = 128;
     char head[MAX_HEAD];
     size_t n = fread(head, 1, MAX_HEAD, fp);
-    if (n < 14) { fclose(fp); return false; }
+    if (n < 13) { fclose(fp); return false; }
 
-    string magic = "LLLM_SAVE_V2 git_sha=";
     string first_chunk(head, n);
-    if (first_chunk.substr(0, magic.size()) != magic) {
-        fclose(fp);
-        return false; // Not a V2 token save file
-    }
-
     size_t nl = first_chunk.find('\n');
     if (nl == string::npos) { fclose(fp); return false; }
 
-    // Parse n_tokens from header
     string header_str(first_chunk.begin(), first_chunk.begin() + nl);
+
+    // Accept both V2 and V3 headers
+    bool is_v3 = header_str.substr(0, 13) == "LLLM_SAVE_V3 ";
+    bool is_v2 = header_str.substr(0, 13) == "LLLM_SAVE_V2 ";
+    if (!is_v2 && !is_v3) { fclose(fp); return false; }
+
     size_t nt_pos = header_str.find("n_tokens=");
     if (nt_pos == string::npos) { fclose(fp); return false; }
     size_t num_tokens = std::stoull(header_str.substr(nt_pos + 9));
 
-    // Seek to right after the header newline -- fread may have consumed
-    // bytes beyond the newline into our buffer, so we can't just continue reading.
     long header_end = (long)(nl + 1);
     if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }
 
-    // Read token IDs
     tokens.resize(num_tokens);
     if (num_tokens > 0) {
         size_t n_read = fread(tokens.data(), sizeof(llama_token), num_tokens, fp);
@@ -174,6 +144,106 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
         fclose(fp);
     }
     return true;
+}
+
+// --- V3 save: includes prompt-return checkpoints for partial restore ---
+
+bool write_token_save_v3(const string& save_path, const vector<llama_token>& tokens,
+                         const vector<PromptCheckpoint>& checkpoints) {
+    FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
+    char buf[48];
+    string sha;
+    if (pipe) {
+        if (fgets(buf, sizeof(buf), pipe)) {
+            sha = buf;
+            while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
+        }
+        pclose(pipe);
+    }
+
+    // Header: "LLLM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n"
+    string header = "LLLM_SAVE_V3 git_sha=" + sha +
+                    " n_tokens=" + std::to_string(tokens.size()) +
+                    " n_checkpoints=" + std::to_string(checkpoints.size()) + "\n";
+
+    FILE* fp = fopen(save_path.c_str(), "wb");
+    if (!fp) return false;
+
+    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
+    if (!tokens.empty()) {
+        size_t written = fwrite(tokens.data(), sizeof(llama_token), tokens.size(), fp);
+        if (written != tokens.size()) { fclose(fp); return false; }
+    }
+    // Append checkpoint entries: <n_past as int32><prompt_len as uint16><prompt_bytes>
+    for (const auto& cp : checkpoints) {
+        int32_t pos = static_cast<int32_t>(cp.n_past);
+        if (fwrite(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return false; }
+        uint16_t plen = static_cast<uint16_t>(cp.prompt.size());
+        if (fwrite(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return false; }
+        if (plen > 0) {
+            size_t written = fwrite(cp.prompt.data(), 1, plen, fp);
+            if (written != plen) { fclose(fp); return false; }
+        }
+    }
+    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
+    return ok;
+}
+
+vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
+    FILE* fp = fopen(save_path.c_str(), "rb");
+    if (!fp) return {};
+
+    static constexpr size_t MAX_HEAD = 128;
+    char head[MAX_HEAD];
+    size_t n = fread(head, 1, MAX_HEAD, fp);
+    if (n < 14) { fclose(fp); return {}; }
+
+    string first_chunk(head, n);
+
+    // Check for V3 magic
+    string v3_magic = "LLLM_SAVE_V3 ";
+    if (first_chunk.substr(0, v3_magic.size()) != v3_magic) {
+        fclose(fp);
+        return {};  // Not a V3 file
+    }
+
+    size_t nl = first_chunk.find('\n');
+    if (nl == string::npos) { fclose(fp); return {}; }
+
+    string header_str(first_chunk.begin(), first_chunk.begin() + nl);
+
+    // Parse n_tokens and n_checkpoints
+    size_t nt_pos = header_str.find("n_tokens=");
+    size_t nc_pos = header_str.find("n_checkpoints=");
+    if (nt_pos == string::npos || nc_pos == string::npos) { fclose(fp); return {}; }
+
+    size_t num_tokens = std::stoull(header_str.substr(nt_pos + 9));
+    size_t num_checkpoints = std::stoull(header_str.substr(nc_pos + 14));
+
+    if (num_checkpoints == 0) { fclose(fp); return {}; }
+
+    // Skip header + tokens to reach checkpoint data
+    long header_end = (long)(nl + 1);
+    long token_data_size = (long)(num_tokens * sizeof(llama_token));
+    long cp_offset = header_end + token_data_size;
+    if (fseek(fp, cp_offset, SEEK_SET) != 0) { fclose(fp); return {}; }
+
+    vector<PromptCheckpoint> checkpoints;
+    checkpoints.reserve(num_checkpoints);
+    for (size_t i = 0; i < num_checkpoints; i++) {
+        int32_t pos;
+        uint16_t plen;
+        if (fread(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return {}; }
+        if (fread(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return {}; }
+        string prompt;
+        if (plen > 0) {
+            prompt.resize(plen);
+            if (fread(prompt.data(), 1, plen, fp) != plen) { fclose(fp); return {}; }
+        }
+        checkpoints.push_back({static_cast<int>(pos), std::move(prompt)});
+    }
+    fclose(fp);
+    return checkpoints;
 }
 
 // --- V1 Cache: auto-cached KV cache for instant V2 restores ---

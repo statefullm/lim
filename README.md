@@ -392,6 +392,17 @@ coder cats          # restores from cats.save
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LLLM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn — as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+
+**Force decode:** Add `--decode` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
+
+```bash
+coder mysave --decode
+coder --decode mysave
+```
+
+Press Ctrl+C during the restore prompt to cancel without decoding.
+
 **Instant restore cache:** Save files contain only the token sequence, keeping them small and model-agnostic. On first restore, tokens are decoded through the model to rebuild the KV-cache. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are instant. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for instant future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
 **Auto-save on clear and quit:** Before clearing the context, LLLM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
