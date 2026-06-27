@@ -427,10 +427,10 @@ int main(int argc, char ** argv) {
     init_model_tokens(ctx, model);
 
     // Optionally append the reserved-token escape contract to the system prompt.
-    // Controlled by env var LLLM_ESCAPE_CONTRACT (default 1 = include).
+    // Controlled by env var LLLM_ESCAPE_CONTRACT (default 0 = hidden, 1 = included).
     {
         const char* env = getenv("LLLM_ESCAPE_CONTRACT");
-        int include_contract = 1; // default: include
+        int include_contract = 0; // default: hidden from prompt (still functional in code)
         if (env) include_contract = atoi(env);
         if (include_contract) {
             system_prompt += "\n\n" + generate_turn_escape_contract();
