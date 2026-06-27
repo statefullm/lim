@@ -286,11 +286,21 @@
 
             // Replace the raw span with the rendered HTML fragment.
             var fragment = htmlFragment(html);
+            var firstInserted = null, lastInserted = null;
             while (fragment.firstChild) {
+                if (!firstInserted) firstInserted = fragment.firstChild;
+                lastInserted = fragment.firstChild;
                 span.parentNode.insertBefore(fragment.firstChild, span);
             }
             span.parentNode.removeChild(span);
             wrapperDiv.removeAttribute('data-raw');
+
+            // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
+            if (firstInserted) {
+                var anchor = firstInserted.previousSibling || firstInserted;
+                renderMathInRange(anchor, lastInserted);
+                injectCopyButtonsInRange(anchor, lastInserted);
+            }
 
             // If this was a THINK segment that just finished rendering,
             // collapse it immediately -- thinking is done.
@@ -303,9 +313,6 @@
                     wrapperDiv.setAttribute('data-think-collapsed', '1');
                 }
             }
-
-            injectCopyButtons(wrapperDiv);
-            renderMathInDiv(wrapperDiv);
 
             segRenderedContent[segIndex] = segments[segIndex].content;
         }
@@ -365,18 +372,24 @@
 
             // Insert the rendered HTML fragment right before the raw span.
             var fragment = htmlFragment(html);
+            var firstInserted = null, lastInserted = null;
             while (fragment.firstChild) {
+                if (!firstInserted) firstInserted = fragment.firstChild;
+                lastInserted = fragment.firstChild;
                 span.parentNode.insertBefore(fragment.firstChild, span);
             }
 
             // Update the raw span to contain only the remaining tail.
             span.textContent = remainingTail;
 
-            injectCopyButtons(wrapperDiv);
-            renderMathInDiv(wrapperDiv);
+            // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
+            // O(1) per step, not O(n) rescanning of already-rendered content.
+            if (firstInserted) {
+                var anchor = firstInserted.previousSibling || firstInserted;
+                renderMathInRange(anchor, lastInserted);
+                injectCopyButtonsInRange(anchor, lastInserted);
+            }
         }
-
-        // Convert raw markdown text to an HTML string for a given segment type.
         // Handles $$...$$ math extraction and restoration for KaTeX.
         function rawTextToHtml(text, segType) {
             var mathBlocks = [];
@@ -554,6 +567,31 @@
             });
         }
 
+        // Inject copy buttons only into <pre><code> blocks within the nodes between
+        // startNode (exclusive) and endNode (inclusive).  Avoids O(n^2) rescanning
+        // of already-processed code blocks on every progressive-render step.
+        function injectCopyButtonsInRange(startNode, endNode) {
+            var parent = startNode.parentNode;
+            var nodes = [];
+            var node = startNode.nextSibling;
+            while (node && node !== endNode) {
+                nodes.push(node);
+                node = node.nextSibling;
+            }
+            nodes.push(endNode);
+
+            // Build a temporary container with exactly the new nodes.
+            var tmp = document.createElement('div');
+            nodes.forEach(function(n) { tmp.appendChild(n); });
+
+            injectCopyButtons(tmp);
+
+            // Move nodes back into the real DOM.
+            while (tmp.firstChild) {
+                parent.insertBefore(tmp.firstChild, startNode.nextSibling);
+            }
+        }
+
         // Render math with KaTeX within a specific parent div.
         function renderMathInDiv(parentDiv) {
             if (typeof renderMathInElement === 'function') {
@@ -566,6 +604,42 @@
                     ],
                     throwOnError: false
                 });
+            }
+        }
+
+        // Render math with KaTeX only on the nodes between startNode (exclusive)
+        // and endNode (inclusive) within their shared parent.  This avoids the
+        // O(n^2) behaviour of rescanning already-rendered content on every
+        // progressive-render step: each new fragment is rendered exactly once.
+        function renderMathInRange(startNode, endNode) {
+            if (typeof renderMathInElement !== 'function') return;
+
+            var parent = startNode.parentNode;
+            var nodes = [];
+            var node = startNode.nextSibling;
+            while (node && node !== endNode) {
+                nodes.push(node);
+                node = node.nextSibling;
+            }
+            nodes.push(endNode);  // inclusive
+
+            // Build a temporary container with exactly the new nodes.
+            var tmp = document.createElement('div');
+            nodes.forEach(function(n) { tmp.appendChild(n); });
+
+            renderMathInElement(tmp, {
+                delimiters: [
+                    { left: '$$',  right: '$$',  display: true  },
+                    { left: '$',   right: '$',   display: false },
+                    { left: '\\(', right: '\\)', display: false },
+                    { left: '\\[', right: '\\]', display: true  }
+                ],
+                throwOnError: false
+            });
+
+            // Move the (now math-rendered) nodes back into the real DOM.
+            while (tmp.firstChild) {
+                parent.insertBefore(tmp.firstChild, startNode.nextSibling);
             }
         }
 
