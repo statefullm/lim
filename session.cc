@@ -234,6 +234,9 @@ private:
         state_.all_context_tokens = system_tokens_;
         feed_tokens_impl(system_tokens_);
 
+        // Reset sampler state (penalty history, RNG) for a fresh start
+        llama_sampler_reset(smpl_);
+
         // Reset the current directory to the initial value so no memory of the last session persists
         {
             chdir(INITIAL_CWD.c_str());
@@ -246,10 +249,8 @@ private:
     }
 
     void reset_llm_state() {
-        state_.file_cache.clear();
         state_.loop_guard.clear_history();
         state_.invalid_tool_strikes = 0;
-        llama_sampler_reset(smpl_);
     }
 
     void reset_session_state() {
@@ -851,8 +852,8 @@ bool ChatSession::run() {
 
         if (last_cmd_ == Command::RESET) {
             reset_llm_state();
-            log_entry("SYSTEM", "Loop Counter and File Cache Reset");
-            diag("Loop Counter and File Cache Reset Successfully", "\033[32m");
+            log_entry("SYSTEM", "Loop Counter Reset");
+            diag("Loop Counter Reset Successfully", "\033[32m");
             continue;
         }
 

@@ -371,7 +371,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/quit <path>` or `/exit <path>` | Save the current state to `<path>.save`, then exit (overrides default save location) |
 | `/clear` | Auto-save the current state to `log/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. For a permanent named checkpoint before clearing, use `/save <name>` first. |
 | `/clear <path>` | Save the current state to `<path>.save`, then clear (overrides default save location) |
-| `/reset` | Reset internal state (loop detector, file cache) without clearing the KV-cache |
+| `/reset` | Reset internal state (loop detector) without clearing the KV-cache |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
 | `/reincarnate <path>` | Same as `/reincarnate`, but save to `<path>.save` instead of `log/<N>-clear.save` before clearing |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |

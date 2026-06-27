@@ -39,8 +39,6 @@ string file_fingerprint(const string& path) {
     return oss.str();
 }
 
-// Fast content hash (FNV-1a 64-bit), returned as a hex string.
-
 // Write a save file with a one-line text header containing the git SHA,
 // followed by the raw llama state.  The header format is:
 //     LLLM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
