@@ -306,7 +306,7 @@ string ChatSession::get_user_input() {
             oss << fixed << setprecision(1);
 
             // Pick denominator based on honest_speed global:
-            //   false (default): benchmark-style — use decode_time only
+            //   false (default): benchmark-style -- use decode_time only
             //   true: honest wall-clock speed
             double denom = state_.last_elapsed;  // default: wall clock ("honest")
             if (!honest_speed && state_.last_decode_time > 0.0) {

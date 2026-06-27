@@ -45,7 +45,7 @@ static void escape_one_token(string& str, const string& token) {
 }
 
 // Generic unescape: remove one '\' after first char of every occurrence of 'token'.
-// If no extra backslash, leave alone (raw token — should not appear in practice).
+// If no extra backslash, leave alone (raw token -- should not appear in practice).
 static void unescape_one_token(string& str, const string& token) {
     if (token.size() < 2) return;
     char first = token[0];
@@ -76,7 +76,7 @@ static void unescape_one_token(string& str, const string& token) {
                 str.replace(pos, scan - pos + suffix.length(), replacement);
                 start_pos = pos + replacement.length();
             } else {
-                // No backslashes — raw token, leave alone.
+                // No backslashes -- raw token, leave alone.
                 start_pos = pos + 1 + suffix.length();
             }
         } else {

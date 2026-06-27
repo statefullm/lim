@@ -141,7 +141,7 @@ string get_chat_template_name(ModelType model_type) {
 ModelType detect_model_type(const llama_model *model) {
     const char *tmpl_str = llama_model_chat_template(model, nullptr);
     if (!tmpl_str || tmpl_str[0] == '\0') {
-        // No template metadata — fall back to ChatML (most common default)
+        // No template metadata -- fall back to ChatML (most common default)
         return ModelType::CHATML;
     }
 
@@ -150,7 +150,7 @@ ModelType detect_model_type(const llama_model *model) {
     ModelType mt = map_llm_template(detected);
 
     if (mt == ModelType::UNKNOWN) {
-        // Detection failed — try to use the template string directly with
+        // Detection failed -- try to use the template string directly with
         // llama_chat_apply_template. If it's already a built-in name, that works.
         // Otherwise fall back to ChatML.
         const char *builtin_names[64];
@@ -217,7 +217,7 @@ static string escape_for_log(const string &s) {
 
 void init_model_tokens(llama_context *ctx, const llama_model *model) {
     // Get the actual Jinja template string from GGUF metadata.
-    // This is what the model itself says it uses — more reliable than detection.
+    // This is what the model itself says it uses -- more reliable than detection.
     const char *tmpl_str = llama_model_chat_template(model, nullptr);
     if (!tmpl_str || tmpl_str[0] == '\0') {
         tmpl_str = "chatml";  // safe fallback
@@ -272,7 +272,7 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
         if (candidate == assistant_turn_start_str) {
             turn_end_str = tail_after_content.substr(0, offset);
         } else {
-            // assistant_turn_start not at the end — try finding it in the middle.
+            // assistant_turn_start not at the end -- try finding it in the middle.
             size_t pos = tail_after_content.find(assistant_turn_start_str);
             if (pos != string::npos) {
                 turn_end_str = tail_after_content.substr(0, pos);
@@ -282,7 +282,7 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
             }
         }
     } else if (!tail_after_content.empty()) {
-        // No assistant prefix detected — entire tail is turn_end.
+        // No assistant prefix detected -- entire tail is turn_end.
         turn_end_str = tail_after_content;
     }
 

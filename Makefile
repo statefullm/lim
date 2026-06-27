@@ -20,7 +20,7 @@ ifeq ($(CUDA_ARCH_FLAGS),)
 endif
 
 ifeq ($(CUDA_ARCH_FLAGS),)
-  # No GPU detected and no override — will be checked at build time if needed
+  # No GPU detected and no override -- will be checked at build time if needed
 endif
 
 # Determine GGML backend flags

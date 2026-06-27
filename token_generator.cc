@@ -83,7 +83,7 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
             continue;
         }
         if (in_parameter) {
-            // FUNC_START or FUNC_END inside parameter value — ignore
+            // FUNC_START or FUNC_END inside parameter value -- ignore
             pos = events[type] + (type == 0 ? fs_str.length() : fe_str.length());
             continue;
         }

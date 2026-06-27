@@ -47,9 +47,9 @@ ofstream token_log;
 string INITIAL_CWD;
 
 // LLLM_HONEST_SPEED: how the t/s diagnostic is computed.
-//   0 (default): benchmark-style — tokens / decode-only time (excludes sampling,
+//   0 (default): benchmark-style -- tokens / decode-only time (excludes sampling,
 //                 output rendering, tool detection scanning). Matches llama-cli.
-//   1: "honest" speed — tokens / total wall clock time (includes all CPU overhead).
+//   1: "honest" speed -- tokens / total wall clock time (includes all CPU overhead).
 bool honest_speed = false;  // default: benchmark-style
 
 // LLLM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
@@ -264,7 +264,7 @@ int main(int argc, char ** argv) {
         if ((env = getenv("LLLM_GPU_LAYERS")) != nullptr) {
             int val = atoi(env);
             mparams.n_gpu_layers = val;
-            // Treat -1 as "not set" — it's the default and should trigger auto-fit.
+            // Treat -1 as "not set" -- it's the default and should trigger auto-fit.
             gpu_layers_explicit = (val != -1);
         } else {
             mparams.n_gpu_layers = -1; // -1 means "all layers" (auto-fit)
