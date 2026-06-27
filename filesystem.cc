@@ -1,4 +1,5 @@
 #include "filesystem.h"
+#include "session.h"
 #include "output.h"
 #include "parsers.h"
 #include "tokens.h"
@@ -39,9 +40,22 @@ string file_fingerprint(const string& path) {
     return oss.str();
 }
 
-// Write a save file with a one-line text header containing the git SHA,
-// followed by the raw llama state.  The header format is:
-//     LIM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
+// --- Save file header keys ---
+// Each string appears once; len is derived at compile time via STR.
+static const struct HeaderKey {
+    const char* name;
+    int len;
+} header_keys[] = {
+    STR("LIM_SAVE_V3 "),       // 0
+    STR("n_tokens="),          // 1
+    STR("n_checkpoints="),     // 2
+    STR("LIM_SAVE_v1 git_sha=")// 3
+};
+
+static constexpr int HDR_MAGIC   = 0;
+static constexpr int HDR_N_TOKENS = 1;
+static constexpr int HDR_N_CHECKPOINTS = 2;
+static constexpr int HDR_SAVE_V1 = 3;
 bool write_llm_save(const string& save_path, const uint8_t* state_data, size_t state_size) {
     FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
     if (!pipe) return false;
@@ -80,24 +94,49 @@ string read_llm_save_header(const string& save_path, size_t* header_size) {
     char head[MAX_HEAD];
     size_t n = fread(head, 1, MAX_HEAD, fp);
     fclose(fp);
-    if (n < 14) return ""; // "LIM_SAVE_v1" is 12 chars + space + at least 2 more
+    if (n < header_keys[HDR_SAVE_V1].len + 1) return ""; // need at least magic + some content
 
     // Must start with the magic prefix
-    string magic = "LIM_SAVE_v1 git_sha=";
+    const auto& magic = header_keys[HDR_SAVE_V1];
     string first_chunk(head, n);
-    if (first_chunk.substr(0, magic.size()) != magic) {
+    if (first_chunk.substr(0, magic.len) != magic.name) {
         return ""; // Old-style raw save file -- no header
     }
 
     size_t nl = first_chunk.find('\n');
     if (nl == string::npos) return ""; // Malformed
     *header_size = nl + 1;
-    return first_chunk.substr(magic.size(), nl - magic.size());
+    return first_chunk.substr(magic.len, nl - magic.len);
 }
 
 // --- Compact token-based save/restore ---
 // Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
 
+// Parse a V3 header line. Returns false if format is invalid.
+// On success, fills *out_n_tokens and optionally *out_n_checkpoints.
+static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
+                            size_t* out_n_checkpoints = nullptr) {
+    // Validate magic prefix
+    if (header_str.substr(0, header_keys[0].len) != header_keys[0].name) return false;
+
+    // Parse n_tokens= (required)
+    size_t pos = header_str.find(header_keys[1].name);
+    if (pos == string::npos) return false;
+    string val = header_str.substr(pos + header_keys[1].len);
+    { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
+    *out_n_tokens = std::stoull(val);
+
+    // Parse n_checkpoints= (optional)
+    if (out_n_checkpoints) {
+        pos = header_str.find(header_keys[2].name);
+        if (pos == string::npos) return false;
+        val = header_str.substr(pos + header_keys[2].len);
+        { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
+        *out_n_checkpoints = std::stoull(val);
+    }
+
+    return true;
+}
 
 bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
     FILE* fp = fopen(save_path.c_str(), "rb");
@@ -106,20 +145,15 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
     static constexpr size_t MAX_HEAD = 128;
     char head[MAX_HEAD];
     size_t n = fread(head, 1, MAX_HEAD, fp);
-    if (n < 13) { fclose(fp); return false; }
+    if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return false; }
 
     string first_chunk(head, n);
-
-    // Only accept V3 header
-    if (first_chunk.substr(0, 13) != "LIM_SAVE_V3 ") { fclose(fp); return false; }
-
     size_t nl = first_chunk.find('\n');
     if (nl == string::npos) { fclose(fp); return false; }
     string header_str(first_chunk.begin(), first_chunk.begin() + nl);
 
-    size_t nt_pos = header_str.find("n_tokens=");
-    if (nt_pos == string::npos) { fclose(fp); return false; }
-    size_t num_tokens = std::stoull(header_str.substr(nt_pos + 9));
+    size_t num_tokens = 0;
+    if (!parse_v3_header(header_str, &num_tokens)) { fclose(fp); return false; }
 
     long header_end = (long)(nl + 1);
     if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }
@@ -154,9 +188,9 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
     }
 
     // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n"
-    string header = "LIM_SAVE_V3 git_sha=" + sha +
-                    " n_tokens=" + std::to_string(tokens.size()) +
-                    " n_checkpoints=" + std::to_string(checkpoints.size()) + "\n";
+    string header = string(header_keys[0].name) + "git_sha=" + sha +
+                    " " + header_keys[1].name + std::to_string(tokens.size()) +
+                    " " + header_keys[2].name + std::to_string(checkpoints.size()) + "\n";
 
     FILE* fp = fopen(save_path.c_str(), "wb");
     if (!fp) return false;
@@ -188,29 +222,15 @@ vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
     static constexpr size_t MAX_HEAD = 128;
     char head[MAX_HEAD];
     size_t n = fread(head, 1, MAX_HEAD, fp);
-    if (n < 14) { fclose(fp); return {}; }
+    if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return {}; }
 
     string first_chunk(head, n);
-
-    // Check for V3 magic
-    string v3_magic = "LIM_SAVE_V3 ";
-    if (first_chunk.substr(0, v3_magic.size()) != v3_magic) {
-        fclose(fp);
-        return {};  // Not a V3 file
-    }
-
     size_t nl = first_chunk.find('\n');
     if (nl == string::npos) { fclose(fp); return {}; }
-
     string header_str(first_chunk.begin(), first_chunk.begin() + nl);
 
-    // Parse n_tokens and n_checkpoints
-    size_t nt_pos = header_str.find("n_tokens=");
-    size_t nc_pos = header_str.find("n_checkpoints=");
-    if (nt_pos == string::npos || nc_pos == string::npos) { fclose(fp); return {}; }
-
-    size_t num_tokens = std::stoull(header_str.substr(nt_pos + 9));
-    size_t num_checkpoints = std::stoull(header_str.substr(nc_pos + 14));
+    size_t num_tokens = 0, num_checkpoints = 0;
+    if (!parse_v3_header(header_str, &num_tokens, &num_checkpoints)) { fclose(fp); return {}; }
 
     if (num_checkpoints == 0) { fclose(fp); return {}; }
 
@@ -238,7 +258,7 @@ vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
     return checkpoints;
 }
 
-// --- V1 Cache: auto-cached KV cache for instant V2 restores ---
+// --- V1 Cache: auto-cached KV cache for instant restores ---
 
 #include <openssl/sha.h>
 #include <array>

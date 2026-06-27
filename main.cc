@@ -480,7 +480,6 @@ int main(int argc, char ** argv) {
         if (!handle_llama_decode_error(ctx, batch)) return 1;
     } else {
         // Restore from save file.
-        // V2 format: compact token sequence -- re-decode through model to rebuild KV cache.
         //   Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32><checkpoint_offsets_as_int32>"
         vector<llama_token> restored_tokens;
         vector<PromptCheckpoint> restored_checkpoints;
@@ -488,7 +487,7 @@ int main(int argc, char ** argv) {
         int n_restored = 0;
         bool used_v2 = false;
 
-        // Try compact token save (V2 or V3)
+        // Try compact token save
         if (read_token_save(restore_path, restored_tokens)) {
             // Parse git SHA from the header by reading just the first line
             FILE* fp = fopen(restore_path.c_str(), "rb");

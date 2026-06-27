@@ -3,6 +3,8 @@
 
 #include "llama.h"
 #include "common.h"
+
+#define STR(name, ...) { name, (int)(sizeof(name) - 1), __VA_ARGS__ }
 #include <string>
 #include <vector>
 #include <set>

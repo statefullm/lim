@@ -455,24 +455,19 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
         return Command::NONE;
     };
 
-    // STR_CMD(name, cmd) derives len from the literal at compile time -- string appears once.
-#define STR_CMD(name, cmd) { name, (int)(sizeof(name) - 1), cmd }
-
-    static const struct CmdPattern {
+        static const struct CmdPattern {
         const char* name;
         int len;
         Command cmd;
     } patterns[] = {
-        STR_CMD("quit", Command::QUIT),
-        STR_CMD("exit", Command::QUIT),
-        STR_CMD("clear", Command::CLEAR),
-        STR_CMD("reincarnate", Command::REINCARNATE),
-        STR_CMD("reset", Command::RESET),
-        STR_CMD("continue", Command::CONTINUE),
-        STR_CMD("help", Command::HELP)
+        STR("quit", Command::QUIT),
+        STR("exit", Command::QUIT),
+        STR("clear", Command::CLEAR),
+        STR("reincarnate", Command::REINCARNATE),
+        STR("reset", Command::RESET),
+        STR("continue", Command::CONTINUE),
+        STR("help", Command::HELP)
     };
-
-#undef STR_CMD
 
     // Check exact-match commands first (no arguments allowed)
     for (const auto& p : patterns) {
@@ -761,7 +756,7 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
                                      const vector<PromptCheckpoint>* checkpoints = nullptr) {
     if (tokens.empty()) return false;
 
-    // Always write V3 format (V2 is obsolete).
+    // Write V3 format.
     bool ok = write_token_save_v3(path, tokens, *checkpoints);
 
     // Also write V1 cache for instant future restores (only on explicit /save)
