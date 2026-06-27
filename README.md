@@ -244,9 +244,9 @@ Set via `LLLM_OUTPUT`:
 
 | Value | stdout | Browser | Think | Description |
 |-------|--------|---------|-------|-------------|
-| 3 | ✅ | ✅ | ✅ | Both stdout and browser |
-| 2 (default) | ❌ | ✅ | ✅ | Browser only, think to stdout |
-| 1 | ✅ | ❌ | ✅ | Stdout only, no browser |
+| 3 | ✅ | ✅ | browser | Both stdout and browser; think blocks go to browser only |
+| 2 (default) | ❌ | ✅ | browser | Browser only; think blocks go to browser |
+| 1 | ✅ | ❌ | stdout | Stdout only; think blocks go to stdout |
 | 0 | ❌ | ❌ | ❌ | No output (system stderr still works) |
 
 ---
