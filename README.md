@@ -397,8 +397,8 @@ This restores the session exactly as it was: the full conversation, KV-cache pos
 **Force decode:** Add `--decode` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
 
 ```bash
-coder mysave --decode
-coder --decode mysave
+coder cats --decode
+coder --decode cats
 ```
 
 Press Ctrl+C during the restore prompt to cancel without decoding.
