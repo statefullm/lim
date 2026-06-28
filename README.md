@@ -80,7 +80,7 @@ make llama-clean
 
 ## User Setup
 
-The dedicated LLM user is controlled by the `LIM_AI_USER` environment variable (defaults to `ai`). All references below use `$LIM_AI_USER`.
+The dedicated LLM user is controlled by the `LIM_AI_USER` environment variable (defaults to `ai`). All references below use `$LIM_AI_USER`. The group name always matches the user name.
 
 ### 1. Creating the AI User
 
@@ -93,6 +93,14 @@ export LIM_AI_USER=ai
 sudo groupadd -f $LIM_AI_USER
 sudo useradd -m -g $LIM_AI_USER -s /bin/bash $LIM_AI_USER
 ```
+
+Then add your personal user to the `$LIM_AI_USER` group so you can read and write files the LLM creates without needing `sudo chown`:
+
+```bash
+sudo usermod -aG $LIM_AI_USER $USER
+```
+
+Log out and back in (or run `newgrp $LIM_AI_USER`) for the group change to take effect.
 
 ### 2. Git Safe Directories
 
@@ -107,7 +115,7 @@ This prevents "fatal: detected dubious ownership in repository" errors when the 
 
 ### 3. Directory Permissions
 
-Your project directories should be group-writable by `$LIM_AI_USER` so the LLM can read and write files. The recommended layout for `/home/$LIM_AI_USER`:
+Your project directories should be group-writable by the `$LIM_AI_USER` group so the LLM can read and write files. Because you added your personal user to the `$LIM_AI_USER` group (step 1), access is symmetric: you can read files the LLM creates, and the LLM can read your files. The recommended layout for `/home/$LIM_AI_USER`:
 
 ```bash
 $ ls -ld /home/$LIM_AI_USER
@@ -292,7 +300,7 @@ Set via `LIM_OUTPUT`:
 
 The `$LIM_AI_USER` operates in a sandboxed environment:
 
-- **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `fixai` to grant access to new project directories.
+- **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `fixai` to grant access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment.
 - **Git integration**: The sandbox repo is a separate git repository that is writable by `$LIM_AI_USER` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
 
