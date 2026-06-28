@@ -1,4 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
-  <rect x="1" y="1" width="14" height="14" rx="3" fill="#5879C0"/>
-  <text x="8" y="12.5" text-anchor="middle" font-family="system-ui, sans-serif" font-size="10" font-weight="bold" fill="#ffffff">LL</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <rect x="0" y="0" width="48" height="48" fill="#1e1e1e"/>
+  <text x="11" y="34" text-anchor="middle" font-family="system-ui, sans-serif" font-size="26" font-weight="bold" fill="#79c0ff">L</text>
+  <text x="22" y="34" text-anchor="middle" font-family="system-ui, sans-serif" font-size="26" font-weight="bold" fill="#ce9178">I</text>
+  <text x="33" y="34" text-anchor="middle" font-family="system-ui, sans-serif" font-size="26" font-weight="bold" fill="#b5cea8">M</text>
 </svg>

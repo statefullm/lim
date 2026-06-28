@@ -90,7 +90,15 @@ VSIX = vscode-extension/vscode-extension-0.1.0.vsix
 
 vscode: $(VSIX)
 
-$(VSIX): vscode-extension/src/extension.ts vscode-extension/package.json vscode-extension/tsconfig.json
+$(VSIX): vscode-extension/src/extension.ts \
+		 vscode-extension/package.json \
+		 vscode-extension/tsconfig.json \
+		 vscode-extension/resources/lim.png \
+		 vscode-extension/viewer.html \
+		 vscode-extension/libs/katex.min.css \
+		 vscode-extension/libs/katex.min.js \
+		 vscode-extension/libs/marked.min.js \
+		 vscode-extension/libs/auto-render.min.js
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
 

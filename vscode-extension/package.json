@@ -1,7 +1,7 @@
 {
   "name": "vscode-extension",
   "displayName": "LIM Workspace",
-  "description": "Embeds the LIM browser viewer and terminal REPL inside VS Code as a single dockable panel.",
+  "description": "Integrated terminal and browser workspace for LIM",
   "version": "0.1.0",
   "repository": {
     "type": "git",
