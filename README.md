@@ -119,16 +119,24 @@ Your project directories should be group-writable by the `$LIM_AI_USER` group so
 
 ```bash
 $ ls -ld /home/$LIM_AI_USER
-drwxrwsr-x+ 32 $USER $LIM_AI_USER 4096 Jun  6 11:53 /home/$LIM_AI_USER/
+drwxrwsr-x. 42 $USER $LIM_AI_USER 4096 Jan  1 00:00 /home/$LIM_AI_USER/
 ```
 
 The setgid bit (`s`) ensures new files inherit the `$LIM_AI_USER` group.
 
-To set permissions in any project sandbox, add this alias to **your personal** `~/.bashrc`:
+To set permissions in any project sandbox, copy `aishare` from this repository to your personal `/home/$USER/bin/`:
 
 ```bash
-alias fixai='sudo chown -R $USER:$LIM_AI_USER .; chmod -R g+rw .; chmod -R -t .'
+cp aishare /home/$USER/bin/
 ```
+
+Then run it on any directory you want the AI to access:
+
+```bash
+aishare /home/$LIM_AI_USER/project
+```
+
+It sets ownership to `$USER:$LIM_AI_USER`, grants group read/write and setgid, and clears the sticky bit. When run on `/home/$LIM_AI_USER`, it fixes permissions on the home directory itself plus all top-level entries, skipping `.ssh`.
 
 ### 4. Connecting and Running LIM
 
@@ -300,7 +308,7 @@ Set via `LIM_OUTPUT`:
 
 The `$LIM_AI_USER` operates in a sandboxed environment:
 
-- **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `fixai` to grant access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
+- **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `aishare` to grant access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment.
 - **Git integration**: The sandbox repo is a separate git repository that is writable by `$LIM_AI_USER` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
 

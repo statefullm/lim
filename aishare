@@ -1,0 +1,40 @@
+#!/bin/sh
+# aishare -- make project files accessible to both the user and LIM_AI_USER
+# Usage: aishare [directory]   (defaults to current directory)
+
+target="${1:-.}"
+
+# Resolve to absolute path
+target="$(cd "$target" 2>/dev/null && pwd)" || { echo "ERROR: not a directory: $1" >&2; exit 1; }
+
+owner="${USER:-$(whoami)}"
+group="${LIM_AI_USER:-ai}"
+
+# Refuse to operate outside /home/$group
+case "$target" in
+    /home/$group*) ;;
+    *) echo "ERROR: target must be under /home/$group" >&2; exit 1 ;;
+esac
+
+ssh_dir="/home/$group/.ssh"
+
+fix() {
+    sudo chown -hR "$owner:$group" "$1"
+    chmod -hR g+rw,g+s "$1"
+    chmod -hR -t "$1"
+}
+
+if [ "$target" = "/home/$group" ] && [ -d "$ssh_dir" ]; then
+    # Fix the target itself so the AI can create new top-level entries
+    fix "$target"
+    # Then fix each child, skipping .ssh
+    for entry in "$target"/* "$target"/.*; do
+        case "$(basename "$entry")" in
+            .|..|.ssh) continue ;;
+        esac
+        [ -e "$entry" ] || continue
+        fix "$entry"
+    done
+else
+    fix "$target"
+fi
