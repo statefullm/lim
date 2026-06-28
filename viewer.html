@@ -144,10 +144,14 @@
         pre {
             position: relative;
         }
+        .code-block-wrapper {
+            position: relative;
+            margin: 4px 0;
+        }
         .copy-btn {
             position: absolute;
             top: 8px;
-            right: 8px;
+            right: 16px;
             padding: 4px 10px;
             font-size: 0.75em;
             font-family: inherit;
@@ -295,11 +299,11 @@
             span.parentNode.removeChild(span);
             wrapperDiv.removeAttribute('data-raw');
 
-            // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
+            // Render KaTeX and inject copy buttons on newly inserted nodes.
+            // Both operations must happen in a single pass to avoid stale DOM references.
             if (firstInserted) {
                 var anchor = firstInserted.previousSibling || firstInserted;
-                renderMathInRange(anchor, lastInserted);
-                injectCopyButtonsInRange(anchor, lastInserted);
+                renderMathAndCopyButtonsInRange(wrapperDiv, anchor, lastInserted);
             }
 
             // If this was a THINK segment that just finished rendering,
@@ -382,12 +386,11 @@
             // Update the raw span to contain only the remaining tail.
             span.textContent = remainingTail;
 
-            // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
-            // O(1) per step, not O(n) rescanning of already-rendered content.
+            // Render KaTeX and inject copy buttons on newly inserted nodes.
+            // Both operations must happen in a single pass to avoid stale DOM references.
             if (firstInserted) {
                 var anchor = firstInserted.previousSibling || firstInserted;
-                renderMathInRange(anchor, lastInserted);
-                injectCopyButtonsInRange(anchor, lastInserted);
+                renderMathAndCopyButtonsInRange(wrapperDiv, anchor, lastInserted);
             }
         }
         // Handles $$...$$ math extraction and restoration for KaTeX.
@@ -539,11 +542,19 @@
         }
 
         // Inject copy buttons into <pre><code> blocks within a specific parent div.
+        // Buttons are placed in a wrapper div around each <pre> so they stay visible
+        // when the code block is scrolled (the <pre> has overflow-y: auto).
         function injectCopyButtons(parentDiv) {
             parentDiv.querySelectorAll('pre code').forEach(function(codeEl) {
                 const pre = codeEl.parentElement;
                 if (!pre || pre.classList.contains('copy-btn-host')) return;
                 pre.classList.add('copy-btn-host');
+
+                // Wrap <pre> in a relative-positioned container.
+                const wrapper = document.createElement('div');
+                wrapper.className = 'code-block-wrapper';
+                pre.parentNode.insertBefore(wrapper, pre);
+                wrapper.appendChild(pre);
 
                 const btn = document.createElement('button');
                 btn.className = 'copy-btn';
@@ -563,15 +574,23 @@
                         fallbackCopy(textToCopy, btn);
                     }
                 });
-                pre.appendChild(btn);
+                wrapper.appendChild(btn);
             });
         }
 
-        // Inject copy buttons only into <pre><code> blocks within the nodes between
-        // startNode (exclusive) and endNode (inclusive).  Avoids O(n^2) rescanning
-        // of already-processed code blocks on every progressive-render step.
-        function injectCopyButtonsInRange(startNode, endNode) {
+        // Render KaTeX and inject copy buttons over the nodes between startNode
+        // (exclusive) and endNode (inclusive).  KaTeX rendering requires moving
+        // nodes into a temp container; copy button injection does not.
+        // When startNode has no previous sibling, it is included in the copy
+        // button scan since it may itself contain <pre><code> blocks (e.g., when
+        // marked output begins with a code fence and a trailing \n text node makes
+        // lastInserted point elsewhere).  But startNode is NOT passed through KaTeX
+        // since it may contain already-rendered math from a previous step.
+        function renderMathAndCopyButtonsInRange(wrapperDiv, startNode, endNode) {
             var parent = startNode.parentNode;
+            var includeStart = !startNode.previousSibling;
+
+            // Collect nodes between startNode (exclusive) and endNode (inclusive).
             var nodes = [];
             var node = startNode.nextSibling;
             while (node && node !== endNode) {
@@ -580,15 +599,38 @@
             }
             nodes.push(endNode);
 
-            // Build a temporary container with exactly the new nodes.
+            // Save the insertion anchor before moving nodes out of the DOM.
+            var insertAnchor = startNode.nextSibling;
+
+            // Build a temporary container with the new nodes (excluding startNode).
             var tmp = document.createElement('div');
             nodes.forEach(function(n) { tmp.appendChild(n); });
 
+            // Render KaTeX on the new content only (startNode may have already-rendered math).
+            if (typeof renderMathInElement === 'function') {
+                renderMathInElement(tmp, {
+                    delimiters: [
+                        { left: '$$',  right: '$$',  display: true  },
+                        { left: '$',   right: '$',   display: false },
+                        { left: '\\(', right: '\\)', display: false },
+                        { left: '\\[', right: '\\]', display: true  }
+                    ],
+                    throwOnError: false
+                });
+            }
+
+            // Inject copy buttons on the new content.
             injectCopyButtons(tmp);
 
-            // Move nodes back into the real DOM.
-            while (tmp.firstChild) {
-                parent.insertBefore(tmp.firstChild, startNode.nextSibling);
+            // Also scan startNode for copy buttons if it has no previous sibling.
+            // We query it directly without moving it (it may have already-rendered math).
+            if (includeStart) {
+                injectCopyButtons(startNode);
+            }
+
+            // Move nodes back into the real DOM, preserving original order.
+            for (var i = nodes.length - 1; i >= 0; i--) {
+                parent.insertBefore(nodes[i], insertAnchor);
             }
         }
 
@@ -604,42 +646,6 @@
                     ],
                     throwOnError: false
                 });
-            }
-        }
-
-        // Render math with KaTeX only on the nodes between startNode (exclusive)
-        // and endNode (inclusive) within their shared parent.  This avoids the
-        // O(n^2) behaviour of rescanning already-rendered content on every
-        // progressive-render step: each new fragment is rendered exactly once.
-        function renderMathInRange(startNode, endNode) {
-            if (typeof renderMathInElement !== 'function') return;
-
-            var parent = startNode.parentNode;
-            var nodes = [];
-            var node = startNode.nextSibling;
-            while (node && node !== endNode) {
-                nodes.push(node);
-                node = node.nextSibling;
-            }
-            nodes.push(endNode);  // inclusive
-
-            // Build a temporary container with exactly the new nodes.
-            var tmp = document.createElement('div');
-            nodes.forEach(function(n) { tmp.appendChild(n); });
-
-            renderMathInElement(tmp, {
-                delimiters: [
-                    { left: '$$',  right: '$$',  display: true  },
-                    { left: '$',   right: '$',   display: false },
-                    { left: '\\(', right: '\\)', display: false },
-                    { left: '\\[', right: '\\]', display: true  }
-                ],
-                throwOnError: false
-            });
-
-            // Move the (now math-rendered) nodes back into the real DOM.
-            while (tmp.firstChild) {
-                parent.insertBefore(tmp.firstChild, startNode.nextSibling);
             }
         }
 
