@@ -302,6 +302,11 @@
                 injectCopyButtonsInRange(anchor, lastInserted);
             }
 
+            // Fallback: scan the entire wrapper for any <pre> blocks missed by
+            // the range-based pass.  The copy-btn-host guard ensures each <pre>
+            // is processed at most once, so this is O(missed), not O(n).
+            injectCopyButtons(wrapperDiv);
+
             // If this was a THINK segment that just finished rendering,
             // collapse it immediately -- thinking is done.
             if (segments[segIndex].type === SEG_THINK) {
@@ -343,24 +348,29 @@
             // How much has already been rendered (i.e., is not in the raw span)?
             var renderedPrefixLen = fullText.length - span.textContent.length;
 
-            // Find the first \n\n in the raw tail portion.
+            // Find \n\n boundaries that are NOT inside a fenced code block.
+            // We scan character-by-character tracking fence state so that blank
+            // lines inside ``` ... ``` do not trigger an early split.
             var searchPos = renderedPrefixLen;
-            var newBreak = fullText.indexOf('\n\n', searchPos);
-            if (newBreak < 0) return;  // No paragraph boundary in the tail yet.
+            var tail = fullText.substring(searchPos);
+            var inFence = false;
+            var lastValidBreak = -1;
 
-            // Find the LAST \n\n in the tail, so we render all completed
-            // paragraphs and keep only the current incomplete one as buffer.
-            var lastBreak = newBreak;
-            var scan = newBreak;
-            while (true) {
-                var nb = fullText.indexOf('\n\n', scan + 2);
-                if (nb < 0) break;
-                lastBreak = nb;
-                scan = nb;
+            for (var i = 0; i < tail.length; i++) {
+                if (tail[i] === '`' && tail.substring(i, i + 3) === '```') {
+                    inFence = !inFence;
+                    i += 2;
+                    continue;
+                }
+                if (!inFence && tail[i] === '\n' && tail[i + 1] === '\n') {
+                    lastValidBreak = searchPos + i;
+                    i++;
+                }
             }
 
-            // renderEnd: position after the last \n\n we want to consume.
-            var renderEnd = lastBreak + 2;
+            if (lastValidBreak < 0) return;
+
+            var renderEnd = lastValidBreak + 2;
 
             // The new delta to parse: text between the previous render point
             // and the new render point.  This is O(delta), not O(total).
@@ -389,6 +399,11 @@
                 renderMathInRange(anchor, lastInserted);
                 injectCopyButtonsInRange(anchor, lastInserted);
             }
+
+            // Fallback: scan the entire wrapper for any <pre> blocks missed by
+            // the range-based pass.  The copy-btn-host guard ensures each <pre>
+            // is processed at most once, so this is O(missed), not O(n).
+            injectCopyButtons(wrapperDiv);
         }
         // Handles $$...$$ math extraction and restoration for KaTeX.
         function rawTextToHtml(text, segType) {
