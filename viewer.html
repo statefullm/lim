@@ -144,10 +144,14 @@
         pre {
             position: relative;
         }
+        .code-block-wrapper {
+            position: relative;
+            margin: 4px 0;
+        }
         .copy-btn {
             position: absolute;
             top: 8px;
-            right: 8px;
+            right: 16px;
             padding: 4px 10px;
             font-size: 0.75em;
             font-family: inherit;
@@ -554,11 +558,19 @@
         }
 
         // Inject copy buttons into <pre><code> blocks within a specific parent div.
+        // Buttons are placed in a wrapper div around each <pre> so they stay visible
+        // when the code block is scrolled (the <pre> has overflow-y: auto).
         function injectCopyButtons(parentDiv) {
             parentDiv.querySelectorAll('pre code').forEach(function(codeEl) {
                 const pre = codeEl.parentElement;
                 if (!pre || pre.classList.contains('copy-btn-host')) return;
                 pre.classList.add('copy-btn-host');
+
+                // Wrap <pre> in a relative-positioned container.
+                const wrapper = document.createElement('div');
+                wrapper.className = 'code-block-wrapper';
+                pre.parentNode.insertBefore(wrapper, pre);
+                wrapper.appendChild(pre);
 
                 const btn = document.createElement('button');
                 btn.className = 'copy-btn';
@@ -578,7 +590,7 @@
                         fallbackCopy(textToCopy, btn);
                     }
                 });
-                pre.appendChild(btn);
+                wrapper.appendChild(btn);
             });
         }
 
