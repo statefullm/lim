@@ -1,8 +1,26 @@
 import * as vscode from 'vscode';
 
+// Track the viewer URL so reload can re-open it.
+let currentViewerUrl: string | undefined;
+
 export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('lim.workspace.start', startWorkspace)
+    );
+
+    // Reload the Simple (integrated) Browser: close all tabs, open a fresh one.
+    context.subscriptions.push(
+        vscode.commands.registerCommand('lim.workspace.reload', async () => {
+            if (!currentViewerUrl) return;
+
+            await closeAllWebviewTabs();
+
+            const activeTerminal = vscode.window.activeTerminal;
+            vscode.commands.executeCommand('simpleBrowser.api.open', currentViewerUrl);
+            if (activeTerminal) {
+                setTimeout(() => activeTerminal.show(false), 200);
+            }
+        })
     );
 
     // Handle Ctrl+J in terminal: send file separator directly to the active terminal.
@@ -27,18 +45,35 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(statusBar);
 }
 
+// Close Simple Browser tabs matching our viewer URL or title.
+async function closeAllWebviewTabs(): Promise<void> {
+    for (const group of vscode.window.tabGroups.all) {
+        const toClose: vscode.Tab[] = [];
+        for (const tab of group.tabs) {
+            if (tab.label === 'LIM Viewer') {
+                toClose.push(tab);
+            }
+        }
+        for (const tab of toClose) {
+            await vscode.window.tabGroups.close(tab);
+        }
+    }
+}
+
 function startWorkspace() {
     const config = vscode.workspace.getConfiguration('lim.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
 
     const host = process.env.LIM_HOST || getHostname();
     const viewerUrl = `http://${host}:${browserPort}/viewer.html`;
+    currentViewerUrl = viewerUrl;
 
     // Wait for the server to be up before opening the browser. Uses an async
     // fetch that resolves on first success -- not a busy loop, just event-driven
     // retries via setTimeout. Opens the browser only when viewer.html will load.
     waitForServer(host, browserPort).then(() => {
         vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
+        setTimeout(() => terminal.show(false), 200);
     });
 
     // Create an integrated terminal for the LIM REPL and show it at the bottom.

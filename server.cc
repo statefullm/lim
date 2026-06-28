@@ -317,12 +317,10 @@ void disable_browser_output() {
 }
 
 bool prompt_for_browser_connection() {
-    message("\n\033[1;35m[Waiting for browser connection...]\033[0m\n");
-    message("Load this URL in your browser:\n");
+    message("Load this URL in your browser, or reload with Ctrl+Shift+R:\n");
     message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
 
     if (wait_for_file(INOTIFY_DIR, "lim.browser_ready", false)) {
-        message("\033[1;32m[Browser connected! Ready to proceed.]\033[0m\n");
         return true;
     }
 

@@ -93,11 +93,12 @@ vscode: $(VSIX)
 $(VSIX): vscode-extension/src/extension.ts vscode-extension/package.json vscode-extension/tsconfig.json
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
-install: vscode
-	code --install-extension $(VSIX)
 
-vscode-uninstall: vscode FORCE
-	code --uninstall-extension undefined_publisher.vscode-extension
+install: vscode-uninstall vscode
+	code --install-extension $(VSIX) --force
+
+vscode-uninstall: FORCE
+	-code --uninstall-extension undefined_publisher.vscode-extension
 
 uninstall: vscode-uninstall
 
