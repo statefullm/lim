@@ -97,7 +97,7 @@ $(VSIX): vscode-extension/src/extension.ts \
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
 
-install: vscode-uninstall vscode
+install: vscode
 	code --install-extension $(VSIX) --force
 
 vscode-uninstall: FORCE
