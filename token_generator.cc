@@ -218,12 +218,14 @@ TokenGenerator::Result TokenGenerator::generate() {
     bool was_interrupted = false;
     bool early_exit = false;
 
-    // Decode timing: measure pure GPU compute time per token.
-    // Per-token timing isolates GPU decode from CPU overhead (sampling, output,
-    // tool detection). llama_synchronize() is effectively free here since
-    // llama_sampler_sample already blocks waiting for the previous token's logits.
-    double decode_time_sum = 0.0;
-    auto t_dec_start = chrono::high_resolution_clock::now();
+    // Generation timing: matches llama-cli's "Generation: X t/s" (t_token_generation).
+    // t_gen_start is set after sampling the first token (with synchronize), and
+    // t_gen_end is updated after every subsequent sample+sync, including the last.
+    // This measures N sampling operations + (N-1) decode cycles, identical to
+    // llama-cli's server-context.cpp timing window.
+    double gen_wall_time = 0.0;
+    auto t_gen_start = chrono::high_resolution_clock::now();
+    auto t_gen_end   = t_gen_start;
 
     while (true) {
         if (stop_generation) {
@@ -287,6 +289,16 @@ TokenGenerator::Result TokenGenerator::generate() {
             break;
         }
         llama_token next_token = llama_sampler_sample(smpl_, ctx_, batch_.n_tokens - 1);
+
+        // Generation timing: record start on first sampled token, end on every sample.
+        // llama_sampler_sample already synchronizes the context internally via
+        // llama_get_sampled_*_ith -> ctx->synchronize(), so no extra sync needed.
+        if (!honest_speed) {
+            if (t_count_ == 0) {
+                t_gen_start = chrono::high_resolution_clock::now();
+            }
+            t_gen_end = chrono::high_resolution_clock::now();
+        }
 
         // Track this sampled token for compact save/restore
         if (out_tokens_) out_tokens_->push_back(next_token);
@@ -590,8 +602,8 @@ TokenGenerator::Result TokenGenerator::generate() {
                 if (total_elapsed > 0) {
                     // Pick denominator based on honest_speed global
                     double denom = total_elapsed;  // default: wall clock ("honest")
-                    if (!honest_speed && decode_time_sum > 0.0) {
-                        denom = decode_time_sum;
+                    if (!honest_speed && t_count_ >= 1) {
+                        denom = chrono::duration<double>(now - t_gen_start).count();
                     }
                     double speed = t_count_ / denom;
                     double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
@@ -611,20 +623,17 @@ TokenGenerator::Result TokenGenerator::generate() {
         batch_.n_tokens = 0;
         common_batch_add(batch_, next_token, n_past_++, {0}, true);
 
-        // Time pure GPU decode (only when benchmark-style speed is enabled)
-        if (!honest_speed) {
-            t_dec_start = chrono::high_resolution_clock::now();
-        }
         if (!handle_llama_decode_error(ctx_, batch_)) {
             sync_n_past(ctx_, n_past_);
             early_exit = true;
             break;
         }
-        if (!honest_speed) {
-            llama_synchronize(ctx_);
-            decode_time_sum += chrono::duration<double>(chrono::high_resolution_clock::now() - t_dec_start).count();
-        }
     } // END INNER TOKEN LOOP
+
+    // Compute wall-clock generation time (first sample -> last sample).
+    if (!honest_speed && t_count_ > 0) {
+        gen_wall_time = chrono::duration<double>(t_gen_end - t_gen_start).count();
+    }
 
     // Flush remaining unprinted text
     if (!unprinted_text_.empty()) {
@@ -649,7 +658,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.has_tool_call = trigger_tool_execution_ && tool_start_ != string::npos && tool_end_ != string::npos;
     result.was_interrupted = was_interrupted;
     result.early_exit = early_exit;
-    result.decode_time = decode_time_sum;
+    result.decode_time = gen_wall_time;
 
     return result;
 }

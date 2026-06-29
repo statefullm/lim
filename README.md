@@ -276,7 +276,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
-| `LIM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic (includes all CPU overhead). Default `0` reports benchmark-style tokens/s matching llama-cli eval time. |
+| `LIM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic -- tokens / total generate() call time, including all CPU-side overhead (sampling, output rendering, tool-call detection). Default `0` reports generation time matching llama-cli's "Generation: X t/s" -- measured from first-token sample+sync to last-token sample+sync, covering N sampling operations and (N-1) decode cycles. |
 | `LIM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
 | `LIM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
 | `LIM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
@@ -407,7 +407,7 @@ coder cats          # restores from cats.save
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn — as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
 **Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
 

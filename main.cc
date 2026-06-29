@@ -49,8 +49,8 @@ ofstream token_log;
 string INITIAL_CWD;
 
 // LIM_HONEST_SPEED: how the t/s diagnostic is computed.
-//   0 (default): benchmark-style -- tokens / decode-only time (excludes sampling,
-//                 output rendering, tool detection scanning). Matches llama-cli.
+//   0 (default): benchmark-style -- tokens / sample+sync window (first to last token),
+//                 covering N sampling ops + (N-1) decode cycles. Matches llama-cli.
 //   1: "honest" speed -- tokens / total wall clock time (includes all CPU overhead).
 bool honest_speed = false;  // default: benchmark-style
 
@@ -556,7 +556,7 @@ int main(int argc, char ** argv) {
                         n_restored = -1; // sentinel: indicates cancelled restore
                         stop_generation = 0;
                     } else if (!line) {
-                        // Ctrl+D (EOF) — skip decode, start fresh session
+                        // Ctrl+D (EOF) -- skip decode, start fresh session
                         n_restored = -1; // sentinel: indicates cancelled restore
                     } else {
                         string input = line;

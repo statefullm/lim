@@ -17,7 +17,8 @@ void log_tokens(const std::string& label, const std::vector<llama_token>& toks, 
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
 
 // Print speed/context diagnostic to stdout (used during auto-continue chains)
-// When decode_time > 0 and honest_speed is false, uses decode_time as denominator.
+// When gen_wall_time > 0 and honest_speed is false, uses wall-clock generation time
+// (first-token decode start to last-token decode end), matching llama-cli's "Generation t/s".
 void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time = 0.0);
 
 inline int round_int(double d) { return (int)(d + 0.5); }
