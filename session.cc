@@ -835,6 +835,7 @@ bool ChatSession::run() {
             }
 
             clear_context();
+            state_.file_cache.clear();
             state_.auto_continue = false;
             state_.prev_was_interrupted = false;
             reset_session_state();
