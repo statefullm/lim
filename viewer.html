@@ -19,7 +19,7 @@
             line-height: 1.6;
             margin: 0;
             padding: 20px 5%;
-            padding-bottom: 15px;
+            padding-bottom: 10px;
         }
         #output {
             max-width: 100%;
@@ -705,6 +705,19 @@
 
             let hasChanges = false;
 
+            // Force-render any remaining tails on streaming segments whose content
+            // hasn't changed (i.e., generation for that segment appears finished).
+            // This ensures that paragraphs without a trailing \n\n are rendered even
+            // if the 200 ms debounce hasn't fired yet.
+            for (let i = 0; i < segments.length; i++) {
+                if (i >= segRenderedContent.length) continue;
+                if (segments[i].content !== segRenderedContent[i]) continue;
+                var w = outputDiv.querySelector('[data-seg="' + i + '"]');
+                if (!w || !w.hasAttribute('data-raw')) continue;
+                renderRawTail(w, i);
+                hasChanges = true;
+            }
+
             // Process existing segments: re-render only if content changed.
             for (let i = 0; i < segments.length; i++) {
                 if (i < segRenderedContent.length) {
@@ -889,13 +902,16 @@
                 // NOT discard the rest of the frame (e.g., a speed diagnostic sent
                 // immediately after clear).  Strip the marker and continue parsing.
                 if (data.includes('\x01')) {
-                    segments = [];
-                    segRenderedContent = [];
-                    outputDiv.innerHTML = '';
+                    // Render any remaining tails on streaming segments before clearing,
+                    // so that content from a truncated or interrupted generation is not lost.
                     if (renderTimer !== null) {
                         clearTimeout(renderTimer);
                         renderTimer = null;
                     }
+
+                    segments = [];
+                    segRenderedContent = [];
+                    outputDiv.innerHTML = '';
                     data = data.replace(/\x01/g, '');
                     if (data.length === 0) return;
                 }
