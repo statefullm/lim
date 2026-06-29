@@ -53,7 +53,7 @@ LDFLAGS = -L$(LLAMA_BUILD_DIR)/bin \
 
 MAKEDEPEND = $(CXXFLAGS) -O0 -M -MG -DDEPEND
 
-FILES = output server tools filesystem network parsers signals model session token_generator tool_executor session_utils
+FILES = main output server tools filesystem network parsers signals model session token_generator tool_executor session_utils
 
 TARGET = lim
 
@@ -78,12 +78,12 @@ $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so: $(
 	@echo "[llama.cpp] Building..."
 	cd $(LLAMA_DIR) && cmake --build $(abspath $(LLAMA_BUILD_DIR)) --target llama --target llama-common
 
-$(TARGET): main.o $(FILES:=.o) $(FILES:=.h) | $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so
-	$(CXX) $(CXXFLAGS) main.o $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
+$(TARGET): $(FILES:=.o) | $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so
+	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 else
 # Use pre-built llama.cpp from external directory
-$(TARGET): main.o $(FILES:=.o) $(FILES:=.h)
-	$(CXX) $(CXXFLAGS) main.o $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
+$(TARGET): $(FILES:=.o)
+	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 endif
 
 VSIX = vscode-extension/vscode-extension-0.1.0.vsix
@@ -115,7 +115,7 @@ llama-clean:
 distclean: clean llama-clean
 
 .SUFFIXES: .cc .o .d
-%.o: %.cc $(FILES:=.cc)
+%.o: %.cc %.d $(FILES:=.cc)
 	$(CXX) $(CXXFLAGS) -o $@ -c $<
 
 %.d: %.cc

@@ -3,6 +3,7 @@
 
 #include <string>
 #include <vector>
+#include <set>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
@@ -275,6 +276,46 @@ static int physical_core_count() {
 }
 
 // ---------------------------------------------------------------------------
+// Return the number of physical P-cores (no E-cores, no HT siblings).
+// On hybrid CPUs this excludes slow efficiency cores from inference threading.
+// On non-hybrid CPUs falls back to physical_core_count().
+// ---------------------------------------------------------------------------
+static int p_core_thread_count() {
+    std::string p, e;
+    if (!get_core_split(p, e)) {
+        // Non-hybrid: all cores are equal, use physical count
+        return physical_core_count();
+    }
+    // Hybrid: count unique physical P-cores by deduplicating sibling lists.
+    // Each unique thread_siblings_list value represents one physical core.
+    // P-cores have HT siblings (e.g., "0-1"), E-cores are single-threaded (e.g., "16").
+    FILE* fp = popen(
+        "bash -c '"
+        "shopt -s nullglob; "
+        "for d in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do "
+        "  s=$(cat $d 2>/dev/null); "
+        "  echo \"$s\"; "
+        "done'",
+        "r"
+    );
+    if (!fp) return physical_core_count();
+
+    std::set<std::string> unique_siblings;
+    char line[128];
+    while (fgets(line, sizeof(line), fp)) {
+        std::string sib(line);
+        while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
+        // If siblings contain a dash, this CPU has hyperthreading -> P-core
+        if (sib.find('-') != std::string::npos) {
+            unique_siblings.insert(sib);
+        }
+    }
+    pclose(fp);
+
+    return !unique_siblings.empty() ? static_cast<int>(unique_siblings.size()) : physical_core_count();
+}
+
+// ---------------------------------------------------------------------------
 // Log a one-line diagnostic describing the detected topology.
 // ---------------------------------------------------------------------------
 static void log_core_detection(std::ostream& os) {
@@ -304,4 +345,3 @@ static void log_core_detection(std::ostream& os) {
 } // namespace Taskset
 
 #endif // TASKSET_H
-

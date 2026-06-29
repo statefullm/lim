@@ -318,14 +318,30 @@ int main(int argc, char ** argv) {
         if ((env = getenv("LIM_THREADS")) != nullptr) {
             cparams.n_threads = atoi(env);
         } else {
-            cparams.n_threads = Taskset::physical_core_count();
+            cparams.n_threads = Taskset::p_core_thread_count();
         }
         if ((env = getenv("LIM_THREADS_BATCH")) != nullptr) {
             cparams.n_threads_batch = atoi(env);
         } else {
-            cparams.n_threads_batch = Taskset::physical_core_count();
+            cparams.n_threads_batch = Taskset::p_core_thread_count();
         }
     }
+
+    // KV-cache types: override via LIM_CACHE_TYPE_K / LIM_CACHE_TYPE_V
+    // Accepted values: F16, Q4_0, Q5_0, Q5_1, Q8_0, Q8_1 (default Q8_0)
+    auto parse_kv_type = [](const char* env, ggml_type fallback) -> ggml_type {
+        if (!env || !env[0]) return fallback;
+        if (strcmp(env, "F16") == 0) return GGML_TYPE_F16;
+        if (strcmp(env, "Q4_0") == 0) return GGML_TYPE_Q4_0;
+        if (strcmp(env, "Q5_0") == 0) return GGML_TYPE_Q5_0;
+        if (strcmp(env, "Q5_1") == 0) return GGML_TYPE_Q5_1;
+        if (strcmp(env, "Q8_0") == 0) return GGML_TYPE_Q8_0;
+        if (strcmp(env, "Q8_1") == 0) return GGML_TYPE_Q8_1;
+        cerr << "Warning: unknown LIM_CACHE_TYPE value '" << env << "', using default." << endl;
+        return fallback;
+    };
+    cparams.type_k = parse_kv_type(getenv("LIM_CACHE_TYPE_K"), GGML_TYPE_Q8_0);
+    cparams.type_v = parse_kv_type(getenv("LIM_CACHE_TYPE_V"), GGML_TYPE_Q8_0);
 
     // Vectors must live through model loading since mparams holds pointers into them.
     const size_t ndevs = llama_max_devices();
@@ -333,27 +349,12 @@ int main(int argc, char ** argv) {
     const size_t n_overrides = llama_max_tensor_buft_overrides();
     std::vector<llama_model_tensor_buft_override> tensor_buft_overrides(n_overrides, {nullptr, nullptr});
 
-    // Try loading the model first with full GPU offload. If it fails (e.g., OOM),
-    // retry with common_fit_params which can do MoE-aware partial layer offloading.
-    llama_model * model = llama_model_load_from_file(argv[1], mparams);
-
-    if (!model && !gpu_layers_explicit && mparams.n_gpu_layers < 0) {
-        diag("Initial model load failed, attempting to fit parameters to device memory...", "\033[33m");
-
-        // Reset mparams to defaults so common_fit_params can adjust n_gpu_layers
-        mparams = llama_model_default_params();
-        // Re-apply non-fit-sensitive settings
-        if ((getenv("LIM_USE_MMAP")) != nullptr) {
-            mparams.use_mmap = atoi(getenv("LIM_USE_MMAP")) != 0;
-        } else {
-            mparams.use_mmap = false;
-        }
-        if ((getenv("LIM_USE_MLOCK")) != nullptr) {
-            mparams.use_mlock = atoi(getenv("LIM_USE_MLOCK")) != 0;
-        } else {
-            mparams.use_mlock = true;
-        }
-
+    // Use common_fit_params for GPU layer offloading (matches llama-cli behavior).
+    // For MoE models this enables partial layer offloading when the full model
+    // doesn't fit in VRAM. Always go through the fitter rather than trying a
+    // raw load first, since a failed load can leave GPU state that reduces
+    // available memory for subsequent fitting attempts.
+    if (!gpu_layers_explicit && mparams.n_gpu_layers < 0) {
         std::vector<size_t> margins(ndevs, 1024 * 1024 * 1024);
         mparams.tensor_split = tensor_split.data();
         mparams.tensor_buft_overrides = tensor_buft_overrides.data();
@@ -369,15 +370,17 @@ int main(int argc, char ** argv) {
             GGML_LOG_LEVEL_ERROR);
 
         if (fit_status == COMMON_PARAMS_FIT_STATUS_SUCCESS) {
-            diag("Model fit successful: " + to_string(mparams.n_gpu_layers) + " layers on GPU", "\033[32m");
+            if (mparams.n_gpu_layers >= 0) {
+                diag("Model fit successful: " + to_string(mparams.n_gpu_layers) + " layers on GPU", "\033[32m");
+            }
         } else if (fit_status == COMMON_PARAMS_FIT_STATUS_FAILURE) {
             diag("Warning: could not fully fit model to device memory, using fallback parameters", "\033[33m");
         } else {
             diag("Error during model fitting, proceeding with default parameters", "\033[31m");
         }
-
-        model = llama_model_load_from_file(argv[1], mparams);
     }
+
+    llama_model * model = llama_model_load_from_file(argv[1], mparams);
 
     if (!model) return 1;
 
@@ -386,22 +389,6 @@ int main(int argc, char ** argv) {
     // Apply remaining context params that fit_params shouldn't touch
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
-
-    // KV-cache types: override via LIM_TYPE_K / LIM_TYPE_V
-    // Accepted values: F16, Q8_0, Q4_0, Q5_0, Q5_1, Q8_1 (default Q8_0)
-    auto parse_kv_type = [](const char* env, ggml_type fallback) -> ggml_type {
-        if (!env || !env[0]) return fallback;
-        if (strcmp(env, "F16") == 0) return GGML_TYPE_F16;
-        if (strcmp(env, "Q4_0") == 0) return GGML_TYPE_Q4_0;
-        if (strcmp(env, "Q5_0") == 0) return GGML_TYPE_Q5_0;
-        if (strcmp(env, "Q5_1") == 0) return GGML_TYPE_Q5_1;
-        if (strcmp(env, "Q8_0") == 0) return GGML_TYPE_Q8_0;
-        if (strcmp(env, "Q8_1") == 0) return GGML_TYPE_Q8_1;
-        cerr << "Warning: unknown LIM_TYPE value '" << env << "', using default." << endl;
-        return fallback;
-    };
-    cparams.type_k = parse_kv_type(getenv("LIM_TYPE_K"), GGML_TYPE_Q8_0);
-    cparams.type_v = parse_kv_type(getenv("LIM_TYPE_V"), GGML_TYPE_Q8_0);
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
