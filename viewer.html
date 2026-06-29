@@ -862,12 +862,33 @@
                 outputDiv.removeChild(outputDiv.lastChild);
             }
 
+            // Render any remaining raw tails on non-THINK segments immediately
+            // before scrolling, so that short LLM outputs without paragraph
+            // boundaries are fully visible in the viewport.  THINK segments
+            // are skipped here -- they collapse only when a non-THINK segment
+            // appears after them (handled below) or by the debounce timer.
+            if (hasChanges) {
+                for (var fi = 0; fi < segments.length; fi++) {
+                    if (segments[fi].type === SEG_THINK) continue;
+                    var fw = outputDiv.querySelector('[data-seg="' + fi + '"]');
+                    if (!fw || !fw.hasAttribute('data-raw')) continue;
+                    renderRawTail(fw, fi);
+                }
+            }
+
             // Auto-scroll only when the user was near the bottom before the new
             // content was rendered.  This lets the user scroll back to read earlier
             // output without being forcibly pulled back to the bottom while
             // generation continues.
             if (hasChanges && wasAtBottom) {
-                window.scrollTo(0, document.body.scrollHeight);
+                requestAnimationFrame(function() {
+                    var last = outputDiv.lastElementChild;
+                    if (last) {
+                        last.scrollIntoView({ block: 'end' });
+                    } else {
+                        window.scrollTo(0, document.body.scrollHeight);
+                    }
+                });
             }
         }
 
