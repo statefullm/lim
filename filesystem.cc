@@ -597,7 +597,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
   // Limit output to avoid overwhelming LLM context and browser display.
   // All three consumers (LLM result, browser stream, chat_log) see the same bounded output.
-  static constexpr size_t MAX_OUTPUT_SIZE = 32768;  // 32KB
+  static constexpr size_t MAX_OUTPUT_SIZE = 8192;  // 8KB
   bool truncated = false;
 
   // Signal that streaming is about to begin.
@@ -633,11 +633,10 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
             if (on_chunk) on_chunk(std::string(buffer, remaining));
             if (chat_log.is_open()) { chat_log << std::string(buffer, remaining); chat_log.flush(); }
 
-            // Inject truncation marker for all consumers.
-            string trunc_msg = "\n[Output truncated at " + std::to_string(MAX_OUTPUT_SIZE) + " bytes]\n";
-            result += trunc_msg;
-            if (on_chunk) on_chunk(trunc_msg);
-            if (chat_log.is_open()) { chat_log << trunc_msg; chat_log.flush(); }
+            // Mark truncation; actual message will be appended after exit code is known.
+            // Show visual ellipsis to browser and chat_log only (not to LLM result).
+            if (on_chunk) on_chunk("\n...");
+            if (chat_log.is_open()) { chat_log << "\n..."; chat_log.flush(); }
             truncated = true;
           } else {
             result += buffer;
@@ -708,9 +707,17 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     chat_log << "\n\n";
     chat_log.flush();
 
-    // Always include exit code so the LLM can distinguish success from failure
-    if (exit_code > 0) {
-      result = "[Exit code: " + to_string(exit_code) + "]\n" + result;
+    // If output was truncated, append truncation notice with exit code.
+    if (truncated) {
+      string trunc_msg = "\n[Output truncated at " + std::to_string(MAX_OUTPUT_SIZE) + " bytes; exit code " + to_string(exit_code) + "]\n";
+      result += trunc_msg;
+      if (on_chunk) on_chunk(trunc_msg);
+      if (chat_log.is_open()) { chat_log << trunc_msg; chat_log.flush(); }
+    } else {
+      // Always include exit code so the LLM can distinguish success from failure
+      if (exit_code > 0) {
+        result = "[Exit code: " + to_string(exit_code) + "]\n" + result;
+      }
     }
   }
   return result;
