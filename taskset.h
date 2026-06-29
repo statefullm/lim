@@ -40,6 +40,33 @@
 namespace Taskset {
 
 // ---------------------------------------------------------------------------
+// Check whether a thread_siblings_list string indicates SMT/HT.
+// Intel uses range notation ("0-1"), AMD uses comma-separated ("0,6").
+// A single-threaded core has just a number ("16").
+// ---------------------------------------------------------------------------
+static bool has_smt(const std::string& sib) {
+    return sib.find('-') != std::string::npos || sib.find(',') != std::string::npos;
+}
+
+// ---------------------------------------------------------------------------
+// Count the number of logical threads in a thread_siblings_list string.
+// Handles both Intel range notation ("0-1" -> 2) and AMD comma-separated ("0,6" -> 2).
+// ---------------------------------------------------------------------------
+static int sibling_count(const std::string& sib) {
+    if (sib.find('-') != std::string::npos && sib.find(',') == std::string::npos) {
+        // Range: "0-1" means 2 threads
+        size_t dash = sib.find('-');
+        int lo = std::atoi(sib.substr(0, dash).c_str());
+        int hi = std::atoi(sib.substr(dash + 1).c_str());
+        return hi - lo + 1;
+    }
+    // Comma-separated or single: count entries
+    int count = 1;
+    for (char c : sib) { if (c == ',') count++; }
+    return count;
+}
+
+// ---------------------------------------------------------------------------
 // Check whether the pinning command exists on $PATH.  Cached after first call.
 // ---------------------------------------------------------------------------
 static bool has_pinning_cmd() {
@@ -111,7 +138,7 @@ static bool get_core_split(std::string& p_mask, std::string& e_mask) {
     }
 
     // --- Auto-detect: read thread_siblings_list from sysfs ---
-    // P-cores have hyperthreading (siblings contain "-"), E-cores don't.
+    // SMT cores have multiple siblings (Intel: "0-1", AMD: "0,6"), E-cores are single ("16").
     // "shopt -s nullglob" ensures the loop body never runs if the glob doesn't match
     // (e.g., on macOS where /sys/devices/system/cpu/ doesn't exist).
     FILE* fp = popen(
@@ -145,8 +172,8 @@ static bool get_core_split(std::string& p_mask, std::string& e_mask) {
         if (cpu_str.find_first_not_of("0123456789") != std::string::npos) continue;
         if (id < 0) continue;
 
-        // If siblings contain a dash, this CPU has hyperthreading -> P-core
-        if (sib.find('-') != std::string::npos) {
+        // If siblings contain a range or comma, this CPU has SMT -> P-core (on hybrid)
+        if (has_smt(sib)) {
             p_cores.push_back(id);
         } else {
             e_cores.push_back(id);
@@ -247,12 +274,9 @@ static int physical_core_count() {
         std::string sib = siblings.substr(cp + 1);
         while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
 
-        if (sib.find('-') != std::string::npos) {
+        if (has_smt(sib)) {
             // HT core: count the logical CPUs in the range
-            size_t dash = sib.find('-');
-            int lo = std::atoi(sib.substr(0, dash).c_str());
-            int hi = std::atoi(sib.substr(dash + 1).c_str());
-            ht_logical.push_back(hi - lo); // number of siblings per physical core
+            ht_logical.push_back(sibling_count(sib)); // number of threads per physical core
         } else {
             non_ht.push_back(std::atoi(cpu_str.c_str()));
         }
@@ -267,7 +291,7 @@ static int physical_core_count() {
     int physical = 0;
     if (!ht_logical.empty()) {
         // All HT entries share the same sibling count (e.g., 2 for hyperthreading)
-        int siblings_per_core = ht_logical[0] + 1; // "0-1" means 2 logical per physical
+        int siblings_per_core = ht_logical[0]; // already the thread count per physical core
         physical += static_cast<int>(ht_logical.size()) / siblings_per_core;
     }
     physical += static_cast<int>(non_ht.size());
@@ -288,7 +312,7 @@ static int p_core_thread_count() {
     }
     // Hybrid: count unique physical P-cores by deduplicating sibling lists.
     // Each unique thread_siblings_list value represents one physical core.
-    // P-cores have HT siblings (e.g., "0-1"), E-cores are single-threaded (e.g., "16").
+    // SMT cores have multiple siblings (Intel: "0-1", AMD: "0,6"), E-cores are single ("16").
     FILE* fp = popen(
         "bash -c '"
         "shopt -s nullglob; "
@@ -305,8 +329,8 @@ static int p_core_thread_count() {
     while (fgets(line, sizeof(line), fp)) {
         std::string sib(line);
         while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
-        // If siblings contain a dash, this CPU has hyperthreading -> P-core
-        if (sib.find('-') != std::string::npos) {
+        // If siblings contain a range or comma, this CPU has SMT -> P-core (on hybrid)
+        if (has_smt(sib)) {
             unique_siblings.insert(sib);
         }
     }
