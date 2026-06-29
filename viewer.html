@@ -424,11 +424,23 @@
             // is processed at most once, so this is O(missed), not O(n).
             injectCopyButtons(wrapperDiv);
         }
-        // Handles $$...$$ math extraction and restoration for KaTeX.
+        // Handles $$...$$ and $...$ math extraction and restoration for KaTeX.
+        // Extracts both display ($$) and inline ($) math before markdown processing
+        // so that marked doesn't corrupt delimiters or split them across paragraphs.
+        // Unclosed $ (incomplete inline math) is left as-is; it will be captured
+        // when the closing $ arrives in a later delta.
         function rawTextToHtml(text, segType) {
             var mathBlocks = [];
+
+            // Extract display math $$...$$ first (greedy across newlines).
             var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                mathBlocks.push(m.trim());
+                mathBlocks.push({ tex: m.trim(), display: true });
+                return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+            });
+
+            // Extract inline math $...$ (single line only; won't match across \n).
+            content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                mathBlocks.push({ tex: m.trim(), display: false });
                 return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
             });
 
@@ -440,18 +452,15 @@
                 html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
             }
 
+            // Restore math blocks with appropriate delimiters.
             html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                return '$$' + mathBlocks[parseInt(idx)] + '$$';
+                var block = mathBlocks[parseInt(idx)];
+                if (block.display) {
+                    return '$$' + block.tex + '$$';
+                } else {
+                    return '$' + block.tex + '$';
+                }
             });
-
-            if (segType === SEG_THINK) {
-                // For think segments, wrap in the think-block structure.
-                // But only on the first render of a think segment -- subsequent
-                // delta renders should NOT re-wrap.  The caller handles this:
-                // the initial creation wraps, progressiveRender just inserts deltas.
-                // Actually, for correctness we return unwrapped HTML here and let
-                // the initial segment creation handle wrapping.
-            }
 
             return html;
         }
@@ -508,11 +517,14 @@
         // Convert a single segment to HTML string.
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
-                // Extract $$...$$ blocks before markdown processing so marked
-                // doesn't corrupt the delimiters or split them across paragraphs.
+                // Extract $$...$$ and $...$ blocks before markdown processing.
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push(m.trim());
+                    mathBlocks.push({ tex: m.trim(), display: true });
+                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                });
+                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                    mathBlocks.push({ tex: m.trim(), display: false });
                     return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
                 });
 
@@ -524,17 +536,22 @@
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
 
-                // Restore math blocks as <div> elements so KaTeX can render them.
+                // Restore math blocks with appropriate delimiters.
                 html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
+                    var block = mathBlocks[parseInt(idx)];
+                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
                 });
                 return html;
             } else if (seg.type === SEG_THINK) {
                 // Think block: collapsible box with markdown + KaTeX.
-                // Extract $$...$$ blocks before markdown processing.
+                // Extract $$...$$ and $...$ blocks before markdown processing.
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push(m.trim());
+                    mathBlocks.push({ tex: m.trim(), display: true });
+                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                });
+                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                    mathBlocks.push({ tex: m.trim(), display: false });
                     return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
                 });
 
@@ -546,9 +563,10 @@
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
 
-                // Restore math blocks as raw $$...$$ delimiters for KaTeX to find.
+                // Restore math blocks with appropriate delimiters.
                 html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
+                    var block = mathBlocks[parseInt(idx)];
+                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
                 });
 
                 return '<div class="think-block">' +
@@ -901,7 +919,13 @@
                         // segment sits between its own prefix and the next prefix.
                         if (i > lastIdx) {
                             const payload = data.substring(lastIdx, i);
-                            if (pendingType !== null) {
+                            if (pendingType === SEG_SPEED) {
+                                // Speed diagnostic -- update status bar directly, don't create a segment.
+                                speedInfo = payload;
+                                statusDiv.textContent = speedInfo;
+                                statusDiv.className = 'status connected';
+                                pendingType = null;
+                            } else if (pendingType !== null) {
                                 // Content belongs to the pending type from a previous message.
                                 segments.push({ type: pendingType, content: payload });
                                 pendingType = null;
@@ -921,7 +945,13 @@
                 // Remaining text after last prefix goes to the current segment (or creates one).
                 if (lastIdx < data.length) {
                     const payload = data.substring(lastIdx);
-                    if (pendingType !== null) {
+                    if (pendingType === SEG_SPEED) {
+                        // Speed diagnostic -- update status bar directly.
+                        speedInfo = payload;
+                        statusDiv.textContent = speedInfo;
+                        statusDiv.className = 'status connected';
+                        pendingType = null;
+                    } else if (pendingType !== null) {
                         segments.push({ type: pendingType, content: payload });
                         pendingType = null;
                     } else if (segments.length > 0) {
@@ -939,17 +969,6 @@
                 // LLM-text tokens (each prefixed with \x02) merge into one block rather
                 // than each getting its own independent markdown render pass.
                 coalesceSegments();
-
-                // Extract speed/context diagnostics and update the status bar.
-                for (const seg of segments) {
-                    if (seg.type === SEG_SPEED && seg.content.length > 0) {
-                        speedInfo = seg.content;
-                        statusDiv.textContent = speedInfo;
-                        statusDiv.className = 'status connected';
-                    }
-                }
-                // Remove speed segments so they don't render as content.
-                segments = segments.filter(seg => seg.type !== SEG_SPEED);
 
                 render();
             };
