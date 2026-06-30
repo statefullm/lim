@@ -183,6 +183,8 @@ private:
     // Parsed command and optional save prefix
     Command last_cmd_ = Command::NONE;
     string save_prefix_;
+    // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
+    bool prev_was_save_ = false;
     // Last non-empty user input, used as checkpoint label for tool-call turns
     string last_user_input_;
 
@@ -801,6 +803,7 @@ bool ChatSession::run() {
     while (true) {
         stop_generation = 0;
         g_was_interrupted = 0;
+        prev_was_save_ = false;
 
         // 1. Get user input
         string user_input = get_user_input();
@@ -810,7 +813,8 @@ bool ChatSession::run() {
 
         if (last_cmd_ == Command::QUIT) {
             // If there's actual conversation to preserve, auto-save before exiting.
-            if (!state_.prompt_checkpoints.empty()) {
+            // Skip if the user just manually saved -- nothing has changed since then.
+            if (!state_.prompt_checkpoints.empty() && !prev_was_save_) {
                 string autosave_path = "log/" + to_string(state_.log_index) + ".save";
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
                 if (!ok) {
@@ -952,6 +956,7 @@ bool ChatSession::run() {
             } else {
                 diag("Session saved to " + save_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[32m");
                 log_entry("SYSTEM", "Session saved to " + save_path);
+                prev_was_save_ = true;
             }
             continue;
         }
