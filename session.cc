@@ -992,8 +992,11 @@ bool ChatSession::run() {
                 state_.auto_continue_depth_val = 0;
                 user_input = "";
             } else {
-                // Not interrupted -- nothing to resume. Return silently to prompt.
-                continue;
+                // Not interrupted, but user wants to keep the model going.
+                diag("Continuing generation...", "\033[1;33m");
+                state_.auto_continue = true;
+                state_.auto_continue_depth_val = 0;
+                user_input = "";
             }
         }
 
