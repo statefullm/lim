@@ -25,6 +25,7 @@
             max-width: 100%;
             margin: auto;
         }
+        #output > [data-seg] > :first-child { margin-top: 0; }
         pre {
             background-color: #2d2d2d;
             padding: 15px;
@@ -133,9 +134,12 @@
             font-size: 0.9em;
             line-height: 1.6;
         }
+        .think-body > :first-child { margin-top: 0; }
+        .think-body > :last-child { margin-bottom: 0; }
         .think-body.hidden {
             display: none;
         }
+
         .think-body pre {
             background-color: #352548;
         }
@@ -168,7 +172,6 @@
             opacity: 1;
             background-color: #505050;
         }
-
     </style>
 </head>
 <body>
@@ -180,6 +183,7 @@
         const outputDiv = document.getElementById('output');
         const statusDiv = document.getElementById('status');
         let speedInfo = '';
+        let userScrolledAway = false;  // set when user scrolls up during generation
 
         /* ------------------------------------------------------------------ */
         /*  Segment-based renderer                                            */
@@ -198,6 +202,7 @@
         const SEG_HTML       = '\x04';
         const SEG_SPEED      = '\x05';
         const SEG_THINK      = '\x06';
+        const SEG_TURN_END   = '\x07';
 
         /* Toggle think block visibility.  Survives re-renders because the
            wrapper div stores a data-think-collapsed attribute. */
@@ -238,60 +243,55 @@
         // Used to skip re-rendering unchanged segments (incremental rendering).
         let segRenderedContent = [];
 
+        // Track whether the user manually scrolled away from the bottom during
+        // the current generation turn.  If so, skip the auto-scroll at turn end.
+
         /* ------------------------------------------------------------------ */
-        /*  O(n) streaming with progressive paragraph-boundary rendering       */
+        /*  O(1) streaming with progressive paragraph-boundary rendering       */
         /* ------------------------------------------------------------------ */
         /*  Every token previously triggered marked.parse() on the entire
            accumulated segment plus a full renderMathInElement() DOM scan.
            That's O(n^2) -- the n-th token re-parses and re-scans all n-1
            previous tokens.
         /*
-        /*  Fix: during streaming, keep only a cursor element in the DOM.
-        /*       New text accumulates in segments[].content (in memory).
-        /*       When a paragraph boundary (\n\n) appears, render everything
-        /*       up to that boundary through marked + KaTeX and insert it
-        /*       before the cursor.  A scan position is tracked so each
-        /*       character is visited at most once -> O(n) total.
+        /*  Fix: during streaming, append raw text to a <span> (O(1)).
+        /*       When a new paragraph boundary (\n\n) appears in the tail,
+        /*       render everything up to that boundary through marked + KaTeX
+        /*       and keep only the incomplete tail as raw text.
+        /*       Each character is parsed exactly once -> O(n) total.
         /*       A 200 ms debounce renders whatever remains when the stream stops.
         /* ------------------------------------------------------------------ */
 
-        // Timer handle for the deferred final render (renders leftover tail).
-        var renderTimer = null;
-
-        // How long to wait after the last token before rendering any remaining
-        // raw tail.  200 ms is enough to catch pauses between turns.
-        var RENDER_THROTTLE_MS = 200;
-
-        // Schedule a final render of all raw tails.  Repeated calls reset timer.
+        // Schedule a final render of all raw tails.  No-op: the server now
+        // sends SEG_TURN_END when generation completes, which triggers
+        // finishAllRawSegments() directly without an arbitrary timeout.
         function scheduleFinalRender() {
-            if (renderTimer !== null) {
-                clearTimeout(renderTimer);
-            }
-            renderTimer = setTimeout(function () {
-                renderTimer = null;
-                finishAllRawSegments();
-            }, RENDER_THROTTLE_MS);
         }
 
         // Render the raw tail of a single segment.  Called by progressiveRender()
         // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
         // Only parses the new delta -- never re-parses already-rendered content.
         function renderRawTail(wrapperDiv, segIndex) {
-            var renderedLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
             var fullText = segments[segIndex].content;
+            var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
 
-            if (renderedLen >= fullText.length) {
+            var tail = fullText.substring(renderedPrefixLen);
+            if (tail.length === 0) {
                 wrapperDiv.removeAttribute('data-raw');
-                wrapperDiv.removeAttribute('data-rendered-len');
                 return;
             }
-
-            var tail = fullText.substring(renderedLen);
 
             // Parse only the tail text through markdown + KaTeX.
             var html = rawTextToHtml(tail, segments[segIndex].type);
 
-            // Append the rendered HTML fragment.
+            // Remove the zero-width cursor span if present.
+            var span = wrapperDiv.querySelector('span.raw-cursor');
+            if (span) {
+                span.parentNode.removeChild(span);
+            }
+
+            // Insert the rendered HTML fragment at the end of the wrapper.
+            // For think blocks, insert into .think-body; otherwise into wrapperDiv.
             var target = (segments[segIndex].type === SEG_THINK) ?
                 wrapperDiv.querySelector('.think-body') : wrapperDiv;
             var fragment = htmlFragment(html);
@@ -302,7 +302,6 @@
                 target.appendChild(fragment.firstChild);
             }
             wrapperDiv.removeAttribute('data-raw');
-            wrapperDiv.removeAttribute('data-rendered-len');
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
             if (firstInserted) {
@@ -331,7 +330,6 @@
             segRenderedContent[segIndex] = segments[segIndex].content;
         }
 
-        // Render the raw tail of every segment that still has one.
         function finishAllRawSegments() {
             var didRender = false;
             for (var i = 0; i < segments.length; i++) {
@@ -342,40 +340,26 @@
                 didRender = true;
             }
 
-            // Auto-collapse think blocks only after their tails have been rendered.
+            // Auto-collapse think blocks when thinking is done.
             autoCollapseThinkBlocks();
-
-            // After rendering remaining tails (debounce fired), scroll to bottom
-            // so that short outputs without paragraph boundaries are fully visible.
-            if (didRender) {
-                window.scrollTo(0, document.body.scrollHeight);
-            }
         }
 
-        // Try to progressively render completed paragraphs from the tail.
+        // Try to progressively render completed paragraphs from the raw tail.
         // Splits at the last \n\n so that code fences spanning multiple
         // paragraphs are not broken: we keep one incomplete paragraph as buffer.
         // Only parses the new delta -- never re-parses already-rendered content.
-        //
-        // To maintain O(n) total, we track scanLen (how far into the string we've
-        // already scanned for fence/paragraph state).  On each call we resume from
-        // scanLen rather than restarting from renderedLen, so every character is
-        // visited at most once across all calls.
         function progressiveRender(wrapperDiv, segIndex) {
-            var renderedLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
             var fullText = segments[segIndex].content;
 
-            if (renderedLen >= fullText.length) return;
-
-            // Resume scanning from where we left off.
-            var scanLen = parseInt(wrapperDiv.getAttribute('data-scan-len')) || renderedLen;
+            // How much has already been rendered (tracked via data attribute, not DOM text).
+            var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
 
             // Find \n\n boundaries that are NOT inside a fenced code block.
             // We scan character-by-character tracking fence state so that blank
             // lines inside ``` ... ``` do not trigger an early split.
-            var tail = fullText.substring(scanLen);
-            var inFence = (scanLen > renderedLen) ?
-                (wrapperDiv.getAttribute('data-in-fence') === '1') : false;
+            var searchPos = renderedPrefixLen;
+            var tail = fullText.substring(searchPos);
+            var inFence = false;
             var lastValidBreak = -1;
 
             for (var i = 0; i < tail.length; i++) {
@@ -385,14 +369,10 @@
                     continue;
                 }
                 if (!inFence && tail[i] === '\n' && tail[i + 1] === '\n') {
-                    lastValidBreak = scanLen + i;
+                    lastValidBreak = searchPos + i;
                     i++;
                 }
             }
-
-            // Always update scan position so we never re-scan old characters.
-            wrapperDiv.setAttribute('data-scan-len', String(scanLen + tail.length));
-            wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
 
             if (lastValidBreak < 0) return;
 
@@ -400,12 +380,14 @@
 
             // The new delta to parse: text between the previous render point
             // and the new render point.  This is O(delta), not O(total).
-            var deltaText = fullText.substring(renderedLen, renderEnd);
+            var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
+            var remainingTail = fullText.substring(renderEnd);
 
             // Parse only the delta through markdown + KaTeX.
             var html = rawTextToHtml(deltaText, segments[segIndex].type);
 
-            // Insert the rendered HTML fragment at the end.
+            // Insert the rendered HTML fragment right before the raw cursor span.
+            // For think blocks, insert into .think-body; otherwise into wrapperDiv.
             var target = (segments[segIndex].type === SEG_THINK) ?
                 wrapperDiv.querySelector('.think-body') : wrapperDiv;
             var fragment = htmlFragment(html);
@@ -416,7 +398,7 @@
                 target.appendChild(fragment.firstChild);
             }
 
-            // Update the rendered length.
+            // Update the rendered-length tracker.  The cursor span stays zero-width.
             wrapperDiv.setAttribute('data-rendered-len', String(renderEnd));
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
@@ -432,24 +414,12 @@
             // is processed at most once, so this is O(missed), not O(n).
             injectCopyButtons(wrapperDiv);
         }
-        // Handles $$...$$ and $...$ math extraction and restoration for KaTeX.
-        // Extracts both display ($$) and inline ($) math before markdown processing
-        // so that marked doesn't corrupt delimiters or split them across paragraphs.
-        // Unclosed $ (incomplete inline math) is left as-is; it will be captured
-        // when the closing $ arrives in a later delta.
+        // Handles $$...$$ math extraction and restoration for KaTeX.
         function rawTextToHtml(text, segType) {
             var mathBlocks = [];
-
-            // Extract display math $$...$$ first (greedy across newlines).
             var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                mathBlocks.push({ tex: m.trim(), display: true });
-                return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
-            });
-
-            // Extract inline math $...$ (single line only; won't match across \n).
-            content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
-                mathBlocks.push({ tex: m.trim(), display: false });
-                return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                mathBlocks.push(m.trim());
+                return '<mth_' + (mathBlocks.length - 1) + '>';
             });
 
             var html;
@@ -460,15 +430,25 @@
                 html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
             }
 
-            // Restore math blocks with appropriate delimiters.
-            html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                var block = mathBlocks[parseInt(idx)];
-                if (block.display) {
-                    return '$$' + block.tex + '$$';
-                } else {
-                    return '$' + block.tex + '$';
+            // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
+            html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
+                var tex = mathBlocks[parseInt(idx)];
+                if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
+                    try {
+                        return katex.renderToString(tex, { displayMode: true, throwOnError: false });
+                    } catch(e) {}
                 }
+                return '$$' + tex + '$$';
             });
+
+            if (segType === SEG_THINK) {
+                // For think segments, wrap in the think-block structure.
+                // But only on the first render of a think segment -- subsequent
+                // delta renders should NOT re-wrap.  The caller handles this:
+                // the initial creation wraps, progressiveRender just inserts deltas.
+                // Actually, for correctness we return unwrapped HTML here and let
+                // the initial segment creation handle wrapping.
+            }
 
             return html;
         }
@@ -480,10 +460,11 @@
             return template.content;
         }
 
-        // Append new text to a streaming segment.  The delta is already appended
-        // to segments[segIndex].content by the caller (ws.onmessage).  This function
-        // simply triggers progressive rendering of any completed paragraphs.
+        // Append raw text to a segment's in-memory buffer.
+        // O(1) -- no markdown parsing, no DOM scan.  After appending, tries
+        // progressive paragraph-boundary rendering.
         function appendRawText(wrapperDiv, delta, segIndex) {
+            // Try progressive render after each append.
             progressiveRender(wrapperDiv, segIndex);
         }
 
@@ -525,15 +506,12 @@
         // Convert a single segment to HTML string.
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
-                // Extract $$...$$ and $...$ blocks before markdown processing.
+                // Extract $$...$$ blocks before markdown processing so marked
+                // doesn't corrupt the delimiters or split them across paragraphs.
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: true });
-                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
-                });
-                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: false });
-                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                    mathBlocks.push(m.trim());
+                    return '<mth_' + (mathBlocks.length - 1) + '>';
                 });
 
                 var html;
@@ -544,23 +522,18 @@
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
 
-                // Restore math blocks with appropriate delimiters.
-                html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                    var block = mathBlocks[parseInt(idx)];
-                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
+                // Restore math blocks as <div> elements so KaTeX can render them.
+                html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
+                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
                 });
                 return html;
             } else if (seg.type === SEG_THINK) {
                 // Think block: collapsible box with markdown + KaTeX.
-                // Extract $$...$$ and $...$ blocks before markdown processing.
+                // Extract $$...$$ blocks before markdown processing.
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: true });
-                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
-                });
-                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: false });
-                    return '\x00MATH_' + (mathBlocks.length - 1) + '\x00';
+                    mathBlocks.push(m.trim());
+                    return '<mth_' + (mathBlocks.length - 1) + '>';
                 });
 
                 var html;
@@ -571,10 +544,9 @@
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
 
-                // Restore math blocks with appropriate delimiters.
-                html = html.replace(/\x00MATH_(\d+)\x00/g, function(_, idx) {
-                    var block = mathBlocks[parseInt(idx)];
-                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
+                // Restore math blocks as raw $$...$$ delimiters for KaTeX to find.
+                html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
+                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
                 });
 
                 return '<div class="think-block">' +
@@ -799,9 +771,11 @@
                     if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
                         // Raw-text streaming mode.
                         wrapperDiv.setAttribute('data-raw', '1');
+                        wrapperDiv.setAttribute('data-rendered-len', '0');
 
                         if (segments[i].type === SEG_THINK) {
-                            // Think block: create the collapsible structure immediately.
+                            // Think block: create the collapsible structure immediately,
+                            // but put raw text inside .think-body.
                             wrapperDiv.className = 'think-block';
                             var header = document.createElement('div');
                             header.className = 'think-header';
@@ -817,8 +791,9 @@
                             body.className = 'think-body';
                             wrapperDiv.appendChild(body);
                         }
-                        // Track how many characters have been rendered (0 initially).
-                        wrapperDiv.setAttribute('data-rendered-len', '0');
+                        // No cursor span needed -- progressiveRender and renderRawTail
+                        // insert rendered HTML directly into the target (wrapperDiv
+                        // for LLM text, .think-body for think blocks).
                         // Try progressive render on the initial content (might already have paragraphs).
                         progressiveRender(wrapperDiv, i);
                         segRenderedContent[i] = segments[i].content;
@@ -837,32 +812,42 @@
                 }
             }
 
-            // If a non-THINK segment appeared after THINK segments, the LLM has
-            // finished reasoning.  Render any remaining tails on think blocks
-            // immediately (don't wait for the debounce) and collapse them.
+            // Auto-collapse think blocks when thinking is done.
+            // When a non-THINK segment appears after THINK segments, the LLM has
+            // finished reasoning -- collapse all think block bodies automatically.
             if (segments.length > 0 && segments[segments.length - 1].type !== SEG_THINK) {
-                var didRender = false;
-                for (var j = 0; j < segments.length; j++) {
-                    if (segments[j].type !== SEG_THINK) continue;
-                    var w = outputDiv.querySelector('[data-seg="' + j + '"]');
-                    if (!w || !w.hasAttribute('data-raw')) continue;
-                    renderRawTail(w, j);
-                    didRender = true;
-                }
-                if (didRender) hasChanges = true;
-                autoCollapseThinkBlocks();
+                var autoCollapsed = false;
+                outputDiv.querySelectorAll('.think-block').forEach(function(block) {
+                    if (!block.hasAttribute('data-think-collapsed')) {
+                        // Only auto-collapse if the user hasn't manually toggled it.
+                        var th = block.querySelector('.think-header');
+                        var tb = block.querySelector('.think-body');
+                        if (th && tb) {
+                            tb.classList.add('hidden');
+                            th.classList.add('collapsed');
+                            block.setAttribute('data-think-collapsed', 'auto');
+                            autoCollapsed = true;
+                        }
+                    }
+                });
+                if (autoCollapsed) hasChanges = true;
             }
+
             // Remove trailing wrapper divs if segments were cleared/reduced.
             while (outputDiv.children.length > segments.length) {
                 outputDiv.removeChild(outputDiv.lastChild);
             }
-
             // Auto-scroll only when the user was near the bottom before the new
             // content was rendered.  This lets the user scroll back to read earlier
             // output without being forcibly pulled back to the bottom while
             // generation continues.
             if (hasChanges && wasAtBottom) {
                 window.scrollTo(0, document.body.scrollHeight);
+                userScrolledAway = false;  // user is back at bottom
+            } else if (hasChanges && !wasAtBottom) {
+                // User scrolled up during generation — remember this so we skip
+                // the auto-scroll at turn end.
+                userScrolledAway = true;
             }
         }
 
@@ -889,6 +874,7 @@
             };
 
             ws.onmessage = (event) => {
+                try {
                 // Split incoming data by segment prefix characters.
                 // Data may contain multiple segments or partial segments.
                 let data = event.data;
@@ -900,6 +886,7 @@
                     segments = [];
                     segRenderedContent = [];
                     outputDiv.innerHTML = '';
+                    userScrolledAway = false;
                     if (renderTimer !== null) {
                         clearTimeout(renderTimer);
                         renderTimer = null;
@@ -916,10 +903,13 @@
                 // be destroyed and recreated on every chunk (the root cause of the
                 // post-generation CPU spike).
                 let pendingType = null;
+                // Flag: set when SEG_TURN_END (\x07) is seen in this frame.
+                // Survives subsequent prefix overwrites so we can act on it after coalescing.
+                let turnEnded = false;
 
                 for (let i = 0; i < data.length; i++) {
                     const ch = data[i];
-                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML || ch === SEG_SPEED || ch === SEG_THINK) {
+                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML || ch === SEG_SPEED || ch === SEG_THINK || ch === SEG_TURN_END) {
                         // Append any text between the last prefix and this one to the
                         // segment that was opened by the last prefix.  When multiple
                         // prefixes arrive in a single WebSocket frame (e.g., three
@@ -927,13 +917,7 @@
                         // segment sits between its own prefix and the next prefix.
                         if (i > lastIdx) {
                             const payload = data.substring(lastIdx, i);
-                            if (pendingType === SEG_SPEED) {
-                                // Speed diagnostic -- update status bar directly, don't create a segment.
-                                speedInfo = payload;
-                                statusDiv.textContent = speedInfo;
-                                statusDiv.className = 'status connected';
-                                pendingType = null;
-                            } else if (pendingType !== null) {
+                            if (pendingType !== null) {
                                 // Content belongs to the pending type from a previous message.
                                 segments.push({ type: pendingType, content: payload });
                                 pendingType = null;
@@ -945,7 +929,14 @@
                             }
                         }
                         // Remember this prefix; create the segment lazily when content arrives.
-                        pendingType = ch;
+                        // SEG_TURN_END is a control signal, not a content type -- set a
+                        // flag but do NOT use it as pendingType (so subsequent prefixes
+                        // in the same frame still work normally).
+                        if (ch === SEG_TURN_END) {
+                            turnEnded = true;
+                        } else {
+                            pendingType = ch;
+                        }
                         lastIdx = i + 1;
                     }
                 }
@@ -953,13 +944,7 @@
                 // Remaining text after last prefix goes to the current segment (or creates one).
                 if (lastIdx < data.length) {
                     const payload = data.substring(lastIdx);
-                    if (pendingType === SEG_SPEED) {
-                        // Speed diagnostic -- update status bar directly.
-                        speedInfo = payload;
-                        statusDiv.textContent = speedInfo;
-                        statusDiv.className = 'status connected';
-                        pendingType = null;
-                    } else if (pendingType !== null) {
+                    if (pendingType !== null) {
                         segments.push({ type: pendingType, content: payload });
                         pendingType = null;
                     } else if (segments.length > 0) {
@@ -969,6 +954,9 @@
                         segments.push({ type: SEG_LLM_TEXT, content: payload });
                     }
                 }
+                // Check if turn ended (flag set inside the parsing loop).
+                // finishAllRawSegments() is called after coalescing below.
+
                 // If pendingType is still set after processing the entire message,
                 // the message ended on a prefix.  Don't create an empty segment;
                 // just wait for the next message to supply content.
@@ -978,7 +966,47 @@
                 // than each getting its own independent markdown render pass.
                 coalesceSegments();
 
+                // If turn ended, render remaining tails AFTER coalescing so that
+                // the last segment's content is already fully merged.
+                if (turnEnded) {
+                    finishAllRawSegments();
+
+                    // Scroll to bottom at end of turn unless the user manually
+                    // scrolled away during generation (tracked via userScrolledAway).
+                    if (!userScrolledAway) {
+                        window.scrollTo(0, document.body.scrollHeight);
+                    }
+                    userScrolledAway = false;
+                }
+
+                // Also update segRenderedContent for any segments that were coalesced
+                // and already fully rendered (no raw attr), so render() doesn't
+                // unnecessarily re-render them.
+                if (turnEnded) {
+                    for (var ui = 0; ui < segments.length; ui++) {
+                        var uw = outputDiv.querySelector('[data-seg="' + ui + '"]');
+                        if (uw && !uw.hasAttribute('data-raw')) {
+                            segRenderedContent[ui] = segments[ui].content;
+                        }
+                    }
+                }
+
+                // Extract speed/context diagnostics and update the status bar.
+                for (const seg of segments) {
+                    if (seg.type === SEG_SPEED && seg.content.length > 0) {
+                        speedInfo = seg.content;
+                        statusDiv.textContent = speedInfo;
+                        statusDiv.className = 'status connected';
+                    }
+                }
+                // Remove speed segments so they don't render as content.
+                segments = segments.filter(seg => seg.type !== SEG_SPEED);
+
                 render();
+                } catch(e) {
+                    console.error('[ws] ERROR in onmessage handler:', e);
+                    console.trace('[ws] Stack trace:');
+                }
             };
 
             ws.onclose = () => {

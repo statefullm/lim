@@ -588,6 +588,10 @@ TokenGenerator::Result ChatSession::generate_response() {
                       &state_.all_context_tokens);
     gen_result_ = tg.generate();
 
+    // Signal the viewer that generation is complete so it can render
+    // remaining raw tails (no arbitrary timeout needed).
+    pipe_write(&SEG_TURN_END, 1);
+
     generated_text_ = gen_result_.text;
     t_count_ = gen_result_.token_count;
 

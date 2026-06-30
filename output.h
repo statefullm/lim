@@ -14,6 +14,7 @@ extern const char SEG_LLM_TEXT;  // LLM-generated text (rendered through marked)
 extern const char SEG_HTML;      // Any other raw HTML (tool results, user input, dividers)
 extern const char SEG_SPEED;     // Speed/context diagnostic for status bar
 extern const char SEG_THINK;     // Think/reasoning block content (scrollable box with KaTeX)
+extern const char SEG_TURN_END;  // Generation complete signal for viewer
 
 // --- FIFO / Pipe Management ---
 extern int pipe_fd;
