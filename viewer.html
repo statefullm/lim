@@ -19,7 +19,7 @@
             line-height: 1.6;
             margin: 0;
             padding: 20px 5%;
-            padding-bottom: 10px;
+            padding-bottom: 15px;
         }
         #output {
             max-width: 100%;
@@ -333,15 +333,23 @@
 
         // Render the raw tail of every segment that still has one.
         function finishAllRawSegments() {
+            var didRender = false;
             for (var i = 0; i < segments.length; i++) {
                 var wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
                 if (!wrapperDiv) continue;
                 if (!wrapperDiv.hasAttribute('data-raw')) continue;
                 renderRawTail(wrapperDiv, i);
+                didRender = true;
             }
 
             // Auto-collapse think blocks only after their tails have been rendered.
             autoCollapseThinkBlocks();
+
+            // After rendering remaining tails (debounce fired), scroll to bottom
+            // so that short outputs without paragraph boundaries are fully visible.
+            if (didRender) {
+                window.scrollTo(0, document.body.scrollHeight);
+            }
         }
 
         // Try to progressively render completed paragraphs from the tail.
@@ -705,19 +713,6 @@
 
             let hasChanges = false;
 
-            // Force-render any remaining tails on streaming segments whose content
-            // hasn't changed (i.e., generation for that segment appears finished).
-            // This ensures that paragraphs without a trailing \n\n are rendered even
-            // if the 200 ms debounce hasn't fired yet.
-            for (let i = 0; i < segments.length; i++) {
-                if (i >= segRenderedContent.length) continue;
-                if (segments[i].content !== segRenderedContent[i]) continue;
-                var w = outputDiv.querySelector('[data-seg="' + i + '"]');
-                if (!w || !w.hasAttribute('data-raw')) continue;
-                renderRawTail(w, i);
-                hasChanges = true;
-            }
-
             // Process existing segments: re-render only if content changed.
             for (let i = 0; i < segments.length; i++) {
                 if (i < segRenderedContent.length) {
@@ -862,33 +857,12 @@
                 outputDiv.removeChild(outputDiv.lastChild);
             }
 
-            // Render any remaining raw tails on non-THINK segments immediately
-            // before scrolling, so that short LLM outputs without paragraph
-            // boundaries are fully visible in the viewport.  THINK segments
-            // are skipped here -- they collapse only when a non-THINK segment
-            // appears after them (handled below) or by the debounce timer.
-            if (hasChanges) {
-                for (var fi = 0; fi < segments.length; fi++) {
-                    if (segments[fi].type === SEG_THINK) continue;
-                    var fw = outputDiv.querySelector('[data-seg="' + fi + '"]');
-                    if (!fw || !fw.hasAttribute('data-raw')) continue;
-                    renderRawTail(fw, fi);
-                }
-            }
-
             // Auto-scroll only when the user was near the bottom before the new
             // content was rendered.  This lets the user scroll back to read earlier
             // output without being forcibly pulled back to the bottom while
             // generation continues.
             if (hasChanges && wasAtBottom) {
-                requestAnimationFrame(function() {
-                    var last = outputDiv.lastElementChild;
-                    if (last) {
-                        last.scrollIntoView({ block: 'end' });
-                    } else {
-                        window.scrollTo(0, document.body.scrollHeight);
-                    }
-                });
+                window.scrollTo(0, document.body.scrollHeight);
             }
         }
 
@@ -923,16 +897,13 @@
                 // NOT discard the rest of the frame (e.g., a speed diagnostic sent
                 // immediately after clear).  Strip the marker and continue parsing.
                 if (data.includes('\x01')) {
-                    // Render any remaining tails on streaming segments before clearing,
-                    // so that content from a truncated or interrupted generation is not lost.
+                    segments = [];
+                    segRenderedContent = [];
+                    outputDiv.innerHTML = '';
                     if (renderTimer !== null) {
                         clearTimeout(renderTimer);
                         renderTimer = null;
                     }
-
-                    segments = [];
-                    segRenderedContent = [];
-                    outputDiv.innerHTML = '';
                     data = data.replace(/\x01/g, '');
                     if (data.length === 0) return;
                 }
