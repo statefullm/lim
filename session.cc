@@ -261,6 +261,7 @@ private:
         NetworkTools::reset_context_usage();
         g_browser_warning_suppressed = false;
         state_.partial_tool_text.clear();
+        state_.tool_interrupt_pending = false;
     }
 
     // --- Main loop methods ---
