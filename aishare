@@ -2,13 +2,13 @@
 # aishare -- make project files accessible to both the user and LIM_AI_USER
 # Usage: aishare [directory]   (defaults to current directory)
 
+owner="${USER:-$(whoami)}"
+group="${LIM_AI_USER:-ai}"
+
 target="${1:-.}"
 
 # Resolve to absolute path
-target="$(cd "$target" 2>/dev/null && pwd)" || { echo "ERROR: not a directory: $1" >&2; exit 1; }
-
-owner="${USER:-$(whoami)}"
-group="${LIM_AI_USER:-ai}"
+target="$(cd "$target" 2>/dev/null && pwd -P)" || { echo "ERROR: not a directory: $1" >&2; exit 1; }
 
 # Refuse to operate outside /home/$group
 case "$target" in
@@ -19,9 +19,9 @@ esac
 ssh_dir="/home/$group/.ssh"
 
 fix() {
-    sudo chown -hR "$owner:$group" "$1"
-    chmod -hR g+rw,g+s "$1"
-    chmod -hR -t "$1"
+    sudo chown -R "$owner:$group" "$1"
+    chmod -R g+rw,g+s "$1"
+    chmod -R -t "$1"
 }
 
 if [ "$target" = "/home/$group" ] && [ -d "$ssh_dir" ]; then
@@ -33,6 +33,7 @@ if [ "$target" = "/home/$group" ] && [ -d "$ssh_dir" ]; then
             .|..|.ssh) continue ;;
         esac
         [ -e "$entry" ] || continue
+        [ -L "$entry" ] && continue
         fix "$entry"
     done
 else
