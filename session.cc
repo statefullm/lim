@@ -991,12 +991,22 @@ bool ChatSession::run() {
                 state_.auto_continue = true;
                 state_.auto_continue_depth_val = 0;
                 user_input = "";
-            } else {
+            } else if (state_.first_turn_done) {
                 // Not interrupted, but user wants to keep the model going.
+                // After a normal EOG the batch is empty (EOG token wasn't added),
+                // so we need to feed an assistant prefill for the LLM to sample from.
                 diag("Continuing generation...", "\033[1;33m");
                 state_.auto_continue = true;
                 state_.auto_continue_depth_val = 0;
+                // Feed a minimal assistant prefill so the batch isn't empty.
+                vector<llama_token> ass_prefill = common_tokenize(ctx_, g_model_tokens.assistant_turn_start.text, false, true);
+                if (!ass_prefill.empty() && n_past_ + (int)ass_prefill.size() < (int)cparams_.n_ctx) {
+                    feed_tokens_impl(ass_prefill);
+                }
                 user_input = "";
+            } else {
+                // No turns have happened yet -- nothing to resume. Return silently to prompt.
+                continue;
             }
         }
 
