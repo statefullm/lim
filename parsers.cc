@@ -89,7 +89,7 @@ void escape_parameter_tags(string& str)     { escape_one_token(str, PARAM_END); 
 void unescape_parameter_tags(string& str)   { unescape_one_token(str, PARAM_END); }
 
 // Extract base turn tokens from model turn markers.
-static void collect_base_turn_tokens(vector<string>& out) {
+void collect_base_turn_tokens(vector<string>& out) {
     vector<string> markers;
     if (!g_model_tokens.user_turn_start.text.empty()) markers.push_back(g_model_tokens.user_turn_start.text);
     if (!g_model_tokens.assistant_turn_start.text.empty()) markers.push_back(g_model_tokens.assistant_turn_start.text);
@@ -166,22 +166,44 @@ static string strip_quotes(const string& s) {
     return s;
 }
 
+// Strip quote characters from a string (used for forgiving tag-name matching).
+static string strip_quotes_from_name(const string& s) {
+    string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c != '"' && c != '\'') out += c;
+    }
+    return out;
+}
+
+// Extract the raw param name from a PARAM_START tag, stripping stray quotes.
+// Given text starting at PARAM_START, finds the '>' and returns the trimmed,
+// unquoted name between them.  Also returns 'content_begin' pointing just past '>'.
+static string extract_param_name(const string& tool_call, size_t tag_pos, size_t& content_begin) {
+    size_t after_prefix = tag_pos + strlen(PARAM_START);
+    size_t gt = tool_call.find('>', after_prefix);
+    if (gt == string::npos) return "";
+
+    content_begin = gt + 1;
+    return strip_quotes_from_name(tool_call.substr(after_prefix, gt - after_prefix));
+}
+
 // Linear-time string parser for XML schema
 string extract_string_arg_bounded(const string& tool_call, const string& arg_name) {
-    string search_key = string(PARAM_START) + arg_name + ">";
-    size_t pos = tool_call.find(search_key);
-    if (pos == string::npos) return "";
+    size_t pos = 0;
+    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+        size_t content_begin = 0;
+        string found_name = extract_param_name(tool_call, pos, content_begin);
+        if (found_name == arg_name) {
+            size_t end = find_unescaped_param_end(tool_call, content_begin);
+            if (end == string::npos) end = tool_call.length();
 
-    size_t start = pos + search_key.length();
-    size_t end = find_unescaped_param_end(tool_call, start);
-    if (end == string::npos) end = tool_call.length();
-
-    string val = tool_call.substr(start, end - start);
-
-    // With the single-line tool protocol, parameter values are taken verbatim.
-    // No structural newlines exist between tags, so we preserve all content exactly.
-
-    return strip_quotes(val);
+            string val = tool_call.substr(content_begin, end - content_begin);
+            return strip_quotes(val);
+        }
+        pos++;
+    }
+    return "";
 }
 
 // Linear-time array parser for XML schema (Newline/Comma separated)
@@ -190,76 +212,80 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 // and commas. Leading/trailing whitespace is trimmed from each item.
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
-    string search_key = string(PARAM_START) + arg_name + ">";
-    size_t pos = tool_call.find(search_key);
-    if (pos == string::npos) return result;
 
-    size_t start = pos + search_key.length();
-    size_t end = find_unescaped_param_end(tool_call, start);
-    if (end == string::npos) end = tool_call.length();
+    size_t pos = 0;
+    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+        size_t content_begin = 0;
+        string found_name = extract_param_name(tool_call, pos, content_begin);
+        if (found_name == arg_name) {
+            size_t end = find_unescaped_param_end(tool_call, content_begin);
+            if (end == string::npos) end = tool_call.length();
 
-    string val = tool_call.substr(start, end - start);
+            string val = tool_call.substr(content_begin, end - content_begin);
 
-    // If the llm bleeds its schema (</<), truncate the parameter exactly at the bleed.
-    size_t bleed_pos = val.find("</<");
-    if (bleed_pos != string::npos) {
-        val = val.substr(0, bleed_pos);
-    }
+            // If the llm bleeds its schema (</<), truncate the parameter exactly at the bleed.
+            size_t bleed_pos = val.find("</<");
+            if (bleed_pos != string::npos) {
+                val = val.substr(0, bleed_pos);
+            }
 
-    // --- Strip outer square brackets if present (handles multi-line bracket lists) ---
-    // Find the first '[' and last ']' in the entire block. If they form a valid pair
-    // wrapping content, strip them so we can split by newline/commas uniformly.
-    size_t first_bracket = val.find('[');
-    size_t last_bracket  = val.rfind(']');
-    if (first_bracket != string::npos && last_bracket != string::npos && last_bracket > first_bracket) {
-        // Strip content before the first '[' and after the last ']'
-        val = val.substr(first_bracket + 1, last_bracket - first_bracket - 1);
-    }
+            // --- Strip outer square brackets if present (handles multi-line bracket lists) ---
+            size_t first_bracket = val.find('[');
+            size_t last_bracket  = val.rfind(']');
+            if (first_bracket != string::npos && last_bracket != string::npos && last_bracket > first_bracket) {
+                val = val.substr(first_bracket + 1, last_bracket - first_bracket - 1);
+            }
 
-    // Split the parameter block by newlines. Each non-empty line is a candidate item.
-    stringstream ss(val);
-    string line;
-    while (getline(ss, line)) {
-        // Also split by commas just in case the LLM outputs: file1.cc, file2.cc
-        stringstream comma_ss(line);
-        string item;
-        while (getline(comma_ss, item, ',')) {
-            // Trim leading and trailing whitespace/newlines
-            size_t first = item.find_first_not_of(" \t\r\n");
-            if (first == string::npos) continue;
-            size_t last = item.find_last_not_of(" \t\r\n");
-            result.push_back(strip_quotes(item.substr(first, last - first + 1)));
+            // Split the parameter block by newlines. Each non-empty line is a candidate item.
+            stringstream ss(val);
+            string line;
+            while (getline(ss, line)) {
+                stringstream comma_ss(line);
+                string item;
+                while (getline(comma_ss, item, ',')) {
+                    size_t first = item.find_first_not_of(" \t\r\n");
+                    if (first == string::npos) continue;
+                    size_t last = item.find_last_not_of(" \t\r\n");
+                    result.push_back(strip_quotes(item.substr(first, last - first + 1)));
+                }
+            }
+            return result;
         }
+        pos++;
     }
     return result;
 }
 
 // Linear-time integer parser for XML schema
 int extract_int_arg_bounded(const string& tool_call, const string& arg_name) {
-    string search_key = string(PARAM_START) + arg_name + ">";
-    size_t pos = tool_call.find(search_key);
-    if (pos == string::npos) return 0;
+    size_t pos = 0;
+    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+        size_t content_begin = 0;
+        string found_name = extract_param_name(tool_call, pos, content_begin);
+        if (found_name == arg_name) {
+            size_t end = find_unescaped_param_end(tool_call, content_begin);
+            if (end == string::npos) end = tool_call.length();
 
-    size_t start = pos + search_key.length();
-    size_t end = find_unescaped_param_end(tool_call, start);
-    if (end == string::npos) end = tool_call.length();
+            string val = tool_call.substr(content_begin, end - content_begin);
 
-    string val = tool_call.substr(start, end - start);
+            size_t bleed_pos = val.find("</<");
+            if (bleed_pos != string::npos) {
+                val = val.substr(0, bleed_pos);
+            }
 
-    size_t bleed_pos = val.find("</<");
-    if (bleed_pos != string::npos) {
-        val = val.substr(0, bleed_pos);
+            size_t first = val.find_first_not_of(" \t\n\r");
+            if (first == string::npos) return 0;
+
+            char* endptr = nullptr;
+            long result = strtol(val.c_str() + first, &endptr, 10);
+            if (*endptr != '\0' && *endptr != '\n' && *endptr != '\r' && *endptr != ' ' && *endptr != '\t') {
+                return 0;
+            }
+            return static_cast<int>(result);
+        }
+        pos++;
     }
-
-    size_t first = val.find_first_not_of(" \t\n\r");
-    if (first == string::npos) return 0;
-
-    char* endptr = nullptr;
-    long result = strtol(val.c_str() + first, &endptr, 10);
-    if (*endptr != '\0' && *endptr != '\n' && *endptr != '\r' && *endptr != ' ' && *endptr != '\t') {
-        return 0;  // Non-numeric trailing content
-    }
-    return static_cast<int>(result);
+    return 0;
 }
 
 string remove_trailing_spaces(const string& str) {

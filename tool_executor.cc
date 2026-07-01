@@ -9,6 +9,7 @@
 #include <sstream>
 #include <cstdio>
 #include <cctype>
+#include <algorithm>
 
 // Forward declarations for functions defined in main.cc
 extern void diag(const string& msg, const char* color);
@@ -64,9 +65,13 @@ ToolExecutor::Result ToolExecutor::execute(
     if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
 
     vector<string> strip_tags_vec;
+    // Strip full turn markers (user_start, assistant_start, turn_end).
     if (!g_model_tokens.user_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.user_turn_start.text);
     if (!g_model_tokens.assistant_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.assistant_turn_start.text);
     if (!g_model_tokens.turn_end.text.empty()) strip_tags_vec.push_back(g_model_tokens.turn_end.text);
+    // Also strip individual base tokens (<|im_end|>, <|eot_id|>, etc.) that can
+    // appear as spurious EOGs embedded inside XML tags and attributes.
+    collect_base_turn_tokens(strip_tags_vec);
     strip_tags(tool_call, strip_tags_vec);
 
 
@@ -106,20 +111,30 @@ ToolExecutor::Result ToolExecutor::execute(
         if (!tool_out.recognized || !tool_out.params_valid) {
             state.invalid_tool_strikes++;
 
-            if (is_debug && should_output_to_browser()) {
-                string safe = html_escape(tool_call);
-                string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
-                string error_html = "\n\n<div class='tool-error'>" + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + "):<pre><code>" + safe + "</code></pre></div>\n\n";
-                stream_tool_result(error_html);
-
-                if (state.invalid_tool_strikes >= 5) {
-                    diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
-                    abort_auto = true;
-                } else if (state.invalid_tool_strikes >= 2) {
-                    diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
-                    inject_auto_user_msg = true;
-                    active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+            // Always output full diagnostics to the console for debugging.
+            string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
+            diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
+            diag("  Raw tool_call: " + tool_call, "\033[90m");
+            diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[90m");
+            if (!tool_out.recognized) {
+                diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[90m");
+            }
+            if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
+                string mp;
+                for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
+                    if (i > 0) mp += ", ";
+                    mp += "\"" + tool_out.missing_params[i] + "\"";
                 }
+                diag("  Missing required parameters: " + mp, "\033[90m");
+            }
+
+            if (state.invalid_tool_strikes >= 5) {
+                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                abort_auto = true;
+            } else if (state.invalid_tool_strikes >= 2) {
+                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+                inject_auto_user_msg = true;
+                active_intervention_msg = SYSTEM_PROMPT_REMINDER;
             }
         } else {
             state.invalid_tool_strikes = 0;

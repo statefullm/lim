@@ -357,6 +357,14 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                 }
                 had_eog_recovery_ = true;
+
+                // Reset sampler state after EOG recovery. Each call to
+                // llama_sampler_sample during polling accepted the rejected
+                // EOG token into the penalties ring buffer, polluting the
+                // history with tokens that were never actually generated.
+                // A full chain reset clears this phantom history so the
+                // penalties sampler reflects only real context.
+                llama_sampler_reset(smpl_);
             }
 
             if (!recovered) {

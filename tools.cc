@@ -43,8 +43,23 @@ static vector<string> find_missing_params(const string& tool_name, const string&
 
         if (spec.name == tool_name) {
             for (const auto& param : spec.params) {
-                string key = string(PARAM_START) + param + ">";
-                bool found = (tool_call.find(key) != string::npos);
+                // Search on PARAM_START only, then extract and compare the name
+                // tolerating stray quotes (e.g., <parameter=command">).
+                bool found = false;
+                size_t pos = 0;
+                while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+                    size_t after_prefix = pos + strlen(PARAM_START);
+                    size_t gt = tool_call.find('>', after_prefix);
+                    if (gt == string::npos) break;
+
+                    string raw = tool_call.substr(after_prefix, gt - after_prefix);
+                    string clean;
+                    for (char c : raw) {
+                        if (c != '"' && c != '\'') clean += c;
+                    }
+                    if (clean == param) { found = true; break; }
+                    pos++;
+                }
                 if (!found) {
                     missing.push_back(param);
                 }
@@ -82,12 +97,20 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       }
   }
 
+  // Strip stray quotes from the tool name (e.g., "exec_shell" -> exec_shell).
+  string clean_name;
+  for (char c : tool_name) {
+      if (c != '"' && c != '\'') clean_name += c;
+  }
+  tool_name = clean_name;
+
   // Check for interrupt before starting tool execution
   if (stop_generation) { out.content = "[Tool interrupted by user]"; return out; }
 
   // Validate: is this a recognized tool with required parameters?
   out.recognized = is_known_tool(tool_name);
   out.params_valid = check_params(tool_name, tool_call);
+  out.parsed_tool_name = tool_name;
 
   if (!out.recognized) {
       out.content = "Error: Unknown tool call";
@@ -96,6 +119,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
   }
   if (!out.params_valid) {
       vector<string> missing = find_missing_params(tool_name, tool_call);
+      out.missing_params = missing;
       string missing_list;
       for (size_t i = 0; i < missing.size(); i++) {
           if (i > 0) missing_list += ", ";
