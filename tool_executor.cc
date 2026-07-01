@@ -189,44 +189,42 @@ ToolExecutor::Result ToolExecutor::execute(
         }
         consoleFlush();
 
-        // Log tool result to chat_log (skip exec_shell -- already streamed incrementally)
-        if (!tool_out.content.empty() && tool_out.content != "[Command executed with no output]") {
+        // Log tool result to chat_log with structured label.
+        // exec_shell already streams its output incrementally to chat_log in
+        // filesystem.cc, so skip it here to avoid duplication.
+        if (tool_out.parsed_tool_name != "exec_shell") {
+            string logged = tool_out.content;
             // For web_search, log query + snippets but skip full page content
-            if (tool_out.content.find("Search Results for:") == 0) {
-                string logged;
+            if (logged.find("Search Results for:") == 0) {
+                string filtered;
                 size_t i = 0;
-                while (i < tool_out.content.size()) {
-                    size_t page_content = tool_out.content.find("Page Content: ", i);
-                    if (page_content != string::npos && page_content + 14 < tool_out.content.size()) {
-                        // Skip everything from "Page Content:" until the next "Title:" or "Snippet:" or end of result block
-                        logged += tool_out.content.substr(i, page_content - i);
-                        // Find the end: blank line followed by Title:, Snippet:, or next result marker
-                        size_t skip_start = page_content;
+                while (i < logged.size()) {
+                    size_t page_content = logged.find("Page Content: ", i);
+                    if (page_content != string::npos && page_content + 14 < logged.size()) {
+                        filtered += logged.substr(i, page_content - i);
                         size_t j = page_content + 14;
                         bool past_blank = false;
-                        while (j < tool_out.content.size()) {
-                            if (tool_out.content[j] == '\n') {
-                                if (past_blank) {
-                                    // Two consecutive newlines -- end of page content block
-                                    break;
-                                }
+                        while (j < logged.size()) {
+                            if (logged[j] == '\n') {
+                                if (past_blank) break;
                                 past_blank = true;
                             } else {
                                 past_blank = false;
                             }
                             j++;
                         }
-                        logged += "[Page Content omitted from log]\n";
+                        filtered += "[Page Content omitted from log]\n";
                         i = j;
                     } else {
-                        // Rest of content (titles, URLs, snippets) -- keep it all
-                        logged += tool_out.content.substr(i);
+                        filtered += logged.substr(i);
                         break;
                     }
                 }
-                if (!logged.empty()) chat_log << logged << "\n";
-            } else {
-                chat_log << tool_out.content << "\n";
+                logged = filtered;
+            }
+            if (!logged.empty()) {
+                chat_log << "=== TOOL_RESULT ===\n" << logged << "\n\n";
+                chat_log.flush();
             }
         }
         generated_text = "";

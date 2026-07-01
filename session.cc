@@ -185,6 +185,9 @@ private:
     string save_prefix_;
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
+    // Track if we already logged assistant output this turn (via process_tool_call),
+    // so step 12 doesn't duplicate it.
+    bool assistant_logged_this_turn_ = false;
     // Last non-empty user input, used as checkpoint label for tool-call turns
     string last_user_input_;
 
@@ -654,6 +657,26 @@ bool ChatSession::process_tool_call() {
     size_t tool_end = gen_result_.tool_end;
 
     if (trigger_tool_execution && tool_start != string::npos && tool_end != string::npos) {
+        // Log the assistant's preamble text (text before the tool call) so it
+        // appears in the chat log just like it does in the browser.
+        if (tool_start > 0) {
+            string preamble = generated_text_.substr(0, tool_start);
+            log_entry("ASSISTANT", preamble);
+        }
+
+        // Log the tool call itself so the chat log shows what was invoked.
+        // Write directly (not via log_entry) to preserve FUNC_START/FUNC_END tags.
+        {
+            string tool_call = generated_text_.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
+            if (chat_log.is_open()) {
+                chat_log << "=== TOOL_CALL ===\n" << tool_call << "\n\n";
+                chat_log.flush();
+            }
+        }
+
+        // Mark that we've logged assistant output this turn so step 12 doesn't duplicate.
+        assistant_logged_this_turn_ = true;
+
         string full_generated = generated_text_;
 
         auto tool_result = ToolExecutor::execute(
@@ -808,6 +831,7 @@ bool ChatSession::run() {
         stop_generation = 0;
         g_was_interrupted = 0;
         prev_was_save_ = false;
+        assistant_logged_this_turn_ = false;
 
         // 1. Get user input
         string user_input = get_user_input();
@@ -1049,8 +1073,8 @@ bool ChatSession::run() {
             continue;
         }
 
-        // 12. Log assistant output
-        if (!state_.auto_continue && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
+        // 12. Log assistant output (skip if already logged via process_tool_call)
+        if (!state_.auto_continue && !assistant_logged_this_turn_ && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
 
         // 13. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;
