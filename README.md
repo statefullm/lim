@@ -275,6 +275,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `log/<N>.tokens` |
+| `LIM_EOG_RESAMPLE_MAX` | `64` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings with Qwen3.6 or similar models. |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
 | `LIM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic -- tokens / total generate() call time, including all CPU-side overhead (sampling, output rendering, tool-call detection). Default `0` reports generation time matching llama-cli's "Generation: X t/s" -- measured from first-token sample+sync to last-token sample+sync, covering N sampling operations and (N-1) decode cycles. |
 | `LIM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
