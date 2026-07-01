@@ -98,6 +98,9 @@ void log_tool_diagnostic(const std::string& message, bool debugOnly = false,
 // Global debug flag - declared in main.cc and used by other modules
 extern bool is_debug;
 
+// exec_shell truncation limit (in bytes) - declared in main.cc, configurable via LIM_EXEC_TRUNCATION
+extern size_t exec_truncation_limit;
+
 // Chat log file stream - declared in main.cc and used for all tool diagnostics
 extern std::ofstream chat_log;
 

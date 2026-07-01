@@ -597,7 +597,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
   // Limit output to avoid overwhelming LLM context and browser display.
   // All three consumers (LLM result, browser stream, chat_log) see the same bounded output.
-  static constexpr size_t MAX_OUTPUT_SIZE = 8192;  // 8KB
+  size_t max_output = exec_truncation_limit;
   bool truncated = false;
 
   // Signal that streaming is about to begin.
@@ -626,7 +626,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
         // Keep draining the child pipe to prevent EPIPE, but only
         // forward data to consumers until we hit the limit.
         if (!truncated) {
-          size_t remaining = MAX_OUTPUT_SIZE - result.size();
+          size_t remaining = max_output - result.size();
           if (static_cast<size_t>(n) > remaining) {
             // This chunk would exceed the limit - clip it.
             result += std::string(buffer, remaining);
@@ -709,7 +709,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
     // If output was truncated, append truncation notice with exit code.
     if (truncated) {
-      string trunc_msg = "\n[Output truncated at " + std::to_string(MAX_OUTPUT_SIZE) + " bytes; exit code " + to_string(exit_code) + "]\n";
+      string trunc_msg = "\n[Output truncated at " + std::to_string(max_output) + " bytes; exit code " + to_string(exit_code) + "]\n";
       result += trunc_msg;
       if (on_chunk) on_chunk(trunc_msg);
       if (chat_log.is_open()) { chat_log << trunc_msg; chat_log.flush(); }

@@ -297,6 +297,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
+| `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |

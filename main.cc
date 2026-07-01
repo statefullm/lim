@@ -57,6 +57,9 @@ bool honest_speed = false;  // default: benchmark-style
 // LIM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
 int speed_update_interval = 100;
 
+// LIM_EXEC_TRUNCATION: max bytes of exec_shell output before truncation.
+size_t exec_truncation_limit = 32768;  // default: 32KB
+
 static void diag_impl(const string& formatted_line, const string& msg) {
     // Diagnostic messages (session status, errors, etc.) always go to the
     // terminal regardless of LIM_OUTPUT mode.
@@ -206,6 +209,15 @@ int main(int argc, char ** argv) {
         if (env != nullptr && strlen(env) > 0) {
             int val = atoi(env);
             if (val > 0) speed_update_interval = val;
+        }
+    }
+
+    // LIM_EXEC_TRUNCATION: max bytes of exec_shell output before truncation (default 32768)
+    {
+        const char* env = getenv("LIM_EXEC_TRUNCATION");
+        if (env != nullptr && strlen(env) > 0) {
+            long val = strtol(env, nullptr, 10);
+            if (val > 0) exec_truncation_limit = static_cast<size_t>(val);
         }
     }
 
