@@ -308,6 +308,13 @@ string ChatSession::get_user_input() {
     string user_input = "";
 
     if (!state_.auto_continue) {
+        // If stdout didn't end with a newline, ensure we start on a fresh line
+        // before printing the speed diagnostic.
+        if (should_output_to_stdout() && !prev_stdout_ended_with_newline_) {
+            cout << "\n";
+            cout.flush();
+        }
+
         // Print Speed from previous generation right before >>> (skip first turn)
         if (state_.first_turn_done && state_.last_t_count > 0) {
             double context_percent = (state_.last_n_past / (double)cparams_.n_ctx) * 100.0;
@@ -326,13 +333,6 @@ string ChatSession::get_user_input() {
             string ctx_str = std::to_string(state_.last_n_past) + " (" + std::to_string((int)context_percent) + "%)";
             string speed_str = std::to_string(round_int(speed)) + " t/s";
             diag_speed_impl(speed_str + " | " + ctx_str);
-        }
-
-        // If stdout didn't end with a newline, ensure we start on a fresh line
-        // before printing the speed diagnostic.
-        if (should_output_to_stdout() && !prev_stdout_ended_with_newline_) {
-            cout << "\n";
-            cout.flush();
         }
 
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
@@ -624,14 +624,11 @@ TokenGenerator::Result ChatSession::generate_response() {
     auto end = chrono::high_resolution_clock::now();
     elapsed_ = chrono::duration<double>(end - start).count();
 
-    bool stdout_ended_with_newline = prev_stdout_ended_with_newline_;
-    if (!generated_text_.empty() && generated_text_.back() == '\n') {
-        stdout_ended_with_newline = true;
-    }
-    if (!stdout_ended_with_newline && should_output_to_stdout()) {
-        console("\n");
-        consoleFlush();
-        stdout_ended_with_newline = true;
+    // TokenGenerator::generate() already flushes remaining unprinted text to
+    // stdout with a trailing newline. If stdout was enabled during this turn,
+    // we know it ends with \n. If not, preserve the previous state.
+    if (should_output_to_stdout()) {
+        prev_stdout_ended_with_newline_ = true;
     }
 
     state_.last_t_count = t_count_;
@@ -639,8 +636,6 @@ TokenGenerator::Result ChatSession::generate_response() {
     state_.last_decode_time = gen_result_.decode_time;
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
-
-    prev_stdout_ended_with_newline_ = stdout_ended_with_newline;
 
     if (stop_generation) {
         stop_generation = 0;

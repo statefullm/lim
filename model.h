@@ -50,6 +50,11 @@ struct ModelTokens {
     // Turn end / EOT marker (may be empty for templates that rely on EOS).
     ModelFragment turn_end;
 
+    // Thinking block delimiters, determined from the model's chat template.
+    // Empty strings if the model doesn't support thinking/reasoning blocks.
+    std::string think_start;
+    std::string think_end;
+
     // Whether turn_end tokens are meaningful (empty = template uses EOS only).
     bool has_explicit_turn_end() const { return !turn_end.tokens.empty(); }
 };

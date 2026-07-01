@@ -1,5 +1,6 @@
 #include "model.h"
 #include "common.h"
+#include "chat.h"
 #include "filesystem.h"
 #include "parsers.h"
 #include "tokens.h"
@@ -307,6 +308,33 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
     g_model_tokens.turn_end.text  = turn_end_str;
     g_model_tokens.turn_end.tokens = tok(ctx, turn_end_str);
 
+    // Set thinking tags by querying the model's chat template.
+    // common_chat_templates_apply populates thinking_start_tag and
+    // thinking_end_tag from the Jinja template via its autoparser,
+    // so we get the correct tags for any model without hardcoding.
+    {
+        auto tmpls = common_chat_templates_init(model, tmpl_str);
+        if (tmpls) {
+            common_chat_templates_inputs inputs;
+            inputs.messages.push_back({{"user", "_X_"}});
+            inputs.add_generation_prompt = true;
+            inputs.use_jinja = true;
+
+            try {
+                auto params = common_chat_templates_apply(tmpls.get(), inputs);
+                if (!params.thinking_start_tag.empty()) {
+                    g_model_tokens.think_start = params.thinking_start_tag;
+                }
+                if (!params.thinking_end_tag.empty()) {
+                    g_model_tokens.think_end = params.thinking_end_tag;
+                }
+            } catch (...) {
+                // Template application failed -- leave tags empty.
+                // Thinking block detection will simply never match.
+            }
+        }
+    }
+
     // Log what we detected (useful for debugging)
     if (is_debug) {
         cerr << "[model] Detected template: " << get_chat_template_name(g_model_tokens.type) << "\n";
@@ -314,6 +342,8 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
         cerr << "[model] user_turn_start    = \"" << escape_for_log(user_turn_start_str) << "\"\n";
         cerr << "[model] assistant_turn_start = \"" << escape_for_log(assistant_turn_start_str) << "\"\n";
         cerr << "[model] turn_end           = \"" << escape_for_log(turn_end_str) << "\"\n";
+        cerr << "[model] think_start      = \"" << escape_for_log(g_model_tokens.think_start) << "\"\n";
+        cerr << "[model] think_end        = \"" << escape_for_log(g_model_tokens.think_end) << "\"\n";
     }
 }
 

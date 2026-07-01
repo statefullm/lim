@@ -55,14 +55,6 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
         denom = decode_time;
     }
 
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(1);
-    oss << "\033[35m[" << round_int(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)" << "]\033[0m" << std::endl;
-    if (should_output_to_stdout()) {
-        std::cout << oss.str();
-        std::fflush(stdout);
-    }
-
     // Send to browser status bar (compact: no labels)
     if (should_output_to_browser()) {
         std::ostringstream oss2;

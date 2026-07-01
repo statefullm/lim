@@ -159,7 +159,7 @@ void repair_malformed_tool_end(string& text, size_t pos) {
 // --- Helper to strip thinking and tool-call XML tags from a string ---
 void _strip_think_and_tool_tags(string& str) {
     static const vector<string> all_tags = {
-        Tokens::THINK_START, Tokens::THINK_END,
+        g_model_tokens.think_start, g_model_tokens.think_end,
         FUNC_START, FUNC_END,
         PARAM_START, PARAM_END
     };
@@ -423,11 +423,11 @@ TokenGenerator::Result TokenGenerator::generate() {
         // Think-tag detection for output rendering only.
         // Never use think-tag positions to suppress tool-call detection:
         // think blocks and tool calls are sequential, never nested.
-        if (think_start_ == string::npos) {
-            think_start_ = generated_text_.find(Tokens::THINK_START);
+        if (!g_model_tokens.think_start.empty() && think_start_ == string::npos) {
+            think_start_ = generated_text_.find(g_model_tokens.think_start);
         }
         if (think_start_ != string::npos && think_end_ == string::npos) {
-            think_end_ = generated_text_.find(Tokens::THINK_END, think_start_);
+            think_end_ = generated_text_.find(g_model_tokens.think_end, think_start_);
         }
         in_thinking_block_ = (think_start_ != string::npos && think_end_ == string::npos);
 
@@ -482,19 +482,20 @@ TokenGenerator::Result TokenGenerator::generate() {
         if (!in_tool_call_stream_ && !in_thinking_block_) {
             size_t safe_len = generated_text_.length();
             string fstart(FUNC_START);
-            string tstart(Tokens::THINK_START);
+            string tstart(g_model_tokens.think_start);
 
             if (think_start_ != string::npos && think_end_ != string::npos) {
-                size_t think_block_end = think_end_ + string(Tokens::THINK_END).length();
+                size_t think_block_end = think_end_ + g_model_tokens.think_end.length();
                 bool was_empty = think_buffering_;
+                // If we had content (was_empty == false), output the closing tag to stdout.
+                if (!was_empty && should_output_to_stdout()) {
+                    console(g_model_tokens.think_end.c_str());
+                    console("\n");
+                    consoleFlush();
+                }
                 think_buffer_.clear();
                 think_buffering_ = true;
                 if (print_pos_ < think_block_end) {
-                    if (!think_buffering_ && print_pos_ <= think_end_) {
-                        string close_tag = generated_text_.substr(print_pos_, think_block_end - print_pos_);
-                        console_think(close_tag.c_str());
-                        consoleThinkFlush();
-                    }
                     print_pos_ = think_block_end;
                 }
                 // Only skip newlines right after advancing past the think block end,
@@ -535,8 +536,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
         } else if (in_thinking_block_) {
             size_t safe_len = generated_text_.length();
-            string tstart(Tokens::THINK_START);
-            string tend(Tokens::THINK_END);
+            string tend(g_model_tokens.think_end);
 
             for (size_t len = 1; len <= tend.length() && len <= generated_text_.length(); ++len) {
                 if (generated_text_.compare(generated_text_.length() - len, len, tend, 0, len) == 0) {
@@ -561,6 +561,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                     if (found_content) {
                         think_buffer_.clear();
                         think_output = think_output.substr(content_start);
+                        // Output the opening think tag to stdout when content begins.
+                        if (should_output_to_stdout()) {
+                            console(g_model_tokens.think_start.c_str());
+                            console("\n");
+                            consoleFlush();
+                        }
                         console_think(think_output.c_str());
                         consoleThinkFlush();
                         stream_think(think_output);
@@ -603,6 +609,8 @@ TokenGenerator::Result TokenGenerator::generate() {
 
             // Speed/context diagnostic for the browser status bar.
             // Update every N tokens so progress stays visible at any generation rate.
+            // For stdout output (LIM_OUTPUT=1 or 3), skip mid-generation diagnostics;
+            // they are printed once at turn end in session.cc before the >>> prompt.
             if (t_count_ > 5 && t_count_ % speed_update_interval == 0) {
                 auto now = chrono::high_resolution_clock::now();
                 double total_elapsed = chrono::duration<double>(now - start).count();
@@ -619,9 +627,6 @@ TokenGenerator::Result TokenGenerator::generate() {
 
                     if (should_output_to_browser()) {
                         stream_speed(string(speed_buf));
-                    } else {
-                        cout << "\033[35m[" << speed_buf << "]\033[0m\n";
-                        cout.flush();
                     }
                 }
             }
