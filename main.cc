@@ -139,8 +139,8 @@ int main(int argc, char ** argv) {
             }
             restore_path = argv[i];
             // Match /save behavior: append .save if not already present
-            if (restore_path.size() < 5 || restore_path.substr(restore_path.size() - 5) != ".save") {
-                restore_path += ".save";
+            if (restore_path.size() < std::strlen(SAVE_EXT) || restore_path.compare(restore_path.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
+                restore_path += SAVE_EXT;
             }
         }
     }
@@ -511,7 +511,7 @@ int main(int argc, char ** argv) {
             // Try instant restore from V1 cache before slow token decode
             bool cache_hit = false;
             if (!restore_path_abs.empty() && !show_checkpoints) {
-                cache_hit = try_load_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
+                cache_hit = try_load_v1_cache(restore_path_abs, restored_tokens, argv[1], ctx);
                 if (cache_hit && is_debug) {
                     std::string key = get_cache_dir() + "/"; // just to trigger dir creation check
                     diag("Restore from cache.", "\033[35m");
@@ -619,7 +619,7 @@ int main(int argc, char ** argv) {
                     if (is_debug) {
                         diag("Save to cache.", "\033[35m");
                     }
-                    write_v1_cache(restore_path_abs, argv[1], saved_sha, ctx);
+                    write_v1_cache(restore_path_abs, restored_tokens, argv[1], ctx, "");
                 }
                 }
             }

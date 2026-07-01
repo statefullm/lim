@@ -749,8 +749,8 @@ bool ChatSession::handle_reincarnate_completion() {
 static string make_save_path(const string& prefix, const string& default_path) {
     if (prefix.empty()) return default_path;
     string path = prefix;
-    if (path.size() < 5 || path.substr(path.size() - 5) != ".save") {
-        path += ".save";
+    if (path.size() < std::strlen(SAVE_EXT) || path.compare(path.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
+        path += SAVE_EXT;
     }
     return path;
 }
@@ -764,6 +764,16 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
                                      const vector<PromptCheckpoint>* checkpoints = nullptr) {
     if (tokens.empty()) return false;
 
+    // Read old tokens from the existing save file *before* overwriting it,
+    // so write_v1_cache can compute and delete the stale cache entry.
+    vector<llama_token> old_tokens;
+    string old_hash;
+    if (write_v1) {
+        if (read_token_save(path, old_tokens)) {
+            old_hash = cache_hash_for_save(old_tokens, g_model_path);
+        }
+    }
+
     // Write V3 format.
     bool ok = write_token_save_v3(path, tokens, *checkpoints);
 
@@ -773,24 +783,8 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
         string abs_path = path;
         if (realpath(path.c_str(), abs_buf)) abs_path = abs_buf;
 
-        FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
-        string git_sha;
-        if (pipe) {
-            char buf[48];
-            if (fgets(buf, sizeof(buf), pipe)) {
-                git_sha = buf;
-                while (!git_sha.empty() && (git_sha.back() == '\n' || git_sha.back() == '\r'))
-                    git_sha.pop_back();
-            }
-            pclose(pipe);
-        }
-        if (!git_sha.empty()) {
-            if (is_debug) diag("Save to cache.", "\033[35m");
-            write_v1_cache(abs_path, g_model_path, git_sha, ctx);
-        } else {
-            if (is_debug) diag("Save to cache.", "\033[35m");
-            write_v1_cache(abs_path, g_model_path, "", ctx);
-        }
+        if (is_debug) diag("Save to cache.", "\033[35m");
+        write_v1_cache(abs_path, tokens, g_model_path, ctx, old_hash);
     }
     return ok;
 }
@@ -1037,6 +1031,7 @@ bool ChatSession::run() {
 
         // 9. Feed user message (if non-empty)
         if (!user_input.empty()) {
+            last_user_input_ = user_input;
             if (!feed_user_message(user_input)) continue;
         }
 
@@ -1045,11 +1040,6 @@ bool ChatSession::run() {
 
         // 11. Process tool call
         if (process_tool_call()) {
-            // Record checkpoint after tool output is fed back, so "restore all"
-            // and the last checkpoint align when no further conversation turns follow.
-            if (!last_user_input_.empty()) {
-                state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
-            }
             continue;
         }
 
@@ -1060,9 +1050,6 @@ bool ChatSession::run() {
         if (handle_reincarnate_completion()) continue;
 
         // Record checkpoint at every prompt return for partial restore.
-        if (!user_input.empty()) {
-            last_user_input_ = user_input;
-        }
         if (!last_user_input_.empty()) {
             state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
         }

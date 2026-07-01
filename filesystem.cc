@@ -292,53 +292,58 @@ static std::string model_identifier(const std::string& model_path) {
     return slash != std::string::npos ? model_path.substr(slash + 1) : model_path;
 }
 
-static std::string cache_key(const std::string& v2_path, const std::string& model_path,
-                             const std::string& git_sha) {
-    // Hash the combination of v2 path, model path, and git sha.
-    // If git_sha is empty (no git repo), fall back to hashing just path + model.
-    // This ensures cache works even outside a git repository.
-    return sha256_hex(v2_path + "|" + model_identifier(model_path) + "|" + git_sha).substr(0, 12);
+// Compute content-based cache key: SHA-256 of (raw token bytes + model filename),
+// truncated to 12 hex characters.  This survives save file renames and moves.
+static std::string cache_hash(const std::vector<llama_token>& tokens,
+                              const std::string& model_path) {
+    std::string combined;
+    combined.reserve(tokens.size() * sizeof(llama_token) + model_identifier(model_path).size() + 1);
+    combined.append(reinterpret_cast<const char*>(tokens.data()),
+                    tokens.size() * sizeof(llama_token));
+    combined += '|';
+    combined += model_identifier(model_path);
+    return sha256_hex(combined).substr(0, 12);
 }
 
-static long file_mtime(const std::string& path) {
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0) return -1;
-    return st.st_mtime;
+std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
+                                const std::string& model_path) {
+    return cache_hash(tokens, model_path);
 }
 
-// Minimal JSON registry: just track mtime of v2 source for staleness detection.
-// Full registry.json is overkill -- we embed metadata in the V1 cache header instead.
+// Extract the save file basename without directory path or .save extension.
+// Used as the human-readable prefix in cache filenames: .cache/<name>-<hash>
+static std::string save_file_name(const std::string& v2_path) {
+    size_t slash = v2_path.rfind('/');
+    std::string base = slash != std::string::npos ? v2_path.substr(slash + 1) : v2_path;
+    if (base.size() >= std::strlen(SAVE_EXT) && base.compare(base.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) == 0) {
+        base.resize(base.size() - std::strlen(SAVE_EXT));
+    }
+    return base;
+}
 
-bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path,
-                       const std::string& git_sha, struct llama_context* ctx) {
-    std::string dir = get_cache_dir_internal();
-    std::string key = cache_key(v2_path, model_path, git_sha);
-    std::string cache_path = dir + "/" + key;
+// Build the cache filename: <name>-<hash>.  The name is purely informational;
+// the hash suffix encodes content + model for correctness.
+static std::string cache_filename(const std::string& v2_path,
+                                  const std::vector<llama_token>& tokens,
+                                  const std::string& model_path) {
+    return save_file_name(v2_path) + "-" + cache_hash(tokens, model_path);
+}
 
-    // Check cache exists
-    struct stat st;
-    if (stat(cache_path.c_str(), &st) != 0) return false;
-
-    // Check v2 source hasn't been updated since cache was created
-    long v2_mtime = file_mtime(v2_path);
-    if (v2_mtime == -1 || v2_mtime > st.st_mtime) return false; // stale or missing
-
-    // Load the cached KV cache (it has a V1 header)
-    size_t header_size = 0;
-    read_llm_save_header(cache_path, &header_size);
-
+// Load a raw KV-cache blob from a file (no header).
+static bool load_raw_cache(const std::string& cache_path, struct llama_context* ctx) {
     FILE* fp = fopen(cache_path.c_str(), "rb");
     if (!fp) return false;
-    if (fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0) { fclose(fp); return false; }
+
     fseek(fp, 0, SEEK_END);
     long fsize = ftell(fp);
     fclose(fp);
-    size_t state_size = static_cast<size_t>(fsize) - header_size;
+    if (fsize <= 0) return false;
 
+    size_t state_size = static_cast<size_t>(fsize);
     std::vector<uint8_t> state_buf(state_size);
+
     fp = fopen(cache_path.c_str(), "rb");
-    if (!fp || fseek(fp, static_cast<long>(header_size), SEEK_SET) != 0 ||
-        fread(state_buf.data(), 1, state_size, fp) != state_size) {
+    if (!fp || fread(state_buf.data(), 1, state_size, fp) != state_size) {
         if (fp) fclose(fp);
         return false;
     }
@@ -348,13 +353,77 @@ bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path
     return n_loaded == state_size;
 }
 
-bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
-                    const std::string& git_sha, struct llama_context* ctx) {
+bool try_load_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+                       const std::string& model_path, struct llama_context* ctx) {
     std::string dir = get_cache_dir_internal();
-    std::string key = cache_key(v2_path, model_path, git_sha);
-    std::string cache_path = dir + "/" + key;
+    std::string hash = cache_hash(tokens, model_path);
+    std::string suffix = "-" + hash;
 
-    // Get the current KV cache as raw state data
+    // Look for any file ending with -<hash> (glob-style via readdir).
+    DIR* d = opendir(dir.c_str());
+    if (!d) return false;
+
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+        std::string fname = entry->d_name;
+        if (fname.size() > suffix.size() &&
+            fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            // Found a match. All matches share the same content+model hash,
+            // so any one of them is valid.
+            std::string cache_path = dir + "/" + fname;
+            if (load_raw_cache(cache_path, ctx)) {
+                closedir(d);
+                return true;
+            }
+        }
+    }
+    closedir(d);
+    return false;
+}
+
+bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+                    const std::string& model_path, struct llama_context* ctx,
+                    const std::string& old_hash) {
+    std::string dir = get_cache_dir_internal();
+    std::string hash = cache_hash(tokens, model_path);
+    std::string suffix = "-" + hash;
+
+    // Check if an equivalent cache entry already exists (same content+model).
+    DIR* d = opendir(dir.c_str());
+    if (d) {
+        struct dirent* entry;
+        while ((entry = readdir(d)) != nullptr) {
+            std::string fname = entry->d_name;
+            if (fname.size() > suffix.size() &&
+                fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                // Cache already present for this content+model combination.
+                closedir(d);
+                return true;
+            }
+        }
+        closedir(d);
+    }
+
+    // Delete the stale cache entry from the previous save (if we know its hash).
+    if (!old_hash.empty()) {
+        std::string old_suffix = "-" + old_hash;
+        d = opendir(dir.c_str());
+        if (d) {
+            struct dirent* entry;
+            while ((entry = readdir(d)) != nullptr) {
+                std::string fname = entry->d_name;
+                if (fname.size() > old_suffix.size() &&
+                    fname.compare(fname.size() - old_suffix.size(), old_suffix.size(), old_suffix) == 0) {
+                    unlink((dir + "/" + fname).c_str());
+                }
+            }
+            closedir(d);
+        }
+    }
+
+    // Write the raw KV cache as .cache/<name>-<hash>
+    std::string cache_path = dir + "/" + cache_filename(v2_path, tokens, model_path);
+
     size_t state_size = llama_state_get_size(ctx);
     if (state_size == 0) return false;
 
@@ -362,22 +431,11 @@ bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
     size_t n_written = llama_state_get_data(ctx, state_buf.data(), state_size);
     if (n_written == 0) return false;
 
-    // Write with V1 header so it's self-describing
     FILE* fp = fopen(cache_path.c_str(), "wb");
     if (!fp) return false;
-
-    // Header: same format as V1 save, includes source info for debugging
-    std::string header = "LIM_SAVE_v1 git_sha=" + git_sha + "\n";
-    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
     if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
-
     bool ok = fflush(fp) == 0 && fclose(fp) == 0;
-    if (!ok) { return false; }
-
-    // Return cache size in MB for the caller to log
-    struct stat st;
-    stat(cache_path.c_str(), &st);
-    return true;
+    return ok;
 }
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.

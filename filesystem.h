@@ -41,13 +41,23 @@ bool read_token_save(const std::string& save_path, std::vector<llama_token>& tok
 std::vector<PromptCheckpoint> read_checkpoint_offsets(const std::string& save_path);
 
 // V1 cache: after a slow restore, auto-save the rebuilt KV cache for instant
-// future restores.  Cache lives in <cwd>/.cache/<hash>.
-bool try_load_v1_cache(const std::string& v2_path, const std::string& model_path,
-                       const std::string& git_sha, struct llama_context* ctx);
-// After a successful restore, persist the current KV cache as a V1 cache entry.
-// Returns true on success.
-bool write_v1_cache(const std::string& v2_path, const std::string& model_path,
-                    const std::string& git_sha, struct llama_context* ctx);
+// future restores.  Cache lives in <cwd>/.cache/<name>-<hash>.
+// The hash is content-based (SHA-256 of token data + model filename), so it
+// survives save file renames and moves.  The name suffix is purely informational.
+static constexpr const char* SAVE_EXT = ".save";
+
+bool try_load_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+                       const std::string& model_path, struct llama_context* ctx);
+// Compute the content-based cache hash for a token sequence and model.
+std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
+                                const std::string& model_path);
+// After a successful restore or named save, persist the current KV cache.
+// old_hash: if non-empty, the cache entry matching this hash is deleted first
+// (it corresponds to the previous content of the save file).
+// Returns true on success (or if an equivalent cache entry already exists).
+bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+                    const std::string& model_path, struct llama_context* ctx,
+                    const std::string& old_hash = "");
 std::string get_cache_dir();
 #include <functional>
 
