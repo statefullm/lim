@@ -354,12 +354,15 @@
             // How much has already been rendered (tracked via data attribute, not DOM text).
             var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
 
+            // Restore fence state from the previous render step so that unclosed
+            // code fences spanning multiple deltas are handled correctly.
+            var inFence = wrapperDiv.getAttribute('data-in-fence') === '1';
+
             // Find \n\n boundaries that are NOT inside a fenced code block.
             // We scan character-by-character tracking fence state so that blank
             // lines inside ``` ... ``` do not trigger an early split.
             var searchPos = renderedPrefixLen;
             var tail = fullText.substring(searchPos);
-            var inFence = false;
             var lastValidBreak = -1;
 
             for (var i = 0; i < tail.length; i++) {
@@ -374,9 +377,28 @@
                 }
             }
 
-            if (lastValidBreak < 0) return;
+            if (lastValidBreak < 0) {
+                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+                return;
+            }
 
             var renderEnd = lastValidBreak + 2;
+
+            // Check if we'd leave an unclosed fence at renderEnd.
+            // Re-scan from the start to renderEnd for a clean count.
+            var fenceState = false;
+            var checkText = fullText.substring(0, renderEnd);
+            for (var j = 0; j < checkText.length; j++) {
+                if (checkText[j] === '`' && checkText.substring(j, j + 3) === '```') {
+                    fenceState = !fenceState;
+                    j += 2;
+                }
+            }
+            if (fenceState) {
+                // Unclosed fence -- skip this break, save state, wait for closing ```.
+                wrapperDiv.setAttribute('data-in-fence', '1');
+                return;
+            }
 
             // The new delta to parse: text between the previous render point
             // and the new render point.  This is O(delta), not O(total).
@@ -398,8 +420,10 @@
                 target.appendChild(fragment.firstChild);
             }
 
-            // Update the rendered-length tracker.  The cursor span stays zero-width.
+            // Update the rendered-length tracker.  Fence state is always false
+            // here since we refused to render with an unclosed fence above.
             wrapperDiv.setAttribute('data-rendered-len', String(renderEnd));
+            wrapperDiv.removeAttribute('data-in-fence');
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
             // O(1) per step, not O(n) rescanning of already-rendered content.
@@ -845,7 +869,7 @@
                 window.scrollTo(0, document.body.scrollHeight);
                 userScrolledAway = false;  // user is back at bottom
             } else if (hasChanges && !wasAtBottom) {
-                // User scrolled up during generation — remember this so we skip
+                // User scrolled up during generation -- remember this so we skip
                 // the auto-scroll at turn end.
                 userScrolledAway = true;
             }
