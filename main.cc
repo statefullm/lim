@@ -540,7 +540,8 @@ int main(int argc, char ** argv) {
                 // If checkpoints exist, offer partial restore via readline history navigation
                 int restore_limit = (int)restored_tokens.size();
                 if (!restored_checkpoints.empty()) {
-                    diag("Save contains " + to_string(restored_checkpoints.size()) + " prompt checkpoint(s).", "\033[35m");
+                    size_t num_cps = restored_checkpoints.size();
+                    diag("Save contains " + to_string(num_cps) + " prompt checkpoint" + (num_cps != 1 ? "s" : "") + ".", "\033[35m");
                     diag("Up/down arrows to navigate, Enter to confirm.", "\033[37m");
 
                     using_history();

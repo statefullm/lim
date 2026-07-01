@@ -755,6 +755,12 @@ static string make_save_path(const string& prefix, const string& default_path) {
     return path;
 }
 
+// Helper: format a save diagnostic with proper pluralization.
+static string save_diag(size_t n_checkpoints, size_t n_tokens) {
+    return to_string(n_checkpoints) + " checkpoint" + (n_checkpoints != 1 ? "s" : "")
+         + ", " + to_string(n_tokens) + " token" + (n_tokens != 1 ? "s" : "");
+}
+
 // Helper: compact save -- write only the token sequence (not the raw KV cache).
 // On restore, tokens are re-decoded through the model to regenerate the KV cache.
 // For a 75K-token session this produces ~300 KB instead of ~2 GB.
@@ -818,7 +824,7 @@ bool ChatSession::run() {
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
-                    diag("Auto-saved to " + autosave_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[35m");
+                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
                 }
             }
             return false;
@@ -834,7 +840,7 @@ bool ChatSession::run() {
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
-                    diag("Auto-saved to " + autosave_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[35m");
+                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
                 }
             }
 
@@ -880,7 +886,7 @@ bool ChatSession::run() {
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
-                    diag("Auto-saved to " + autosave_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[35m");
+                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
                 }
             }
 
@@ -952,7 +958,7 @@ bool ChatSession::run() {
             if (!ok) {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
-                diag("Session saved to " + save_path + " (" + to_string(state_.all_context_tokens.size()) + " tokens)", "\033[32m");
+                diag("Session saved to " + save_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[32m");
                 log_entry("SYSTEM", "Session saved to " + save_path);
                 prev_was_save_ = true;
             }
