@@ -20,8 +20,9 @@ ssh_dir="/home/$group/.ssh"
 
 fix() {
     sudo chown -R "$owner:$group" "$1"
-    chmod -R g+rw,g+s "$1"
+    chmod -R g+rw "$1"
     chmod -R -t "$1"
+    find "$1" -type d -exec chmod g+s {} +
 }
 
 if [ "$target" = "/home/$group" ] && [ -d "$ssh_dir" ]; then
