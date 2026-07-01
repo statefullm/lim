@@ -411,16 +411,19 @@ int main(int argc, char ** argv) {
     // system_tokens to re-seed the KV cache after a wipe, so it must be correct.
     string system_prompt;
 
+    bool prompt_file_exists = false;
     ifstream prompt_file(HOME+"/prompt");
     if (prompt_file.is_open()) {
         stringstream buffer;
         buffer << prompt_file.rdbuf();
         system_prompt = buffer.str();
         prompt_file.close();
+        prompt_file_exists = true;
     }
 
-    // Append current working directory and date to system prompt
-    {
+    // Only append cwd and date if a system prompt file was found.
+    // If ~/prompt is missing, leave system_prompt empty for unbiased comparison.
+    if (prompt_file_exists) {
         char current_cwd[1024];
         if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
             system_prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
@@ -450,7 +453,11 @@ int main(int argc, char ** argv) {
     }
 
     // Build system prompt using model-type-aware token vectors (BOS + system turn).
-    vector<llama_token> system_tokens = build_system_prompt_tokens(ctx, system_prompt);
+    // If no prompt file was found, skip the system turn entirely to match llama-cli's -sys "" behavior.
+    vector<llama_token> system_tokens;
+    if (!system_prompt.empty()) {
+        system_tokens = build_system_prompt_tokens(ctx, system_prompt);
+    }
     llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
     llama_sampler * smpl = llama_sampler_chain_init(lparams);
     llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, penalty_repeat, penalty_freq, penalty_present));
@@ -475,7 +482,7 @@ int main(int argc, char ** argv) {
             }
         }
 
-        if (!handle_llama_decode_error(ctx, batch)) return 1;
+        if (!system_tokens.empty() && !handle_llama_decode_error(ctx, batch)) return 1;
     } else {
         // Restore from save file.
         //   Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32><checkpoint_offsets_as_int32>"
@@ -653,7 +660,7 @@ int main(int argc, char ** argv) {
             for (size_t i = 0; i < (int)system_tokens.size(); i++) {
                 common_batch_add(batch, system_tokens[i], n_past++, {0}, (i == (int)system_tokens.size() - 1));
             }
-            if (!handle_llama_decode_error(ctx, batch)) return 1;
+            if (!system_tokens.empty() && !handle_llama_decode_error(ctx, batch)) return 1;
 
             bool result = run_chat_session(
                 ctx, vocab, smpl, batch, n_past, cparams,
