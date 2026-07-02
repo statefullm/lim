@@ -305,9 +305,11 @@
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
             if (firstInserted) {
-                var anchor = firstInserted.previousSibling || firstInserted;
-                renderMathInRange(anchor, lastInserted);
-                injectCopyButtonsInRange(anchor, lastInserted);
+                renderMathInDiv(target);
+                if (tail.includes('```')) {
+                    var anchor = firstInserted.previousSibling || firstInserted;
+                    injectCopyButtonsInRange(anchor, lastInserted);
+                }
             }
 
             // Fallback: scan the entire wrapper for any <pre> blocks missed by
@@ -400,6 +402,23 @@
                 return;
             }
 
+            // Check if the remaining text after renderEnd starts with a list item.
+            // If so, this break splits a list in half -- skip it and wait.
+            var tailAfter = fullText.substring(renderEnd);
+            var trimmed = tailAfter.replace(/^\s+/, '');
+            if (/^(\d+[.)]\s|[-*+]|\d+-\s)/.test(trimmed)) {
+                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+                return;
+            }
+
+            // Also check if the tail contains ANY list marker -- the delta might
+            // end with a list whose intro/context text comes after renderEnd,
+            // which would render the list before its surrounding text.
+            if (tailAfter.length > 0 && /(?:^|\n)(?:\d+[.)]\s|[-*+])/m.test(tailAfter)) {
+                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+                return;
+            }
+
             // The new delta to parse: text between the previous render point
             // and the new render point.  This is O(delta), not O(total).
             var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
@@ -430,7 +449,9 @@
             if (firstInserted) {
                 var anchor = firstInserted.previousSibling || firstInserted;
                 renderMathInRange(anchor, lastInserted);
-                injectCopyButtonsInRange(anchor, lastInserted);
+                if (deltaText.includes('```')) {
+                    injectCopyButtonsInRange(anchor, lastInserted);
+                }
             }
 
             // Fallback: scan the entire wrapper for any <pre> blocks missed by
@@ -438,11 +459,20 @@
             // is processed at most once, so this is O(missed), not O(n).
             injectCopyButtons(wrapperDiv);
         }
-        // Handles $$...$$ math extraction and restoration for KaTeX.
+        // Handles $$...$$ and $...$ math extraction and restoration for KaTeX.
         function rawTextToHtml(text, segType) {
             var mathBlocks = [];
+
+            // Extract display math $$...$$ first (greedy across newlines).
             var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                mathBlocks.push(m.trim());
+                mathBlocks.push({ tex: m.trim(), display: true });
+                return '<mth_' + (mathBlocks.length - 1) + '>';
+            });
+
+            // Extract inline math $...$ so that | inside $a|b$ doesn't get
+            // treated as a table delimiter by marked.
+            content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                mathBlocks.push({ tex: m.trim(), display: false });
                 return '<mth_' + (mathBlocks.length - 1) + '>';
             });
 
@@ -456,13 +486,15 @@
 
             // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
             html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
-                var tex = mathBlocks[parseInt(idx)];
+                var block = mathBlocks[parseInt(idx)];
+                var tex = block.tex;
                 if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                     try {
-                        return katex.renderToString(tex, { displayMode: true, throwOnError: false });
+                        var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
+                        if (!result.includes('katex-error')) return result;
                     } catch(e) {}
                 }
-                return '$$' + tex + '$$';
+                return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
             });
 
             if (segType === SEG_THINK) {
@@ -530,11 +562,16 @@
         // Convert a single segment to HTML string.
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
-                // Extract $$...$$ blocks before markdown processing so marked
-                // doesn't corrupt the delimiters or split them across paragraphs.
+                // Extract $$...$$ and $...$ blocks before markdown processing so
+                // marked doesn't corrupt delimiters or split | inside $a|b$ as
+                // a table column separator.
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push(m.trim());
+                    mathBlocks.push({ tex: m.trim(), display: true });
+                    return '<mth_' + (mathBlocks.length - 1) + '>';
+                });
+                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                    mathBlocks.push({ tex: m.trim(), display: false });
                     return '<mth_' + (mathBlocks.length - 1) + '>';
                 });
 
@@ -546,17 +583,28 @@
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
 
-                // Restore math blocks as <div> elements so KaTeX can render them.
+                // Render math blocks directly with KaTeX.
                 html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
-                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
+                    var block = mathBlocks[parseInt(idx)];
+                    if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
+                        try {
+                            var result = katex.renderToString(block.tex, { displayMode: block.display, throwOnError: false });
+                            if (!result.includes('katex-error')) return result;
+                        } catch(e) {}
+                    }
+                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
                 });
                 return html;
             } else if (seg.type === SEG_THINK) {
                 // Think block: collapsible box with markdown + KaTeX.
-                // Extract $$...$$ blocks before markdown processing.
+                // Extract $$...$$ and $...$ blocks before markdown processing.
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push(m.trim());
+                    mathBlocks.push({ tex: m.trim(), display: true });
+                    return '<mth_' + (mathBlocks.length - 1) + '>';
+                });
+                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                    mathBlocks.push({ tex: m.trim(), display: false });
                     return '<mth_' + (mathBlocks.length - 1) + '>';
                 });
 
@@ -568,9 +616,16 @@
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
                 }
 
-                // Restore math blocks as raw $$...$$ delimiters for KaTeX to find.
+                // Render math blocks directly with KaTeX.
                 html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
-                    return '$$' + mathBlocks[parseInt(idx)] + '$$';
+                    var block = mathBlocks[parseInt(idx)];
+                    if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
+                        try {
+                            var result = katex.renderToString(block.tex, { displayMode: block.display, throwOnError: false });
+                            if (!result.includes('katex-error')) return result;
+                        } catch(e) {}
+                    }
+                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
                 });
 
                 return '<div class="think-block">' +
@@ -669,33 +724,62 @@
         function renderMathInRange(startNode, endNode) {
             if (typeof renderMathInElement !== 'function') return;
 
+            // Render directly into a standalone temp div without extracting real
+            // nodes -- this avoids reordering block-level elements that can happen
+            // when moving DOM nodes in and out of a container.  Instead, we collect
+            // all text nodes in range, extract their $...$ content, render it with
+            // katex.renderToString, and replace the delimiters inline.
             var parent = startNode.parentNode;
-            var nodes = [];
+            var textNodes = [];
             var node = startNode.nextSibling;
             while (node && node !== endNode) {
-                nodes.push(node);
+                if (node.nodeType === 3) textNodes.push(node);
                 node = node.nextSibling;
             }
-            nodes.push(endNode);  // inclusive
-
-            // Build a temporary container with exactly the new nodes.
-            var tmp = document.createElement('div');
-            nodes.forEach(function(n) { tmp.appendChild(n); });
-
-            renderMathInElement(tmp, {
-                delimiters: [
-                    { left: '$$',  right: '$$',  display: true  },
-                    { left: '$',   right: '$',   display: false },
-                    { left: '\\(', right: '\\)', display: false },
-                    { left: '\\[', right: '\\]', display: true  }
-                ],
-                throwOnError: false
-            });
-
-            // Move the (now math-rendered) nodes back into the real DOM.
-            while (tmp.firstChild) {
-                parent.insertBefore(tmp.firstChild, startNode.nextSibling);
+            if (endNode.nodeType === 3) textNodes.push(endNode);
+            else if (endNode) {
+                var walker = document.createTreeWalker(endNode, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) textNodes.push(walker.currentNode);
             }
+
+            var delimRe = /\$\$([^\$]+?)\$\$|\$([^\$]+?)\$/g;
+            textNodes.forEach(function(tn) {
+                var text = tn.nodeValue;
+                if (!text.includes('$')) return;
+                var fragments = [];
+                var lastIdx = 0;
+                var m;
+                while ((m = delimRe.exec(text)) !== null) {
+                    if (m.index > lastIdx) fragments.push(document.createTextNode(text.substring(lastIdx, m.index)));
+                    var tex = m[1] ? m[1].trim() : m[2].trim();
+                    var display = !!m[1];
+                    if (typeof katex !== 'undefined') {
+                        try {
+                            fragments.push(katex.renderToString(tex, { displayMode: display, throwOnError: false }));
+                        } catch(e) {
+                            fragments.push(document.createTextNode(m[0]));
+                        }
+                    } else {
+                        fragments.push(document.createTextNode(m[0]));
+                    }
+                    lastIdx = m.index + m[0].length;
+                }
+                if (fragments.length === 0) return;
+                if (lastIdx < text.length) fragments.push(document.createTextNode(text.substring(lastIdx)));
+                // Replace the text node with a fragment containing math spans.
+                // Text nodes can't have children, so we must swap it out.
+                var frag = document.createDocumentFragment();
+                fragments.forEach(function(f) {
+                    if (typeof f === 'string') {
+                        var t = document.createElement('template');
+                        t.innerHTML = f;
+                        while (t.content.firstChild) frag.appendChild(t.content.firstChild);
+                    } else {
+                        frag.appendChild(f);
+                    }
+                });
+                tn.parentNode.replaceChild(frag, tn);
+            });
         }
 
         function render() {
