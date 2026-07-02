@@ -204,6 +204,99 @@
         const SEG_THINK      = '\x06';
         const SEG_TURN_END   = '\x07';
 
+        /* ------------------------------------------------------------------ */
+        /*  Math sentinel escaping (mirrors parsers.cc)                        */
+        /* ------------------------------------------------------------------ */
+        /*  The internal math sentinel @mth_N@ can appear literally in LLM     */
+        /*  output.  To prevent marked/browser from interpreting it as an      */
+        /*  HTML tag, we escape on input and unescape before DOM insertion.   */
+        /*  Escape char: _ (underscore).                                      */
+        /* ------------------------------------------------------------------ */
+
+        // Escape @mth_N@ tokens in incoming SSE payloads.
+        // Mirrors escape_one_token() in parsers.cc with '_' as the escape char.
+        function escapeMth(str) {
+            var start_pos = 0;
+            while (start_pos < str.length) {
+                var pos = str.indexOf('@', start_pos);
+                if (pos === -1) break;
+
+                // Skip any underscores after the @.
+                var scan = pos + 1;
+                while (scan < str.length && str[scan] === '_') scan++;
+
+                // Check if suffix matches 'mth_N@' where N is digits.
+                var match = true;
+                if (str.substring(scan, scan + 4) !== 'mth_') {
+                    match = false;
+                } else {
+                    var k = scan + 4;
+                    while (k < str.length && str[k] >= '0' && str[k] <= '9') k++;
+                    if (k >= str.length || str[k] !== '@') {
+                        match = false;
+                    }
+                }
+
+                if (match) {
+                    // Insert one more underscore after the @.
+                    str = str.substring(0, pos + 1) + '_' + str.substring(pos + 1);
+                    start_pos = pos + 2 + (k - scan);
+                } else {
+                    start_pos = pos + 1;
+                }
+            }
+            return str;
+        }
+
+        // Unescape @mth_N@ tokens before DOM insertion.
+        // Mirrors unescape_one_token() in parsers.cc with '_' as the escape char.
+        function unescapeMth(str) {
+            var start_pos = 0;
+            while (start_pos < str.length) {
+                var pos = str.indexOf('@', start_pos);
+                if (pos === -1) break;
+
+                // Count underscores after the @.
+                var scan = pos + 1;
+                var bs = 0;
+                while (scan < str.length && str[scan] === '_') { bs++; scan++; }
+
+                // Check if suffix matches 'mth_N@' where N is digits.
+                var match = true;
+                if (str.substring(scan, scan + 4) !== 'mth_') {
+                    match = false;
+                } else {
+                    var k = scan + 4;
+                    while (k < str.length && str[k] >= '0' && str[k] <= '9') k++;
+                    if (k >= str.length || str[k] !== '@') {
+                        match = false;
+                    }
+                }
+
+                if (match) {
+                    if (bs > 0) {
+                        // Remove one underscore: @ + (bs-1) underscores + mth_N@.
+                        var replacement = '@';
+                        for (var b = 0; b < bs - 1; b++) replacement += '_';
+                        replacement += str.substring(scan, k + 1);
+                        str = str.substring(0, pos) + replacement + str.substring(k + 1);
+                        start_pos = pos + replacement.length;
+                    } else {
+                        // No underscores -- raw token, leave alone.
+                        start_pos = k + 1;
+                    }
+                } else {
+                    start_pos = pos + 1;
+                }
+            }
+            return str;
+        }
+
+        // Single point of unescaping before any HTML enters the DOM.
+        function htmlToDom(htmlStr, targetEl) {
+            targetEl.innerHTML = unescapeMth(htmlStr);
+        }
+
         /* Toggle think block visibility.  Survives re-renders because the
            wrapper div stores a data-think-collapsed attribute. */
         function toggleThinkBlock(headerEl) {
@@ -466,14 +559,14 @@
             // Extract display math $$...$$ first (greedy across newlines).
             var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
                 mathBlocks.push({ tex: m.trim(), display: true });
-                return '<mth_' + (mathBlocks.length - 1) + '>';
+                return '@mth_' + (mathBlocks.length - 1) + '@';
             });
 
             // Extract inline math $...$ so that | inside $a|b$ doesn't get
             // treated as a table delimiter by marked.
             content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
                 mathBlocks.push({ tex: m.trim(), display: false });
-                return '<mth_' + (mathBlocks.length - 1) + '>';
+                return '@mth_' + (mathBlocks.length - 1) + '@';
             });
 
             var html;
@@ -485,7 +578,7 @@
             }
 
             // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
-            html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
+            html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                 var block = mathBlocks[parseInt(idx)];
                 var tex = block.tex;
                 if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
@@ -512,7 +605,7 @@
         // Parse an HTML string into a DocumentFragment (no outerHTML wrapper).
         function htmlFragment(htmlStr) {
             var template = document.createElement('template');
-            template.innerHTML = htmlStr;
+            template.innerHTML = unescapeMth(htmlStr);
             return template.content;
         }
 
@@ -568,11 +661,11 @@
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
                     mathBlocks.push({ tex: m.trim(), display: true });
-                    return '<mth_' + (mathBlocks.length - 1) + '>';
+                    return '@mth_' + (mathBlocks.length - 1) + '@';
                 });
                 content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
                     mathBlocks.push({ tex: m.trim(), display: false });
-                    return '<mth_' + (mathBlocks.length - 1) + '>';
+                    return '@mth_' + (mathBlocks.length - 1) + '@';
                 });
 
                 var html;
@@ -584,7 +677,7 @@
                 }
 
                 // Render math blocks directly with KaTeX.
-                html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
+                html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                     var block = mathBlocks[parseInt(idx)];
                     if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                         try {
@@ -601,11 +694,11 @@
                 var mathBlocks = [];
                 var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
                     mathBlocks.push({ tex: m.trim(), display: true });
-                    return '<mth_' + (mathBlocks.length - 1) + '>';
+                    return '@mth_' + (mathBlocks.length - 1) + '@';
                 });
                 content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
                     mathBlocks.push({ tex: m.trim(), display: false });
-                    return '<mth_' + (mathBlocks.length - 1) + '>';
+                    return '@mth_' + (mathBlocks.length - 1) + '@';
                 });
 
                 var html;
@@ -617,7 +710,7 @@
                 }
 
                 // Render math blocks directly with KaTeX.
-                html = html.replace(/<mth_(\d+)>/g, function(_, idx) {
+                html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                     var block = mathBlocks[parseInt(idx)];
                     if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                         try {
@@ -755,7 +848,12 @@
                     var display = !!m[1];
                     if (typeof katex !== 'undefined') {
                         try {
-                            fragments.push(katex.renderToString(tex, { displayMode: display, throwOnError: false }));
+                            var result = katex.renderToString(tex, { displayMode: display, throwOnError: false });
+                            if (!result.includes('katex-error')) {
+                                fragments.push(result);
+                            } else {
+                                fragments.push(document.createTextNode(m[0]));
+                            }
                         } catch(e) {
                             fragments.push(document.createTextNode(m[0]));
                         }
@@ -811,7 +909,7 @@
                                     delta = newContent.substring(oldContent.length);
                                 } else {
                                     // Content shrank (shouldn't happen normally, but handle it).
-                                    wrapperDiv.innerHTML = segToHtml(segments[i]);
+                        wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
                                     wrapperDiv.removeAttribute('data-raw');
                                     injectCopyButtons(wrapperDiv);
                                     renderMathInDiv(wrapperDiv);
@@ -838,7 +936,7 @@
                                     preWasAtBottom.push(nearBottom);
                                 });
 
-                                wrapperDiv.innerHTML = segToHtml(segments[i]);
+                                wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
                                 injectCopyButtons(wrapperDiv);
                                 renderMathInDiv(wrapperDiv);
 
@@ -908,7 +1006,7 @@
                         scheduleFinalRender();
                     } else {
                         // Non-text segments (tool labels, HTML) render immediately.
-                        wrapperDiv.innerHTML = segToHtml(segments[i]);
+                        wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
                         outputDiv.appendChild(wrapperDiv);
                         injectCopyButtons(wrapperDiv);
                         renderMathInDiv(wrapperDiv);
@@ -1024,7 +1122,7 @@
                         // stream_html() calls read together), the content of each
                         // segment sits between its own prefix and the next prefix.
                         if (i > lastIdx) {
-                            const payload = data.substring(lastIdx, i);
+                            var payload = escapeMth(data.substring(lastIdx, i));
                             if (pendingType !== null) {
                                 // Content belongs to the pending type from a previous message.
                                 segments.push({ type: pendingType, content: payload });
@@ -1051,7 +1149,7 @@
 
                 // Remaining text after last prefix goes to the current segment (or creates one).
                 if (lastIdx < data.length) {
-                    const payload = data.substring(lastIdx);
+                    var payload = escapeMth(data.substring(lastIdx));
                     if (pendingType !== null) {
                         segments.push({ type: pendingType, content: payload });
                         pendingType = null;
@@ -1077,19 +1175,6 @@
                 // If turn ended, render remaining tails AFTER coalescing so that
                 // the last segment's content is already fully merged.
                 if (turnEnded) {
-                    finishAllRawSegments();
-
-                    // Scroll to bottom at end of turn unless the user manually
-                    // scrolled away during generation.  Check wasAtBottom one
-                    // final time with the current page height to catch scrolls
-                    // that happened after the last render() call.
-                    if (!userScrolledAway) {
-                        var margin = 120;
-                        var wasAtBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
-                        if (wasAtBottom) {
-                            window.scrollTo(0, document.body.scrollHeight);
-                        }
-                    }
                     userScrolledAway = false;
                 }
 
@@ -1117,6 +1202,17 @@
                 segments = segments.filter(seg => seg.type !== SEG_SPEED);
 
                 render();
+                if (turnEnded) {
+                    finishAllRawSegments();
+
+                    // Scroll to bottom at end of turn unless the user manually
+                    // scrolled away during generation.  This must happen AFTER
+                    // both render() and finishAllRawSegments() so the page height
+                    // includes all newly rendered content.
+                    if (!userScrolledAway) {
+                        window.scrollTo(0, document.body.scrollHeight);
+                    }
+                }
                 } catch(e) {
                     console.error('[ws] ERROR in onmessage handler:', e);
                     console.trace('[ws] Stack trace:');
