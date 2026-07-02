@@ -72,7 +72,7 @@ static string trim(const string& s) {
 static map<string, string> load_aliases() {
     // Built-in commands that cannot be overridden by aliases.
     static const set<string> builtin_commands = {
-        "quit", "exit", "clear", "reset", "reincarnate", "continue", "save", "help"
+        "quit", "exit", "clear", "undo", "reset", "reincarnate", "continue", "save", "help"
     };
 
     map<string, string> aliases;
@@ -178,11 +178,12 @@ public:
     bool run();
 
 private:
-    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, HELP };
+    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, HELP, UNDO };
 
-    // Parsed command and optional save prefix
+    // Parsed command and optional arguments
     Command last_cmd_ = Command::NONE;
     string save_prefix_;
+    int undo_count_ = 1;
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
     // Track if we already logged assistant output this turn (via process_tool_call),
@@ -237,8 +238,8 @@ private:
     void clear_context() {
         llama_memory_clear(llama_get_memory(ctx_), true);
         n_past_ = 0;
-        // Reset context token tracker to just system tokens
-        state_.all_context_tokens = system_tokens_;
+        // Reset context token tracker to empty; feed_tokens_impl will rebuild it.
+        state_.all_context_tokens.clear();
         state_.prompt_checkpoints.clear();
         feed_tokens_impl(system_tokens_);
 
@@ -493,6 +494,25 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
         if (rest.substr(0, SAVE_LEN) == SAVE_NAME) {
             save_prefix_ = trim(rest.substr(SAVE_LEN));
             return Command::SAVE;
+        }
+    }
+
+    // /undo is special: it accepts an optional integer argument.
+    static constexpr const char* UNDO_NAME = "undo";
+    static constexpr int UNDO_LEN = 4;
+    if (rest.size() == UNDO_LEN || (rest.size() > UNDO_LEN && isspace(rest[UNDO_LEN]))) {
+        if (rest.substr(0, UNDO_LEN) == UNDO_NAME) {
+            string arg = trim(rest.substr(UNDO_LEN));
+            undo_count_ = 1;
+            if (!arg.empty()) {
+                try {
+                    int val = stoi(arg);
+                    if (val > 0) undo_count_ = val;
+                } catch (...) {
+                    // If parsing fails, default to 1.
+                }
+            }
+            return Command::UNDO;
         }
     }
 
@@ -890,6 +910,115 @@ bool ChatSession::run() {
             continue;
         }
 
+        if (last_cmd_ == Command::UNDO) {
+            // Auto-save before undoing so nothing is truly lost.
+            {
+                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
+                if (!ok) {
+                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+                } else {
+                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
+                }
+            }
+
+            // Handle zero/negative: NOP, return silently to prompt.
+            if (undo_count_ <= 0) continue;
+
+
+
+            // If no checkpoints remain after undo, or N exceeds available, fall back to /clear.
+            if (state_.prompt_checkpoints.empty() || undo_count_ >= (int)state_.prompt_checkpoints.size()) {
+                clear_context();
+                state_.file_cache.clear();
+                state_.auto_continue = false;
+                state_.prev_was_interrupted = false;
+                reset_session_state();
+                state_.last_t_count = 0;
+                state_.last_elapsed = 0.0;
+                state_.last_n_past = n_past_;
+                log_entry("SYSTEM", "Context Cleared (undo fallback)");
+
+                if (should_output_to_browser()) {
+                    double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+                    string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+                    const char soh = 0x01;
+                    pipe_write(&soh, 1);
+                    pipe_write(&SEG_SPEED, 1);
+                    string speed_msg = "Cleared | " + ctx_str;
+                    pipe_write(speed_msg.c_str(), speed_msg.length());
+                }
+
+                diag("Context Cleared Successfully", "\033[32m");
+                continue;
+            }
+
+            // Find the first checkpoint to remove (target_idx), then restore
+            // to the state recorded by the checkpoint just before it.
+            int target_idx = (int)state_.prompt_checkpoints.size() - undo_count_;
+            PromptCheckpoint& target = state_.prompt_checkpoints[target_idx - 1];
+
+            diag("Undoing " + to_string(undo_count_) + " prompt" + (undo_count_ > 1 ? "s" : "") + " (restoring to: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\")", "\033[35m");
+
+            // Truncate the token tracker to what we're keeping.
+            state_.all_context_tokens.resize(target.n_past);
+
+            // Try seq_rm first: for pure attention models this frees tail cells
+            // instantly with no re-decode.  For hybrid models (Qwen3.5/3.6) the
+            // recurrent cache rejects partial rollback, so we fall back to a full
+            // clear + re-decode which always works.
+            {
+                llama_memory_t mem = llama_get_memory(ctx_);
+                bool ok = llama_memory_seq_rm(mem, 0, target.n_past, -1);
+                if (ok) {
+                    n_past_ = target.n_past;
+                } else {
+                    diag("seq_rm failed during undo, falling back to clear+decode.", "\033[35m");
+                    llama_memory_clear(mem, true);
+                    n_past_ = 0;
+
+                    auto start = chrono::high_resolution_clock::now();
+                    if (!feed_tokens_impl(state_.all_context_tokens)) {
+                        diag("Failed to re-feed tokens after undo. Type '/clear' to reset.", "\033[31m");
+                        continue;
+                    }
+                    state_.all_context_tokens.resize(target.n_past);
+
+                    auto end = chrono::high_resolution_clock::now();
+                    double elapsed = chrono::duration<double>(end - start).count();
+                    int secs = (int)elapsed;
+                    double speed = target.n_past / (elapsed > 0 ? elapsed : 1.0);
+                    diag("KV cache regenerated: " + to_string(target.n_past) + " tokens at " + to_string(round_int(speed)) + " t/s (" + to_string(secs) + "s)", "\033[35m");
+                }
+            }
+
+            // Erase all checkpoints at and beyond the undo boundary.
+            state_.prompt_checkpoints.erase(state_.prompt_checkpoints.begin() + target_idx, state_.prompt_checkpoints.end());
+
+            // Reset generation state so the session is ready for a fresh user prompt.
+            state_.auto_continue = false;
+            state_.prev_was_interrupted = false;
+            reset_session_state();
+            state_.last_t_count = 0;
+            state_.last_elapsed = 0.0;
+            state_.last_n_past = n_past_;
+
+            log_entry("SYSTEM", "Undid " + to_string(undo_count_) + " prompt" + (undo_count_ > 1 ? "s" : ""));
+
+            if (should_output_to_browser()) {
+                double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+                string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+                const char soh = 0x01;
+                pipe_write(&soh, 1);
+                pipe_write(&SEG_SPEED, 1);
+                string speed_msg = "Undid " + to_string(undo_count_) + " | " + ctx_str;
+                pipe_write(speed_msg.c_str(), speed_msg.length());
+            }
+
+            diag("Undo successful", "\033[32m");
+            continue;
+        }
+
         if (last_cmd_ == Command::RESET) {
             reset_llm_state();
             log_entry("SYSTEM", "Loop Counter Reset");
@@ -989,11 +1118,12 @@ bool ChatSession::run() {
             diag("Available Commands:", "\033[1;36m");
             diag("  /quit or /exit         Save to log/<N>.save and exit", "\033[37m");
             diag("  /clear                 Clear context (auto-saves first to log/<N>-clear.save)", "\033[37m");
+            diag("  /undo [N]              Undo last N prompts (default: 1; auto-saves first)", "\033[37m");
             diag("  /reset                 Reset loop detector and file cache", "\033[37m");
             diag("  /reincarnate           Compose new prompt in ~/userprompt, then restart (auto-saves first)", "\033[37m");
             diag("  /continue              Resume generation after interruption", "\033[37m");
             diag("  /save [path]           Save session state (default: log/<N>.save)", "\033[37m");
-            diag("  /help               Show this help message", "\033[37m");
+            diag("  /help                  Show this help message", "\033[37m");
             diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;36m");
             continue;
         }

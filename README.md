@@ -300,6 +300,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
+| `LIM_RS_SEQ` | `16` | Number of recurrent-state snapshots per sequence for rollback. On hybrid models (Qwen3.5/3.6), `/undo` tries `seq_rm` first for instant undo; if the rollback distance exceeds this value it falls back to clear+re-decode. Set to `0` to disable entirely (fallback always used). Higher values use more RAM. |
 | `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
 | `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
@@ -386,6 +387,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 |---|---|
 | `/quit` or `/exit` | Auto-save the current state to `log/<N>.save`, then exit the session |
 | `/clear` | Auto-save the current state to `log/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. For a permanent named checkpoint before clearing, use `/save <name>` first. |
+| `/undo [N]` | Undo the last N user prompts (default: 1). Auto-saves first to `log/<N>-clear.save`. Restores the session to the checkpoint just before those prompts were issued by truncating tokens, clearing the KV-cache, and re-decoding the retained portion. Only actual LLM inputs are counted; LIM commands like `/undo` itself are skipped. If N exceeds available checkpoints, falls back to `/clear`. |
 | `/reset` | Reset internal state (loop detector) without clearing the KV-cache |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |

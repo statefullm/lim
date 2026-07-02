@@ -402,6 +402,17 @@ int main(int argc, char ** argv) {
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
 
+    // Recurrent-state snapshots for undo on hybrid models (Qwen3.5/3.6).
+    // With snapshots, /undo can rewind the recurrent cache without re-decoding.
+    {
+        const char* rs_env = getenv("LIM_RS_SEQ");
+        if (rs_env != nullptr && strlen(rs_env) > 0) {
+            cparams.n_rs_seq = atoi(rs_env);
+        } else {
+            cparams.n_rs_seq = 16;
+        }
+    }
+
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
 
