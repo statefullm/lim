@@ -239,6 +239,7 @@ private:
         n_past_ = 0;
         // Reset context token tracker to just system tokens
         state_.all_context_tokens = system_tokens_;
+        state_.prompt_checkpoints.clear();
         feed_tokens_impl(system_tokens_);
 
         // Reset sampler state (penalty history, RNG) for a fresh start
