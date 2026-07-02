@@ -996,9 +996,15 @@
                     finishAllRawSegments();
 
                     // Scroll to bottom at end of turn unless the user manually
-                    // scrolled away during generation (tracked via userScrolledAway).
+                    // scrolled away during generation.  Check wasAtBottom one
+                    // final time with the current page height to catch scrolls
+                    // that happened after the last render() call.
                     if (!userScrolledAway) {
-                        window.scrollTo(0, document.body.scrollHeight);
+                        var margin = 120;
+                        var wasAtBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
+                        if (wasAtBottom) {
+                            window.scrollTo(0, document.body.scrollHeight);
+                        }
                     }
                     userScrolledAway = false;
                 }
