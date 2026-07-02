@@ -695,6 +695,17 @@ int main(int argc, char ** argv) {
                 } else {
                     diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
                     diag("Git HEAD mismatch: session was at " + short_saved + ", currently at " + short_current, "\033[33m");
+                    // Inform the LLM about code changes so it can adapt.
+                    {
+                        vector<llama_token> git_msg = build_user_assistant_turn(ctx,
+                            "Note: Git HEAD has changed since this session was saved (was " + short_saved + ", now " + short_current + "). Code or configuration may have been modified.");
+                        restored_tokens.insert(restored_tokens.end(), git_msg.begin(), git_msg.end());
+                        batch.n_tokens = 0;
+                        for (size_t i = 0; i < (int)git_msg.size(); i++) {
+                            common_batch_add(batch, git_msg[i], n_past++, {0}, (i == (int)git_msg.size() - 1));
+                        }
+                        if (!handle_llama_decode_error(ctx, batch)) return 1;
+                    }
                 }
             } else {
                 diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
