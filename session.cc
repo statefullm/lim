@@ -971,17 +971,27 @@ bool ChatSession::run() {
             {
                 llama_memory_t mem = llama_get_memory(ctx_);
 
-                // Restore recurrent state from the target checkpoint.
-                // No-op for pure attention models (no recurrent state).
-                llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)(target_idx - 1));
+                // Translate the prompt_checkpoints index into a live stack index.
+                // After a fast restore, historical checkpoints from the save file
+                // have no corresponding entries in the recurrent checkpoint stack;
+                // only checkpoints saved during this session are present.
+                int stack_idx = (target_idx - 1) - state_.checkpoint_stack_offset;
+
+                if (stack_idx >= 0) {
+                    // Restore recurrent state from the target checkpoint.
+                    // No-op for pure attention models (no recurrent state).
+                    llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)stack_idx);
+                }
 
                 bool ok = llama_memory_seq_rm(mem, 0, target.n_past, -1);
                 if (ok) {
                     n_past_ = target.n_past;
                     // Prune stale recurrent checkpoints beyond the restored index.
-                    llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)(target_idx - 1));
+                    if (stack_idx >= 0) {
+                        llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)stack_idx);
+                    }
                 } else {
-                    diag("seq_rm failed during undo, falling back to clear+decode.", "\033[35m");
+                    diag("Regenerating KV cache for " + to_string(target.n_past) + " tokens...", "\033[35m");
                     llama_memory_clear(mem, true);
                     n_past_ = 0;
 
@@ -1001,7 +1011,14 @@ bool ChatSession::run() {
             }
 
             // Erase all checkpoints at and beyond the undo boundary.
+            // Adjust the stack offset: after erasing, count how many remaining
+            // prompt_checkpoints are still historical (before the live stack).
+            int erased_count = 0;
+            for (int i = target_idx; i < (int)state_.prompt_checkpoints.size(); i++) {
+                if (i < state_.checkpoint_stack_offset) erased_count++;
+            }
             state_.prompt_checkpoints.erase(state_.prompt_checkpoints.begin() + target_idx, state_.prompt_checkpoints.end());
+            state_.checkpoint_stack_offset = std::max(0, state_.checkpoint_stack_offset - erased_count);
 
             // Reset generation state so the session is ready for a fresh user prompt.
             state_.auto_continue = false;

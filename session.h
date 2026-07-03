@@ -39,6 +39,10 @@ struct SessionState {
     vector<llama_token> all_context_tokens;
     // Token positions and prompt text at each prompt return, for partial restore
     vector<PromptCheckpoint> prompt_checkpoints;
+    // Number of historical checkpoints not present in the live recurrent checkpoint
+    // stack (e.g., after a fast restore from cache where only new prompts get saved).
+    // Used to offset rs_checkpoint_restore/prune indices during undo.
+    int checkpoint_stack_offset = 0;
     // Log file index (set by main.cc), so save files match chat log numbering
     int log_index = 0;
 };

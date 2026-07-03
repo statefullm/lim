@@ -495,6 +495,7 @@ int main(int argc, char ** argv) {
         string saved_sha;
         int n_restored = 0;
         bool used_v2 = false;
+        bool cache_hit = false;
 
         // Try compact token save
         if (read_token_save(restore_path, restored_tokens)) {
@@ -520,14 +521,15 @@ int main(int argc, char ** argv) {
             restored_checkpoints = read_checkpoint_offsets(restore_path);
 
             // Try instant restore from V1 cache before slow token decode
-            bool cache_hit = false;
+            bool cache_hit_local = false;
             if (!restore_path_abs.empty() && !show_checkpoints) {
-                cache_hit = try_load_v1_cache(restore_path_abs, restored_tokens, argv[1], ctx);
-                if (cache_hit && is_debug) {
+                cache_hit_local = try_load_v1_cache(restore_path_abs, restored_tokens, argv[1], ctx);
+                if (cache_hit_local && is_debug) {
                     std::string key = get_cache_dir() + "/"; // just to trigger dir creation check
                     diag("Restore from cache.", "\033[35m");
                 }
             }
+            cache_hit = cache_hit_local;
 
             auto log_restore = [&](const string& path, int count) {
                 diag("Restoring session from " + path + "... (" + to_string(count) + " tokens)", "\033[35m");
@@ -734,6 +736,11 @@ int main(int argc, char ** argv) {
         SessionState state;
         state.all_context_tokens = restored_tokens;
         state.prompt_checkpoints = restored_checkpoints;
+        // After a fast restore, the recurrent checkpoint stack is empty.
+        // The prompt_checkpoints list has entries from the save file that have
+        // no corresponding stack entries.  Record this offset so undo can
+        // translate between the two index spaces.
+        state.checkpoint_stack_offset = cache_hit ? (int)restored_checkpoints.size() : 0;
         state.log_index = log_index;
 
         // --- Run the main chat session loop ---
