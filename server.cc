@@ -329,7 +329,6 @@ bool prompt_for_browser_connection() {
         return true;
     }
 
-    message("\n\033[1;35m[Browser wait cancelled. Output may be lost.]\033[0m\n");
-    g_browser_warning_suppressed = true;
+    disable_browser_output();
     return false;
 }
