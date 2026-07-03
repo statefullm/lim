@@ -1214,10 +1214,13 @@ bool ChatSession::run() {
         if (handle_reincarnate_completion()) continue;
 
         // Record checkpoint at every prompt return for partial restore.
+        // Only save once per user turn -- clear last_user_input_ after use so that
+        // subsequent tool-call iterations within the same turn don't create duplicates.
         if (!last_user_input_.empty()) {
             state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
             // Save recurrent state for instant undo on hybrid models.
             llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+            last_user_input_.clear();
         }
     }
 
