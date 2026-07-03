@@ -474,6 +474,12 @@
 
             if (lastValidBreak < 0) {
                 wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+                // If the raw tail is very long with no paragraph break, force-render
+                // it so the user sees progress.  Rendering the entire tail is safe:
+                // no split means no risk of breaking code fences or lists.
+                if (tail.length > 2000) {
+                    renderRawTail(wrapperDiv, segIndex);
+                }
                 return;
             }
 
@@ -1172,25 +1178,10 @@
                 // than each getting its own independent markdown render pass.
                 coalesceSegments();
 
-                // If turn ended, render remaining tails AFTER coalescing so that
-                // the last segment's content is already fully merged.
-                if (turnEnded) {
-                    userScrolledAway = false;
-                }
-
-                // Also update segRenderedContent for any segments that were coalesced
-                // and already fully rendered (no raw attr), so render() doesn't
-                // unnecessarily re-render them.
-                if (turnEnded) {
-                    for (var ui = 0; ui < segments.length; ui++) {
-                        var uw = outputDiv.querySelector('[data-seg="' + ui + '"]');
-                        if (uw && !uw.hasAttribute('data-raw')) {
-                            segRenderedContent[ui] = segments[ui].content;
-                        }
-                    }
-                }
-
-                // Extract speed/context diagnostics and update the status bar.
+                // Extract speed/context diagnostics and update the status bar, then
+                // remove speed segments BEFORE any index-dependent logic (render,
+                // finishAllRawSegments) so that segment indices remain stable relative
+                // to segRenderedContent and DOM wrapper divs.
                 for (const seg of segments) {
                     if (seg.type === SEG_SPEED && seg.content.length > 0) {
                         speedInfo = seg.content;
@@ -1198,7 +1189,6 @@
                         statusDiv.className = 'status connected';
                     }
                 }
-                // Remove speed segments so they don't render as content.
                 segments = segments.filter(seg => seg.type !== SEG_SPEED);
 
                 render();
@@ -1212,6 +1202,7 @@
                     if (!userScrolledAway) {
                         window.scrollTo(0, document.body.scrollHeight);
                     }
+                    userScrolledAway = false;
                 }
                 } catch(e) {
                     console.error('[ws] ERROR in onmessage handler:', e);
