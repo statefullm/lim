@@ -839,6 +839,15 @@ bool ChatSession::run() {
     const char* history_file = ".lim_history";
     load_history_safe(history_file);
 
+    // Push saved prompt checkpoints onto readline history so up-arrow
+    // navigates through the session as it appeared when /save was called.
+    using_history();
+    for (const auto& cp : state_.prompt_checkpoints) {
+        if (!cp.prompt.empty()) {
+            add_history(cp.prompt.c_str());
+        }
+    }
+
     // Load user-defined aliases from ~/.lim_aliases
     aliases_ = load_aliases();
 
