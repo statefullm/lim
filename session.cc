@@ -963,15 +963,23 @@ bool ChatSession::run() {
             // Truncate the token tracker to what we're keeping.
             state_.all_context_tokens.resize(target.n_past);
 
-            // Try seq_rm first: for pure attention models this frees tail cells
-            // instantly with no re-decode.  For hybrid models (Qwen3.5/3.6) the
-            // recurrent cache rejects partial rollback, so we fall back to a full
-            // clear + re-decode which always works.
+            // Undo via seq_rm.  For pure attention models this works instantly.
+            // For hybrid models (Qwen3.5/3.6) we first restore the saved recurrent
+            // checkpoint, then seq_rm succeeds because plane 0 already holds the
+            // correct R/S state - instant undo with no re-decode.
+            // Falls back to clear+re-decode only if no checkpoint is available.
             {
                 llama_memory_t mem = llama_get_memory(ctx_);
+
+                // Restore recurrent state from the target checkpoint.
+                // No-op for pure attention models (no recurrent state).
+                llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)(target_idx - 1));
+
                 bool ok = llama_memory_seq_rm(mem, 0, target.n_past, -1);
                 if (ok) {
                     n_past_ = target.n_past;
+                    // Prune stale recurrent checkpoints beyond the restored index.
+                    llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)(target_idx - 1));
                 } else {
                     diag("seq_rm failed during undo, falling back to clear+decode.", "\033[35m");
                     llama_memory_clear(mem, true);
@@ -1208,6 +1216,8 @@ bool ChatSession::run() {
         // Record checkpoint at every prompt return for partial restore.
         if (!last_user_input_.empty()) {
             state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
+            // Save recurrent state for instant undo on hybrid models.
+            llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
         }
     }
 

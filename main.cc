@@ -402,16 +402,9 @@ int main(int argc, char ** argv) {
     cparams.flash_attn_type = (llama_flash_attn_type)1;
     cparams.offload_kqv = true;
 
-    // Recurrent-state snapshots for undo on hybrid models (Qwen3.5/3.6).
-    // With snapshots, /undo can rewind the recurrent cache without re-decoding.
-    {
-        const char* rs_env = getenv("LIM_RS_SEQ");
-        if (rs_env != nullptr && strlen(rs_env) > 0) {
-            cparams.n_rs_seq = atoi(rs_env);
-        } else {
-            cparams.n_rs_seq = 16;
-        }
-    }
+    // Recurrent state snapshots disabled - undo uses the checkpoint mechanism
+    // (rs_checkpoint_save/restore) which is independent of n_rs_seq.
+    cparams.n_rs_seq = 0;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) return 1;
@@ -612,6 +605,7 @@ int main(int argc, char ** argv) {
                 // This is deterministic: same tokens + same model = identical KV cache.
                 // Decode in n_batch-sized chunks to stay within llama.cpp's batch limit.
                 auto restore_start = chrono::high_resolution_clock::now();
+                size_t cp_restore_idx = 0; // index into restored_checkpoints
                 for (int i = 0; i < n_restored; i += (int)cparams.n_batch) {
                     int chunk = std::min((int)cparams.n_batch, n_restored - i);
                     batch.n_tokens = 0;
@@ -622,6 +616,13 @@ int main(int argc, char ** argv) {
                         sync_n_past(ctx, n_past);
                         cerr << "Error: Failed to decode tokens during restore" << endl;
                         return 1;
+                    }
+                    // After each chunk, check if we've crossed any checkpoint positions
+                    // and save the recurrent state for instant undo support.
+                    while (cp_restore_idx < restored_checkpoints.size() &&
+                           restored_checkpoints[cp_restore_idx].n_past <= n_past) {
+                        llama_memory_rs_checkpoint_save(llama_get_memory(ctx), 0);
+                        cp_restore_idx++;
                     }
                 }
                 sync_n_past(ctx, n_past);

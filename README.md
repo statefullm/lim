@@ -300,7 +300,6 @@ Set via `LIM_OUTPUT`:
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
-| `LIM_RS_SEQ` | `16` | Number of recurrent-state snapshots per sequence for rollback. On hybrid models (Qwen3.5/3.6), `/undo` tries `seq_rm` first for instant undo; if the rollback distance exceeds this value it falls back to clear+re-decode. Set to `0` to disable entirely (fallback always used). Higher values use more RAM. |
 | `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
 | `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
@@ -386,13 +385,13 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | Command | Effect |
 |---|---|
 | `/quit` or `/exit` | Auto-save the current state to `log/<N>.save`, then exit the session |
-| `/clear` | Auto-save the current state to `log/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. For a permanent named checkpoint before clearing, use `/save <name>` first. |
-| `/undo [N]` | Undo the last N user prompts (default: 1). Auto-saves first to `log/<N>-clear.save`. Restores the session to the checkpoint just before those prompts were issued by truncating tokens, clearing the KV-cache, and re-decoding the retained portion. Only actual LLM inputs are counted; LIM commands like `/undo` itself are skipped. If N exceeds available checkpoints, falls back to `/clear`. |
+| `/clear` | Auto-save the current state to `log/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
+| `/undo [N]` | Undo the last N user prompts (default: 1). Auto-saves first to `log/<N>-clear.save`. Restores the session to the checkpoint just before those prompts were issued. For pure attention models (Llama, Mistral), this is instant via `seq_rm`. For hybrid models (Qwen3.5/3.6), LIM restores a saved recurrent-state snapshot and trims both caches: also instant, no re-decode needed. Falls back to clear+re-decode only if no checkpoint is available (e.g., immediately after a fast cache restore before any new turns). Only actual LLM inputs are counted; LIM commands like `/undo` itself are skipped. If N exceeds available checkpoints, falls back to `/clear`. |
 | `/reset` | Reset internal state (loop detector) without clearing the KV-cache |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
 | `/save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, overwriting any previous save for this session |
-| `/save <path>` | Save the full session state to `<path>.save`. The path can be relative (`/save cats` -> `cats.save`) or absolute (`/save /tmp/checkpoint` -> `/tmp/checkpoint.save`). If the path already ends in `.save`, no extra extension is added. Use this to create named checkpoints at meaningful points in your session. |
+| `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
 | `/help` | Display a summary of all available commands |
 
 ### Save and Restore
@@ -411,7 +410,7 @@ coder cats          # restores from cats.save
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. Checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
 **Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
 
@@ -422,7 +421,7 @@ coder --checkpoints cats
 
 Press Ctrl+C during the restore prompt to cancel without decoding.
 
-**Instant restore cache:** Save files contain only the token sequence, keeping them small and model-agnostic. On first restore, tokens are decoded through the model to rebuild the KV-cache. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are instant. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for instant future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
+**Instant restore cache:** Save files contain only the token sequence, keeping them small and model-agnostic. On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that (/undo) works instantly for hybrid models (Qwen3.5/3.6) right after restore. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are instant. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for instant future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For instant cache restores, recurrent checkpoints build up naturally as conversation turns complete: (/undo) works after the first new turn. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
 **Auto-save on clear and quit:** Before clearing the context, LIM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 
