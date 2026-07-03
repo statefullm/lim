@@ -76,6 +76,10 @@ public:
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
 
+    void rs_checkpoint_save(llama_seq_id seq_id) override { mem_recr->rs_checkpoint_save(seq_id); }
+    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { mem_recr->rs_checkpoint_restore(seq_id, checkpoint_idx); }
+    void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { mem_recr->rs_checkpoint_prune(seq_id, keep_idx); }
+
     //
     // llama_memory_hybrid specific API
     //

@@ -78,6 +78,22 @@ public:
 
     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
 
+    // Recurrent state checkpointing (stack-based)
+
+    void rs_checkpoint_save(llama_seq_id seq_id) override;
+    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
+    void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override;
+
+    struct rs_checkpoint {
+        std::vector<uint8_t> r_data; // R tensor row data for all layers
+        std::vector<uint8_t> s_data; // S tensor row data for all layers
+    };
+
+    // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
+    std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
+    // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
+    std::vector<bool> rs_restored;
+
     // computed before each graph build
     uint32_t n = 0;
 
