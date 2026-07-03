@@ -37,7 +37,8 @@ THE SURGICAL EDITING WORKFLOW:
 If you need to edit a file, DO NOT use read_files to read the entire file if you already know roughly what you are looking for.
 Instead, use this 2-step workflow:
 1. Call search_file to find the target code. This will return the exact matched text along with sufficient surrounding lines of context.
-2. Call edit_file using the EXACT string you just pulled from the search results as your 'old' parameter.
+2. Select the portion you want to replace from the search results. Copy it verbatim -- do not reformat, trim whitespace, or change indentation. Paste it as the `old` parameter in your edit_file call. It must be a contiguous substring of what search_file returned.
+3. Call edit_file with the path on its own line to keep it visible even when old/new are long.
    - edit_file performs the edit directly on the file system and will return context snippets of the modified code.
    - Use the returned context snippets to verify your edit was successful.
    - DO NOT call read_files after a successful edit. The snippets are sufficient verification.
