@@ -355,6 +355,15 @@ int main(int argc, char ** argv) {
     cparams.type_k = parse_kv_type(getenv("LIM_CACHE_TYPE_K"), GGML_TYPE_Q8_0);
     cparams.type_v = parse_kv_type(getenv("LIM_CACHE_TYPE_V"), GGML_TYPE_Q8_0);
 
+    // Check whether the model file exists before doing anything with it.
+    {
+        struct stat st;
+        if (stat(argv[1], &st) != 0) {
+            diag("Model file not found: " + string(argv[1]), "\033[31m");
+            return 1;
+        }
+    }
+
     // Vectors must live through model loading since mparams holds pointers into them.
     const size_t ndevs = llama_max_devices();
     std::vector<float> tensor_split(ndevs, 0.0f);
@@ -382,9 +391,7 @@ int main(int argc, char ** argv) {
             GGML_LOG_LEVEL_ERROR);
 
         if (fit_status == COMMON_PARAMS_FIT_STATUS_SUCCESS) {
-            if (mparams.n_gpu_layers >= 0) {
-                diag("Model fit successful: " + to_string(mparams.n_gpu_layers) + " layers on GPU", "\033[32m");
-            }
+            // Defer the success message until after model load, when we know total layers.
         } else if (fit_status == COMMON_PARAMS_FIT_STATUS_FAILURE) {
             diag("Warning: could not fully fit model to device memory, using fallback parameters", "\033[33m");
         } else {
@@ -394,9 +401,28 @@ int main(int argc, char ** argv) {
 
     llama_model * model = llama_model_load_from_file(argv[1], mparams);
 
-    if (!model) return 1;
+    if (!model) {
+        // Model file exists but loading failed -- likely OOM on GPU or corrupt file.
+        struct stat st;
+        if (stat(argv[1], &st) == 0) {
+            double size_gb = static_cast<double>(st.st_size) / (1024.0 * 1024.0 * 1024.0);
+            char sz_buf[32];
+            snprintf(sz_buf, sizeof(sz_buf), "%.1f GB", size_gb);
+            string device = (mparams.n_gpu_layers > 0) ? "GPU" : "CPU";
+            diag("Failed to load model: " + string(argv[1]) + " (" + device + ", " + sz_buf + ")", "\033[31m");
+        } else {
+            diag("Failed to load model: " + string(argv[1]), "\033[31m");
+        }
+        return 1;
+    }
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
+
+    // Report GPU layer offload with total layer count.
+    if (mparams.n_gpu_layers >= 0) {
+        int32_t n_layers = llama_model_n_layer(model);
+        diag("Model loaded: " + to_string(mparams.n_gpu_layers) + "/" + to_string(n_layers) + " layers on GPU", "\033[32m");
+    }
 
     // Apply remaining context params that fit_params shouldn't touch
     cparams.flash_attn_type = (llama_flash_attn_type)1;
@@ -407,7 +433,12 @@ int main(int argc, char ** argv) {
     cparams.n_rs_seq = 0;
 
     llama_context * ctx = llama_init_from_model(model, cparams);
-    if (!ctx) return 1;
+    if (!ctx) {
+        int32_t n_layers = llama_model_n_layer(model);
+        diag("Failed to initialize model context: " + to_string(mparams.n_gpu_layers) +
+             "/" + to_string(n_layers) + " layers on GPU. The model may be too large for available device memory.", "\033[31m");
+        return 1;
+    }
 
     // Always load and tokenize the system prompt.
     // This is needed even during restore so that `system_tokens` holds only the
