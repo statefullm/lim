@@ -201,7 +201,6 @@ private:
 
     void repopulate_history() {
         using_history();
-        clear_history();
         for (const auto& cp : state_.prompt_checkpoints) {
             if (!cp.prompt.empty()) {
                 add_history(cp.prompt.c_str());
