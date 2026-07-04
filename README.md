@@ -392,6 +392,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
 | `/save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
+| `/restore <path>` | Restore a saved session from within the current session. Must be used immediately after `/clear` — fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the instant cache when available, falling back to full re-decode with checkpoint regeneration. |
 | `/help` | Display a summary of all available commands |
 
 ### Save and Restore
@@ -409,6 +410,16 @@ coder cats          # restores from cats.save
 ```
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
+
+**In-session restore:** You can also restore from within a running session using `/restore <path>`. This must be used immediately after `/clear` — if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the instant cache when available. Typical workflow:
+
+```
+>>> /clear
+[Context Cleared Successfully]
+>>> /restore cats
+[Restoring session from cats.save... (75432 tokens, from cache)]
+[Session restored: 75432 tokens loaded]
+```
 
 **Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first), with "restore all" as the final option. Press Enter to confirm. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 

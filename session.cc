@@ -34,6 +34,7 @@ extern std::string g_model_path;
 #include <unistd.h>
 #include <sys/ioctl.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 
 // --- Readline Headers ---
 #include <readline/readline.h>
@@ -72,7 +73,7 @@ static string trim(const string& s) {
 static map<string, string> load_aliases() {
     // Built-in commands that cannot be overridden by aliases.
     static const set<string> builtin_commands = {
-        "quit", "exit", "clear", "undo", "reset", "reincarnate", "continue", "save", "help"
+        "quit", "exit", "clear", "undo", "reset", "reincarnate", "continue", "save", "restore", "help"
     };
 
     map<string, string> aliases;
@@ -178,11 +179,12 @@ public:
     bool run();
 
 private:
-    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, HELP, UNDO };
+    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, RESTORE, HELP, UNDO };
 
     // Parsed command and optional arguments
     Command last_cmd_ = Command::NONE;
     string save_prefix_;
+    string restore_path_;
     int undo_count_ = 1;
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
@@ -195,6 +197,16 @@ private:
     // --- Helper methods (extracted from lambdas) ---
     vector<llama_token> tokenize(string text) {
         return common_tokenize(ctx_, text, false, true);
+    }
+
+    void repopulate_history() {
+        using_history();
+        clear_history();
+        for (const auto& cp : state_.prompt_checkpoints) {
+            if (!cp.prompt.empty()) {
+                add_history(cp.prompt.c_str());
+            }
+        }
     }
 
     void log_entry(const string& role, const string& text) {
@@ -494,6 +506,16 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
         if (rest.substr(0, SAVE_LEN) == SAVE_NAME) {
             save_prefix_ = trim(rest.substr(SAVE_LEN));
             return Command::SAVE;
+        }
+    }
+
+    // /restore is special: it accepts an optional path argument.
+    static constexpr const char* RESTORE_NAME = "restore";
+    static constexpr int RESTORE_LEN = 7;
+    if (rest.size() == RESTORE_LEN || (rest.size() > RESTORE_LEN && isspace(rest[RESTORE_LEN]))) {
+        if (rest.substr(0, RESTORE_LEN) == RESTORE_NAME) {
+            restore_path_ = trim(rest.substr(RESTORE_LEN));
+            return Command::RESTORE;
         }
     }
 
@@ -841,12 +863,7 @@ bool ChatSession::run() {
 
     // Push saved prompt checkpoints onto readline history so up-arrow
     // navigates through the session as it appeared when /save was called.
-    using_history();
-    for (const auto& cp : state_.prompt_checkpoints) {
-        if (!cp.prompt.empty()) {
-            add_history(cp.prompt.c_str());
-        }
-    }
+    repopulate_history();
 
     // Load user-defined aliases from ~/.lim_aliases
     aliases_ = load_aliases();
@@ -1148,6 +1165,126 @@ bool ChatSession::run() {
             continue;
         }
 
+        if (last_cmd_ == Command::RESTORE) {
+            // Build restore path: require a non-empty argument (no default path).
+            string rpath = restore_path_;
+            if (rpath.empty()) {
+                diag("/restore requires a path argument. Usage: /restore <save_file>", "\033[31m");
+                continue;
+            }
+
+            // Append .save if not already present (matches /save and CLI behavior).
+            if (rpath.size() < std::strlen(SAVE_EXT) || rpath.compare(rpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
+                rpath += SAVE_EXT;
+            }
+
+            // Validate the save file exists.
+            struct stat st_restore;
+            if (stat(rpath.c_str(), &st_restore) != 0 || !S_ISREG(st_restore.st_mode)) {
+                diag("Restore failed: save file not found: " + rpath, "\033[31m");
+                continue;
+            }
+
+            // Verify context is in a clean state (only system prompt present).
+            int expected_n_past = (int)system_tokens_.size();
+            if ((int)state_.all_context_tokens.size() != expected_n_past || !state_.prompt_checkpoints.empty()) {
+                diag("Restore failed: context has changed since last /clear. Type '/clear' first, then retry.", "\033[31m");
+                continue;
+            }
+
+            // Read the save file tokens.
+            vector<llama_token> restored_tokens;
+            if (!read_token_save(rpath, restored_tokens)) {
+                diag("Restore failed: invalid save file format: " + rpath, "\033[31m");
+                continue;
+            }
+
+            // Resolve to absolute path for cache key consistency.
+            char abs_buf[4096];
+            string restore_path_abs;
+            if (realpath(rpath.c_str(), abs_buf)) {
+                restore_path_abs = abs_buf;
+            } else {
+                restore_path_abs = rpath;
+            }
+
+            // Try instant restore from V1 cache first.
+            bool cache_hit = try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
+            if (cache_hit) {
+                diag("Restoring session from " + rpath + "... (" + to_string(restored_tokens.size()) + " tokens, from cache)", "\033[35m");
+                n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
+
+                // Update session state.
+                state_.all_context_tokens = restored_tokens;
+                state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
+                state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
+
+                diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+                log_entry("SYSTEM", "Restored session from " + rpath);
+            } else {
+                // Slow restore: re-decode through the model.
+                diag("Restoring session from " + rpath + "... (" + to_string(restored_tokens.size()) + " tokens)", "\033[35m");
+
+                // Clear the KV cache before re-decoding.
+                llama_memory_clear(llama_get_memory(ctx_), true);
+                n_past_ = 0;
+                state_.all_context_tokens.clear();
+
+                vector<PromptCheckpoint> restored_checkpoints = read_checkpoint_offsets(rpath);
+                size_t cp_restore_idx = 0;
+
+                auto restore_start = chrono::high_resolution_clock::now();
+                bool restore_failed = false;
+                for (int i = 0; i < (int)restored_tokens.size() && !restore_failed; i += (int)cparams_.n_batch) {
+                    int chunk = std::min((int)cparams_.n_batch, (int)restored_tokens.size() - i);
+                    batch_.n_tokens = 0;
+                    for (int j = 0; j < chunk; j++) {
+                        common_batch_add(batch_, restored_tokens[i + j], n_past_, {0}, (i + j == (int)restored_tokens.size() - 1));
+                        n_past_++;
+                    }
+                    if (!handle_llama_decode_error(ctx_, batch_, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
+                        sync_n_past(ctx_, n_past_);
+                        diag("Restore failed: could not decode tokens", "\033[31m");
+                        restore_failed = true;
+                    }
+                    // Save recurrent checkpoints at prompt boundaries.
+                    while (cp_restore_idx < restored_checkpoints.size() &&
+                           restored_checkpoints[cp_restore_idx].n_past <= n_past_) {
+                        llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+                        cp_restore_idx++;
+                    }
+                }
+                sync_n_past(ctx_, n_past_);
+
+                if (restore_failed) continue;
+
+                auto restore_end = chrono::high_resolution_clock::now();
+                double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
+                double restore_speed = (restore_elapsed > 0) ? restored_tokens.size() / restore_elapsed : 0;
+                diag("KV cache regenerated: " + to_string(restored_tokens.size()) + " tokens at " +
+                     std::to_string((int)restore_speed) + " t/s (" +
+                     std::to_string((int)restore_elapsed) + "s)", "\033[35m");
+
+                // Update session state.
+                state_.all_context_tokens = restored_tokens;
+                state_.prompt_checkpoints = restored_checkpoints;
+                state_.checkpoint_stack_offset = 0; // all checkpoints are live
+
+                diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+                log_entry("SYSTEM", "Restored session from " + rpath);
+            }
+
+
+            // Reset sampler state for a clean generation start.
+            llama_sampler_reset(smpl_);
+
+            // Repopulate readline history from restored checkpoints so up-arrow
+            // navigates through the restored session's prompts.
+            repopulate_history();
+
+            continue;
+        }
+
         if (last_cmd_ == Command::HELP) {
             diag("Available Commands:", "\033[1;36m");
             diag("  /quit or /exit         Save to log/<N>.save and exit", "\033[37m");
@@ -1157,6 +1294,7 @@ bool ChatSession::run() {
             diag("  /reincarnate           Compose new prompt in ~/userprompt, then restart (auto-saves first)", "\033[37m");
             diag("  /continue              Resume generation after interruption", "\033[37m");
             diag("  /save [path]           Save session state (default: log/<N>.save)", "\033[37m");
+            diag("  /restore [path]        Restore session from save file (must be used after /clear)", "\033[37m");
             diag("  /help                  Show this help message", "\033[37m");
             diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;36m");
             continue;
