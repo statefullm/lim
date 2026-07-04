@@ -85,7 +85,9 @@ function startWorkspace() {
 
     if (limHost && limHost !== getHostname()) {
         const aiUser = process.env.AI_USER || 'ai';
-        terminal.sendText(`ssh -t ${aiUser}@${limHost}`);
+        terminal.sendText(`ssh -t ${aiUser}@${limHost} 'export TERM_PROGRAM=vscode; exec bash -l'`);
+    } else {
+        terminal.sendText('export TERM_PROGRAM=vscode');
     }
 
     terminal.show();
