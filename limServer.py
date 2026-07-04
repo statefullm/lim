@@ -31,38 +31,46 @@ def _update_browser_ready():
         pass  # Best effort; don't crash the server
 
 async def broadcast_llm_stream():
-    """Reads from the FIFO and broadcasts to all connected WebSockets."""
+    """Reads from the FIFO and broadcasts to all connected WebSockets.
+
+    Uses loop.add_reader() (epoll on Linux) so we wake up only when
+    data is actually available -- no polling, no wasted cycles.
+    """
     if not os.path.exists(FIFO_PATH):
         os.mkfifo(FIFO_PATH)
 
-#    print(f"Listening to {FIFO_PATH}...")
-
-    # Open non-blocking
+    # Open non-blocking; add_reader will notify us when readable.
     fd = os.open(FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)
+    loop = asyncio.get_running_loop()
 
-    with os.fdopen(fd, 'rb', buffering=0) as pipe:
-        while True:
-            try:
-                chunk = pipe.read(65536)
-                if chunk:
-                    text = chunk.decode('utf-8', errors='ignore')
-                    if clients:
-                        # Send to all connected browser tabs
-                        for client in list(clients):
-                            try:
-                                await client.send_str(text)
-                            except Exception as e:
-                                print(f"[WARNING] Send failed for a client: {e}")
-                                import traceback
-                                traceback.print_exc()
-                                # Client will be removed when websocket_handler detects the actual disconnection
-                else:
-                    await asyncio.sleep(0.01)
-            except BlockingIOError:
-                await asyncio.sleep(0.01)
-            except Exception as e:
-                print(f"Pipe error: {e}")
-                await asyncio.sleep(1)
+    def _on_fifo_readable():
+        """Called by the event loop whenever the FIFO has data."""
+        try:
+            # Drain everything currently buffered in the pipe.
+            buf = b""
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                buf += chunk
+        except BlockingIOError:
+            pass  # No more data right now
+
+        if buf and clients:
+            text = buf.decode('utf-8', errors='ignore')
+            for client in list(clients):
+                try:
+                    asyncio.ensure_future(client.send_str(text))
+                except Exception as e:
+                    print(f"[WARNING] Send failed for a client: {e}")
+
+        # Re-arm — the writer keeps its end open, so we'll be notified again.
+        loop.add_reader(fd, _on_fifo_readable)
+
+    loop.add_reader(fd, _on_fifo_readable)
+
+    # Block forever; the server lives as long as the FIFO is open.
+    await asyncio.Event().wait()
 
 async def websocket_handler(request):
     """Handles WebSocket connections for LLM streaming."""
