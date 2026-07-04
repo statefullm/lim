@@ -442,6 +442,17 @@ string ChatSession::get_user_input() {
         }
     }
 
+    // Strip leading whitespace so commands like " /quit" work.
+    {
+        size_t start = user_input.find_first_not_of(" \t");
+        if (start != string::npos) {
+            user_input = user_input.substr(start);
+        } else if (!user_input.empty()) {
+            // Input is entirely whitespace -- treat as empty.
+            user_input.clear();
+        }
+    }
+
     // Alias expansion: if user_input matches an alias key, replace with its value (single-level only).
     {
         auto alias_it = aliases_.find(user_input);
@@ -500,7 +511,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 
     // /save is special: it accepts an optional path argument.
     static constexpr const char* SAVE_NAME = "save";
-    static constexpr int SAVE_LEN = 4;
+    static constexpr size_t SAVE_LEN = strlen(SAVE_NAME);
     if (rest.size() == SAVE_LEN || (rest.size() > SAVE_LEN && isspace(rest[SAVE_LEN]))) {
         if (rest.substr(0, SAVE_LEN) == SAVE_NAME) {
             save_prefix_ = trim(rest.substr(SAVE_LEN));
@@ -510,7 +521,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 
     // /restore is special: it accepts an optional path argument.
     static constexpr const char* RESTORE_NAME = "restore";
-    static constexpr int RESTORE_LEN = 7;
+    static constexpr size_t RESTORE_LEN = strlen(RESTORE_NAME);
     if (rest.size() == RESTORE_LEN || (rest.size() > RESTORE_LEN && isspace(rest[RESTORE_LEN]))) {
         if (rest.substr(0, RESTORE_LEN) == RESTORE_NAME) {
             restore_path_ = trim(rest.substr(RESTORE_LEN));
@@ -520,7 +531,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 
     // /undo is special: it accepts an optional integer argument.
     static constexpr const char* UNDO_NAME = "undo";
-    static constexpr int UNDO_LEN = 4;
+    static constexpr size_t UNDO_LEN = strlen(UNDO_NAME);
     if (rest.size() == UNDO_LEN || (rest.size() > UNDO_LEN && isspace(rest[UNDO_LEN]))) {
         if (rest.substr(0, UNDO_LEN) == UNDO_NAME) {
             string arg = trim(rest.substr(UNDO_LEN));
