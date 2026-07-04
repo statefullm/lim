@@ -50,10 +50,17 @@
             padding-left: 15px;
             color: #9cdcfe;
         }
-        .status {
+        /* Top-right controls bar */
+        .controls-bar {
             position: fixed;
             top: 10px;
             right: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            z-index: 9999;
+        }
+        .status {
             padding: 5px 10px;
             border-radius: 5px;
             font-size: 0.8em;
@@ -63,6 +70,19 @@
         }
         .connected { background-color: #28a745; color: black; font-weight: bold; }
         .disconnected { background-color: #dc3545; color: white; }
+
+        /* Export button */
+        .export-btn {
+            padding: 0;
+            background: none;
+            border: none;
+            cursor: pointer;
+            transition: opacity 0.2s;
+            line-height: 1;
+        }
+        .export-btn:hover {
+            opacity: 0.7;
+        }
 
         /* Tool label / result styling (sent as raw HTML from C++) */
         .tool-label {
@@ -176,7 +196,12 @@
 </head>
 <body>
 
-    <div id="status" class="status disconnected">Disconnected</div>
+    <div class="controls-bar">
+        <div id="status" class="status disconnected">Disconnected</div>
+        <button class="export-btn" onclick="exportHtml()" title="Export session as HTML">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4ade69" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v13"/><polyline points="7 11 12 16 17 11"/><path d="M4 21h16"/></svg>
+        </button>
+    </div>
     <div id="output"></div>
 
     <script>
@@ -1214,6 +1239,58 @@
                 statusDiv.textContent = 'Disconnected';
                 statusDiv.className = 'status disconnected';
             };
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  Export session as standalone HTML                                  */
+        /* ------------------------------------------------------------------ */
+        function exportHtml() {
+            // Build a timestamped filename.
+            var now = new Date();
+            var ts = now.getFullYear() + '-' +
+                String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                String(now.getDate()).padStart(2, '0') + '_' +
+                String(now.getHours()).padStart(2, '0') + '-' +
+                String(now.getMinutes()).padStart(2, '0') + '-' +
+                String(now.getSeconds()).padStart(2, '0');
+            var filename = 'lim_export_' + ts + '.html';
+
+            // Grab the live DOM -- it already has fully rendered KaTeX spans
+            // and marked HTML.  No need to re-render from raw segments.
+            var bodyContent = document.getElementById('output').innerHTML;
+
+            // Collect our own inline CSS (viewer styling).
+            var cssText = '';
+            document.querySelectorAll('style').forEach(function(s) {
+                cssText += s.textContent + '\n';
+            });
+
+            // Build a standalone HTML document.  Include the KaTeX CDN CSS
+            // so that pre-rendered KaTeX spans (with their class names and
+            // structure) display correctly in the exported file.
+            var html = '<!DOCTYPE html>\n' +
+                '<html lang="en">\n<head>\n' +
+                '  <meta charset="UTF-8">\n' +
+                '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+                '  <title>LIM Session Export</title>\n' +
+                '  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">\n' +
+                '  <style>\n' + cssText + '\n  </style>\n' +
+                '</head>\n<body>\n' +
+                bodyContent + '\n' +
+                '<hr style="border-color:#555;margin-top:30px;">\n' +
+                '<p style="color:#888;font-size:0.75em;text-align:center;">Exported from LIM on ' + now.toISOString() + '</p>\n' +
+                '</body>\n</html>';
+
+            // Trigger download.
+            var blob = new Blob([html], { type: 'text/html' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
         }
 
         connect();
