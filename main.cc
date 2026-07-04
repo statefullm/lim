@@ -771,7 +771,13 @@ int main(int argc, char ** argv) {
         // The prompt_checkpoints list has entries from the save file that have
         // no corresponding stack entries.  Record this offset so undo can
         // translate between the two index spaces.
+        // Also save one live checkpoint at the current tail position so that
+        // undoing back to the restore boundary can use rs_checkpoint_restore
+        // for an instant undo without re-decode.
         state.checkpoint_stack_offset = cache_hit ? (int)restored_checkpoints.size() : 0;
+        if (cache_hit && !restored_checkpoints.empty()) {
+            llama_memory_rs_checkpoint_save(llama_get_memory(ctx), 0);
+        }
         state.log_index = log_index;
 
         // --- Run the main chat session loop ---

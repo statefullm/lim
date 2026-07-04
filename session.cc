@@ -1000,12 +1000,18 @@ bool ChatSession::run() {
                 // After a fast restore, historical checkpoints from the save file
                 // have no corresponding entries in the recurrent checkpoint stack;
                 // only checkpoints saved during this session are present.
+                // A boundary checkpoint (index 0 in the stack) was saved at restore
+                // time.  It can be used when undoing back to the restore boundary
+                // (stack_idx == -1), since its R/S state matches that position.
                 int stack_idx = (target_idx - 1) - state_.checkpoint_stack_offset;
 
                 if (stack_idx >= 0) {
                     // Restore recurrent state from the target checkpoint.
                     // No-op for pure attention models (no recurrent state).
                     llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)stack_idx);
+                } else if (stack_idx == -1 && state_.checkpoint_stack_offset > 0) {
+                    // Undoing back to the restore boundary: use the boundary checkpoint.
+                    llama_memory_rs_checkpoint_restore(mem, 0, 0);
                 }
 
                 bool ok = llama_memory_seq_rm(mem, 0, target.n_past, -1);
@@ -1014,6 +1020,9 @@ bool ChatSession::run() {
                     // Prune stale recurrent checkpoints beyond the restored index.
                     if (stack_idx >= 0) {
                         llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)stack_idx);
+                    } else if (stack_idx == -1) {
+                        // Keep only the boundary checkpoint.
+                        llama_memory_rs_checkpoint_prune(mem, 0, 0);
                     }
                 } else {
                     diag("Regenerating KV cache for " + to_string(target.n_past) + " tokens...", "\033[35m");
