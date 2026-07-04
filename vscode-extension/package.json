@@ -58,6 +58,10 @@
       {
         "command": "lim.workspace.reload",
         "key": "ctrl+shift+r"
+      },
+      {
+        "command": "lim.workspace.reload",
+        "key": "ctrl+2"
       }
     ],
     "configuration": {
