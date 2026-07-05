@@ -83,13 +83,13 @@ static const struct CmdInfo {
     { "quit",         Cmd::QUIT,        ArgType::NONE,   "Save to log/<N>.save and exit" },
     { "exit",         Cmd::QUIT,        ArgType::NONE,   nullptr },              // alias, not shown in help
     { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
-    { "undo",         Cmd::UNDO,        ArgType::INT,    "Undo last N prompts (default: 1; auto-saves first)" },
+    { "undo",         Cmd::UNDO,        ArgType::INT,    "Undo last [N] prompts (default: 1; auto-saves first)" },
     { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
     { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset loop detector and file cache" },
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/userprompt, then restart (auto-saves first)" },
-    { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state (default: log/<N>.save)" },
-    { "restore",      Cmd::RESTORE,     ArgType::PATH,   "Restore session from save file (must be used after /clear)" },
-    { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete a save file and its fast restore cache" },
+    { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
+    { "restore",      Cmd::RESTORE,     ArgType::PATH,   "Restore session from <path>.save (must be used after /clear)" },
+    { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete <path>.save and its fast restore cache" },
     { "help",         Cmd::HELP,        ArgType::NONE,   "Show this help message" },
 };
 
@@ -1351,6 +1351,14 @@ bool ChatSession::run() {
 
                 // Align descriptions in a fixed-width column.
                 string cmd_col = "  /" + names;
+
+                // Append argument hint based on ArgType.
+                if (c.arg == ArgType::INT) {
+                    cmd_col += " [N]";
+                } else if (c.arg == ArgType::PATH) {
+                    cmd_col += " <path>";
+                }
+
                 while (cmd_col.size() < 24) cmd_col += ' ';
                 diag((cmd_col + c.description).c_str(), "\033[37m");
             }
