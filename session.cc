@@ -200,7 +200,6 @@ public:
     ) : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch),
        n_past_(n_past), cparams_(cparams), system_tokens_(system_tokens),
        use_dummy_thought_(use_dummy_thought), state_(state),
-       prev_stdout_ended_with_newline_(false),
        g_auto_continue_depth_(0)
     {
         const char* cur_tty = ttyname(STDIN_FILENO);
@@ -334,7 +333,6 @@ private:
 
     map<string, string> aliases_;
     string prev_tty_;
-    bool prev_stdout_ended_with_newline_;
     int g_auto_continue_depth_;
 
     // Generation result shared between generate_response and process_tool_call
@@ -352,14 +350,9 @@ string ChatSession::get_user_input() {
     string user_input = "";
 
     if (!state_.auto_continue) {
-        // If stdout didn't end with a newline, ensure we start on a fresh line
-        // before printing the speed diagnostic.
-        if (should_output_to_stdout() && !prev_stdout_ended_with_newline_) {
-            cout << "\n";
-            cout.flush();
-        }
-
-        // Print Speed from previous generation right before >>> (skip first turn)
+        // Print Speed from previous generation right before >>> (skip first turn).
+        // Deferred here so we have a clean terminal state: generation output
+        // always flushes with a trailing \n, so the diagnostic lands on its own line.
         if (state_.first_turn_done && state_.last_t_count > 0) {
             double context_percent = (state_.last_n_past / (double)cparams_.n_ctx) * 100.0;
             ostringstream oss;
@@ -675,11 +668,8 @@ TokenGenerator::Result ChatSession::generate_response() {
     elapsed_ = chrono::duration<double>(end - start).count();
 
     // TokenGenerator::generate() already flushes remaining unprinted text to
-    // stdout with a trailing newline. If stdout was enabled during this turn,
-    // we know it ends with \n. If not, preserve the previous state.
-    if (should_output_to_stdout()) {
-        prev_stdout_ended_with_newline_ = true;
-    }
+    // stdout with a trailing newline, so the speed diagnostic in get_user_input()
+    // will naturally appear on its own line.
 
     state_.last_t_count = t_count_;
     state_.last_elapsed = elapsed_;

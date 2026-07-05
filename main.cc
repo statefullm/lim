@@ -580,7 +580,7 @@ int main(int argc, char ** argv) {
                 n_past = (int)llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
                 n_restored = n_past;
                 used_v2 = true;
-                diag_restore(restore_path, n_restored, true);
+                diag_restore(restore_path, n_restored);
             } else {
                 used_v2 = true;
 
@@ -642,7 +642,7 @@ int main(int argc, char ** argv) {
 
                 if (n_restored != -1) {
                     n_restored = restore_limit;
-                    diag_restore(restore_path, n_restored, true);
+                    diag_restore(restore_path, n_restored);
 
                     // Re-decode all tokens through the model to rebuild the KV cache.
                 // This is deterministic: same tokens + same model = identical KV cache.
