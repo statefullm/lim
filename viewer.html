@@ -543,6 +543,21 @@
                 return;
             }
 
+            // Check if the tail starts with an ATX-style block header (#, ##, etc.).
+            // If so, this break would render content before its section heading -- skip it.
+            if (/^#{1,6}(?:\s|$)/.test(trimmed)) {
+                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+                return;
+            }
+
+            // Also check if the tail contains ANY block header marker -- a section
+            // heading appearing mid-tail would get rendered after its own content,
+            // producing a header that follows the block it should introduce.
+            if (tailAfter.length > 0 && /(?:^|\n)#{1,6}(?:\s|$)/m.test(tailAfter)) {
+                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+                return;
+            }
+
             // The new delta to parse: text between the previous render point
             // and the new render point.  This is O(delta), not O(total).
             var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
@@ -820,9 +835,14 @@
 
             injectCopyButtons(tmp);
 
-            // Move nodes back into the real DOM.
+            // Move nodes back into the real DOM, preserving order.
+            // Each insertBefore must target the node AFTER the last-inserted one,
+            // otherwise all nodes end up in reverse order (each new insert goes
+            // before the previous one at startNode.nextSibling).
+            var ref = startNode;
             while (tmp.firstChild) {
-                parent.insertBefore(tmp.firstChild, startNode.nextSibling);
+                parent.insertBefore(tmp.firstChild, ref.nextSibling);
+                ref = ref.nextSibling;  // advance past the node we just inserted
             }
         }
 
