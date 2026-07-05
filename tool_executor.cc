@@ -111,21 +111,23 @@ ToolExecutor::Result ToolExecutor::execute(
         if (!tool_out.recognized || !tool_out.params_valid) {
             state.invalid_tool_strikes++;
 
-            // Always output full diagnostics to the console for debugging.
             string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
             diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
-            diag("  Raw tool_call: " + tool_call, "\033[90m");
-            diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[90m");
-            if (!tool_out.recognized) {
-                diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[90m");
-            }
-            if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
-                string mp;
-                for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
-                    if (i > 0) mp += ", ";
-                    mp += "\"" + tool_out.missing_params[i] + "\"";
+
+            if (is_debug) {
+                diag("  Raw tool_call: " + tool_call, "\033[90m");
+                diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[90m");
+                if (!tool_out.recognized) {
+                    diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[90m");
                 }
-                diag("  Missing required parameters: " + mp, "\033[90m");
+                if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
+                    string mp;
+                    for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
+                        if (i > 0) mp += ", ";
+                        mp += "\"" + tool_out.missing_params[i] + "\"";
+                    }
+                    diag("  Missing required parameters: " + mp, "\033[90m");
+                }
             }
 
             if (state.invalid_tool_strikes >= 5) {
