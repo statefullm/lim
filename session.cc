@@ -1078,8 +1078,6 @@ bool ChatSession::run() {
             if (should_output_to_browser()) {
                 double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
                 string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
-                const char soh = 0x01;
-                pipe_write(&soh, 1);
                 pipe_write(&SEG_SPEED, 1);
                 string speed_msg = "Undid " + to_string(undo_count_) + " | " + ctx_str;
                 pipe_write(speed_msg.c_str(), speed_msg.length());

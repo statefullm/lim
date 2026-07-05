@@ -390,16 +390,16 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/reset` | Reset internal state (loop detector) without clearing the KV-cache |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
-| `/save` | Save the full session state (KV-cache + tokens) to `log/<N>.save`, overwriting any previous save for this session |
+| `/save` | Save the full session state to `log/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
-| `/restore <path>` | Restore a saved session from within the current session. Must be used immediately after `/clear` — fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the instant cache when available, falling back to full re-decode with checkpoint regeneration. |
+| `/restore <path>` | Restore a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
 | `/help` | Display a summary of all available commands |
 
 ### Save and Restore
 
 You can save a running session and restore it later with zero context loss:
 
-**Save:** Type `/save` at the `>>>` prompt to save to `log/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The save file contains only the conversation token sequence, keeping it small and model-agnostic. Named saves also write the full KV-cache state to a fast-format cache for instant future restores.
+**Save:** Type `/save` at the `>>>` prompt to save to `log/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The save file contains only the conversation token sequence, keeping it small and model-agnostic. Named saves also cache the full KV-cache for fast future restores.
 
 **Restore:** Pass a save file as the last argument to `coder`. The `.save` extension is added automatically if not already present, matching `/save` behavior:
 
@@ -411,7 +411,7 @@ coder cats          # restores from cats.save
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
-**In-session restore:** You can also restore from within a running session using `/restore <path>`. This must be used immediately after `/clear` — if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the instant cache when available. Typical workflow:
+**In-session restore:** You can also restore from within a running session using `/restore <path>`. This must be used immediately after `/clear`; if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the fast cache when available. Typical workflow:
 
 ```
 >>> /clear
@@ -432,7 +432,7 @@ coder --checkpoints cats
 
 Press Ctrl+C during the restore prompt to cancel without decoding.
 
-**Instant restore cache:** Save files contain only the token sequence, keeping them small and model-agnostic. On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that (/undo) works instantly for hybrid models (Qwen3.5/3.6) right after restore. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are instant. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for instant future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For instant cache restores, recurrent checkpoints build up naturally as conversation turns complete: (/undo) works after the first new turn. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
+**Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that /undo works instantly for hybrid models (Qwen3.5/3.6) right after restore. The rebuilt cache is then automatically written to `.cache/<hash>` so all subsequent restores from the same save file are fast. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for faster future restores. The name prefix in the cache filename is purely informational; LIM identifies cache files by their content hash, not their name. If you run `/save cats` followed by `/save dogs` with identical session content, only one cache file is written since both resolve to the same hash. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For fast cache restores, recurrent checkpoints build up naturally as conversation turns complete to support the instant /undo feature after the first new turn. The `.cache/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
 **Auto-save on clear and quit:** Before clearing the context, LIM automatically saves the current state to `log/<N>-clear.save`. Before exiting, it saves to `log/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 
