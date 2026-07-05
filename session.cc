@@ -135,6 +135,10 @@ static string context_limit_diag(int n_past, int last_n_past, size_t needed, int
 }
 
 // Local diag_speed implementation for session.cc
+static void diag_session_restored(int session_num, size_t n_tokens) {
+    diag("Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded", "\033[32m");
+}
+
 static void diag_speed_impl(const string& msg) {
     if (should_output_to_stdout()) {
         cout << "\033[35m[" << msg << "]\033[0m\n";
@@ -838,7 +842,8 @@ static string save_diag(size_t n_checkpoints, size_t n_tokens) {
 // When checkpoints are available, writes V3 format with prompt-return positions.
 static bool save_session_with_header(const vector<llama_token>& tokens, const string& path,
                                      bool write_v1 = false, llama_context* ctx = nullptr,
-                                     const vector<PromptCheckpoint>* checkpoints = nullptr) {
+                                     const vector<PromptCheckpoint>* checkpoints = nullptr,
+                                     int session_num = -1) {
     if (tokens.empty()) return false;
 
     // Read old tokens from the existing save file *before* overwriting it,
@@ -852,7 +857,7 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
     }
 
     // Write V3 format.
-    bool ok = write_token_save_v3(path, tokens, *checkpoints);
+    bool ok = write_token_save_v3(path, tokens, *checkpoints, session_num);
 
     // Also write V1 cache for instant future restores (only on explicit /save)
     if (ok && write_v1) {
@@ -896,7 +901,7 @@ bool ChatSession::run() {
             // Skip if the user just manually saved -- nothing has changed since then.
             if (!state_.prompt_checkpoints.empty() && !prev_was_save_) {
                 string autosave_path = "log/" + to_string(state_.log_index) + ".save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
@@ -912,7 +917,7 @@ bool ChatSession::run() {
             // with the regular save file that /quit or /exit will overwrite.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
@@ -950,7 +955,7 @@ bool ChatSession::run() {
             // Auto-save before undoing so nothing is truly lost.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
@@ -1099,7 +1104,7 @@ bool ChatSession::run() {
             // Uses the same -clear.save name since reincarnate calls clear_context internally.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints);
+                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
                 } else {
@@ -1171,7 +1176,7 @@ bool ChatSession::run() {
 
             diag("Saving session to " + save_path + "...", "\033[35m");
 
-            bool ok = save_session_with_header(state_.all_context_tokens, save_path, write_v1, ctx_, &state_.prompt_checkpoints);
+            bool ok = save_session_with_header(state_.all_context_tokens, save_path, write_v1, ctx_, &state_.prompt_checkpoints, state_.log_index);
             if (!ok) {
                 diag("Save failed: could not write " + save_path, "\033[31m");
             } else {
@@ -1227,6 +1232,7 @@ bool ChatSession::run() {
 
             // Try instant restore from V1 cache first.
             bool cache_hit = try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
+            int saved_session = read_save_session(rpath);
             if (cache_hit) {
                 diag("Restoring session from " + rpath + "... (" + to_string(restored_tokens.size()) + " tokens, from cache)", "\033[35m");
                 n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
@@ -1236,7 +1242,7 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
                 state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
 
-                diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+                diag_session_restored(saved_session, restored_tokens.size());
                 log_entry("SYSTEM", "Restored session from " + rpath);
             } else {
                 // Slow restore: re-decode through the model.
@@ -1287,7 +1293,7 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints = restored_checkpoints;
                 state_.checkpoint_stack_offset = 0; // all checkpoints are live
 
-                diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+                diag_session_restored(saved_session, restored_tokens.size());
                 log_entry("SYSTEM", "Restored session from " + rpath);
             }
 

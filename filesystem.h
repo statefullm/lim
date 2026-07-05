@@ -35,10 +35,13 @@ struct PromptCheckpoint {
 
 // V3 variant: includes prompt-return checkpoints for partial restore.
 bool write_token_save_v3(const std::string& save_path, const std::vector<llama_token>& tokens,
-                         const std::vector<PromptCheckpoint>& checkpoints);
+                         const std::vector<PromptCheckpoint>& checkpoints,
+                         int session_num = -1);
 bool read_token_save(const std::string& save_path, std::vector<llama_token>& tokens);
 // Returns the prompt-return checkpoints embedded in a V3 save file.
 std::vector<PromptCheckpoint> read_checkpoint_offsets(const std::string& save_path);
+// Extract the session number from a V3 save file header. Returns -1 if absent or unreadable.
+int read_save_session(const std::string& save_path);
 
 // V1 cache: after a slow restore, auto-save the rebuilt KV cache for instant
 // future restores.  Cache lives in <cwd>/.cache/<name>-<hash>.

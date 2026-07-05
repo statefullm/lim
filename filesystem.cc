@@ -49,13 +49,15 @@ static const struct HeaderKey {
     STR("LIM_SAVE_V3 "),       // 0
     STR("n_tokens="),          // 1
     STR("n_checkpoints="),     // 2
-    STR("LIM_SAVE_v1 git_sha=")// 3
+    STR("session="),           // 3
+    STR("LIM_SAVE_v1 git_sha=")// 4
 };
 
-static constexpr int HDR_MAGIC   = 0;
-static constexpr int HDR_N_TOKENS = 1;
+static constexpr int HDR_MAGIC         = 0;
+static constexpr int HDR_N_TOKENS      = 1;
 static constexpr int HDR_N_CHECKPOINTS = 2;
-static constexpr int HDR_SAVE_V1 = 3;
+static constexpr int HDR_SESSION       = 3;
+static constexpr int HDR_SAVE_V1       = 4;
 bool write_llm_save(const string& save_path, const uint8_t* state_data, size_t state_size) {
     FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
     if (!pipe) return false;
@@ -113,9 +115,10 @@ string read_llm_save_header(const string& save_path, size_t* header_size) {
 // Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
 
 // Parse a V3 header line. Returns false if format is invalid.
-// On success, fills *out_n_tokens and optionally *out_n_checkpoints.
+// On success, fills *out_n_tokens and optionally *out_n_checkpoints and *out_session.
 static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
-                            size_t* out_n_checkpoints = nullptr) {
+                            size_t* out_n_checkpoints = nullptr,
+                            int* out_session = nullptr) {
     // Validate magic prefix
     if (header_str.substr(0, header_keys[0].len) != header_keys[0].name) return false;
 
@@ -133,6 +136,18 @@ static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
         val = header_str.substr(pos + header_keys[2].len);
         { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
         *out_n_checkpoints = std::stoull(val);
+    }
+
+    // Parse session= (optional; absent in older save files)
+    if (out_session) {
+        pos = header_str.find(header_keys[3].name);
+        if (pos != string::npos) {
+            val = header_str.substr(pos + header_keys[3].len);
+            { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
+            *out_session = std::stoi(val);
+        } else {
+            *out_session = -1; // No session number in this save file
+        }
     }
 
     return true;
@@ -175,7 +190,8 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
 // --- V3 save: includes prompt-return checkpoints for partial restore ---
 
 bool write_token_save_v3(const string& save_path, const vector<llama_token>& tokens,
-                         const vector<PromptCheckpoint>& checkpoints) {
+                         const vector<PromptCheckpoint>& checkpoints,
+                         int session_num) {
     FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
     char buf[48];
     string sha;
@@ -187,10 +203,14 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
         pclose(pipe);
     }
 
-    // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M>\n"
+    // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M> session=<S>\n"
     string header = string(header_keys[0].name) + "git_sha=" + sha +
                     " " + header_keys[1].name + std::to_string(tokens.size()) +
-                    " " + header_keys[2].name + std::to_string(checkpoints.size()) + "\n";
+                    " " + header_keys[2].name + std::to_string(checkpoints.size());
+    if (session_num >= 0) {
+        header += string(" ") + header_keys[3].name + std::to_string(session_num);
+    }
+    header += "\n";
 
     FILE* fp = fopen(save_path.c_str(), "wb");
     if (!fp) return false;
@@ -256,6 +276,29 @@ vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
     }
     fclose(fp);
     return checkpoints;
+}
+
+int read_save_session(const string& save_path) {
+    FILE* fp = fopen(save_path.c_str(), "rb");
+    if (!fp) return -1;
+
+    static constexpr size_t MAX_HEAD = 256;
+    char head[MAX_HEAD];
+    size_t n = fread(head, 1, MAX_HEAD, fp);
+    fclose(fp);
+
+    string header_line(head, n);
+    size_t nl = header_line.find('\n');
+    if (nl != string::npos) header_line.resize(nl);
+
+    size_t pos = header_line.find(header_keys[HDR_SESSION].name);
+    if (pos == string::npos) return -1;
+
+    string val = header_line.substr(pos + header_keys[HDR_SESSION].len);
+    size_t sp = val.find(' ');
+    if (sp != string::npos) val.resize(sp);
+
+    try { return std::stoi(val); } catch (...) { return -1; }
 }
 
 // --- V1 Cache: auto-cached KV cache for instant restores ---

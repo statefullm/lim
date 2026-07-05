@@ -75,6 +75,12 @@ void diag(const string& msg, const char* color) {
     diag_impl(string(color) + "[" + msg + "]\033[0m", msg);
 }
 
+static void diag_session_restored(int session_num, size_t n_tokens, const string& git_short = "") {
+    string msg = "Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded";
+    if (!git_short.empty()) msg += " (git: " + git_short + ")";
+    diag(msg, "\033[32m");
+}
+
 // Model path -- set in main(), read by session.cc for V1 cache writes.
 std::string g_model_path;
 
@@ -524,13 +530,14 @@ int main(int argc, char ** argv) {
         vector<llama_token> restored_tokens;
         vector<PromptCheckpoint> restored_checkpoints;
         string saved_sha;
+        int saved_session = -1;
         int n_restored = 0;
         bool used_v2 = false;
         bool cache_hit = false;
 
         // Try compact token save
         if (read_token_save(restore_path, restored_tokens)) {
-            // Parse git SHA from the header by reading just the first line
+            // Parse git SHA and session from the header by reading just the first line
             FILE* fp = fopen(restore_path.c_str(), "rb");
             if (fp) {
                 char head[128];
@@ -545,6 +552,12 @@ int main(int argc, char ** argv) {
                     string raw = header_line.substr(sha_pos + 8);
                     size_t sp = raw.find(' ');
                     saved_sha = (sp != string::npos) ? raw.substr(0, sp) : raw;
+                }
+                size_t sess_pos = header_line.find("session=");
+                if (sess_pos != string::npos) {
+                    string raw = header_line.substr(sess_pos + 8);
+                    size_t sp = raw.find(' ');
+                    try { saved_session = std::stoi((sp != string::npos) ? raw.substr(0, sp) : raw); } catch (...) { saved_session = -1; }
                 }
             }
 
@@ -736,9 +749,9 @@ int main(int argc, char ** argv) {
             if (!current_sha.empty()) {
                 string short_current = current_sha.substr(0, 7);
                 if (saved_sha == current_sha) {
-                    diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded (git: " + short_saved + ")", "\033[32m");
+                    diag_session_restored(saved_session, restored_tokens.size(), short_saved);
                 } else {
-                    diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+                    diag_session_restored(saved_session, restored_tokens.size());
                     diag("Git HEAD mismatch: session was at " + short_saved + ", currently at " + short_current, "\033[33m");
                     // Inform the LLM about code changes so it can adapt.
                     {
@@ -753,10 +766,10 @@ int main(int argc, char ** argv) {
                     }
                 }
             } else {
-                diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+                diag_session_restored(saved_session, restored_tokens.size());
             }
         } else {
-            diag("Session restored: " + to_string(restored_tokens.size()) + " tokens loaded", "\033[32m");
+            diag_session_restored(saved_session, restored_tokens.size());
         }
         log_entry("SYSTEM", "Restored session from " + restore_path);
 
