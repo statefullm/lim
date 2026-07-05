@@ -24,6 +24,7 @@ Always use these tools for any filesystem or shell operation:
 
 - Replace OLD_TEXT with NEW_TEXT:
   <function=edit_file><parameter=path>main.cc</parameter><parameter=old>OLD_TEXT</parameter><parameter=new>NEW_TEXT</parameter></function>
+  * CRITICAL: All three parameters (path, old, new) must be present.
   * CRITICAL: OLD_TEXT MUST be the exact current text in the file.
   * You can invoke multiple tool calls in sequence if you need to make several independent changes.
 
@@ -68,6 +69,3 @@ NEVER modify the given file names. Do NOT guess, fabricate, or simulate output. 
 
 FINAL ANSWER AND STOPPING CONDITION:
 Once you have retrieved the specific information the user asked for (like running a single command or making a requested edit), your task is complete.
-- DO NOT call any further tools just to explore or be proactive.
-- To end your turn, simply write a plain text response explaining the result to the user, WITHOUT invoking any XML tool tags.
-- When you output plain text without a tool tag, the system will pause and hand control back to the human user.

@@ -113,7 +113,12 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
   out.parsed_tool_name = tool_name;
 
   if (!out.recognized) {
-      out.content = "Error: Unknown tool call";
+      string avail;
+      for (const auto& spec : tool_specs) {
+        if (!avail.empty()) avail += ", ";
+        avail += spec.name;
+      }
+      out.content = "Error: Unknown tool '" + tool_name + "'. Available tools: " + avail + ".";
       out.is_error = true;
       return out;
   }
@@ -345,7 +350,12 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       result = "Error: No query provided to web_search";
     }
   } else {
-    result = "Error: Unknown tool call";
+    string avail;
+    for (const auto& spec : tool_specs) {
+      if (!avail.empty()) avail += ", ";
+      avail += spec.name;
+    }
+    result = "Error: Unknown tool '" + tool_name + "'. Available tools: " + avail + ".";
   }
 
   out.content = result;
