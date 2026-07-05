@@ -393,6 +393,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/save` | Save the full session state to `log/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
 | `/restore <path>` | Restore a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
+| `/delete <path>` | Delete a save file and its associated fast restore cache entry (if any). Accepts the same path format as `/save`: `.save` is appended automatically if not already present. |
 | `/help` | Display a summary of all available commands |
 
 ### Save and Restore

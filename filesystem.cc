@@ -481,6 +481,46 @@ bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& 
     return ok;
 }
 
+bool delete_save_and_cache(const std::string& save_path,
+                           const std::string& model_path,
+                           int* cache_deleted) {
+    if (cache_deleted) *cache_deleted = 0;
+
+    // Read tokens from the save file to compute the cache hash.
+    std::vector<llama_token> tokens;
+    bool has_hash = read_token_save(save_path, tokens);
+    std::string hash;
+    if (has_hash) {
+        hash = cache_hash(tokens, model_path);
+    }
+
+    // Delete the save file.
+    int rc = unlink(save_path.c_str());
+    if (rc != 0) return false;
+
+    // If we have a hash, scan .cache/ for matching entries and delete them.
+    if (!hash.empty()) {
+        std::string dir = get_cache_dir_internal();
+        std::string suffix = "-" + hash;
+
+        DIR* d = opendir(dir.c_str());
+        if (d) {
+            struct dirent* entry;
+            while ((entry = readdir(d)) != nullptr) {
+                std::string fname = entry->d_name;
+                if (fname.size() > suffix.size() &&
+                    fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                    unlink((dir + "/" + fname).c_str());
+                    if (cache_deleted) (*cache_deleted)++;
+                }
+            }
+            closedir(d);
+        }
+    }
+
+    return true;
+}
+
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.
 // Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.
 void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,

@@ -70,7 +70,7 @@ static string trim(const string& s) {
 }
 
 // --- Command table: single source of truth for dispatch, alias blocking, and help ---
-enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, RESTORE, HELP, UNDO };
+enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, RESTORE, DELETE, HELP, UNDO };
 
 enum class ArgType { NONE, PATH, INT };
 
@@ -89,6 +89,7 @@ static const struct CmdInfo {
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/userprompt, then restart (auto-saves first)" },
     { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state (default: log/<N>.save)" },
     { "restore",      Cmd::RESTORE,     ArgType::PATH,   "Restore session from save file (must be used after /clear)" },
+    { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete a save file and its fast restore cache" },
     { "help",         Cmd::HELP,        ArgType::NONE,   "Show this help message" },
 };
 
@@ -216,6 +217,7 @@ private:
     Command last_cmd_ = Command::NONE;
     string save_prefix_;
     string restore_path_;
+    string delete_path_;
     int undo_count_ = 1;
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
@@ -516,9 +518,11 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
             case ArgType::PATH:
                 save_prefix_.clear();
                 restore_path_.clear();
+                delete_path_.clear();
                 undo_count_ = 1;
                 if (c.cmd == Cmd::SAVE)    save_prefix_   = arg;
                 if (c.cmd == Cmd::RESTORE) restore_path_  = arg;
+                if (c.cmd == Cmd::DELETE)  delete_path_   = arg;
                 return static_cast<Command>(c.cmd);
 
             case ArgType::INT:
@@ -1292,6 +1296,40 @@ bool ChatSession::run() {
             // navigates through the restored session's prompts.
             repopulate_history();
 
+            continue;
+        }
+
+        if (last_cmd_ == Command::DELETE) {
+            // Build delete path: require a non-empty argument.
+            string dpath = delete_path_;
+            if (dpath.empty()) {
+                diag("/delete requires a path argument. Usage: /delete <save_file>", "\033[31m");
+                continue;
+            }
+
+            // Append .save if not already present (matches /save and /restore behavior).
+            if (dpath.size() < std::strlen(SAVE_EXT) || dpath.compare(dpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
+                dpath += SAVE_EXT;
+            }
+
+            // Validate the save file exists.
+            struct stat st_del;
+            if (stat(dpath.c_str(), &st_del) != 0 || !S_ISREG(st_del.st_mode)) {
+                diag("Delete failed: save file not found: " + dpath, "\033[31m");
+                continue;
+            }
+
+            int cache_removed = 0;
+            bool ok = delete_save_and_cache(dpath, g_model_path, &cache_removed);
+            if (!ok) {
+                diag("Delete failed: could not remove " + dpath, "\033[31m");
+            } else {
+                string msg = "Deleted " + dpath;
+                if (cache_removed > 0) {
+                    msg += " and " + std::to_string(cache_removed) + " cache file" + (cache_removed > 1 ? "s" : "");
+                }
+                diag(msg, "\033[32m");
+            }
             continue;
         }
 

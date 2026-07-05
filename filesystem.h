@@ -61,6 +61,12 @@ std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
 bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
                     const std::string& old_hash = "");
+// Delete a save file and its associated fast restore cache entry (if any).
+// Returns true if the save file was deleted.  Also returns the number of
+// cache files removed via *cache_deleted (optional).
+bool delete_save_and_cache(const std::string& save_path,
+                           const std::string& model_path,
+                           int* cache_deleted = nullptr);
 std::string get_cache_dir();
 #include <functional>
 
