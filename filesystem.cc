@@ -517,6 +517,7 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
         // Plain text to stdout
         if (should_output_to_stdout()) {
             cout << final_message << endl;
+            consoleMarkNewline(true);
             fflush(stdout);
         }
     }
@@ -556,6 +557,7 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
             if (should_output_to_stdout()) {
                 // Output to stdout (when browser mode is off, or in combined mode 3)
                 cout << final_message << endl;
+                consoleMarkNewline(true);
                 fflush(stdout);
             }
         }
@@ -615,6 +617,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   }
   if (should_output_to_stdout()) {
       cout << "exec_shell(\"" << command << "\")" << endl;
+      consoleMarkNewline(true);
       fflush(stdout);
   }
 

@@ -43,6 +43,9 @@ void stream_think(const string& text);
 void clear_viewer();
 
 // --- Console Output Helpers ---
+// Track whether stdout ended with a newline, so callers can ensure clean line breaks.
+extern bool g_stdout_ended_with_newline;
+
 template<typename... Args>
 void format_and_print(Args&&... args) {
     ostringstream oss;
@@ -73,6 +76,21 @@ static inline void consoleFlush() {
 
 static inline void consoleThinkFlush() {
     if (should_output_think_blocks()) cout.flush();
+}
+
+// Ensure stdout cursor is at the start of a new line.
+// No-op if stdout already ended with '\n'; prints exactly one '\n' otherwise.
+static inline void consoleEnsureNewline() {
+    if (should_output_to_stdout() && !g_stdout_ended_with_newline) {
+        cout << "\n";
+        g_stdout_ended_with_newline = true;
+        cout.flush();
+    }
+}
+
+// Update the newline-tracking flag after a direct cout write.
+static inline void consoleMarkNewline(bool ended_with_nl) {
+    g_stdout_ended_with_newline = ended_with_nl;
 }
 
 // --- Diagnostic Output ---

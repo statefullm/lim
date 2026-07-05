@@ -1,5 +1,6 @@
 #include "network.h"
 #include "filesystem.h"
+#include "output.h"
 #include "taskset.h"
 #include <curl/curl.h>
 #include <iostream>
@@ -385,6 +386,7 @@ void NetworkTools::init_ssl_certificates() {
         }
     } else {
         cout << "Using cached SSL certificate from: " << cached_ca << endl;
+        consoleMarkNewline(true);
         cout.flush();
         setenv("CURL_CA_BUNDLE", cached_ca.c_str(), 1);
     }

@@ -169,6 +169,7 @@ static void diag_session_restored(int session_num, size_t n_tokens) {
 static void diag_speed_impl(const string& msg) {
     if (should_output_to_stdout()) {
         cout << "\033[35m[" << msg << "]\033[0m\n";
+        consoleMarkNewline(true);
     }
     if (chat_log.is_open()) {
         chat_log << "[" << msg << "]" << "\n\n";
@@ -351,8 +352,7 @@ string ChatSession::get_user_input() {
 
     if (!state_.auto_continue) {
         // Print Speed from previous generation right before >>> (skip first turn).
-        // Deferred here so we have a clean terminal state: generation output
-        // always flushes with a trailing \n, so the diagnostic lands on its own line.
+        // Deferred here so we have all the information we need.
         if (state_.first_turn_done && state_.last_t_count > 0) {
             double context_percent = (state_.last_n_past / (double)cparams_.n_ctx) * 100.0;
             ostringstream oss;
@@ -369,6 +369,9 @@ string ChatSession::get_user_input() {
             double speed = state_.last_t_count / denom;
             string ctx_str = std::to_string(state_.last_n_past) + " (" + std::to_string((int)context_percent) + "%)";
             string speed_str = std::to_string(round_int(speed)) + " t/s";
+
+            // Ensure the diagnostic appears on its own line.
+            consoleEnsureNewline();
             diag_speed_impl(speed_str + " | " + ctx_str);
         }
 
@@ -600,6 +603,8 @@ TokenGenerator::Result ChatSession::generate_response() {
     if (should_output_to_stdout()) {
         cout << "\033[0m";
         cout.flush();
+        // \033[0m is an escape sequence, not a newline.
+        // Don't change g_stdout_ended_with_newline - escape codes don't affect cursor position.
     }
 
     g_auto_continue_depth_ = state_.auto_continue ? g_auto_continue_depth_ : 0;

@@ -65,6 +65,7 @@ static void diag_impl(const string& formatted_line, const string& msg) {
     // Diagnostic messages (session status, errors, etc.) always go to the
     // terminal regardless of LIM_OUTPUT mode.
     cout << formatted_line << "\n";
+    consoleMarkNewline(true);
     cout.flush();
     if (chat_log.is_open()) {
         chat_log << "[" << msg << "]" << "\n\n";

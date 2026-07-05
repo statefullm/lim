@@ -21,6 +21,7 @@ const char* FIFO_PATH = "/tmp/lim.fifo";
 
 // --- Output Mode Control ---
 bool g_browser_warning_suppressed = false;
+bool g_stdout_ended_with_newline = true;  // Start assuming clean state (at prompt)
 
 static int get_server_port() {
     const char* env = getenv("LIM_PORT");

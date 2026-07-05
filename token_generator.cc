@@ -260,6 +260,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     console(unprinted_text_.c_str());
                     consoleFlush();
                     stream(unprinted_text_);
+                    g_stdout_ended_with_newline = (unprinted_text_.back() == '\n');
                     unprinted_text_ = "";
                 }
                 diag("Context approaching limit (" + std::to_string(n_past_) + "/" + std::to_string(cparams_.n_ctx) + "). Type '/reincarnate' to start a fresh session, or '/clear' to reset.", "\033[1;33m");
@@ -278,6 +279,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);
+                g_stdout_ended_with_newline = (unprinted_text_.back() == '\n');
             }
             early_exit = true;
             break;
@@ -492,6 +494,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     console(g_model_tokens.think_end.c_str());
                     console("\n");
                     consoleFlush();
+                    g_stdout_ended_with_newline = true;
                 }
                 think_buffer_.clear();
                 think_buffering_ = true;
@@ -532,6 +535,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);
+                g_stdout_ended_with_newline = (unprinted_text_.back() == '\n');
                 unprinted_text_ = "";
             }
         } else if (in_thinking_block_) {
@@ -566,10 +570,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                             console(g_model_tokens.think_start.c_str());
                             console("\n");
                             consoleFlush();
+                            g_stdout_ended_with_newline = true;
                         }
                         console_think(think_output.c_str());
                         consoleThinkFlush();
                         stream_think(think_output);
+                        if (!think_output.empty()) g_stdout_ended_with_newline = (think_output.back() == '\n');
                         think_buffering_ = false;
                     } else {
                         think_buffer_ += think_output;
@@ -579,6 +585,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     console_think(think_output.c_str());
                     consoleThinkFlush();
                     stream_think(think_output);
+                    if (!think_output.empty()) g_stdout_ended_with_newline = (think_output.back() == '\n');
                 }
                 print_pos_ = safe_len;
             }
@@ -587,6 +594,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);
+                g_stdout_ended_with_newline = (unprinted_text_.back() == '\n');
                 unprinted_text_ = "";
             }
             print_pos_ = generated_text_.length();
@@ -653,10 +661,12 @@ TokenGenerator::Result TokenGenerator::generate() {
             console((unprinted_text_ + "\n").c_str());
             consoleFlush();
             stream(unprinted_text_ + "\n");
+            g_stdout_ended_with_newline = true;
         } else {
             console(unprinted_text_.c_str());
             consoleFlush();
             stream(unprinted_text_);
+            g_stdout_ended_with_newline = true;
         }
         unprinted_text_ = "";
     }
