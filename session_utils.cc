@@ -63,3 +63,7 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
     }
 }
 
+void diag_restore(const std::string& path, int token_count) {
+    diag("Restoring session from " + path + "... (" + std::to_string(token_count) + " tokens)", "\033[35m");
+}
+

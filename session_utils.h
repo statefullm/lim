@@ -21,6 +21,9 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags);
 // (first-token decode start to last-token decode end), matching llama-cli's "Generation t/s".
 void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time = 0.0);
 
+// Print a restore diagnostic message
+void diag_restore(const std::string& path, int token_count, bool from_cache);
+
 inline int round_int(double d) { return (int)(d + 0.5); }
 
 #endif // SESSION_UTILS_H

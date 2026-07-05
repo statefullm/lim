@@ -75,4 +75,7 @@ static inline void consoleThinkFlush() {
     if (should_output_think_blocks()) cout.flush();
 }
 
+// --- Diagnostic Output ---
+void diag(const std::string& msg, const char* color);
+
 #endif // OUTPUT_H

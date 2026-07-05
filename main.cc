@@ -8,6 +8,7 @@
 #include "signals.h"
 #include "server.h"
 #include "model.h"
+#include "session_utils.h"
 #include "session.h"
 #include "taskset.h"
 #include <readline/readline.h>
@@ -72,7 +73,7 @@ static void diag_impl(const string& formatted_line, const string& msg) {
 }
 
 void diag(const string& msg, const char* color) {
-    diag_impl(string(color) + "[" + msg + "]\033[0m", msg);
+    diag_impl(string(color) + msg + "\033[0m", msg);
 }
 
 static void diag_session_restored(int session_num, size_t n_tokens, const string& git_short = "") {
@@ -575,15 +576,11 @@ int main(int argc, char ** argv) {
             }
             cache_hit = cache_hit_local;
 
-            auto log_restore = [&](const string& path, int count) {
-                diag("Restoring session from " + path + "... (" + to_string(count) + " tokens)", "\033[35m");
-            };
-
             if (cache_hit) {
                 n_past = (int)llama_memory_seq_pos_max(llama_get_memory(ctx), 0) + 1;
                 n_restored = n_past;
                 used_v2 = true;
-                log_restore(restore_path, n_restored);
+                diag_restore(restore_path, n_restored, true);
             } else {
                 used_v2 = true;
 
@@ -645,7 +642,7 @@ int main(int argc, char ** argv) {
 
                 if (n_restored != -1) {
                     n_restored = restore_limit;
-                    log_restore(restore_path, n_restored);
+                    diag_restore(restore_path, n_restored, true);
 
                     // Re-decode all tokens through the model to rebuild the KV cache.
                 // This is deterministic: same tokens + same model = identical KV cache.

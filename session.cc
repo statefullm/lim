@@ -69,12 +69,39 @@ static string trim(const string& s) {
     return s.substr(start, end - start + 1);
 }
 
+// --- Command table: single source of truth for dispatch, alias blocking, and help ---
+enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, RESTORE, HELP, UNDO };
+
+enum class ArgType { NONE, PATH, INT };
+
+static const struct CmdInfo {
+    const char* name;
+    Cmd cmd;
+    ArgType arg;
+    const char* description;
+} g_commands[] = {
+    { "quit",         Cmd::QUIT,        ArgType::NONE,   "Save to log/<N>.save and exit" },
+    { "exit",         Cmd::QUIT,        ArgType::NONE,   nullptr },              // alias, not shown in help
+    { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
+    { "undo",         Cmd::UNDO,        ArgType::INT,    "Undo last N prompts (default: 1; auto-saves first)" },
+    { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
+    { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset loop detector and file cache" },
+    { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/userprompt, then restart (auto-saves first)" },
+    { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state (default: log/<N>.save)" },
+    { "restore",      Cmd::RESTORE,     ArgType::PATH,   "Restore session from save file (must be used after /clear)" },
+    { "help",         Cmd::HELP,        ArgType::NONE,   "Show this help message" },
+};
+
 // --- Load aliases from ~/.lim_aliases ---
 static map<string, string> load_aliases() {
     // Built-in commands that cannot be overridden by aliases.
-    static const set<string> builtin_commands = {
-        "quit", "exit", "clear", "undo", "reset", "reincarnate", "continue", "save", "restore", "help"
-    };
+    static set<string> builtin_commands;
+    [[maybe_unused]] static bool init_builtin = ([](){
+        for (const auto& c : g_commands) {
+            if (c.name) builtin_commands.insert(c.name);
+        }
+        return true;
+    })();
 
     map<string, string> aliases;
     string path = string(HOME) + "/.lim_aliases";
@@ -183,7 +210,7 @@ public:
     bool run();
 
 private:
-    enum class Command { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, RESTORE, HELP, UNDO };
+    using Command = Cmd;
 
     // Parsed command and optional arguments
     Command last_cmd_ = Command::NONE;
@@ -469,10 +496,7 @@ string ChatSession::get_user_input() {
 }
 
 // --- handle_command: detect which command the input represents ---
-// Commands must be prefixed with '/'.  Only /save accepts an optional argument:
-//   /save              -> SAVE with empty path (saves to log/<N>.save)
-//   /save cats         -> SAVE with path "cats" (saves to cats.save)
-//   /save /tmp/check   -> SAVE with path "/tmp/check" (saves to /tmp/check.save)
+// Commands must be prefixed with '/'.  /save, /restore, and /undo accept optional arguments.
 
 ChatSession::Command ChatSession::handle_command(const string& input) {
     if (input.empty() || input[0] != '/') return Command::NONE;
@@ -480,75 +504,44 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
     // Strip the leading '/'
     string rest = input.substr(1);
 
-    // Helper: exact match -- command must be followed by nothing or whitespace.
-    static auto check_command = [](const string& rest, const char* name, int len, Command cmd) -> Command {
-        if (rest.size() == len || (rest.size() > len && isspace(rest[len]))) {
-            if (rest.substr(0, len) == name) {
-                return cmd;
-            }
+    for (const auto& c : g_commands) {
+        int len = (int)strlen(c.name);
+        bool matched = false;
+        if (rest.size() == (size_t)len) {
+            matched = (rest == c.name);
+        } else if (rest.size() > (size_t)len && isspace(rest[len])) {
+            matched = (rest.substr(0, len) == c.name);
         }
-        return Command::NONE;
-    };
+        if (!matched) continue;
 
-        static const struct CmdPattern {
-        const char* name;
-        int len;
-        Command cmd;
-    } patterns[] = {
-        STR("quit", Command::QUIT),
-        STR("exit", Command::QUIT),
-        STR("clear", Command::CLEAR),
-        STR("reincarnate", Command::REINCARNATE),
-        STR("reset", Command::RESET),
-        STR("continue", Command::CONTINUE),
-        STR("help", Command::HELP)
-    };
+        // Parse optional argument.
+        string arg = trim(rest.substr(len));
+        switch (c.arg) {
+            case ArgType::PATH:
+                save_prefix_.clear();
+                restore_path_.clear();
+                undo_count_ = 1;
+                if (c.cmd == Cmd::SAVE)    save_prefix_   = arg;
+                if (c.cmd == Cmd::RESTORE) restore_path_  = arg;
+                return static_cast<Command>(c.cmd);
 
-    // Check exact-match commands first (no arguments allowed)
-    for (const auto& p : patterns) {
-        Command result = check_command(rest, p.name, p.len, p.cmd);
-        if (result != Command::NONE) {
-            save_prefix_.clear();
-            return result;
-        }
-    }
-
-    // /save is special: it accepts an optional path argument.
-    static constexpr const char* SAVE_NAME = "save";
-    static constexpr size_t SAVE_LEN = strlen(SAVE_NAME);
-    if (rest.size() == SAVE_LEN || (rest.size() > SAVE_LEN && isspace(rest[SAVE_LEN]))) {
-        if (rest.substr(0, SAVE_LEN) == SAVE_NAME) {
-            save_prefix_ = trim(rest.substr(SAVE_LEN));
-            return Command::SAVE;
-        }
-    }
-
-    // /restore is special: it accepts an optional path argument.
-    static constexpr const char* RESTORE_NAME = "restore";
-    static constexpr size_t RESTORE_LEN = strlen(RESTORE_NAME);
-    if (rest.size() == RESTORE_LEN || (rest.size() > RESTORE_LEN && isspace(rest[RESTORE_LEN]))) {
-        if (rest.substr(0, RESTORE_LEN) == RESTORE_NAME) {
-            restore_path_ = trim(rest.substr(RESTORE_LEN));
-            return Command::RESTORE;
-        }
-    }
-
-    // /undo is special: it accepts an optional integer argument.
-    static constexpr const char* UNDO_NAME = "undo";
-    static constexpr size_t UNDO_LEN = strlen(UNDO_NAME);
-    if (rest.size() == UNDO_LEN || (rest.size() > UNDO_LEN && isspace(rest[UNDO_LEN]))) {
-        if (rest.substr(0, UNDO_LEN) == UNDO_NAME) {
-            string arg = trim(rest.substr(UNDO_LEN));
-            undo_count_ = 1;
-            if (!arg.empty()) {
-                try {
-                    int val = stoi(arg);
-                    if (val > 0) undo_count_ = val;
-                } catch (...) {
-                    // If parsing fails, default to 1.
+            case ArgType::INT:
+                save_prefix_.clear();
+                restore_path_.clear();
+                undo_count_ = 1;
+                if (!arg.empty()) {
+                    try {
+                        int val = stoi(arg);
+                        if (val > 0) undo_count_ = val;
+                    } catch (...) {}
                 }
-            }
-            return Command::UNDO;
+                return static_cast<Command>(c.cmd);
+
+            case ArgType::NONE:
+                save_prefix_.clear();
+                restore_path_.clear();
+                undo_count_ = 1;
+                return static_cast<Command>(c.cmd);
         }
     }
 
@@ -887,7 +880,6 @@ bool ChatSession::run() {
     while (true) {
         stop_generation = 0;
         g_was_interrupted = 0;
-        prev_was_save_ = false;
         assistant_logged_this_turn_ = false;
 
         // 1. Get user input
@@ -1234,7 +1226,7 @@ bool ChatSession::run() {
             bool cache_hit = try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
             int saved_session = read_save_session(rpath);
             if (cache_hit) {
-                diag("Restoring session from " + rpath + "... (" + to_string(restored_tokens.size()) + " tokens, from cache)", "\033[35m");
+                diag_restore(rpath, (int)restored_tokens.size());
                 n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
 
                 // Update session state.
@@ -1246,7 +1238,7 @@ bool ChatSession::run() {
                 log_entry("SYSTEM", "Restored session from " + rpath);
             } else {
                 // Slow restore: re-decode through the model.
-                diag("Restoring session from " + rpath + "... (" + to_string(restored_tokens.size()) + " tokens)", "\033[35m");
+                diag_restore(rpath, (int)restored_tokens.size());
 
                 // Clear the KV cache before re-decoding.
                 llama_memory_clear(llama_get_memory(ctx_), true);
@@ -1309,17 +1301,27 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::HELP) {
-            diag("Available Commands:", "\033[1;36m");
-            diag("  /quit or /exit         Save to log/<N>.save and exit", "\033[37m");
-            diag("  /clear                 Clear context (auto-saves first to log/<N>-clear.save)", "\033[37m");
-            diag("  /undo [N]              Undo last N prompts (default: 1; auto-saves first)", "\033[37m");
-            diag("  /reset                 Reset loop detector and file cache", "\033[37m");
-            diag("  /reincarnate           Compose new prompt in ~/userprompt, then restart (auto-saves first)", "\033[37m");
-            diag("  /continue              Resume generation after interruption", "\033[37m");
-            diag("  /save [path]           Save session state (default: log/<N>.save)", "\033[37m");
-            diag("  /restore [path]        Restore session from save file (must be used after /clear)", "\033[37m");
-            diag("  /help                  Show this help message", "\033[37m");
-            diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;36m");
+            diag("Available Commands:", "\033[1;35m");
+            for (size_t i = 0; i < sizeof(g_commands) / sizeof(g_commands[0]); ++i) {
+                const auto& c = g_commands[i];
+                if (!c.description) continue;
+
+                // Group consecutive aliases with the same Command value (e.g., quit/exit).
+                string names = c.name;
+                for (size_t j = i + 1; j < sizeof(g_commands) / sizeof(g_commands[0]); ++j) {
+                    if (g_commands[j].cmd == c.cmd && !g_commands[j].description) {
+                        names += " or /" + string(g_commands[j].name);
+                    } else {
+                        break;
+                    }
+                }
+
+                // Align descriptions in a fixed-width column.
+                string cmd_col = "  /" + names;
+                while (cmd_col.size() < 24) cmd_col += ' ';
+                diag((cmd_col + c.description).c_str(), "\033[37m");
+            }
+            diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;35m");
             continue;
         }
 
@@ -1355,10 +1357,16 @@ bool ChatSession::run() {
             }
         }
 
-        // 3. Skip empty input when not auto-continuing
+        // 3. Reject unrecognized commands before they reach the LLM
+        if (last_cmd_ == Command::NONE && !user_input.empty() && user_input[0] == '/') {
+            diag("Unknown command: " + user_input + ". Type /help for available commands.", "\033[33m");
+            continue;
+        }
+
+        // 4. Skip empty input when not auto-continuing
         if (user_input.empty() && !state_.auto_continue) continue;
 
-        // 8. Browser/TTY setup
+        // 5. Browser/TTY setup
         bool browser_connected = check_browser_connected();
 
         const char* cur_tty = ttyname(STDIN_FILENO);
@@ -1380,24 +1388,25 @@ bool ChatSession::run() {
             }
         }
 
-        // 9. Feed user message (if non-empty)
+        // 6. Feed user message (if non-empty)
         if (!user_input.empty()) {
+            prev_was_save_ = false;
             last_user_input_ = user_input;
             if (!feed_user_message(user_input)) continue;
         }
 
-        // 10. Generate response
+        // 7. Generate response
         auto gen_result = generate_response();
 
-        // 11. Process tool call
+        // 8. Process tool call
         if (process_tool_call()) {
             continue;
         }
 
-        // 12. Log assistant output (skip if already logged via process_tool_call)
+        // 9. Log assistant output (skip if already logged via process_tool_call)
         if (!state_.auto_continue && !assistant_logged_this_turn_ && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
 
-        // 13. Handle reincarnate completion
+        // 10. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;
 
         // Record checkpoint at every prompt return for partial restore.
