@@ -235,11 +235,11 @@ int main(int argc, char ** argv) {
         llama_log_set(custom_log_callback, nullptr);
     }
 
-    mkdir("log", 0775);
+    mkdir(LIM_LOG_DIR.c_str(), 0775);
     int log_index = 1;
     string log_file_name;
     while (true) {
-        log_file_name = "log/" + to_string(log_index);
+        log_file_name = LIM_LOG_DIR + "/" + to_string(log_index);
         ifstream check_file(log_file_name.c_str());
         if (!check_file.good()) break;
         log_index++;
@@ -251,7 +251,7 @@ int main(int argc, char ** argv) {
     }
 
     // Open token log file (for LIM_DEBUG=1)
-    string token_log_name = "log/" + to_string(log_index) + ".tokens";
+    string token_log_name = LIM_LOG_DIR + "/" + to_string(log_index) + ".tokens";
     if (is_debug) {
         token_log.open(token_log_name, ios::trunc);
         if (token_log.is_open()) {

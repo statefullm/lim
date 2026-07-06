@@ -44,7 +44,7 @@ std::vector<PromptCheckpoint> read_checkpoint_offsets(const std::string& save_pa
 int read_save_session(const std::string& save_path);
 
 // V1 cache: after a slow restore, auto-save the rebuilt KV cache for instant
-// future restores.  Cache lives in <cwd>/.cache/<name>-<hash>.
+// future restores.  Cache lives in <cwd>/$LIM_CACHE_DIR/<name>-<hash>.
 // The hash is content-based (SHA-256 of token data + model filename), so it
 // survives save file renames and moves.  The name suffix is purely informational.
 static constexpr const char* SAVE_EXT = ".save";

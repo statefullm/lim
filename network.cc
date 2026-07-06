@@ -43,10 +43,12 @@ static std::string strip_trailing_whitespace(const std::string& text) {
 }
 
 // --- Global Config & State ---
-const string SEARXNG_LOG_PATH = "log/searxng.log";
-const string DOCLING_LOG_PATH = "log/docling.log";
+string SEARXNG_LOG_PATH;
+string DOCLING_LOG_PATH;
 string HOME;
 string LIM_CONFIG_DIR;
+string LIM_LOG_DIR;
+string LIM_CACHE_DIR;
 static struct HomeInit { HomeInit() {
     const char* h = getenv("HOME");
     HOME = h ? h : "";
@@ -56,6 +58,20 @@ static struct HomeInit { HomeInit() {
     } else {
         LIM_CONFIG_DIR = HOME + "/.config/lim";
     }
+    const char* l = getenv("LIM_LOG_DIR");
+    if (l && l[0]) {
+        LIM_LOG_DIR = l;
+    } else {
+        LIM_LOG_DIR = "log";
+    }
+    const char* k = getenv("LIM_CACHE_DIR");
+    if (k && k[0]) {
+        LIM_CACHE_DIR = k;
+    } else {
+        LIM_CACHE_DIR = ".cache";
+    }
+    SEARXNG_LOG_PATH = LIM_LOG_DIR + "/searxng.log";
+    DOCLING_LOG_PATH = LIM_LOG_DIR + "/docling.log";
 } } g_homeInit;
 
 extern bool is_debug;
@@ -333,10 +349,8 @@ void NetworkTools::init_ssl_certificates() {
 
     struct stat st;
 
-    // Use $HOME/.cache for certificate storage
-    string cache_dir = HOME + "/.cache";
-    mkdir(cache_dir.c_str(), 0755);
-    string cached_ca = cache_dir + "/combined-ca.crt";
+    // Use LIM_CONFIG_DIR for certificate storage
+    string cached_ca = LIM_CONFIG_DIR + "/combined-ca.crt";
 
     const int MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days in seconds
 
@@ -370,8 +384,8 @@ void NetworkTools::init_ssl_certificates() {
             }
         }
 
-        // Download Cloudflare certificate chain to cache directory
-        string cloudflare_cache = cache_dir + "/cloudflare-chain.pem";
+        // Download Cloudflare certificate chain to config directory
+        string cloudflare_cache = LIM_CONFIG_DIR + "/cloudflare-chain.pem";
         string cloudflare_cmd = "openssl s_client -connect example.com:443 -showcerts 2>/dev/null | "
                                "awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{if(/BEGIN CERTIFICATE/)p=1; if(p)print; if(/END CERTIFICATE/)p=0}' > " + cloudflare_cache;
         system(cloudflare_cmd.c_str());
@@ -382,7 +396,7 @@ void NetworkTools::init_ssl_certificates() {
             combine_cmd = "cat " + system_ca + " " + cloudflare_cache + " > " + cached_ca;
         } else {
             // Download standard CA bundle and add Cloudflare certs to cache
-            string temp_bundle = cache_dir + "/ca-bundle-temp.crt";
+            string temp_bundle = LIM_CONFIG_DIR + "/ca-bundle-temp.crt";
             combine_cmd = "curl -s https://curl.se/ca/cacert.pem > " + temp_bundle + " && "
                          "cat " + temp_bundle + " " + cloudflare_cache + " > " + cached_ca;
         }
@@ -457,8 +471,8 @@ static void configure_curl_ssl(CURL* curl, const string& base_url) {
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
         curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
-        // Use the cached CA bundle from $HOME/.cache
-        string cached_ca = HOME + "/.cache/combined-ca.crt";
+        // Use the cached CA bundle from LIM_CONFIG_DIR
+        string cached_ca = LIM_CONFIG_DIR + "/combined-ca.crt";
         struct stat st;
         if (stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
             curl_easy_setopt(curl, CURLOPT_CAINFO, cached_ca.c_str());
@@ -934,8 +948,8 @@ string NetworkTools::web_search(const string& query) {
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
             curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
 
-            // Use the cached CA bundle from $HOME/.cache
-            string cached_ca = HOME + "/.cache/combined-ca.crt";
+            // Use the cached CA bundle from LIM_CONFIG_DIR
+            string cached_ca = LIM_CONFIG_DIR + "/combined-ca.crt";
             struct stat st;
             if (stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
                 curl_easy_setopt(curl, CURLOPT_CAINFO, cached_ca.c_str());

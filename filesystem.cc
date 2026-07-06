@@ -318,10 +318,10 @@ static std::string sha256_hex(const std::string& data) {
 }
 
 static std::string get_cache_dir_internal() {
-    // Use .cache subdirectory in the project directory alongside save files.
+    // Use LIM_CACHE_DIR subdirectory in the project directory alongside save files.
     char cwd[4096];
     std::string base = (getcwd(cwd, sizeof(cwd)) ? cwd : ".");
-    std::string dir = base + "/.cache";
+    std::string dir = base + "/" + LIM_CACHE_DIR;
     mkdir(dir.c_str(), 0755);
     return dir;
 }
@@ -354,7 +354,7 @@ std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
 }
 
 // Extract the save file basename without directory path or .save extension.
-// Used as the human-readable prefix in cache filenames: .cache/<name>-<hash>
+// Used as the human-readable prefix in cache filenames: $LIM_CACHE_DIR/<name>-<hash>
 static std::string save_file_name(const std::string& v2_path) {
     size_t slash = v2_path.rfind('/');
     std::string base = slash != std::string::npos ? v2_path.substr(slash + 1) : v2_path;
@@ -464,7 +464,7 @@ bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& 
         }
     }
 
-    // Write the raw KV cache as .cache/<name>-<hash>
+    // Write the raw KV cache as $LIM_CACHE_DIR/<name>-<hash>
     std::string cache_path = dir + "/" + cache_filename(v2_path, tokens, model_path);
 
     size_t state_size = llama_state_get_size(ctx);
@@ -498,7 +498,7 @@ bool delete_save_and_cache(const std::string& save_path,
     int rc = unlink(save_path.c_str());
     if (rc != 0) return false;
 
-    // If we have a hash, scan .cache/ for matching entries and delete them.
+    // If we have a hash, scan $LIM_CACHE_DIR/ for matching entries and delete them.
     if (!hash.empty()) {
         std::string dir = get_cache_dir_internal();
         std::string suffix = "-" + hash;

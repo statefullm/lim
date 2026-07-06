@@ -883,7 +883,7 @@ bool ChatSession::run() {
             // If there's actual conversation to preserve, auto-save before exiting.
             // Skip if the user just manually saved -- nothing has changed since then.
             if (!state_.prompt_checkpoints.empty() && !prev_was_save_) {
-                string autosave_path = "log/" + to_string(state_.log_index) + ".save";
+                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save";
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -899,7 +899,7 @@ bool ChatSession::run() {
             // Uses a distinct name (e.g., log/5-clear.save) so it doesn't conflict
             // with the regular save file that /quit or /exit will overwrite.
             {
-                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -943,7 +943,7 @@ bool ChatSession::run() {
 
             // Auto-save before undoing so nothing is truly lost.
             {
-                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -1107,7 +1107,7 @@ bool ChatSession::run() {
             // Auto-save before reincarnating so nothing is truly lost.
             // Uses the same -clear.save name since reincarnate calls clear_context internally.
             {
-                string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
+                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
                 bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
                     diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
@@ -1171,7 +1171,7 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::SAVE) {
-            string save_path = make_save_path(save_prefix_, "log/" + to_string(state_.log_index) + ".save");
+            string save_path = make_save_path(save_prefix_, LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save");
 
             // Named saves (with a meaningful argument) are cached in fast format
             // for instant restore. Unnamed saves are compact-only since they're
