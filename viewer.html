@@ -373,6 +373,17 @@
             block.setAttribute('data-think-collapsed', collapsed ? '1' : '0');
         }
 
+        // Collapse a think-block's body (adds hidden/collapsed classes and attribute).
+        function collapseThinkBlock(blockEl, attrValue) {
+            var th = blockEl.querySelector('.think-header');
+            var tb = blockEl.querySelector('.think-body');
+            if (th && tb) {
+                tb.classList.add('hidden');
+                th.classList.add('collapsed');
+                blockEl.setAttribute('data-think-collapsed', attrValue || '1');
+            }
+        }
+
         /* Fallback copy for insecure (HTTP) contexts where navigator.clipboard is unavailable. */
         function fallbackCopy(text, btn) {
             const ta = document.createElement('textarea');
@@ -473,13 +484,7 @@
             // If this was a THINK segment that just finished rendering,
             // collapse it immediately -- thinking is done.
             if (segments[segIndex].type === SEG_THINK) {
-                var th = wrapperDiv.querySelector('.think-header');
-                var tb = wrapperDiv.querySelector('.think-body');
-                if (th && tb) {
-                    tb.classList.add('hidden');
-                    th.classList.add('collapsed');
-                    wrapperDiv.setAttribute('data-think-collapsed', '1');
-                }
+                collapseThinkBlock(wrapperDiv);
             }
 
             segRenderedContent[segIndex] = segments[segIndex].content;
@@ -633,8 +638,9 @@
             // is processed at most once, so this is O(missed), not O(n).
             injectCopyButtons(wrapperDiv);
         }
-        // Handles $$...$$ and $...$ math extraction and restoration for KaTeX.
-        function rawTextToHtml(text, segType) {
+        // Shared pipeline: extract math delimiters, run through marked, render KaTeX.
+        // Used by both rawTextToHtml (streaming) and segToHtml (full re-render).
+        function convertTextToHtml(text) {
             var mathBlocks = [];
 
             // Extract display math $$...$$ first (greedy across newlines).
@@ -675,16 +681,12 @@
                 return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
             });
 
-            if (segType === SEG_THINK) {
-                // For think segments, wrap in the think-block structure.
-                // But only on the first render of a think segment -- subsequent
-                // delta renders should NOT re-wrap.  The caller handles this:
-                // the initial creation wraps, progressiveRender just inserts deltas.
-                // Actually, for correctness we return unwrapped HTML here and let
-                // the initial segment creation handle wrapping.
-            }
-
             return html;
+        }
+
+        // Handles $$...$$ and $...$ math extraction and restoration for KaTeX.
+        function rawTextToHtml(text, segType) {
+            return convertTextToHtml(text);
         }
 
         // Parse an HTML string into a DocumentFragment (no outerHTML wrapper).
@@ -706,13 +708,7 @@
         function autoCollapseThinkBlocks() {
             outputDiv.querySelectorAll('.think-block').forEach(function (block) {
                 if (!block.hasAttribute('data-think-collapsed')) {
-                    var th = block.querySelector('.think-header');
-                    var tb = block.querySelector('.think-body');
-                    if (th && tb) {
-                        tb.classList.add('hidden');
-                        th.classList.add('collapsed');
-                        block.setAttribute('data-think-collapsed', 'auto');
-                    }
+                    collapseThinkBlock(block, 'auto');
                 }
             });
         }
@@ -740,80 +736,9 @@
         // Convert a single segment to HTML string.
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
-                // Extract $$...$$ and $...$ blocks before markdown processing so
-                // marked doesn't corrupt delimiters or split | inside $a|b$ as
-                // a table column separator.
-                var mathBlocks = [];
-                var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: true });
-                    return '@mth_' + (mathBlocks.length - 1) + '@';
-                });
-                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: false });
-                    return '@mth_' + (mathBlocks.length - 1) + '@';
-                });
-
-                var html;
-                if (typeof marked !== 'undefined') {
-                    html = marked.parse(content, { breaks: true });
-                    html = htmlUnescapeSentinels(html);
-                } else {
-                    var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
-                }
-
-                // Render math blocks directly with KaTeX.
-                html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
-                    var block = mathBlocks[parseInt(idx)];
-                    var tex = block.tex;
-                    // Unescape sentinels in math tex so LaTeX alignment chars work.
-                    tex = unescapeMathTex(tex);
-                    if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
-                        try {
-                            var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
-                            if (!result.includes('katex-error')) return result;
-                        } catch(e) {}
-                    }
-                    return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
-                });
-                return html;
+                return convertTextToHtml(seg.content);
             } else if (seg.type === SEG_THINK) {
-                // Think block: collapsible box with markdown + KaTeX.
-                // Extract $$...$$ and $...$ blocks before markdown processing.
-                var mathBlocks = [];
-                var content = seg.content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: true });
-                    return '@mth_' + (mathBlocks.length - 1) + '@';
-                });
-                content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
-                    mathBlocks.push({ tex: m.trim(), display: false });
-                    return '@mth_' + (mathBlocks.length - 1) + '@';
-                });
-
-                var html;
-                if (typeof marked !== 'undefined') {
-                    html = marked.parse(content, { breaks: true });
-                    html = htmlUnescapeSentinels(html);
-                } else {
-                    var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                    html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
-                }
-
-                // Render math blocks directly with KaTeX.
-                html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
-                    var block = mathBlocks[parseInt(idx)];
-                    var tex = block.tex;
-                    // Unescape sentinels in math tex so LaTeX alignment chars work.
-                    tex = unescapeMathTex(tex);
-                    if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
-                        try {
-                            var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
-                            if (!result.includes('katex-error')) return result;
-                        } catch(e) {}
-                    }
-                    return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
-                });
-
+                var html = convertTextToHtml(seg.content);
                 return '<div class="think-block">' +
                     '<div class="think-header" onclick="toggleThinkBlock(this)">' +
                     '<span class="arrow">&#9660;</span> Thinking' +
@@ -1047,13 +972,7 @@
 
                                 // Restore collapsed state of think blocks.
                                 if (wasThinkCollapsed) {
-                                    var th = wrapperDiv.querySelector('.think-header');
-                                    var tb = wrapperDiv.querySelector('.think-body');
-                                    if (th && tb) {
-                                        tb.classList.add('hidden');
-                                        th.classList.add('collapsed');
-                                        wrapperDiv.setAttribute('data-think-collapsed', '1');
-                                    }
+                                    collapseThinkBlock(wrapperDiv);
                                 }
 
                                 segRenderedContent[i] = segments[i].content;
@@ -1122,14 +1041,8 @@
                 outputDiv.querySelectorAll('.think-block').forEach(function(block) {
                     if (!block.hasAttribute('data-think-collapsed')) {
                         // Only auto-collapse if the user hasn't manually toggled it.
-                        var th = block.querySelector('.think-header');
-                        var tb = block.querySelector('.think-body');
-                        if (th && tb) {
-                            tb.classList.add('hidden');
-                            th.classList.add('collapsed');
-                            block.setAttribute('data-think-collapsed', 'auto');
-                            autoCollapsed = true;
-                        }
+                        collapseThinkBlock(block, 'auto');
+                        autoCollapsed = true;
                     }
                 });
                 if (autoCollapsed) hasChanges = true;
