@@ -50,7 +50,7 @@ LIM takes full advantage of what a single-user local setup affords:
 ## Building
 
 ```bash
-git clone https://github.com/statellm/lim.git
+git clone https://github.com/statefullm/lim.git
 cd lim
 make
 ./lim --help
