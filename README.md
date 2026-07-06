@@ -497,6 +497,13 @@ make vscode             # builds and packages the extension
 make install-vscode     # installs the extension into VS Code
 ```
 
+To install everything (binary, config files, and VS Code extension) in one step:
+
+```bash
+make install-all        # runs make install && make install-vscode
+make uninstall-all      # removes installed files and uninstalls the extension
+```
+
 Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
 
 To rebuild both the C++ binary and the extension together:

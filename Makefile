@@ -60,7 +60,7 @@ TARGET = lim
 # Default target: build llama.cpp first, then lim
 all: $(TARGET) vscode
 
-.PHONY: all clean llama-clean FORCE
+.PHONY: all clean llama-clean install install-vscode uninstall uninstall-vscode install-all uninstall-all FORCE
 
 $(LLAMA_BUILD_DIR):
 	mkdir -p $@
@@ -98,17 +98,18 @@ $(VSIX): vscode-extension/src/extension.ts \
 
 
 LIM_CONFIG_DIR ?= $(HOME)/.config/lim
+CONFIG_FILES = prompt reincarnate limServer.py viewer.html
+LIBS_FILES = auto-render.min.js katex.min.css katex.min.js marked.min.js
 
 install: $(TARGET)
 	mkdir -p ~/bin
 	cp $(TARGET) ~/bin/
 	mkdir -p $(LIM_CONFIG_DIR)
-	cp prompt $(LIM_CONFIG_DIR)/prompt
-	cp reincarnate $(LIM_CONFIG_DIR)/reincarnate
+	cp $(CONFIG_FILES) $(LIM_CONFIG_DIR)/
 	mkdir -p $(LIM_CONFIG_DIR)/.search_cache
-	cp limServer.py $(LIM_CONFIG_DIR)/limServer.py
-	cp viewer.html $(LIM_CONFIG_DIR)/viewer.html
-	cp -r libs $(LIM_CONFIG_DIR)/libs
+	mkdir -p $(LIM_CONFIG_DIR)/libs
+	cd libs && cp $(LIBS_FILES) $(LIM_CONFIG_DIR)/libs
+	cp -r libs/fonts $(LIM_CONFIG_DIR)/libs/
 
 install-vscode: vscode
 	code --install-extension $(VSIX) --force
@@ -116,7 +117,14 @@ install-vscode: vscode
 uninstall-vscode: FORCE
 	-code --uninstall-extension undefined_publisher.vscode-extension
 
-uninstall: uninstall-vscode
+install-all: install install-vscode
+
+uninstall: FORCE
+	cd $(LIM_CONFIG_DIR) && rm -f $(CONFIG_FILES) userprompt
+	-cd $(LIM_CONFIG_DIR)/libs && rm -f $(LIBS_FILES) && rm -rf fonts
+	rm -f ~/bin/lim
+
+uninstall-all: uninstall uninstall-vscode
 
 clean:	FORCE
 	rm -f $(TARGET) *.o *.d
