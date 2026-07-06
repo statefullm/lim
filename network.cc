@@ -47,7 +47,6 @@ const string SEARXNG_LOG_PATH = "log/searxng.log";
 const string DOCLING_LOG_PATH = "log/docling.log";
 string HOME;
 string LIM_CONFIG_DIR;
-string LIM_SERVER_DIR;
 static struct HomeInit { HomeInit() {
     const char* h = getenv("HOME");
     HOME = h ? h : "";
@@ -56,12 +55,6 @@ static struct HomeInit { HomeInit() {
         LIM_CONFIG_DIR = c;
     } else {
         LIM_CONFIG_DIR = HOME + "/.config/lim";
-    }
-    const char* s = getenv("LIM_SERVER_DIR");
-    if (s && s[0]) {
-        LIM_SERVER_DIR = s;
-    } else {
-        LIM_SERVER_DIR = LIM_CONFIG_DIR + "/server";
     }
 } } g_homeInit;
 

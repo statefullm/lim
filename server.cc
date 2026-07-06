@@ -202,8 +202,8 @@ void start_lim_server_if_needed() {
         log_diagnostic("Stale server cleared, proceeding with startup.");
     }
 
-    if (LIM_SERVER_DIR.empty()) {
-        log_diagnostic("ERROR: LIM_SERVER_DIR is not set. Cannot start limServer.", true);
+    if (LIM_CONFIG_DIR.empty()) {
+        log_diagnostic("ERROR: LIM_CONFIG_DIR is not set. Cannot start limServer.", true);
         g_lim_server_pid = -2;
         return;
     }
@@ -215,7 +215,7 @@ void start_lim_server_if_needed() {
     pid_t pid = fork();
     if (pid == 0) {
         setpgid(0, 0);
-        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+LIM_SERVER_DIR+"/limServer.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+LIM_CONFIG_DIR+"/limServer.py";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {

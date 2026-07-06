@@ -473,7 +473,7 @@ int main(int argc, char ** argv) {
     }
 
     // Only append cwd and date if a system prompt file was found.
-    // If ~/.config/lim/prompt is missing, leave system_prompt empty for unbiased comparison.    // If ~/.config/lim/prompt is missing, leave system_prompt empty for unbiased comparison.
+    // If ~/.config/lim/prompt is missing, leave system_prompt empty for unbiased comparison.
     if (prompt_file_exists) {
         char current_cwd[1024];
         if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
