@@ -46,7 +46,17 @@ static std::string strip_trailing_whitespace(const std::string& text) {
 const string SEARXNG_LOG_PATH = "log/searxng.log";
 const string DOCLING_LOG_PATH = "log/docling.log";
 string HOME;
-static struct HomeInit { HomeInit() { const char* h = getenv("HOME"); HOME = h ? h : ""; } } g_homeInit;
+string LIM_CONFIG_DIR;
+static struct HomeInit { HomeInit() {
+    const char* h = getenv("HOME");
+    HOME = h ? h : "";
+    const char* c = getenv("LIM_CONFIG_DIR");
+    if (c && c[0]) {
+        LIM_CONFIG_DIR = c;
+    } else {
+        LIM_CONFIG_DIR = HOME + "/.config/lim";
+    }
+} } g_homeInit;
 
 extern bool is_debug;
 extern volatile sig_atomic_t stop_generation;  // Forward declaration for interrupt checking
@@ -873,7 +883,7 @@ string NetworkTools::web_search(const string& query) {
     log_tool_diagnostic("web_search(" + query_str + ")");
     cerr << "web_search(" + query_str + ")" << endl;
 
-    string cache = HOME + "/.search_cache";
+    string cache = LIM_CONFIG_DIR + "/.search_cache";
     mkdir(cache.c_str(), 0777);
     size_t query_hash = hash<string>{}(query);
     string cache_filepath = cache + "/" + to_string(query_hash) + ".txt";

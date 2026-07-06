@@ -97,13 +97,23 @@ $(VSIX): vscode-extension/src/extension.ts \
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
 
-install: vscode
+LIM_CONFIG_DIR ?= $(HOME)/.config/lim
+
+install: $(TARGET)
+	mkdir -p ~/bin
+	cp $(TARGET) ~/bin/
+	mkdir -p $(LIM_CONFIG_DIR)
+	cp prompt $(LIM_CONFIG_DIR)/prompt
+	cp reincarnate $(LIM_CONFIG_DIR)/reincarnate
+	mkdir -p $(LIM_CONFIG_DIR)/.search_cache
+
+install-vscode: vscode
 	code --install-extension $(VSIX) --force
 
-vscode-uninstall: FORCE
+uninstall-vscode: FORCE
 	-code --uninstall-extension undefined_publisher.vscode-extension
 
-uninstall: vscode-uninstall
+uninstall: uninstall-vscode
 
 clean:	FORCE
 	rm -f $(TARGET) *.o *.d

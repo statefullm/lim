@@ -76,6 +76,30 @@ To clean only the llama build artifacts without touching lim:
 make llama-clean
 ```
 
+### Installing LIM
+
+After building, install the binary and config files for `$LIM_AI_USER`:
+
+```bash
+# As $LIM_AI_USER
+make install
+```
+
+This installs:
+- `lim` binary to `~/bin/lim` (ensure `~/bin` is in your PATH via `.bashrc`)
+- System prompt to `~/.config/lim/prompt`
+- Reincarnate instructions to `~/.config/lim/reincarnate`
+- Search cache directory at `~/.config/lim/.search_cache`
+
+All LIM configuration files live under `~/.config/lim/` by default. Override with the `LIM_CONFIG_DIR` environment variable to place them elsewhere:
+
+```bash
+export LIM_CONFIG_DIR=/opt/lim/config
+make install
+```
+
+The `LIM_CONFIG_DIR` is read at runtime, so no recompilation is needed.
+
 ---
 
 ## User Setup
@@ -232,7 +256,7 @@ The `cd` override writes the current directory to `$HOME/.cwd`, which LIM reads 
 
 ### 6. The System Prompt
 
-Place your system prompt in `/home/$LIM_AI_USER/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
+Place your system prompt in `~/.config/lim/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository and is installed to `~/.config/lim/prompt` by `make install`. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
 
 ### 7. Message Shortcuts
 
@@ -271,6 +295,7 @@ Set via `LIM_OUTPUT`:
 | Variable | Default | Description |
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
+| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM configuration files (`prompt`, `reincarnate`, `userprompt`, `.search_cache`). Override to place config elsewhere. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
@@ -389,7 +414,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/undo` | Interactive undo: auto-saves first to `log/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm, Ctrl+C to cancel. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. Falls back to clear+re-decode only if no checkpoint is available. Readline history is updated to reflect the restored session state. |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
 | `/reset` | Reset internal state (loop detector) without clearing the KV-cache |
-| `/reincarnate` | Ask the LLM to compose a new prompt in `~/userprompt`, then clear and restart with it |
+| `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
 | `/save` | Save the full session state to `log/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
 | `/restore <path>` | Restore a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
@@ -466,8 +491,8 @@ You then run your `coder` alias in that terminal as usual.
 **Install:**
 
 ```bash
-make vscode          # builds and packages the extension
-make install         # installs the extension into VS Code
+make vscode             # builds and packages the extension
+make install-vscode     # installs the extension into VS Code
 ```
 
 Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.

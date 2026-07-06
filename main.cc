@@ -455,17 +455,25 @@ int main(int argc, char ** argv) {
     string system_prompt;
 
     bool prompt_file_exists = false;
-    ifstream prompt_file(HOME+"/prompt");
-    if (prompt_file.is_open()) {
-        stringstream buffer;
-        buffer << prompt_file.rdbuf();
-        system_prompt = buffer.str();
-        prompt_file.close();
-        prompt_file_exists = true;
+    {
+        string config_prompt_path = LIM_CONFIG_DIR + "/prompt";
+        string legacy_prompt_path = HOME + "/prompt";
+        ifstream prompt_file(config_prompt_path);
+        if (!prompt_file.is_open()) {
+            // Backward compatibility: fall back to ~/prompt
+            prompt_file.open(legacy_prompt_path);
+        }
+        if (prompt_file.is_open()) {
+            stringstream buffer;
+            buffer << prompt_file.rdbuf();
+            system_prompt = buffer.str();
+            prompt_file.close();
+            prompt_file_exists = true;
+        }
     }
 
     // Only append cwd and date if a system prompt file was found.
-    // If ~/prompt is missing, leave system_prompt empty for unbiased comparison.
+    // If ~/.config/lim/prompt is missing, leave system_prompt empty for unbiased comparison.    // If ~/.config/lim/prompt is missing, leave system_prompt empty for unbiased comparison.
     if (prompt_file_exists) {
         char current_cwd[1024];
         if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {

@@ -86,7 +86,7 @@ static const struct CmdInfo {
     { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
     { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
     { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset loop detector and file cache" },
-    { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/userprompt, then restart (auto-saves first)" },
+    { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/.config/lim/userprompt, then restart (auto-saves first)" },
     { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
     { "restore",      Cmd::RESTORE,     ArgType::PATH,   "Restore session from <path>.save (must be used after /clear)" },
     { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete <path>.save and its fast restore cache" },
@@ -739,7 +739,7 @@ bool ChatSession::handle_reincarnate_completion() {
 
     state_.reincarnate_mode = false;
 
-    string userprompt_path = string(HOME) + "/userprompt";
+    string userprompt_path = LIM_CONFIG_DIR + "/userprompt";
 
     ifstream userprompt_file(userprompt_path);
     if (!userprompt_file.is_open()) {
@@ -776,7 +776,7 @@ bool ChatSession::handle_reincarnate_completion() {
         stream_html(divider);
     }
 
-    string follow_prompt = "Follow the prompt in " + string(HOME) + "/userprompt";
+    string follow_prompt = "Follow the prompt in " + LIM_CONFIG_DIR + "/userprompt";
     log_entry("USER", "[reincarnated session] " + follow_prompt);
 
     vector<llama_token> new_session_tokens = build_user_assistant_turn(ctx_, follow_prompt);
@@ -1116,7 +1116,7 @@ bool ChatSession::run() {
                 }
             }
 
-            string reincarnate_path = string(HOME) + "/reincarnate";
+            string reincarnate_path = LIM_CONFIG_DIR + "/reincarnate";
             ifstream reincarnate_file(reincarnate_path);
             if (!reincarnate_file.is_open()) {
                 diag("Reincarnate failed: Cannot open " + reincarnate_path, "\033[31m");
@@ -1124,12 +1124,12 @@ bool ChatSession::run() {
             }
             stringstream reincarnate_buffer;
             reincarnate_buffer << "Use the write_file tool to write a new prompt to "
-                          << HOME << "/userprompt. Read the following instructions and compose an appropriate prompt, then write it and return without further comment. "
+                          << LIM_CONFIG_DIR << "/userprompt. Read the following instructions and compose an appropriate prompt, then write it and return without further comment. "
                           << reincarnate_file.rdbuf();
             string reincarnate_text = reincarnate_buffer.str();
             reincarnate_file.close();
 
-            string userprompt_check_path = string(HOME) + "/userprompt";
+            string userprompt_check_path = LIM_CONFIG_DIR + "/userprompt";
             {
                 ofstream userprompt_clear(userprompt_check_path, ios::trunc);
                 if (!userprompt_clear.is_open()) {
