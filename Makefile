@@ -106,7 +106,7 @@ install: $(TARGET)
 	cp $(TARGET) ~/bin/
 	mkdir -p $(LIM_CONFIG_DIR)
 	cp $(CONFIG_FILES) $(LIM_CONFIG_DIR)/
-	mkdir -p $(LIM_CONFIG_DIR)/.search_cache
+	mkdir -p $(LIM_CONFIG_DIR)/searchCache
 	mkdir -p $(LIM_CONFIG_DIR)/libs
 	cd libs && cp $(LIBS_FILES) $(LIM_CONFIG_DIR)/libs
 	cp -r libs/fonts $(LIM_CONFIG_DIR)/libs/
@@ -120,8 +120,10 @@ uninstall-vscode: FORCE
 install-all: install install-vscode
 
 uninstall: FORCE
-	cd $(LIM_CONFIG_DIR) && rm -f $(CONFIG_FILES) userprompt
+	-cd $(LIM_CONFIG_DIR) && rm -f $(CONFIG_FILES) userprompt && rmdir searchCache 2>/dev/null || true
 	-cd $(LIM_CONFIG_DIR)/libs && rm -f $(LIBS_FILES) && rm -rf fonts
+	rmdir $(LIM_CONFIG_DIR)/libs 2>/dev/null || true
+	rmdir $(LIM_CONFIG_DIR) 2>/dev/null || true
 	rm -f ~/bin/lim
 
 uninstall-all: uninstall uninstall-vscode

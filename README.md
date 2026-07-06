@@ -89,7 +89,7 @@ This installs:
 - `lim` binary to `~/bin/lim` (ensure `~/bin` is in your PATH via `.bashrc`)
 - System prompt to `~/.config/lim/prompt`
 - Reincarnate instructions to `~/.config/lim/reincarnate`
-- Search cache directory at `~/.config/lim/.search_cache`
+- Search cache directory at `~/.config/lim/searchCache`
 - Browser server files (`limServer.py`, `viewer.html`, `libs/`) to `~/.config/lim/`
 
 All LIM configuration files live under `~/.config/lim/` by default. Override with the `LIM_CONFIG_DIR` environment variable (set in `$LIM_AI_USER`'s `.bashrc`) to place them elsewhere:
@@ -298,7 +298,7 @@ Set via `LIM_OUTPUT`:
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
 | `LIM_CACHE_DIR` | `.cache` | Directory (relative to CWD) for fast restore KV-cache files. |
-| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `.search_cache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary launches `python3 $LIM_CONFIG_DIR/limServer.py` when browser output is enabled. Override to place everything elsewhere. |
+| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary launches `python3 $LIM_CONFIG_DIR/limServer.py` when browser output is enabled. Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory (relative to CWD) for session logs, token traces, and autosave files. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |

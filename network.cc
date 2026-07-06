@@ -904,7 +904,7 @@ string NetworkTools::web_search(const string& query) {
     log_tool_diagnostic("web_search(" + query_str + ")");
     cerr << "web_search(" + query_str + ")" << endl;
 
-    string cache = LIM_CONFIG_DIR + "/.search_cache";
+    string cache = LIM_CONFIG_DIR + "/searchCache";
     mkdir(cache.c_str(), 0777);
     size_t query_hash = hash<string>{}(query);
     string cache_filepath = cache + "/" + to_string(query_hash) + ".txt";
