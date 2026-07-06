@@ -324,6 +324,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
 | `LIM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
 | `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |
+| `LIM_LATEX` | `1` | Set to `0` to disable inline KaTeX rendering in the browser viewer. Block-level `$$...$$` math still renders via `katex.renderToString`. Useful when `$HOME`, `$PATH`, and other env vars appear as bare text and get mangled by LaTeX processing. |
 | `LIM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |

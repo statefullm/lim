@@ -97,7 +97,7 @@ async def status_handler(request):
     return web.json_response({"connected": connected, "clients": len(clients)})
 
 async def serve_viewer(request):
-    """Serve viewer.html from the script directory."""
+    """Serve viewer.html from the script directory, injecting LIM_LATEX setting."""
     script_path = Path(__file__).resolve()
     viewer_html_path = script_path.parent / 'viewer.html'
 
@@ -106,6 +106,21 @@ async def serve_viewer(request):
 
     with open(viewer_html_path, 'r') as f:
         content = f.read()
+
+    # Override the default LIM_LATEX_ENABLED value based on the env var.
+    latex_val = os.environ.get('LIM_LATEX', '1')
+    content = content.replace(
+        "var LIM_LATEX_ENABLED = 1;",
+        "var LIM_LATEX_ENABLED = " + latex_val + ";",
+    )
+
+    # When LaTeX is disabled, also remove auto-render so it doesn't mangle $HOME etc.
+    if latex_val == '0':
+        content = content.replace(
+            '    <script defer src="libs/auto-render.min.js"></script>\n',
+            '',
+        )
+
     return web.Response(text=content, content_type='text/html')
 
 async def main():

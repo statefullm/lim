@@ -646,6 +646,11 @@
             html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                 var block = mathBlocks[parseInt(idx)];
                 var tex = unescapeMathTex(block.tex);
+                // When LIM_LATEX is disabled, only render display-mode (block-level) math.
+                // Inline $...$ falls through to raw delimiters to avoid mangling $HOME etc.
+                if (!LIM_LATEX_ENABLED && !block.display) {
+                    return '$' + tex + '$';
+                }
                 if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                     try {
                         var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
@@ -806,7 +811,7 @@
         // O(n^2) behaviour of rescanning already-rendered content on every
         // progressive-render step: each new fragment is rendered exactly once.
         function renderMathInRange(startNode, endNode) {
-            if (typeof renderMathInElement !== 'function') return;
+            if (!LIM_LATEX_ENABLED || typeof renderMathInElement !== 'function') return;
 
             // Render directly into a standalone temp div without extracting real
             // nodes -- this avoids reordering block-level elements that can happen
@@ -1206,6 +1211,10 @@
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
         }
+
+        // LIM_LATEX_ENABLED: set to 0 by limServer.py (via LIM_LATEX env var)
+        // to disable client-side LaTeX rendering in the browser.
+        var LIM_LATEX_ENABLED = 1;
 
         connect();
     </script>
