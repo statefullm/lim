@@ -353,11 +353,6 @@
             return result;
         }
 
-        // Alias for use on non-math HTML content (after marked.parse).
-        function unescapeHtmlSentinels(str) {
-            return htmlUnescapeSentinels(str);
-        }
-
         // Unescape sentinels in math tex content before passing to KaTeX.
         // Unlike the HTML version, converts sentinels back to raw characters
         // (not HTML entities) since KaTeX expects plain text input.
@@ -366,11 +361,6 @@
             // Also handle escaped forms (literal @lt@ etc. in math).
             str = str.replace(/@\lt@/g, '@lt@').replace(/@\gt@/g, '@gt@').replace(/@\bt@/g, '@bt@');
             return str.replace(/&amp;/g, '&');
-        }
-
-        // Single point of unescaping before any HTML enters the DOM.
-        function htmlToDom(htmlStr, targetEl) {
-            targetEl.innerHTML = unescapeMth(htmlStr);
         }
 
         /* Toggle think block visibility.  Survives re-renders because the
@@ -430,12 +420,6 @@
         /*       Each character is parsed exactly once -> O(n) total.
         /*       A 200 ms debounce renders whatever remains when the stream stops.
         /* ------------------------------------------------------------------ */
-
-        // Schedule a final render of all raw tails.  No-op: the server now
-        // sends SEG_TURN_END when generation completes, which triggers
-        // finishAllRawSegments() directly without an arbitrary timeout.
-        function scheduleFinalRender() {
-        }
 
         // Render the raw tail of a single segment.  Called by progressiveRender()
         // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
@@ -1032,7 +1016,6 @@
                                 if (delta.length > 0) {
                                     appendRawText(wrapperDiv, delta, i);
                                     segRenderedContent[i] = segments[i].content;
-                                    scheduleFinalRender();
                                 }
                             } else {
                                 // Non-streaming segment changed -- full re-render.
@@ -1117,7 +1100,6 @@
                         // Try progressive render on the initial content (might already have paragraphs).
                         progressiveRender(wrapperDiv, i);
                         segRenderedContent[i] = segments[i].content;
-                        scheduleFinalRender();
                     } else {
                         // Non-text segments (tool labels, HTML) render immediately.
                         wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
@@ -1190,7 +1172,6 @@
             ws.onopen = () => {
                 statusDiv.textContent = speedInfo || 'Ready';
                 statusDiv.className = 'status connected';
-                isFirstConnect = false;
             };
 
             ws.onmessage = (event) => {
