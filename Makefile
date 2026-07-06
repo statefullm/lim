@@ -98,6 +98,7 @@ $(VSIX): vscode-extension/src/extension.ts \
 
 
 LIM_CONFIG_DIR ?= $(HOME)/.config/lim
+LIM_SERVER_DIR ?= $(LIM_CONFIG_DIR)/server
 
 install: $(TARGET)
 	mkdir -p ~/bin
@@ -106,6 +107,10 @@ install: $(TARGET)
 	cp prompt $(LIM_CONFIG_DIR)/prompt
 	cp reincarnate $(LIM_CONFIG_DIR)/reincarnate
 	mkdir -p $(LIM_CONFIG_DIR)/.search_cache
+	mkdir -p $(LIM_SERVER_DIR)
+	cp limServer.py $(LIM_SERVER_DIR)/limServer.py
+	cp viewer.html $(LIM_SERVER_DIR)/viewer.html
+	cp -r libs $(LIM_SERVER_DIR)/libs
 
 install-vscode: vscode
 	code --install-extension $(VSIX) --force

@@ -2,6 +2,7 @@
 #include "output.h"
 #include "filesystem.h"
 #include "taskset.h"
+#include "network.h"
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/inotify.h>
@@ -9,8 +10,6 @@
 
 // --- LIM Server Process Management ---
 pid_t g_lim_server_pid = -1;
-
-extern const string HOME;
 
 static const char* INOTIFY_DIR = "/tmp";
 static const char* SERVER_READY_PATH = "/tmp/lim.server_ready";
@@ -203,9 +202,8 @@ void start_lim_server_if_needed() {
         log_diagnostic("Stale server cleared, proceeding with startup.");
     }
 
-    const char* home_env = getenv("HOME");
-    if (home_env == nullptr) {
-        log_diagnostic("ERROR: HOME is not set. Cannot start limServer.", true);
+    if (LIM_SERVER_DIR.empty()) {
+        log_diagnostic("ERROR: LIM_SERVER_DIR is not set. Cannot start limServer.", true);
         g_lim_server_pid = -2;
         return;
     }
@@ -217,7 +215,7 @@ void start_lim_server_if_needed() {
     pid_t pid = fork();
     if (pid == 0) {
         setpgid(0, 0);
-        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+string(home_env)+"/lim/limServer.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"python3 "+LIM_SERVER_DIR+"/limServer.py";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {

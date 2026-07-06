@@ -56,5 +56,6 @@ private:
 
 extern std::string HOME;
 extern std::string LIM_CONFIG_DIR;
+extern std::string LIM_SERVER_DIR;
 
 #endif // NETWORK_H

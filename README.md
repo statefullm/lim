@@ -78,10 +78,10 @@ make llama-clean
 
 ### Installing LIM
 
-After building, install the binary and config files for `$LIM_AI_USER`:
+After building, install the binary and config files. This **must** be run as `$LIM_AI_USER` (e.g., `su - $LIM_AI_USER`) so that files are installed into that user's home directory — which is where LIM will look for them at runtime:
 
 ```bash
-# As $LIM_AI_USER
+su - $LIM_AI_USER
 make install
 ```
 
@@ -90,10 +90,12 @@ This installs:
 - System prompt to `~/.config/lim/prompt`
 - Reincarnate instructions to `~/.config/lim/reincarnate`
 - Search cache directory at `~/.config/lim/.search_cache`
+- Browser server files (`limServer.py`, `viewer.html`, `libs/`) to `~/.config/lim/server/`
 
-All LIM configuration files live under `~/.config/lim/` by default. Override with the `LIM_CONFIG_DIR` environment variable to place them elsewhere:
+All LIM configuration files live under `~/.config/lim/` by default. Override with the `LIM_CONFIG_DIR` environment variable (set in `$LIM_AI_USER`'s `.bashrc`) to place them elsewhere:
 
 ```bash
+# As $LIM_AI_USER
 export LIM_CONFIG_DIR=/opt/lim/config
 make install
 ```
@@ -296,6 +298,7 @@ Set via `LIM_OUTPUT`:
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM configuration files (`prompt`, `reincarnate`, `userprompt`, `.search_cache`). Override to place config elsewhere. |
+| `LIM_SERVER_DIR` | `$LIM_CONFIG_DIR/server` | Directory containing the browser server files (`limServer.py`, `viewer.html`, `libs/`). The C++ binary launches `python3 $LIM_SERVER_DIR/limServer.py` when browser output is enabled. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
