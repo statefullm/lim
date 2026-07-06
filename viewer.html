@@ -317,7 +317,7 @@
             return str;
         }
 
-        // Unescape @lt@, @gt@, and @bt@ sentinel tokens before DOM insertion.
+        // Unescape @lt@ and @gt@ sentinel tokens before DOM insertion.
         // Uses '\' as escape char (same as C++ side, mirrors parsers.cc).
         // Escaped: @\lt@ -> literal text @lt@
         // Raw:     @lt@  -> HTML entity &lt;
@@ -341,15 +341,13 @@
                             else { result += '&gt;'; }
                             i = j + 3; continue;
                         }
-                        if (s3 === 'bt@') {
-                            if (bs > 0) { result += '@'; for (var b = 0; b < bs - 1; b++) result += '\\'; result += 'bt@'; }
-                            else { result += '`'; }
-                            i = j + 3; continue;
-                        }
                     }
                 }
                 result += str[i++];
             }
+            // Fix marked's double-escaping of & inside <code> blocks.
+            // C++ sends & -> &amp;, but marked escapes &amp; -> &amp;amp; inside code.
+            result = result.replace(/&amp;amp;/g, '&amp;');
             return result;
         }
 
@@ -357,9 +355,9 @@
         // Unlike the HTML version, converts sentinels back to raw characters
         // (not HTML entities) since KaTeX expects plain text input.
         function unescapeMathTex(str) {
-            str = str.replace(/@lt@/g, '<').replace(/@gt@/g, '>').replace(/@bt@/g, '`');
+            str = str.replace(/@lt@/g, '<').replace(/@gt@/g, '>');
             // Also handle escaped forms (literal @lt@ etc. in math).
-            str = str.replace(/@\lt@/g, '@lt@').replace(/@\gt@/g, '@gt@').replace(/@\bt@/g, '@bt@');
+            str = str.replace(/@\lt@/g, '@lt@').replace(/@\gt@/g, '@gt@');
             return str.replace(/&amp;/g, '&');
         }
 

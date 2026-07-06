@@ -143,12 +143,11 @@ static string html_escape(const string& input) {
     // Step 1: Recursively escape pre-existing sentinel tokens.
     escape_one_token_out(result, "@lt@");
     escape_one_token_out(result, "@gt@");
-    escape_one_token_out(result, "@bt@");
     // Step 2: Replace raw characters with sentinel tokens.
+    // Note: backtick is NOT escaped — only special in markdown (handled by marked), not HTML.
     { size_t pos = 0; while ((pos = result.find('&', pos)) != string::npos) { result.replace(pos, 1, "&amp;"); pos += 5; } }
     { size_t pos = 0; while ((pos = result.find('<', pos)) != string::npos) { result.replace(pos, 1, "@lt@"); pos += 4; } }
     { size_t pos = 0; while ((pos = result.find('>', pos)) != string::npos) { result.replace(pos, 1, "@gt@"); pos += 4; } }
-    { size_t pos = 0; while ((pos = result.find('`', pos)) != string::npos) { result.replace(pos, 1, "@bt@"); pos += 4; } }
     return result;
 }
 
@@ -161,7 +160,7 @@ void stream(const string& raw_token) {
         filtered.erase(pos, 6);
     }
 
-    // HTML-escape <, >, &, and ` so they render as text in the browser.
+    // HTML-escape <, >, & so they render as text in the browser.
     // Uses sentinel-based recursive escape contract (mirrors parsers.cc).
     string escaped = html_escape(filtered);
 
