@@ -300,6 +300,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_CACHE_DIR` | `.cache` | Directory (relative to CWD) for fast restore KV-cache files. |
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `.search_cache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary launches `python3 $LIM_CONFIG_DIR/limServer.py` when browser output is enabled. Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory (relative to CWD) for session logs, token traces, and autosave files. |
+| `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/restore`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |

@@ -814,6 +814,13 @@ static string make_save_path(const string& prefix, const string& default_path) {
     return path;
 }
 
+// Prepend LIM_SAVE_DIR to relative paths (those not starting with /).
+// Absolute paths are returned unchanged.
+static string apply_save_dir(const string& path) {
+    if (!path.empty() && path[0] == '/') return path;
+    return LIM_SAVE_DIR + "/" + path;
+}
+
 // Helper: format a save diagnostic with proper pluralization.
 static string save_diag(size_t n_checkpoints, size_t n_tokens) {
     return to_string(n_checkpoints) + " checkpoint" + (n_checkpoints != 1 ? "s" : "")
@@ -1171,7 +1178,7 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::SAVE) {
-            string save_path = make_save_path(save_prefix_, LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save");
+            string save_path = apply_save_dir(make_save_path(save_prefix_, LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save"));
 
             // Named saves (with a meaningful argument) are cached in fast format
             // for instant restore. Unnamed saves are compact-only since they're
@@ -1203,6 +1210,9 @@ bool ChatSession::run() {
             if (rpath.size() < std::strlen(SAVE_EXT) || rpath.compare(rpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
                 rpath += SAVE_EXT;
             }
+
+            // Prepend LIM_SAVE_DIR to relative paths.
+            rpath = apply_save_dir(rpath);
 
             // Validate the save file exists.
             struct stat st_restore;
@@ -1324,6 +1334,9 @@ bool ChatSession::run() {
             if (dpath.size() < std::strlen(SAVE_EXT) || dpath.compare(dpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
                 dpath += SAVE_EXT;
             }
+
+            // Prepend LIM_SAVE_DIR to relative paths.
+            dpath = apply_save_dir(dpath);
 
             // Validate the save file exists.
             struct stat st_del;

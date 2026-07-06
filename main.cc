@@ -150,6 +150,10 @@ int main(int argc, char ** argv) {
             if (restore_path.size() < std::strlen(SAVE_EXT) || restore_path.compare(restore_path.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
                 restore_path += SAVE_EXT;
             }
+            // Prepend LIM_SAVE_DIR to relative paths
+            if (!restore_path.empty() && restore_path[0] != '/') {
+                restore_path = LIM_SAVE_DIR + "/" + restore_path;
+            }
         }
     }
     restore_from_file = !restore_path.empty();

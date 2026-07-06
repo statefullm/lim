@@ -49,6 +49,7 @@ string HOME;
 string LIM_CONFIG_DIR;
 string LIM_LOG_DIR;
 string LIM_CACHE_DIR;
+string LIM_SAVE_DIR;
 static struct HomeInit { HomeInit() {
     const char* h = getenv("HOME");
     HOME = h ? h : "";
@@ -69,6 +70,12 @@ static struct HomeInit { HomeInit() {
         LIM_CACHE_DIR = k;
     } else {
         LIM_CACHE_DIR = ".cache";
+    }
+    const char* s = getenv("LIM_SAVE_DIR");
+    if (s && s[0]) {
+        LIM_SAVE_DIR = s;
+    } else {
+        LIM_SAVE_DIR = ".";
     }
     SEARXNG_LOG_PATH = LIM_LOG_DIR + "/searxng.log";
     DOCLING_LOG_PATH = LIM_LOG_DIR + "/docling.log";

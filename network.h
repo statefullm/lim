@@ -58,5 +58,6 @@ extern std::string HOME;
 extern std::string LIM_CONFIG_DIR;
 extern std::string LIM_LOG_DIR;
 extern std::string LIM_CACHE_DIR;
+extern std::string LIM_SAVE_DIR;
 
 #endif // NETWORK_H
