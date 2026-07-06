@@ -1,5 +1,5 @@
 LLAMA_DIR := llama
-LLAMA_BUILD_DIR ?= $(LLAMA_DIR)/build
+LIM_LLAMA_BUILD_DIR ?= $(LLAMA_DIR)/build
 
 CXX = g++
 # Auto-detect CUDA architecture if not overridden by environment
@@ -44,9 +44,9 @@ CXXFLAGS = -std=c++17 -O3 \
 	-I$(LLAMA_DIR)/vendor \
 	-I/usr/include/libxml2
 
-LDFLAGS = -L$(LLAMA_BUILD_DIR)/bin \
+LDFLAGS = -L$(LIM_LLAMA_BUILD_DIR)/bin \
 	-L/usr/local/cuda-13.0/targets/x86_64-linux/lib \
-	-Wl,-rpath,$(shell readlink -f $(LLAMA_BUILD_DIR)/bin) \
+	-Wl,-rpath,$(shell readlink -f $(LIM_LLAMA_BUILD_DIR)/bin) \
 	-Wl,-rpath,/usr/local/cuda-13.0/targets/x86_64-linux/lib \
 	-lllama -lggml-base -lggml -lggml-cpu -lggml-cuda \
 	-lcudart -l:libllama-common.so -lreadline -lcurl -lxml2 -lcrypto
@@ -62,23 +62,23 @@ all: $(TARGET) vscode
 
 .PHONY: all clean llama-clean install install-vscode uninstall uninstall-vscode install-all uninstall-all FORCE
 
-$(LLAMA_BUILD_DIR):
+$(LIM_LLAMA_BUILD_DIR):
 	mkdir -p $@
 
-ifeq ($(LLAMA_BUILD_DIR),$(LLAMA_DIR)/build)
+ifeq ($(LIM_LLAMA_BUILD_DIR),$(LLAMA_DIR)/build)
 # Auto-build llama.cpp from subrepo
-$(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so: $(LLAMA_DIR)/CMakeLists.txt | $(LLAMA_BUILD_DIR)
+$(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so: $(LLAMA_DIR)/CMakeLists.txt | $(LIM_LLAMA_BUILD_DIR)
 	@if [ -z "$(CUDA_ARCH_FLAGS)" ]; then echo "Error: No GPU detected and CUDA_ARCH_FLAGS not set. Set it manually or build with GGML_CUDA=off for CPU-only." >&2; exit 1; fi
 	@echo "[llama.cpp] Configuring with CUDA architectures: $(CUDA_ARCH_FLAGS)"
-	cd $(LLAMA_DIR) && cmake -B $(abspath $(LLAMA_BUILD_DIR)) \
+	cd $(LLAMA_DIR) && cmake -B $(abspath $(LIM_LLAMA_BUILD_DIR)) \
 		-DCMAKE_CUDA_ARCHITECTURES="$(CUDA_ARCH_FLAGS)" \
 		$(GGML_CUDA_FLAG) \
 		$(GGML_HIPBLAS_FLAG) \
-		$(LLAMA_CMAKE_FLAGS)
+		$(LIM_LLAMA_CMAKE_FLAGS)
 	@echo "[llama.cpp] Building..."
-	cd $(LLAMA_DIR) && cmake --build $(abspath $(LLAMA_BUILD_DIR)) --target llama --target llama-common
+	cd $(LLAMA_DIR) && cmake --build $(abspath $(LIM_LLAMA_BUILD_DIR)) --target llama --target llama-common
 
-$(TARGET): $(FILES:=.o) | $(LLAMA_BUILD_DIR)/bin/libllama.so $(LLAMA_BUILD_DIR)/bin/libllama-common.so
+$(TARGET): $(FILES:=.o) | $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so
 	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 else
 # Use pre-built llama.cpp from external directory
@@ -131,7 +131,7 @@ clean:	FORCE
 	rm -rf vscode-extension/out vscode-extension/node_modules vscode-extension/*.vsix
 
 llama-clean:
-	rm -rf $(LLAMA_BUILD_DIR)
+	rm -rf $(LIM_LLAMA_BUILD_DIR)
 
 distclean: clean llama-clean
 
