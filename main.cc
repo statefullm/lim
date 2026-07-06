@@ -433,7 +433,10 @@ int main(int argc, char ** argv) {
     // Report GPU layer offload with total layer count.
     if (mparams.n_gpu_layers >= 0) {
         int32_t n_layers = llama_model_n_layer(model);
-        diag("Model loaded: " + to_string(mparams.n_gpu_layers) + "/" + to_string(n_layers) + " layers on GPU", "\033[32m");
+        // Cap at actual layer count: auto-fit may set n_gpu_layers to n_layers+1
+        // to include the output layer, but we report only transformer blocks.
+        int32_t gpu_layers = std::min(mparams.n_gpu_layers, n_layers);
+        diag("Model loaded: " + to_string(gpu_layers) + "/" + to_string(n_layers) + " layers on GPU", "\033[32m");
     }
 
     // Apply remaining context params that fit_params shouldn't touch
@@ -447,7 +450,8 @@ int main(int argc, char ** argv) {
     llama_context * ctx = llama_init_from_model(model, cparams);
     if (!ctx) {
         int32_t n_layers = llama_model_n_layer(model);
-        diag("Failed to initialize model context: " + to_string(mparams.n_gpu_layers) +
+        int32_t gpu_layers = std::min(mparams.n_gpu_layers, n_layers);
+        diag("Failed to initialize model context: " + to_string(gpu_layers) +
              "/" + to_string(n_layers) + " layers on GPU. The model may be too large for available device memory.", "\033[31m");
         return 1;
     }
