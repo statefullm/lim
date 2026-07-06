@@ -531,7 +531,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 print_pos_ = safe_len;
             }
 
-            if (!unprinted_text_.empty() && (t_count_ % 10 == 0 || unprinted_text_.back() == '\n')) {
+            if (!unprinted_text_.empty() && unprinted_text_.back() == '\n') {
                 console(unprinted_text_.c_str());
                 consoleFlush();
                 stream(unprinted_text_);

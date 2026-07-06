@@ -317,6 +317,57 @@
             return str;
         }
 
+        // Unescape @lt@, @gt@, and @bt@ sentinel tokens before DOM insertion.
+        // Uses '\' as escape char (same as C++ side, mirrors parsers.cc).
+        // Escaped: @\lt@ -> literal text @lt@
+        // Raw:     @lt@  -> HTML entity &lt;
+        function htmlUnescapeSentinels(str) {
+            var result = '';
+            var i = 0;
+            while (i < str.length) {
+                if (str[i] === '@') {
+                    var j = i + 1;
+                    var bs = 0;
+                    while (j < str.length && str[j] === '\\') { bs++; j++; }
+                    if (j + 3 <= str.length) {
+                        var s3 = str.substring(j, j + 3);
+                        if (s3 === 'lt@') {
+                            if (bs > 0) { result += '@'; for (var b = 0; b < bs - 1; b++) result += '\\'; result += 'lt@'; }
+                            else { result += '&lt;'; }
+                            i = j + 3; continue;
+                        }
+                        if (s3 === 'gt@') {
+                            if (bs > 0) { result += '@'; for (var b = 0; b < bs - 1; b++) result += '\\'; result += 'gt@'; }
+                            else { result += '&gt;'; }
+                            i = j + 3; continue;
+                        }
+                        if (s3 === 'bt@') {
+                            if (bs > 0) { result += '@'; for (var b = 0; b < bs - 1; b++) result += '\\'; result += 'bt@'; }
+                            else { result += '`'; }
+                            i = j + 3; continue;
+                        }
+                    }
+                }
+                result += str[i++];
+            }
+            return result;
+        }
+
+        // Alias for use on non-math HTML content (after marked.parse).
+        function unescapeHtmlSentinels(str) {
+            return htmlUnescapeSentinels(str);
+        }
+
+        // Unescape sentinels in math tex content before passing to KaTeX.
+        // Unlike the HTML version, converts sentinels back to raw characters
+        // (not HTML entities) since KaTeX expects plain text input.
+        function unescapeMathTex(str) {
+            str = str.replace(/@lt@/g, '<').replace(/@gt@/g, '>').replace(/@bt@/g, '`');
+            // Also handle escaped forms (literal @lt@ etc. in math).
+            str = str.replace(/@\lt@/g, '@lt@').replace(/@\gt@/g, '@gt@').replace(/@\bt@/g, '@bt@');
+            return str.replace(/&amp;/g, '&');
+        }
+
         // Single point of unescaping before any HTML enters the DOM.
         function htmlToDom(htmlStr, targetEl) {
             targetEl.innerHTML = unescapeMth(htmlStr);
@@ -618,6 +669,8 @@
             var html;
             if (typeof marked !== 'undefined') {
                 html = marked.parse(content, { breaks: true });
+                // Unescape sentinel tokens and convert remaining sentinels to HTML entities.
+                html = htmlUnescapeSentinels(html);
             } else {
                 var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
@@ -627,6 +680,8 @@
             html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                 var block = mathBlocks[parseInt(idx)];
                 var tex = block.tex;
+                // Unescape sentinels and HTML entities in math tex for KaTeX.
+                tex = unescapeMathTex(tex);
                 if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                     try {
                         var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
@@ -717,6 +772,7 @@
                 var html;
                 if (typeof marked !== 'undefined') {
                     html = marked.parse(content, { breaks: true });
+                    html = htmlUnescapeSentinels(html);
                 } else {
                     var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
@@ -725,13 +781,16 @@
                 // Render math blocks directly with KaTeX.
                 html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                     var block = mathBlocks[parseInt(idx)];
+                    var tex = block.tex;
+                    // Unescape sentinels in math tex so LaTeX alignment chars work.
+                    tex = unescapeMathTex(tex);
                     if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                         try {
-                            var result = katex.renderToString(block.tex, { displayMode: block.display, throwOnError: false });
+                            var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
                             if (!result.includes('katex-error')) return result;
                         } catch(e) {}
                     }
-                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
+                    return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
                 });
                 return html;
             } else if (seg.type === SEG_THINK) {
@@ -750,6 +809,7 @@
                 var html;
                 if (typeof marked !== 'undefined') {
                     html = marked.parse(content, { breaks: true });
+                    html = htmlUnescapeSentinels(html);
                 } else {
                     var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                     html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
@@ -758,13 +818,16 @@
                 // Render math blocks directly with KaTeX.
                 html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
                     var block = mathBlocks[parseInt(idx)];
+                    var tex = block.tex;
+                    // Unescape sentinels in math tex so LaTeX alignment chars work.
+                    tex = unescapeMathTex(tex);
                     if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                         try {
-                            var result = katex.renderToString(block.tex, { displayMode: block.display, throwOnError: false });
+                            var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
                             if (!result.includes('katex-error')) return result;
                         } catch(e) {}
                     }
-                    return block.display ? '$$' + block.tex + '$$' : '$' + block.tex + '$';
+                    return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
                 });
 
                 return '<div class="think-block">' +

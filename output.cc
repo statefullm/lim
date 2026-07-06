@@ -114,6 +114,44 @@ void pipe_write(const char* data, size_t len) {
     }
 }
 
+// --- HTML Escape Contract (mirrors parsers.cc escape_one_token) ---
+static void escape_one_token_out(string& str, const string& token) {
+    if (token.size() < 2) return;
+    char first = token[0];
+    const string suffix = token.substr(1);
+    size_t start_pos = 0;
+    while (start_pos < str.length()) {
+        size_t pos = str.find(first, start_pos);
+        if (pos == string::npos) break;
+        size_t scan = pos + 1;
+        while (scan < str.length() && str[scan] == '\\') scan++;
+        bool match = true;
+        for (size_t k = 0; k < suffix.length(); k++) {
+            if (scan + k >= str.length() || str[scan + k] != suffix[k]) { match = false; break; }
+        }
+        if (match) {
+            str.insert(pos + 1, 1, '\\');
+            start_pos = pos + 2 + suffix.length();
+        } else {
+            start_pos = pos + 1;
+        }
+    }
+}
+
+static string html_escape(const string& input) {
+    string result = input;
+    // Step 1: Recursively escape pre-existing sentinel tokens.
+    escape_one_token_out(result, "@lt@");
+    escape_one_token_out(result, "@gt@");
+    escape_one_token_out(result, "@bt@");
+    // Step 2: Replace raw characters with sentinel tokens.
+    { size_t pos = 0; while ((pos = result.find('&', pos)) != string::npos) { result.replace(pos, 1, "&amp;"); pos += 5; } }
+    { size_t pos = 0; while ((pos = result.find('<', pos)) != string::npos) { result.replace(pos, 1, "@lt@"); pos += 4; } }
+    { size_t pos = 0; while ((pos = result.find('>', pos)) != string::npos) { result.replace(pos, 1, "@gt@"); pos += 4; } }
+    { size_t pos = 0; while ((pos = result.find('`', pos)) != string::npos) { result.replace(pos, 1, "@bt@"); pos += 4; } }
+    return result;
+}
+
 void stream(const string& raw_token) {
     if (!should_output_to_browser()) return;
 
@@ -123,8 +161,12 @@ void stream(const string& raw_token) {
         filtered.erase(pos, 6);
     }
 
+    // HTML-escape <, >, &, and ` so they render as text in the browser.
+    // Uses sentinel-based recursive escape contract (mirrors parsers.cc).
+    string escaped = html_escape(filtered);
+
     pipe_write(&SEG_LLM_TEXT, 1);
-    pipe_write(filtered.c_str(), filtered.length());
+    pipe_write(escaped.c_str(), escaped.length());
 }
 
 void stream_tool_result(const string& html) {
@@ -147,8 +189,9 @@ void stream_speed(const string& speed_text) {
 
 void stream_think(const string& text) {
     if (!should_output_to_browser()) return;
+    string escaped = html_escape(text);
     pipe_write(&SEG_THINK, 1);
-    pipe_write(text.c_str(), text.length());
+    pipe_write(escaped.c_str(), escaped.length());
 }
 
 void clear_viewer() {
