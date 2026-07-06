@@ -77,8 +77,8 @@ void diag(const string& msg, const char* color) {
     diag_impl(string(color) + msg + "\033[0m", msg);
 }
 
-static void diag_session_restored(int session_num, size_t n_tokens, const string& git_short = "") {
-    string msg = "Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded";
+static void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, const string& git_short = "") {
+    string msg = "Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded " + context_pct(n_tokens, n_ctx);
     if (!git_short.empty()) msg += " (git: " + git_short + ")";
     diag(msg, "\033[32m");
 }
@@ -763,9 +763,9 @@ int main(int argc, char ** argv) {
             if (!current_sha.empty()) {
                 string short_current = current_sha.substr(0, 7);
                 if (saved_sha == current_sha) {
-                    diag_session_restored(saved_session, restored_tokens.size(), short_saved);
+                    diag_session_restored(saved_session, restored_tokens.size(), (int)cparams.n_ctx, short_saved);
                 } else {
-                    diag_session_restored(saved_session, restored_tokens.size());
+                    diag_session_restored(saved_session, restored_tokens.size(), (int)cparams.n_ctx);
                     diag("Git HEAD mismatch: session was at " + short_saved + ", currently at " + short_current, "\033[33m");
                     // Inform the LLM about code changes so it can adapt.
                     {
@@ -780,10 +780,10 @@ int main(int argc, char ** argv) {
                     }
                 }
             } else {
-                diag_session_restored(saved_session, restored_tokens.size());
+                diag_session_restored(saved_session, restored_tokens.size(), (int)cparams.n_ctx);
             }
         } else {
-            diag_session_restored(saved_session, restored_tokens.size());
+            diag_session_restored(saved_session, restored_tokens.size(), (int)cparams.n_ctx);
         }
         log_entry("SYSTEM", "Restored session from " + restore_path);
 

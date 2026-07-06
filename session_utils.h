@@ -24,6 +24,13 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
 // Print a restore diagnostic message
 void diag_restore(const std::string& path, int token_count);
 
+// Format the context percentage string: "(49%)"
+inline std::string context_pct(size_t n_tokens, int n_ctx) {
+    if (n_ctx <= 0) return "";
+    int pct = (int)((n_tokens * 100) / n_ctx);
+    return "(" + std::to_string(pct) + "%)";
+}
+
 inline int round_int(double d) { return (int)(d + 0.5); }
 
 #endif // SESSION_UTILS_H

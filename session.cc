@@ -163,8 +163,8 @@ static string context_limit_diag(int n_past, int last_n_past, size_t needed, int
 }
 
 // Local diag_speed implementation for session.cc
-static void diag_session_restored(int session_num, size_t n_tokens) {
-    diag("Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded", "\033[32m");
+static void diag_session_restored(int session_num, size_t n_tokens, int n_ctx) {
+    diag("Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded " + context_pct(n_tokens, n_ctx), "\033[32m");
 }
 
 static void diag_speed_impl(const string& msg) {
@@ -1256,7 +1256,7 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
                 state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
 
-                diag_session_restored(saved_session, restored_tokens.size());
+                diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
                 log_entry("SYSTEM", "Restored session from " + rpath);
             } else {
                 // Slow restore: re-decode through the model.
@@ -1307,7 +1307,7 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints = restored_checkpoints;
                 state_.checkpoint_stack_offset = 0; // all checkpoints are live
 
-                diag_session_restored(saved_session, restored_tokens.size());
+                diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
                 log_entry("SYSTEM", "Restored session from " + rpath);
             }
 
