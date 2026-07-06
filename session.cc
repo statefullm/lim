@@ -88,7 +88,7 @@ static const struct CmdInfo {
     { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset loop detector and file cache" },
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/.config/lim/userprompt, then restart (auto-saves first)" },
     { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
-    { "restore",      Cmd::RESTORE,     ArgType::PATH,   "Restore session from <path>.save (must be used after /clear)" },
+    { "load",         Cmd::RESTORE,     ArgType::PATH,   "Load session from <path>.save (must be used after /clear)" },
     { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete <path>.save and its fast restore cache" },
     { "help",         Cmd::HELP,        ArgType::NONE,   "Show this help message" },
 };
@@ -493,7 +493,7 @@ string ChatSession::get_user_input() {
 }
 
 // --- handle_command: detect which command the input represents ---
-// Commands must be prefixed with '/'.  /save, /restore, and /undo accept optional arguments.
+// Commands must be prefixed with '/'.  /save, /load, and /undo accept optional arguments.
 
 ChatSession::Command ChatSession::handle_command(const string& input) {
     if (input.empty() || input[0] != '/') return Command::NONE;
@@ -1202,7 +1202,7 @@ bool ChatSession::run() {
             // Build restore path: require a non-empty argument (no default path).
             string rpath = restore_path_;
             if (rpath.empty()) {
-                diag("/restore requires a path argument. Usage: /restore <save_file>", "\033[31m");
+                diag("/load requires a path argument. Usage: /load <save_file>", "\033[31m");
                 continue;
             }
 
@@ -1330,7 +1330,7 @@ bool ChatSession::run() {
                 continue;
             }
 
-            // Append .save if not already present (matches /save and /restore behavior).
+            // Append .save if not already present (matches /save and /load behavior).
             if (dpath.size() < std::strlen(SAVE_EXT) || dpath.compare(dpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
                 dpath += SAVE_EXT;
             }

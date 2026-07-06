@@ -300,7 +300,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_CACHE_DIR` | `.cache` | Directory (relative to CWD) for fast restore KV-cache files. |
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `.search_cache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary launches `python3 $LIM_CONFIG_DIR/limServer.py` when browser output is enabled. Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory (relative to CWD) for session logs, token traces, and autosave files. |
-| `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/restore`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
+| `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
@@ -423,7 +423,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
 | `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
-| `/restore <path>` | Restore a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
+| `/load <path>` | Load a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
 | `/delete <path>` | Delete a save file and its associated fast restore cache entry (if any). Accepts the same path format as `/save`: `.save` is appended automatically if not already present. |
 | `/help` | Display a summary of all available commands |
 
@@ -443,12 +443,12 @@ coder cats          # restores from cats.save
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
-**In-session restore:** You can also restore from within a running session using `/restore <path>`. This must be used immediately after `/clear`; if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the fast cache when available. Typical workflow:
+**In-session load:** You can also restore from within a running session using `/load <path>`. This must be used immediately after `/clear`; if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the fast cache when available. Typical workflow:
 
 ```
 >>> /clear
 [Context Cleared Successfully]
->>> /restore cats
+>>> /load cats
 [Restoring session from cats.save... (75432 tokens, from cache)]
 [Session restored: 75432 tokens loaded]
 ```
