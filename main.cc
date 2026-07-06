@@ -436,7 +436,22 @@ int main(int argc, char ** argv) {
         // Cap at actual layer count: auto-fit may set n_gpu_layers to n_layers+1
         // to include the output layer, but we report only transformer blocks.
         int32_t gpu_layers = std::min(mparams.n_gpu_layers, n_layers);
-        diag("Model loaded: " + to_string(gpu_layers) + "/" + to_string(n_layers) + " layers on GPU", "\033[32m");
+
+        // Detect partial offloading: tensor_buft_overrides were populated by
+        // common_fit_params when MoE expert weights couldn't fit in VRAM. Each
+        // non-null entry corresponds to one layer with some tensors on CPU.
+        int32_t partial_layers = 0;
+        for (size_t i = 0; i < n_overrides && tensor_buft_overrides[i].pattern != nullptr; i++) {
+            partial_layers++;
+        }
+
+        if (partial_layers > 0) {
+            diag("Model loaded: " + to_string(gpu_layers) + "/" + to_string(n_layers) +
+                 " layers on GPU, " + to_string(partial_layers) + " with MoE experts on CPU", "\033[32m");
+        } else {
+            diag("Model loaded: " + to_string(gpu_layers) + "/" + to_string(n_layers) +
+                 " layers on GPU", "\033[32m");
+        }
     }
 
     // Apply remaining context params that fit_params shouldn't touch
