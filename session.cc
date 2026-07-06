@@ -83,7 +83,7 @@ static const struct CmdInfo {
     { "quit",         Cmd::QUIT,        ArgType::NONE,   "Save to log/<N>.save and exit" },
     { "exit",         Cmd::QUIT,        ArgType::NONE,   nullptr },              // alias, not shown in help
     { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
-    { "undo",         Cmd::UNDO,        ArgType::INT,    "Undo last [N] prompts (default: 1; auto-saves first)" },
+    { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
     { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
     { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset loop detector and file cache" },
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/userprompt, then restart (auto-saves first)" },
@@ -218,7 +218,6 @@ private:
     string save_prefix_;
     string restore_path_;
     string delete_path_;
-    int undo_count_ = 1;
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
     // Track if we already logged assistant output this turn (via process_tool_call),
@@ -519,7 +518,6 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
                 save_prefix_.clear();
                 restore_path_.clear();
                 delete_path_.clear();
-                undo_count_ = 1;
                 if (c.cmd == Cmd::SAVE)    save_prefix_   = arg;
                 if (c.cmd == Cmd::RESTORE) restore_path_  = arg;
                 if (c.cmd == Cmd::DELETE)  delete_path_   = arg;
@@ -528,19 +526,13 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
             case ArgType::INT:
                 save_prefix_.clear();
                 restore_path_.clear();
-                undo_count_ = 1;
-                if (!arg.empty()) {
-                    try {
-                        int val = stoi(arg);
-                        if (val > 0) undo_count_ = val;
-                    } catch (...) {}
-                }
-                return static_cast<Command>(c.cmd);
+                // INT arguments are parsed here for any commands that need them.
+                // Currently no commands use ArgType::INT.
+                [[fallthrough]];
 
             case ArgType::NONE:
                 save_prefix_.clear();
                 restore_path_.clear();
-                undo_count_ = 1;
                 return static_cast<Command>(c.cmd);
         }
     }
@@ -943,6 +935,12 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::UNDO) {
+            // Nothing to undo.
+            if (state_.prompt_checkpoints.empty()) {
+                diag("No checkpoints available to undo to.", "\033[33m");
+                continue;
+            }
+
             // Auto-save before undoing so nothing is truly lost.
             {
                 string autosave_path = "log/" + to_string(state_.log_index) + "-clear.save";
@@ -954,43 +952,61 @@ bool ChatSession::run() {
                 }
             }
 
-            // Handle zero/negative: NOP, return silently to prompt.
-            if (undo_count_ <= 0) continue;
+            // Interactive checkpoint selection, modeled on the Restore> prompt.
+            size_t num_cps = state_.prompt_checkpoints.size();
+            diag("Save contains " + to_string(num_cps) + " checkpoint" + (num_cps != 1 ? "s" : "") + ".", "\033[35m");
+            diag("Up/down arrows to navigate, Enter to confirm, Ctrl+C to cancel.", "\033[37m");
 
+            using_history();
+            clear_history();
 
+            // Add checkpoints oldest-to-newest so pressing Up from empty line
+            // shows the most recent checkpoint first (same order as Restore>).
+            for (const auto& cp : state_.prompt_checkpoints) {
+                string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
+                string entry = label + " (" + to_string(cp.n_past) + " tokens)";
+                add_history(entry.c_str());
+            }
 
-            // If no checkpoints remain after undo, or N exceeds available, fall back to /clear.
-            if (state_.prompt_checkpoints.empty() || undo_count_ >= (int)state_.prompt_checkpoints.size()) {
-                clear_context();
-                state_.file_cache.clear();
-                state_.auto_continue = false;
-                state_.prev_was_interrupted = false;
-                reset_session_state();
-                state_.last_t_count = 0;
-                state_.last_elapsed = 0.0;
-                state_.last_n_past = n_past_;
-                log_entry("SYSTEM", "Context Cleared (undo fallback)");
-
-                if (should_output_to_browser()) {
-                    double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-                    string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
-                    const char soh = 0x01;
-                    pipe_write(&soh, 1);
-                    pipe_write(&SEG_SPEED, 1);
-                    string speed_msg = "Cleared | " + ctx_str;
-                    pipe_write(speed_msg.c_str(), speed_msg.length());
-                }
-
-                diag("Context Cleared Successfully", "\033[32m");
+            char* line = readline("Undo> ");
+            if (stop_generation || !line) {
+                // Ctrl+C or Ctrl+D -- cancel undo.
+                if (line) free(line);
+                stop_generation = 0;
+                diag("Undo cancelled.", "\033[33m");
                 continue;
             }
 
-            // Find the first checkpoint to remove (target_idx), then restore
-            // to the state recorded by the checkpoint just before it.
-            int target_idx = (int)state_.prompt_checkpoints.size() - undo_count_;
-            PromptCheckpoint& target = state_.prompt_checkpoints[target_idx - 1];
+            string input = line;
+            free(line);
 
-            diag("Undoing " + to_string(undo_count_) + " prompt" + (undo_count_ > 1 ? "s" : "") + " (restoring to: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\")", "\033[35m");
+            // Match the user's selection against checkpoint display strings.
+            int selected_idx = -1;
+            for (int i = 0; i < (int)state_.prompt_checkpoints.size(); i++) {
+                const auto& cp = state_.prompt_checkpoints[i];
+                string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
+                string expected = label + " (" + to_string(cp.n_past) + " tokens)";
+                if (input == expected) {
+                    selected_idx = i;
+                    break;
+                }
+            }
+
+            // If nothing matched (e.g., user typed something and pressed Enter), cancel.
+            if (selected_idx < 0) {
+                diag("Undo cancelled: no matching checkpoint.", "\033[33m");
+                continue;
+            }
+
+            // Restore to the selected checkpoint.
+            PromptCheckpoint& target = state_.prompt_checkpoints[selected_idx];
+
+            // If the user selected the last checkpoint, it's a no-op — nothing to undo.
+            if (selected_idx == (int)state_.prompt_checkpoints.size() - 1) {
+                continue;
+            }
+
+            diag("Restoring to: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\" (" + to_string(target.n_past) + " tokens)", "\033[35m");
 
             // Truncate the token tracker to what we're keeping.
             state_.all_context_tokens.resize(target.n_past);
@@ -1004,13 +1020,7 @@ bool ChatSession::run() {
                 llama_memory_t mem = llama_get_memory(ctx_);
 
                 // Translate the prompt_checkpoints index into a live stack index.
-                // After a fast restore, historical checkpoints from the save file
-                // have no corresponding entries in the recurrent checkpoint stack;
-                // only checkpoints saved during this session are present.
-                // A boundary checkpoint (index 0 in the stack) was saved at restore
-                // time.  It can be used when undoing back to the restore boundary
-                // (stack_idx == -1), since its R/S state matches that position.
-                int stack_idx = (target_idx - 1) - state_.checkpoint_stack_offset;
+                int stack_idx = selected_idx - state_.checkpoint_stack_offset;
 
                 if (stack_idx >= 0) {
                     // Restore recurrent state from the target checkpoint.
@@ -1052,13 +1062,11 @@ bool ChatSession::run() {
             }
 
             // Erase all checkpoints at and beyond the undo boundary.
-            // Adjust the stack offset: after erasing, count how many remaining
-            // prompt_checkpoints are still historical (before the live stack).
             int erased_count = 0;
-            for (int i = target_idx; i < (int)state_.prompt_checkpoints.size(); i++) {
+            for (int i = selected_idx + 1; i < (int)state_.prompt_checkpoints.size(); i++) {
                 if (i < state_.checkpoint_stack_offset) erased_count++;
             }
-            state_.prompt_checkpoints.erase(state_.prompt_checkpoints.begin() + target_idx, state_.prompt_checkpoints.end());
+            state_.prompt_checkpoints.erase(state_.prompt_checkpoints.begin() + selected_idx + 1, state_.prompt_checkpoints.end());
             state_.checkpoint_stack_offset = std::max(0, state_.checkpoint_stack_offset - erased_count);
 
             // Reset generation state so the session is ready for a fresh user prompt.
@@ -1069,17 +1077,22 @@ bool ChatSession::run() {
             state_.last_elapsed = 0.0;
             state_.last_n_past = n_past_;
 
-            log_entry("SYSTEM", "Undid " + to_string(undo_count_) + " prompt" + (undo_count_ > 1 ? "s" : ""));
+            log_entry("SYSTEM", "Restored to checkpoint: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\"");
 
             if (should_output_to_browser()) {
                 double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
                 string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
                 pipe_write(&SEG_SPEED, 1);
-                string speed_msg = "Undid " + to_string(undo_count_) + " | " + ctx_str;
+                string speed_msg = "Undid to checkpoint | " + ctx_str;
                 pipe_write(speed_msg.c_str(), speed_msg.length());
             }
 
             diag("Undo successful", "\033[32m");
+
+            // Repopulate readline history to reflect the restored session state.
+            clear_history();
+            repopulate_history();
+
             continue;
         }
 
