@@ -993,10 +993,14 @@
 
             // Auto-collapse think blocks when thinking is done.
             // When a non-THINK segment appears after THINK segments, the LLM has
-            // finished reasoning -- collapse all think block bodies automatically.
+            // finished reasoning -- render any remaining raw tails, then collapse.
             if (segments.length > 0 && segments[segments.length - 1].type !== SEG_THINK) {
                 var autoCollapsed = false;
                 outputDiv.querySelectorAll('.think-block').forEach(function(block) {
+                    if (block.hasAttribute('data-raw')) {
+                        var segIdx = parseInt(block.getAttribute('data-seg'));
+                        renderRawTail(block, segIdx);
+                    }
                     if (!block.hasAttribute('data-think-collapsed')) {
                         collapseThinkBlock(block, 'auto');
                         autoCollapsed = true;
