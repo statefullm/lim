@@ -1207,10 +1207,6 @@
                     segRenderedContent = [];
                     outputDiv.innerHTML = '';
                     userScrolledAway = false;
-                    if (renderTimer !== null) {
-                        clearTimeout(renderTimer);
-                        renderTimer = null;
-                    }
                     data = data.replace(/\x01/g, '');
                     if (data.length === 0) return;
                 }
