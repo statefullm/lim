@@ -134,7 +134,7 @@ static string html_escape(const string& input) {
     escape_one_token_out(result, "@lt@");
     escape_one_token_out(result, "@gt@");
     // Step 2: Replace raw characters with sentinel tokens.
-    // Note: backtick is NOT escaped — only special in markdown (handled by marked), not HTML.
+    // Note: backtick is NOT escaped -- only special in markdown (handled by marked), not HTML.
     { size_t pos = 0; while ((pos = result.find('&', pos)) != string::npos) { result.replace(pos, 1, "&amp;"); pos += 5; } }
     { size_t pos = 0; while ((pos = result.find('<', pos)) != string::npos) { result.replace(pos, 1, "@lt@"); pos += 4; } }
     { size_t pos = 0; while ((pos = result.find('>', pos)) != string::npos) { result.replace(pos, 1, "@gt@"); pos += 4; } }

@@ -466,7 +466,7 @@ string ChatSession::get_user_input() {
             FD_SET(0, &fds);  // stdin
 
             // Use pselect with an empty signal mask so that SIGCONT (from fg)
-            // and SIGINT (Ctrl+C) wake us immediately.  Blocks indefinitely —
+            // and SIGINT (Ctrl+C) wake us immediately.  Blocks indefinitely --
             // no timeout needed since signals provide the wakeup.
             sigset_t empty_mask;
             sigemptyset(&empty_mask);
@@ -1104,7 +1104,7 @@ bool ChatSession::run() {
             // Restore to the selected checkpoint.
             PromptCheckpoint& target = state_.prompt_checkpoints[selected_idx];
 
-            // If the user selected the last checkpoint, it's a no-op — restore B+C.
+            // If the user selected the last checkpoint, it's a no-op -- restore B+C.
             if (selected_idx == (int)state_.prompt_checkpoints.size() - 1) {
                 pop_history(undo_entries_added);
                 restore_saved_history(saved_b, saved_c);
