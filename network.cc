@@ -994,46 +994,8 @@ string NetworkTools::web_search(const string& query) {
         curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_web_timeout_seconds);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
-        // SSL Certificate Support: Configure based on URL protocol
-        bool is_https = url.substr(0, 8) == "https://";
-        if (is_https) {
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
+        configure_curl_ssl(curl, url);
 
-            // Use the cached CA bundle from LIM_CONFIG_DIR
-            string cached_ca = LIM_CONFIG_DIR + "/combined-ca.crt";
-            struct stat st;
-            if (stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
-                curl_easy_setopt(curl, CURLOPT_CAINFO, cached_ca.c_str());
-                cerr << "Using cached CA bundle: " + cached_ca << endl;
-            } else {
-                // Fall back to system CA bundle paths
-                static const char* ca_paths[] = {
-                    "/etc/ssl/certs/ca-certificates.crt",
-                    "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-                    "/etc/pki/tls/certs/ca-bundle.crt",
-                    NULL
-                };
-                bool found = false;
-                for (const char* path : ca_paths) {
-                    if (stat(path, &st) == 0 && st.st_size > 0) {
-                        curl_easy_setopt(curl, CURLOPT_CAINFO, path);
-                        cerr << "Using system CA bundle: " + string(path) << endl;
-                        found = true;
-                        break;
-                    }
-                }
-                if (!found) {
-                    static const char* default_ca = "";
-                    curl_easy_setopt(curl, CURLOPT_CAINFO, default_ca);
-                    cerr << "Using curl's built-in system certificate store" << endl;
-                }
-            }
-        } else {
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-            curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-            cerr << "HTTP request detected - SSL verification disabled" << endl;
-        }
         // Enable interrupt checking during transfer
         curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
         curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
