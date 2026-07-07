@@ -574,9 +574,9 @@ static void configure_curl_ssl(CURL* curl, const string& base_url) {
 static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, HeaderCallback);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, nullptr);  // Will be set by caller if needed
+    curl_easy_setopt(curl, CURLOPT_HEADERDATA, nullptr);  // Must be overridden by caller before perform
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, nullptr);    // Will be set by caller if needed
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, nullptr);    // Must be overridden by caller before perform
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_web_timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");

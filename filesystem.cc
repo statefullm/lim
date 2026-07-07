@@ -589,7 +589,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
   // Output function call to stdout and logfile
-  if (!chat_log.is_open() == false) {
+  if (chat_log.is_open()) {
       chat_log << "exec_shell(\"" << command << "\")" << "\n";
       chat_log.flush();
   }

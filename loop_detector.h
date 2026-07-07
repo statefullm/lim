@@ -131,6 +131,7 @@ public:
     void clear_history() {
         tool_history.clear();
         freq_map.clear();
+        loopMessageIndex = 0;
     }
 };
 

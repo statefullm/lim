@@ -70,7 +70,7 @@ static string trim(const string& s) {
 // --- Command table: single source of truth for dispatch, alias blocking, and help ---
 enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, CONTINUE, SAVE, RESTORE, DELETE, HELP, UNDO };
 
-enum class ArgType { NONE, PATH, INT };
+enum class ArgType { NONE, PATH };
 
 static const struct CmdInfo {
     const char* name;
@@ -563,13 +563,6 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
                 if (c.cmd == Cmd::RESTORE) restore_path_  = arg;
                 if (c.cmd == Cmd::DELETE)  delete_path_   = arg;
                 return static_cast<Command>(c.cmd);
-
-            case ArgType::INT:
-                save_prefix_.clear();
-                restore_path_.clear();
-                // INT arguments are parsed here for any commands that need them.
-                // Currently no commands use ArgType::INT.
-                [[fallthrough]];
 
             case ArgType::NONE:
                 save_prefix_.clear();
@@ -1501,9 +1494,7 @@ bool ChatSession::run() {
                 string cmd_col = "  /" + names;
 
                 // Append argument hint based on ArgType.
-                if (c.arg == ArgType::INT) {
-                    cmd_col += " [N]";
-                } else if (c.arg == ArgType::PATH) {
+                if (c.arg == ArgType::PATH) {
                     cmd_col += " <path>";
                 }
 
