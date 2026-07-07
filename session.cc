@@ -214,7 +214,7 @@ private:
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
     // Track if we already logged assistant output this turn (via process_tool_call),
-    // so step 12 doesn't duplicate it.
+    // so the main loop doesn't duplicate it.
     bool assistant_logged_this_turn_ = false;
     // Last non-empty user input, used as checkpoint label for tool-call turns
     string last_user_input_;
@@ -235,7 +235,7 @@ private:
 
     void repopulate_history() {
         using_history();
-        // Remove any stale entries beyond A before adding fresh B.
+        // Remove stale B entries before pushing fresh checkpoint prompts.
         int stale = history_length - persistent_history_len_;
         if (stale > 0) pop_history(stale);
         for (const auto& cp : state_.prompt_checkpoints) {
@@ -901,8 +901,12 @@ bool ChatSession::run() {
     const char* history_file = ".lim_history";
     load_history_safe(history_file);
 
-    // Record length of persistent history (A) before adding checkpoint prompts.
-    persistent_history_len_ = history_length;
+    // --- Readline History Layout (A / B / C) ---
+    // A = persistent history loaded from .lim_history at startup.
+    // B = prompt checkpoints pushed onto readline history so up-arrow
+    //     navigates through the session as it appeared when /save was called.
+    // C = user inputs added since last restore/undo (survive across /clear).
+    persistent_history_len_ = history_length;  // length of A
     c_count_since_restore_ = 0;
 
     // Record file size so we can truncate back to A at /quit time.
@@ -913,7 +917,7 @@ bool ChatSession::run() {
         }
     }
 
-    // Push saved prompt checkpoints onto readline history so up-arrow
+    // Push checkpoint prompts (B) onto readline history so up-arrow
     // navigates through the session as it appeared when /save was called.
     repopulate_history();
 
@@ -933,7 +937,7 @@ bool ChatSession::run() {
         last_cmd_ = handle_command(user_input);
 
         if (last_cmd_ == Command::QUIT) {
-            // Truncate .lim_history back to its pre-session size, then append
+            // Truncate .lim_history back to the end of A, then append
             // only the surviving C entries.  This removes undone-away inputs
             // while preserving crash safety (inputs were written immediately).
             {
@@ -1000,7 +1004,8 @@ bool ChatSession::run() {
 
             diag("Context Cleared Successfully", "\033[32m");
 
-            // Remove B entries while preserving A and C.
+            // Remove B (checkpoint prompts) while preserving A (persistent)
+            // and C (user inputs since last restore).
             // NOTE: history_get() uses 1-based indexing (last entry at history_length).
             {
                 vector<string> saved_c;
@@ -1040,7 +1045,8 @@ bool ChatSession::run() {
             diag("Save contains " + to_string(num_cps) + " checkpoint" + (num_cps != 1 ? "s" : "") + ".", "\033[35m");
             diag("Up/down arrows to navigate, Enter to confirm, Ctrl+C to cancel.", "\033[37m");
 
-            // Save B and C separately using the known boundary.
+            // Save B (checkpoint prompts) and C (user inputs) separately
+            // using the known boundary between them.
             // NOTE: history_get() uses 1-based indexing.
             int b_count = history_length - c_count_since_restore_ - persistent_history_len_;
             vector<string> saved_b;
@@ -1054,7 +1060,7 @@ bool ChatSession::run() {
                 if (he) saved_c.push_back(he->line);
             }
 
-            // Pop only B+C, leaving A intact.
+            // Pop B+C from history, leaving A (persistent) intact.
             pop_history(b_count + c_count_since_restore_);
 
             // Add Undo> entries oldest-to-newest so pressing Up from empty line
@@ -1114,7 +1120,8 @@ bool ChatSession::run() {
             // Pop Undo> entries and rebuild history from saved B+C.
             pop_history(undo_entries_added);
 
-            // Restore B entries up to selected_idx (capped at original b_count).
+            // Restore B (checkpoint prompts) up to selected_idx
+            // (capped at original b_count).
             int b_to_restore = std::min(selected_idx + 1, b_count);
             for (int i = 0; i < b_to_restore; i++) add_history(saved_b[i].c_str());
 
