@@ -78,7 +78,7 @@ make llama-clean
 
 ### Installing LIM
 
-After building, install the binary and config files. This **must** be run as `$LIM_AI_USER` (e.g., `su - $LIM_AI_USER`) so that files are installed into that user's home directory -- which is where LIM will look for them at runtime:
+After building, install the binary and config files. This **must** be run as `$LIM_AI_USER` (e.g., `su - $LIM_AI_USER`) so that files are installed into that user's home directory, which is where LIM will look for them at runtime:
 
 ```bash
 su - $LIM_AI_USER
