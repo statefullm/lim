@@ -29,6 +29,9 @@
 using namespace std;
 using namespace Tokens;
 
+// Forward declarations for globals in main.cc
+extern std::ofstream tps_log;
+
 // Return "mtime:size" fingerprint for a file, or empty string on error.
 // Used by the read cache to detect unchanged files without reading content.
 string file_fingerprint(const string& path) {
@@ -176,6 +179,9 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
             if (written != plen) { fclose(fp); return false; }
         }
     }
+    // Flush TPS log so it's consistent with the save point
+    tps_log.flush();
+
     bool ok = fflush(fp) == 0 && fclose(fp) == 0;
     return ok;
 }
@@ -420,6 +426,7 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
     FILE* fp = fopen(cache_path.c_str(), "wb");
     if (!fp) return false;
     if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
+
     bool ok = fflush(fp) == 0 && fclose(fp) == 0;
     return ok;
 }
