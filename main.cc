@@ -420,6 +420,20 @@ int main(int argc, char ** argv) {
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
+    // Write model metadata to TPS log header
+    if (tps_log.is_open()) {
+        tps_log << "# Model: " << argv[1] << "\n";
+        tps_log << "# Context limit: " << cparams.n_ctx << "\n";
+        tps_log << "# GPU layers: " << mparams.n_gpu_layers << "\n";
+        tps_log << "# Temperature: " << temp << "\n";
+        tps_log << "# Top_p: " << top_p << "\n";
+        tps_log << "# Top_k: " << top_k << "\n";
+        tps_log << "# Min_p: " << min_p << "\n";
+        tps_log << "# Penalty present: " << penalty_present << "\n";
+        tps_log << "# Penalty repeat: " << penalty_repeat << "\n";
+        tps_log << "# Penalty freq: " << penalty_freq << "\n";
+    }
+
     // Report GPU layer offload with total layer count.
     if (mparams.n_gpu_layers >= 0) {
         int32_t n_layers = llama_model_n_layer(model);
