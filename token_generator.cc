@@ -629,7 +629,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     int speed_rounded = round_int(speed);
 
                     // Write to TPS log file
-                    tps_log << n_past_ << " " << speed_rounded << "\n";
+                    tps_log << n_past_ << " " << std::fixed << std::setprecision(3) << speed << "\n";
 
                     char speed_buf[64];
                     snprintf(speed_buf, sizeof(speed_buf), "%d t/s | %d (%d%%)", speed_rounded, n_past_, (int)context_percent);

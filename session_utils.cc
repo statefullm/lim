@@ -3,6 +3,7 @@
 #include "token_generator.h"
 #include "output.h"
 #include <fstream>
+#include <iomanip>
 #include <string>
 #include <vector>
 #include <iostream>
@@ -56,15 +57,16 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
         denom = decode_time;
     }
 
-    int speed = round_int(t_count / denom);
+    double speed = t_count / denom;
+    int speed_rounded = round_int(speed);
 
     // Write to TPS log file
-    tps_log << n_past << " " << speed << "\n";
+    tps_log << n_past << " " << std::fixed << std::setprecision(3) << speed << "\n";
 
     // Send to browser status bar (compact: no labels)
     if (should_output_to_browser()) {
         std::ostringstream oss2;
-        oss2 << speed << " t/s | " << n_past << " (" << (int)context_percent << "%)";
+        oss2 << speed_rounded << " t/s | " << n_past << " (" << (int)context_percent << "%)";
         stream_speed(oss2.str());
     }
 }
