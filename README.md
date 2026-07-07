@@ -459,7 +459,7 @@ This restores the session exactly as it was: the full conversation, KV-cache pos
 [Session restored: 75432 tokens loaded]
 ```
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C or Ctrl+D to cancel the restore and start a fresh session. Type `/quit` or `/exit` to exit LIM entirely. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
 **Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache and trigger the checkpoint selection prompt. The flag can appear before or after the save file:
 
@@ -467,8 +467,6 @@ This restores the session exactly as it was: the full conversation, KV-cache pos
 coder cats --checkpoints
 coder --checkpoints cats
 ```
-
-Press Ctrl+C during the restore prompt to cancel without decoding.
 
 **Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that /undo works instantly for hybrid models (Qwen3.5/3.6) right after restore. The rebuilt cache is then automatically written to `$LIM_CACHE_DIR/<hash>` so all subsequent restores from the same save file are fast. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for faster future restores. The name prefix in the cache filename is purely informational; LIM identifies cache files by their content hash, not their name. If you run `/save cats` followed by `/save dogs` with identical session content, only one cache file is written since both resolve to the same hash. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For fast cache restores, recurrent checkpoints build up naturally as conversation turns complete to support the instant /undo feature after the first new turn. The `$LIM_CACHE_DIR/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
