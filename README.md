@@ -304,6 +304,12 @@ Set via `LIM_OUTPUT`:
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
+| `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget, so ~3-4 files fill it. Set between `0.0` and `1.0`. |
+| `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget (`LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4`). Set explicitly to override. |
+| `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
+| `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
+| `LIM_WEB_TIMEOUT` | `600` | HTTP request timeout in seconds for fetches and searches |
+| `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
 | `LIM_EOG_RESAMPLE_MAX` | `64` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings with Qwen3.6 or similar models. |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
