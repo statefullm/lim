@@ -64,12 +64,6 @@ void diag(const string& msg, const char* color) {
     diag_impl(string(color) + msg + "\033[0m", msg);
 }
 
-static void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, const string& git_short = "") {
-    string msg = "Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded " + context_pct(n_tokens, n_ctx);
-    if (!git_short.empty()) msg += " (git: " + git_short + ")";
-    diag(msg, "\033[32m");
-}
-
 // Model path -- set in main(), read by session.cc for V1 cache writes.
 std::string g_model_path;
 

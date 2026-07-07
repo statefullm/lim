@@ -73,3 +73,9 @@ void diag_restore(const std::string& path, int token_count) {
     diag("Restoring session from " + path + "... (" + std::to_string(token_count) + " tokens)", "\033[35m");
 }
 
+void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, const std::string& git_short) {
+    string msg = "Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded " + context_pct(n_tokens, n_ctx);
+    if (!git_short.empty()) msg += " (git: " + git_short + ")";
+    diag(msg, "\033[32m");
+}
+

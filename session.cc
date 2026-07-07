@@ -160,11 +160,6 @@ static string context_limit_diag(int n_past, int last_n_past, size_t needed, int
     return oss.str();
 }
 
-// Local diag_speed implementation for session.cc
-static void diag_session_restored(int session_num, size_t n_tokens, int n_ctx) {
-    diag("Session #" + std::to_string(session_num) + " restored: " + std::to_string(n_tokens) + " tokens loaded " + context_pct(n_tokens, n_ctx), "\033[32m");
-}
-
 static void diag_speed_impl(const string& msg) {
     if (should_output_to_stdout()) {
         cout << "\033[35m[" << msg << "]\033[0m\n";

@@ -24,6 +24,9 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
 // Print a restore diagnostic message
 void diag_restore(const std::string& path, int token_count);
 
+// Print a session-restored diagnostic (with optional git SHA)
+void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, const std::string& git_short = "");
+
 // Format the context percentage string: "(49%)"
 inline std::string context_pct(size_t n_tokens, int n_ctx) {
     if (n_ctx <= 0) return "";
