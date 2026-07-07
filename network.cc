@@ -777,6 +777,7 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
             }
             xmlFreeDoc(doc);
         } else {
+            if (doc) xmlFreeDoc(doc);
             // If parsing failed or no children, fall back to raw buffer
             decoded_html = readBuffer;
             cerr << "XML parsing fallback - using raw buffer" << endl;
