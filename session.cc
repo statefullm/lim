@@ -473,11 +473,13 @@ string ChatSession::get_user_input() {
             FD_ZERO(&fds);
             FD_SET(0, &fds);  // stdin
 
-            struct timeval tv;
-            tv.tv_sec = 0;
-            tv.tv_usec = 100000;  // 100ms timeout to check interrupts
+            // Use pselect with an empty signal mask so that SIGCONT (from fg)
+            // and SIGINT (Ctrl+C) wake us immediately.  Blocks indefinitely —
+            // no timeout needed since signals provide the wakeup.
+            sigset_t empty_mask;
+            sigemptyset(&empty_mask);
 
-            int ret = select(1, &fds, nullptr, nullptr, &tv);
+            int ret = pselect(1, &fds, nullptr, nullptr, nullptr, &empty_mask);
             if (ret < 0) {
                 if (errno == EINTR) continue;
                 break;
