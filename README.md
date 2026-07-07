@@ -303,6 +303,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
+| `LIM_OUTPUT` | `2` | Output mode: `0` = none, `1` = stdout only, `2` = browser only (default), `3` = both |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
 | `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget, so ~3-4 files fill it. Set between `0.0` and `1.0`. |
 | `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget (`LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4`). Set explicitly to override. |
