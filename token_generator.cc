@@ -164,12 +164,7 @@ void _strip_think_and_tool_tags(string& str) {
         FUNC_START, FUNC_END,
         PARAM_START, PARAM_END
     };
-    for (const auto& tag : all_tags) {
-        size_t p;
-        while ((p = str.find(tag)) != string::npos) {
-            str.erase(p, tag.length());
-        }
-    }
+    strip_tags(str, all_tags);
 }
 
 // File-scope statics for EOG recovery diagnostics
