@@ -24,6 +24,7 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
+extern ofstream tps_log;
 extern bool honest_speed;
 extern int speed_update_interval;
 
@@ -630,8 +631,13 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                     double speed = t_count_ / denom;
                     double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+                    int speed_rounded = round_int(speed);
+
+                    // Write to TPS log file
+                    tps_log << n_past_ << " " << speed_rounded << "\n";
+
                     char speed_buf[64];
-                    snprintf(speed_buf, sizeof(speed_buf), "%d t/s | %d (%d%%)", round_int(speed), n_past_, (int)context_percent);
+                    snprintf(speed_buf, sizeof(speed_buf), "%d t/s | %d (%d%%)", speed_rounded, n_past_, (int)context_percent);
 
                     if (should_output_to_browser()) {
                         stream_speed(string(speed_buf));

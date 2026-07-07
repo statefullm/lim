@@ -12,6 +12,7 @@ using namespace std;
 // Forward declarations for globals in main.cc
 extern bool is_debug;
 extern std::ofstream token_log;
+extern std::ofstream tps_log;
 extern bool honest_speed;
 
 std::string html_escape(const std::string& s) {
@@ -55,10 +56,15 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
         denom = decode_time;
     }
 
+    int speed = round_int(t_count / denom);
+
+    // Write to TPS log file
+    tps_log << n_past << " " << speed << "\n";
+
     // Send to browser status bar (compact: no labels)
     if (should_output_to_browser()) {
         std::ostringstream oss2;
-        oss2 << round_int(t_count / denom) << " t/s | " << n_past << " (" << (int)context_percent << "%)";
+        oss2 << speed << " t/s | " << n_past << " (" << (int)context_percent << "%)";
         stream_speed(oss2.str());
     }
 }
