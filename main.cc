@@ -9,6 +9,7 @@
 #include "server.h"
 #include "model.h"
 #include "session_utils.h"
+#include "token_generator.h"
 #include "session.h"
 #include "taskset.h"
 #include <readline/readline.h>
@@ -27,20 +28,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
-
-// --- Helper to escape token piece strings for token log ---
-static string escape_token_piece(const string& s) {
-    string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '\n') out += "\\n";
-        else if (c == '\r') out += "\\r";
-        else if (c == '\t') out += "\\t";
-        else if (c == '"') out += "\\\"";
-        else out += c;
-    }
-    return out;
-}
 
 // --- Global State ---
 bool is_debug = false;
