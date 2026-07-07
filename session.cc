@@ -1068,6 +1068,9 @@ bool ChatSession::run() {
                 }
             }
 
+            // Compute how many turns we went back (for the browser message).
+            int turns_back = (int)state_.prompt_checkpoints.size() - selected_idx - 1;
+
             // Erase all checkpoints at and beyond the undo boundary.
             int erased_count = 0;
             for (int i = selected_idx + 1; i < (int)state_.prompt_checkpoints.size(); i++) {
@@ -1090,7 +1093,7 @@ bool ChatSession::run() {
                 double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
                 string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
                 pipe_write(&SEG_SPEED, 1);
-                string speed_msg = "Undid to checkpoint | " + ctx_str;
+                string speed_msg = "Undid " + to_string(turns_back) + " | " + ctx_str;
                 pipe_write(speed_msg.c_str(), speed_msg.length());
             }
 

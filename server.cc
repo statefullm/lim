@@ -317,9 +317,9 @@ void disable_browser_output() {
 bool prompt_for_browser_connection() {
     const char* term_program = getenv("TERM_PROGRAM");
     bool is_vscode = (term_program != nullptr && strcmp(term_program, "vscode") == 0);
-    message("Load this URL in your browser");
+    message("Load this URL in your browser or reload");
     if (is_vscode) {
-        message(", or reload with Ctrl+Shift+R or Ctrl+2");
+        message("with Ctrl+Shift+R or Ctrl+2");
     }
     message(":\n");
     message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
