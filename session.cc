@@ -35,6 +35,7 @@ extern std::string g_model_path;
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <termios.h>
 
 // --- Readline Headers ---
 #include <readline/readline.h>
@@ -448,10 +449,24 @@ string ChatSession::get_user_input() {
 
         rl_callback_handler_install(main_p, storing_callback);
 
+        // Save readline's raw termios so we can restore it after Ctrl+Z / fg.
+        // The shell restores cooked mode during suspend; on resume we need to
+        // put the terminal back into readline's expected raw-mode state.
+        struct termios saved_raw_tios{};
+        tcgetattr(STDIN_FILENO, &saved_raw_tios);
+
         // Event loop: poll for input with select(), check for interrupts
         while (!input_complete) {
             if (g_was_interrupted) {
                 break;
+            }
+
+            // After Ctrl+Z / fg, SIGCONT sets g_was_resumed. The shell has
+            // restored cooked terminal mode, so restore readline's raw settings.
+            if (g_was_resumed) {
+                g_was_resumed = 0;
+                tcsetattr(STDIN_FILENO, TCSANOW, &saved_raw_tios);
+                rl_forced_update_display();
             }
 
             fd_set fds;
