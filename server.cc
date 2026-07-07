@@ -91,12 +91,17 @@ static void kill_stale_server() {
 }
 
 bool is_lim_server_running() {
-    const char* commands[] = {
-        "ss -tlnp 2>/dev/null | grep -q ':8765 '",
-        "netstat -tlnp 2>/dev/null | grep -q ':8765 '",
-        "lsof -i :8765 2>/dev/null | grep -q LISTEN",
-        "python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', 8765)); s.close(); exit(1)\" 2>/dev/null || exit 0"
-    };
+    int port = get_server_port();
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    // Build check commands with the configured port.
+    string cmd_ss = "ss -tlnp 2>/dev/null | grep -q ':" + string(port_str) + " '";
+    string cmd_netstat = "netstat -tlnp 2>/dev/null | grep -q ':" + string(port_str) + " '";
+    string cmd_lsof = "lsof -i :" + string(port_str) + " 2>/dev/null | grep -q LISTEN";
+    string cmd_python = "python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', " + string(port_str) + ")); s.close(); exit(1)\" 2>/dev/null || exit 0";
+
+    const char* commands[] = { cmd_ss.c_str(), cmd_netstat.c_str(), cmd_lsof.c_str(), cmd_python.c_str() };
 
     for (const char* cmd : commands) {
         FILE* fp = popen(cmd, "r");
@@ -110,8 +115,9 @@ bool is_lim_server_running() {
         }
     }
 
-    FILE* fp = popen("python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
-                     "s.bind(('0.0.0.0', 8765)); s.close();\" 2>/dev/null", "r");
+    string cmd_fallback = "python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
+                          "s.bind(('0.0.0.0', " + to_string(port) + ")); s.close();\" 2>/dev/null";
+    FILE* fp = popen(cmd_fallback.c_str(), "r");
     if (fp != nullptr) {
         int status = pclose(fp);
         return status != 0;
@@ -130,7 +136,7 @@ void start_lim_server_if_needed() {
     if (!is_lim_server_running()) {
         kill_stale_server();
     } else {
-        log_diagnostic("limServer appears to be running on port 8765. Checking for stale process...");
+        log_diagnostic("limServer appears to be running on port " + to_string(get_server_port()) + ". Checking for stale process...");
 
         // Collect PIDs to kill: first via PID file, then via fuser fallback.
         vector<pid_t> pids_to_kill;
@@ -151,11 +157,7 @@ void start_lim_server_if_needed() {
 
         // Attempt 2: use fuser to find any process on the port.
         if (pids_to_kill.empty()) {
-            const char* port_str = "8765";
-            const char* env_port = getenv("LIM_PORT");
-            if (env_port && strlen(env_port) > 0) port_str = env_port;
-
-            string fuser_cmd = "fuser " + string(port_str) + "/tcp 2>/dev/null";
+            string fuser_cmd = "fuser " + to_string(get_server_port()) + "/tcp 2>/dev/null";
             FILE* ffp = popen(fuser_cmd.c_str(), "r");
             if (ffp) {
                 char line[256];
@@ -194,7 +196,7 @@ void start_lim_server_if_needed() {
         // Single final check: if the port is still occupied, something else
         // is genuinely listening. Fall back gracefully.
         if (is_lim_server_running()) {
-            log_diagnostic("Port 8765 still in use. Attempting to reuse existing server...");
+            log_diagnostic("Port " + to_string(get_server_port()) + " still in use. Attempting to reuse existing server...");
             g_lim_server_pid = -2;
             return;
         }
