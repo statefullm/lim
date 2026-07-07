@@ -20,7 +20,6 @@
 #include <string>
 #include <cstdlib>
 #include <cstring>
-#include <set>
 #include <clocale>
 #include <ctime>
 #include <algorithm>
@@ -88,7 +87,6 @@ static void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, c
 std::string g_model_path;
 
 int main(int argc, char ** argv) {
-    // this is the main function
     setlocale(LC_ALL, "");
 
     // Read the required username from LIM_AI_USER env var (default: "ai")

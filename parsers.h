@@ -24,14 +24,9 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name);
 
-int extract_int_arg_bounded(const string& tool_call, const string& arg_name);
-
 // Extract base turn tokens from model turn markers.
 // Collects all individual <|...|> special tokens present in the model's
 // turn delimiters (user_start, assistant_start, system_start, turn_end).
 void collect_base_turn_tokens(std::vector<std::string>& out);
-
-// Remove trailing spaces from a string (used for cleaning tool arguments)
-string remove_trailing_spaces(const string& str);
 
 #endif // PARSERS_H

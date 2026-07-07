@@ -5,11 +5,9 @@
 #include "tokens.h"
 #include "output.h"
 #include "session_utils.h"
-#include <set>
 #include <map>
 #include <cstring>
 #include <signal.h>
-#include <functional>
 
 using namespace std;
 using namespace Tokens;

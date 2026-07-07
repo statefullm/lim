@@ -18,13 +18,10 @@
 #include <vector>
 #include <string>
 #include <map>
-#include <cstring>
 
 // From main.cc
 extern std::string g_model_path;
 #include <cstdlib>
-#include <cstring>
-#include <cstdio>
 #include <chrono>
 #include <signal.h>
 #include <cctype>

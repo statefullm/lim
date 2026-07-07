@@ -192,9 +192,3 @@ void stream_think(const string& text) {
     pipe_write(&SEG_THINK, 1);
     pipe_write(escaped.c_str(), escaped.length());
 }
-
-void clear_viewer() {
-    if (!should_output_to_browser()) return;
-    const char marker = 0x01; // SOH control character
-    pipe_write(&marker, 1);
-}

@@ -13,7 +13,6 @@
 #include <cstdio>
 #include <unistd.h>
 #include <fcntl.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <poll.h>
@@ -50,66 +49,12 @@ static const struct HeaderKey {
     STR("n_tokens="),          // 1
     STR("n_checkpoints="),     // 2
     STR("session="),           // 3
-    STR("LIM_SAVE_v1 git_sha=")// 4
 };
 
 static constexpr int HDR_MAGIC         = 0;
 static constexpr int HDR_N_TOKENS      = 1;
 static constexpr int HDR_N_CHECKPOINTS = 2;
 static constexpr int HDR_SESSION       = 3;
-static constexpr int HDR_SAVE_V1       = 4;
-bool write_llm_save(const string& save_path, const uint8_t* state_data, size_t state_size) {
-    FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
-    if (!pipe) return false;
-    char buf[48];
-    string sha;
-    if (fgets(buf, sizeof(buf), pipe)) {
-        sha = buf;
-        while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
-    }
-    pclose(pipe);
-    if (sha.empty()) return false;
-
-    // Write header + raw state in a single pass.
-    // Use C FILE I/O for reliability with large files (>2 GB).
-    FILE* fp = fopen(save_path.c_str(), "wb");
-    if (!fp) return false;
-
-    string header = "LIM_SAVE_v1 git_sha=" + sha + "\n";
-    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
-    if (state_data && state_size > 0) {
-        if (fwrite(state_data, 1, state_size, fp) != state_size) { fclose(fp); return false; }
-    }
-    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
-    return ok;
-}
-
-// Read the header from an LLLM save file.
-string read_llm_save_header(const string& save_path, size_t* header_size) {
-    if (header_size) *header_size = 0;
-
-    FILE* fp = fopen(save_path.c_str(), "rb");
-    if (!fp) return "";
-
-    // Read the first line (max ~80 bytes: "LIM_SAVE_v1 git_sha=" + 40 hex + '\n')
-    static constexpr size_t MAX_HEAD = 96;
-    char head[MAX_HEAD];
-    size_t n = fread(head, 1, MAX_HEAD, fp);
-    fclose(fp);
-    if (n < header_keys[HDR_SAVE_V1].len + 1) return ""; // need at least magic + some content
-
-    // Must start with the magic prefix
-    const auto& magic = header_keys[HDR_SAVE_V1];
-    string first_chunk(head, n);
-    if (first_chunk.substr(0, magic.len) != magic.name) {
-        return ""; // Old-style raw save file -- no header
-    }
-
-    size_t nl = first_chunk.find('\n');
-    if (nl == string::npos) return ""; // Malformed
-    *header_size = nl + 1;
-    return first_chunk.substr(magic.len, nl - magic.len);
-}
 
 // --- Compact token-based save/restore ---
 // Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
@@ -303,11 +248,9 @@ int read_save_session(const string& save_path) {
 
 // --- V1 Cache: auto-cached KV cache for instant restores ---
 
-#include <openssl/sha.h>
 #include <array>
 #include <ctime>
 #include <dirent.h>
-#include <sys/stat.h>
 
 static std::string sha256_hex(const std::string& data) {
     std::array<uint8_t, SHA256_DIGEST_LENGTH> hash;
@@ -355,9 +298,9 @@ std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
 
 // Extract the save file basename without directory path or .save extension.
 // Used as the human-readable prefix in cache filenames: $LIM_CACHE_DIR/<name>-<hash>
-static std::string save_file_name(const std::string& v2_path) {
-    size_t slash = v2_path.rfind('/');
-    std::string base = slash != std::string::npos ? v2_path.substr(slash + 1) : v2_path;
+static std::string save_file_name(const std::string& save_path) {
+    size_t slash = save_path.rfind('/');
+    std::string base = slash != std::string::npos ? save_path.substr(slash + 1) : save_path;
     if (base.size() >= std::strlen(SAVE_EXT) && base.compare(base.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) == 0) {
         base.resize(base.size() - std::strlen(SAVE_EXT));
     }
@@ -366,10 +309,10 @@ static std::string save_file_name(const std::string& v2_path) {
 
 // Build the cache filename: <name>-<hash>.  The name is purely informational;
 // the hash suffix encodes content + model for correctness.
-static std::string cache_filename(const std::string& v2_path,
+static std::string cache_filename(const std::string& save_path,
                                   const std::vector<llama_token>& tokens,
                                   const std::string& model_path) {
-    return save_file_name(v2_path) + "-" + cache_hash(tokens, model_path);
+    return save_file_name(save_path) + "-" + cache_hash(tokens, model_path);
 }
 
 // Load a raw KV-cache blob from a file (no header).
@@ -396,7 +339,7 @@ static bool load_raw_cache(const std::string& cache_path, struct llama_context* 
     return n_loaded == state_size;
 }
 
-bool try_load_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                        const std::string& model_path, struct llama_context* ctx) {
     std::string dir = get_cache_dir_internal();
     std::string hash = cache_hash(tokens, model_path);
@@ -424,7 +367,7 @@ bool try_load_v1_cache(const std::string& v2_path, const std::vector<llama_token
     return false;
 }
 
-bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
                     const std::string& old_hash) {
     std::string dir = get_cache_dir_internal();
@@ -465,7 +408,7 @@ bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& 
     }
 
     // Write the raw KV cache as $LIM_CACHE_DIR/<name>-<hash>
-    std::string cache_path = dir + "/" + cache_filename(v2_path, tokens, model_path);
+    std::string cache_path = dir + "/" + cache_filename(save_path, tokens, model_path);
 
     size_t state_size = llama_state_get_size(ctx);
     if (state_size == 0) return false;
@@ -537,7 +480,6 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
         // Styled HTML to browser pipe (uses .tool-label colors from viewer.html)
         if (should_output_to_browser()) {
             if (pipe_fd < 0) {
-                const char* FIFO_PATH = "/tmp/lim.fifo";
                 pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
             }
             if (pipe_fd >= 0) {
@@ -579,8 +521,6 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
             if (should_output_to_browser()) {
                 // Output to browser via FIFO pipe
                 if (pipe_fd < 0) {
-                    // Try to initialize the pipe if not already done
-                    const char* FIFO_PATH = "/tmp/lim.fifo";
                     pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
                 }
                 if (pipe_fd >= 0) {
@@ -615,10 +555,8 @@ static string _file_ext(const string& path) {
   if (dot == string::npos) return "";
   string ext = path.substr(dot);
   transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
-  return ext;
-}
+  return ext;}
 
-// Test edit - filesystem tools verification
 FileSystemTools::FileSystemTools() {}
 
 string FileSystemTools::_get_fullpath(const string& path) {
@@ -716,7 +654,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     // Reset SIGPIPE to default so pipelines like `find | head` behave as they
     // would in a normal terminal: the upstream process is silently killed by
     // SIGPIPE when the downstream exits, rather than getting EPIPE from write()
-    // and printing a "write error" diagnostic.  (The parent lllm process ignores
+    // and printing a "write error" diagnostic.  (The parent LLM process ignores
     // SIGPIPE to protect its own FIFO writes; this reset scopes that to us only.)
     signal(SIGPIPE, SIG_DFL);
 

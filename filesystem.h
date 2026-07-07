@@ -6,22 +6,10 @@
 #include <vector>
 #include <map>
 #include <cstdint>
+#include <functional>
 
 // Fast file fingerprint (mtime:size) for cache validation without reading content.
 std::string file_fingerprint(const std::string& path);
-
-// Write a save file with a one-line text header containing the git SHA,
-// followed by the raw llama state.  The header format is:
-//     LIM_SAVE_v1 git_sha=<40-hex>\n<raw-state-bytes>
-// Returns true on success.  Overwrites any existing file at save_path.
-bool write_llm_save(const std::string& save_path, const uint8_t* state_data, size_t state_size);
-
-// Read the header from an LLLM save file.
-// On success returns the git SHA and sets *header_size to the byte count of
-// the header line (including trailing newline).  The raw llama state begins
-// at offset *header_size in the file.  Returns "" for unrecognized / old-style
-// files (callers should fall back to llama_state_load_file directly).
-std::string read_llm_save_header(const std::string& save_path, size_t* header_size);
 
 // --- Compact token-based save/restore ---
 // Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_entries>
@@ -37,7 +25,6 @@ struct PromptCheckpoint {
 bool write_token_save_v3(const std::string& save_path, const std::vector<llama_token>& tokens,
                          const std::vector<PromptCheckpoint>& checkpoints,
                          int session_num = -1);
-bool read_token_save(const std::string& save_path, std::vector<llama_token>& tokens);
 // Returns the prompt-return checkpoints embedded in a V3 save file.
 std::vector<PromptCheckpoint> read_checkpoint_offsets(const std::string& save_path);
 // Extract the session number from a V3 save file header. Returns -1 if absent or unreadable.
@@ -49,7 +36,7 @@ int read_save_session(const std::string& save_path);
 // survives save file renames and moves.  The name suffix is purely informational.
 static constexpr const char* SAVE_EXT = ".save";
 
-bool try_load_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                        const std::string& model_path, struct llama_context* ctx);
 // Compute the content-based cache hash for a token sequence and model.
 std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
@@ -58,7 +45,7 @@ std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
 // old_hash: if non-empty, the cache entry matching this hash is deleted first
 // (it corresponds to the previous content of the save file).
 // Returns true on success (or if an equivalent cache entry already exists).
-bool write_v1_cache(const std::string& v2_path, const std::vector<llama_token>& tokens,
+bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
                     const std::string& old_hash = "");
 // Delete a save file and its associated fast restore cache entry (if any).
@@ -68,7 +55,6 @@ bool delete_save_and_cache(const std::string& save_path,
                            const std::string& model_path,
                            int* cache_deleted = nullptr);
 std::string get_cache_dir();
-#include <functional>
 
 class FileSystemTools {
 public:

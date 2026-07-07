@@ -90,11 +90,62 @@ static bool g_searxng_disabled = false;
 static int g_consecutive_empty_searches = 0;
 
 static chrono::steady_clock::time_point g_last_network_request = chrono::steady_clock::now() - chrono::seconds(3);
-const int SEARCH_COOLDOWN_SECONDS = 3;
+
+// --- Configurable web/network limits (all overridable via LIM_* env vars) ---
+static int g_search_cooldown_seconds = []() -> int {
+    const char* env = getenv("LIM_SEARCH_COOLDOWN");
+    if (env && strlen(env) > 0) { int v = atoi(env); if (v > 0) return v; }
+    return 3;
+}();
+
+static size_t g_web_html_max_bytes = []() -> size_t {
+    const char* env = getenv("LIM_WEB_HTML_MAX");
+    if (env && strlen(env) > 0) { long v = atol(env); if (v > 0) return static_cast<size_t>(v); }
+    return 500000;
+}();
+
+static size_t g_web_pdf_max_bytes = []() -> size_t {
+    const char* env = getenv("LIM_WEB_PDF_MAX");
+    if (env && strlen(env) > 0) { long v = atol(env); if (v > 0) return static_cast<size_t>(v); }
+    return 50000000;
+}();
+
+static long g_web_timeout_seconds = []() -> long {
+    const char* env = getenv("LIM_WEB_TIMEOUT");
+    if (env && strlen(env) > 0) { long v = atol(env); if (v > 0) return v; }
+    return 600;
+}();
 
 // Stateful Context Budget for Agentic Sessions
+// Computed from LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4 (bytes/token).
+// Default: n_ctx=262144, fraction=0.75 => ~786K chars budget for fetched content.
+static size_t compute_session_max_chars() {
+    int n_ctx = 262144;
+    const char* ctx_env = getenv("LIM_CTX");
+    if (ctx_env && strlen(ctx_env) > 0) {
+        int val = atoi(ctx_env);
+        if (val > 0) n_ctx = val;
+    }
+    double fraction = 0.75;
+    const char* frac_env = getenv("LIM_WEB_CONTEXT_FRACTION");
+    if (frac_env && strlen(frac_env) > 0) {
+        double val = atof(frac_env);
+        if (val > 0.0 && val <= 1.0) fraction = val;
+    }
+    return static_cast<size_t>(n_ctx * fraction * 4);
+}
+
+static size_t g_session_max_chars = compute_session_max_chars();
+
 size_t NetworkTools::g_cumulative_context_chars = 0;
-const size_t NetworkTools::SESSION_MAX_CHARS = 800000; // Total safe limit for RTX 5090
+const size_t NetworkTools::SESSION_MAX_CHARS = g_session_max_chars;
+
+static size_t g_web_file_max_chars = []() -> size_t {
+    const char* env = getenv("LIM_WEB_FILE_MAX");
+    if (env && strlen(env) > 0) { long v = atol(env); if (v > 0) return static_cast<size_t>(v); }
+    // Default: 25% of the session budget, so ~3-4 files fill the budget.
+    return g_session_max_chars / 4;
+}();
 
 void NetworkTools::reset_context_usage() {
     g_cumulative_context_chars = 0;
@@ -177,7 +228,7 @@ static size_t WriteCallback(void *contents, size_t size, size_t nmemb, void *use
     }
 
     size_t total_size = size * nmemb;
-    size_t max_size = state->is_pdf ? 50000000 : 500000; // 50MB limit for PDFs, 500KB for HTML
+    size_t max_size = state->is_pdf ? g_web_pdf_max_bytes : g_web_html_max_bytes;
 
     // CRITICAL: If we've already exceeded the limit, skip buffering entirely
     if (state->exceeded_limit) {
@@ -427,6 +478,9 @@ void NetworkTools::init_ssl_certificates() {
 
 // --- Smart Context Truncation (Stateful) ---
 string NetworkTools::limit_context_size(const string& text, size_t per_file_max) {
+    // Use env-configured default if caller passed 0.
+    if (per_file_max == 0) per_file_max = g_web_file_max_chars;
+
     // Strip base64 images to prevent corrupting tags
     string cleaned_text = NetworkTools::strip_base64_images(text);
 
@@ -523,7 +577,7 @@ static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
     curl_easy_setopt(curl, CURLOPT_HEADERDATA, nullptr);  // Will be set by caller if needed
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, nullptr);    // Will be set by caller if needed
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_web_timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "Mozilla/5.0");
     curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "gzip, deflate");
@@ -562,15 +616,6 @@ string NetworkTools::strip_base64_images(const string& text) {
     }
 
     return result;
-}
-
-std::string NetworkTools::process_local_pdf(const std::string& pdf_binary) {
-    // Ensure Docling is running
-    start_docling_if_needed();
-
-    // Create instance to call member function
-    NetworkTools net;
-    return net.process_pdf_with_docling(pdf_binary);
 }
 
 string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
@@ -616,7 +661,7 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, json_str.length());
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_web_timeout_seconds);
     // Enable interrupt checking during transfer
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
@@ -922,8 +967,8 @@ string NetworkTools::web_search(const string& query) {
 
     auto now = chrono::steady_clock::now();
     auto elapsed = chrono::duration_cast<chrono::seconds>(now - g_last_network_request).count();
-    if (elapsed < SEARCH_COOLDOWN_SECONDS) {
-        int sleep_time = SEARCH_COOLDOWN_SECONDS - elapsed;
+    if (elapsed < g_search_cooldown_seconds) {
+        int sleep_time = g_search_cooldown_seconds - elapsed;
         cerr << "Pacing network requests. Sleeping " + to_string(sleep_time) + " seconds..." << endl;
         this_thread::sleep_for(chrono::seconds(sleep_time));
     }
@@ -946,7 +991,7 @@ string NetworkTools::web_search(const string& query) {
         curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 600L);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_web_timeout_seconds);
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
         // SSL Certificate Support: Configure based on URL protocol
@@ -1100,6 +1145,5 @@ string NetworkTools::web_search(const string& query) {
 void NetworkTools::reset_search() {
     g_searxng_disabled = false;
     g_consecutive_empty_searches = 0;
-    if (g_searxng_disabled)
-      cerr << "Web search re-enabled." << endl;
+    cerr << "Web search re-enabled." << endl;
 }

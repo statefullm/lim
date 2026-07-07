@@ -27,11 +27,8 @@ public:
   // Start Docling service if not already running
   static void start_docling_if_needed();
 
-  // Static helper to process local PDF files (used by filesystem.cc)
-  static std::string process_local_pdf(const std::string& pdf_binary);
-
   // Context size limiting utility - defaults to ~100k chars per file (approx 25-30 pages)
-  static std::string limit_context_size(const std::string& text, size_t per_file_max = 100000);
+  static std::string limit_context_size(const std::string& text, size_t per_file_max = 0);
 
   // Strip base64 images from markdown to prevent cache corruption
   static std::string strip_base64_images(const std::string& text);
