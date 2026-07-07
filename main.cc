@@ -42,6 +42,10 @@ string INITIAL_CWD;
 //   1: "honest" speed -- tokens / total wall clock time (includes all CPU overhead).
 bool honest_speed = false;  // default: benchmark-style
 
+// LIM_CHATBOT_MODE: when set to 1, re-decodes full history each turn
+// (standard chatbot behavior) instead of appending to KV-cache.
+bool chatbot_mode = false;
+
 // LIM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
 int speed_update_interval = 100;
 
@@ -195,6 +199,14 @@ int main(int argc, char ** argv) {
         }
     }
 
+    // LIM_CHATBOT_MODE: 1 = re-decode full history each turn (default 0)
+    {
+        const char* env = getenv("LIM_CHATBOT_MODE");
+        if (env != nullptr && strlen(env) > 0) {
+            chatbot_mode = (atoi(env) != 0);
+        }
+    }
+
     // LIM_SPEED_INTERVAL: tokens between speed diagnostic updates (default 100)
     {
         const char* env = getenv("LIM_SPEED_INTERVAL");
@@ -277,6 +289,9 @@ int main(int argc, char ** argv) {
     };
 
     diag("Session #" + to_string(log_index) + " started: type /help to see a list of commands", "\033[35m");
+    if (chatbot_mode) {
+        diag("Chatbot mode enabled: full history re-decoded each turn", "\033[33m");
+    }
     if (is_debug) Taskset::log_core_detection(std::cerr);
     log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(log_index) + ")");
 
@@ -432,6 +447,7 @@ int main(int argc, char ** argv) {
         tps_log << "# Penalty present: " << penalty_present << "\n";
         tps_log << "# Penalty repeat: " << penalty_repeat << "\n";
         tps_log << "# Penalty freq: " << penalty_freq << "\n";
+        tps_log << "# Chatbot mode: " << (chatbot_mode ? 1 : 0) << "\n";
     }
 
     // Report GPU layer offload with total layer count.

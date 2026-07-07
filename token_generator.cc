@@ -182,9 +182,10 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                int& n_past, const llama_context_params& cparams,
                                double turn_timeout_sec, bool was_mid_tool_call,
                                int last_n_past,
-                               std::vector<llama_token>* out_tokens)
+                               std::vector<llama_token>* out_tokens,
+                               double feed_time)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
-      cparams_(cparams), turn_timeout_sec_(turn_timeout_sec),
+      cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
       in_tool_call_stream_(was_mid_tool_call),
       in_parameter_(false),
@@ -617,7 +618,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             // they are printed once at turn end in session.cc before the >>> prompt.
             if (t_count_ > 5 && t_count_ % speed_update_interval == 0) {
                 auto now = chrono::high_resolution_clock::now();
-                double total_elapsed = chrono::duration<double>(now - start).count();
+                double total_elapsed = chrono::duration<double>(now - start).count() + feed_time_;
                 if (total_elapsed > 0) {
                     // Pick denominator based on honest_speed global
                     double denom = total_elapsed;  // default: wall clock ("honest")

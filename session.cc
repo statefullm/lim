@@ -56,6 +56,7 @@ extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
 extern bool honest_speed;
+extern bool chatbot_mode;
 
 // HOME is declared as extern std::string HOME in network.h
 
@@ -666,7 +667,7 @@ TokenGenerator::Result ChatSession::generate_response() {
     // --- TOKEN GENERATION via TokenGenerator class ---
     TokenGenerator tg(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
-                      &state_.all_context_tokens);
+                      &state_.all_context_tokens, state_.last_feed_time);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
@@ -707,7 +708,7 @@ TokenGenerator::Result ChatSession::generate_response() {
     // will naturally appear on its own line.
 
     state_.last_t_count = t_count_;
-    state_.last_elapsed = elapsed_;
+    state_.last_elapsed = elapsed_ + state_.last_feed_time;
     state_.last_decode_time = gen_result_.decode_time;
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
@@ -1579,6 +1580,25 @@ bool ChatSession::run() {
         if (!user_input.empty()) {
             prev_was_save_ = false;
             last_user_input_ = user_input;
+
+            // Chatbot mode: re-decode full history each turn for comparison
+            if (chatbot_mode && !state_.all_context_tokens.empty()) {
+                auto feed_start = chrono::high_resolution_clock::now();
+                vector<llama_token> history = state_.all_context_tokens;
+                diag("Chatbot mode: re-decoding " + to_string(history.size()) + " tokens", "\033[90m");
+                llama_memory_clear(llama_get_memory(ctx_), true);
+                n_past_ = 0;
+                state_.all_context_tokens.clear();
+                state_.prompt_checkpoints.clear();
+                llama_sampler_reset(smpl_);
+                // Re-feed entire history (includes system prompt + all conversation)
+                feed_tokens_impl(history);
+                auto feed_end = chrono::high_resolution_clock::now();
+                state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+            } else {
+                state_.last_feed_time = 0.0;
+            }
+
             if (!feed_user_message(user_input)) continue;
         }
 

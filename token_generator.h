@@ -32,7 +32,8 @@ public:
                    int& n_past, const llama_context_params& cparams,
                    double turn_timeout_sec, bool was_mid_tool_call,
                    int last_n_past,
-                   std::vector<llama_token>* out_tokens = nullptr);
+                   std::vector<llama_token>* out_tokens = nullptr,
+                   double feed_time = 0.0);
 
     Result generate();
 
@@ -44,6 +45,7 @@ private:
     int& n_past_;
     const llama_context_params& cparams_;
     double turn_timeout_sec_;
+    double feed_time_;  // Time spent feeding/re-decoding tokens before generation
 
     // Internal state
     std::string generated_text_;
