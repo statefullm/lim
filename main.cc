@@ -240,6 +240,7 @@ int main(int argc, char ** argv) {
     }
 
     mkdir(LIM_LOG_DIR.c_str(), 0775);
+    mkdir(LIM_CACHE_DIR.c_str(), 0775);
     int log_index = 1;
     string log_file_name;
     while (true) {

@@ -370,6 +370,9 @@ private:
     bool was_mid_tool_call_;
     bool allow_continue_resume_;
     int max_auto_continue_;
+
+    // Mode 2 (cache-aware): saved KV-cache for per-turn restore
+    string mode2_cache_path_;  // Path to on-disk cache file
 };
 
 // --- get_user_input: readline callback interface with Ctrl+J newline support ---
@@ -1624,8 +1627,8 @@ bool ChatSession::run() {
             last_user_input_ = user_input;
 
             // Chatbot mode: re-decode full history each turn for comparison
-            if (chatbot_mode > 0 && !state_.all_context_tokens.empty()) {
-                // Save a copy of the history tokens before clearing state.
+            if (chatbot_mode == 1 && !state_.all_context_tokens.empty()) {
+                // Mode 1: clear cache, re-tokenize from text, re-decode everything
                 vector<llama_token> saved_history = state_.all_context_tokens;
 
                 llama_memory_clear(llama_get_memory(ctx_), true);
@@ -1634,36 +1637,44 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints.clear();
                 llama_sampler_reset(smpl_);
 
-                vector<llama_token> history;
-                if (chatbot_mode == 1) {
-                    // Mode 1 (standard chatbot): detokenize to text, then re-tokenize
-                    // from scratch, simulating a real chat API that receives full
-                    // conversation text and tokenizes it each turn. Detokenization
-                    // is benchmark infrastructure only — not counted in TPS.
-                    string history_text;
-                    for (llama_token t : saved_history) {
-                        history_text += common_token_to_piece(ctx_, t);
-                    }
-                    auto feed_start = chrono::high_resolution_clock::now();
-                    history = common_tokenize(ctx_, history_text, false, true);
-                    diag("Chatbot mode 1: re-tokenized " + to_string(history.size()) +
-                         " tokens from " + to_string(saved_history.size()) +
-                         " history tokens", "\033[90m");
-                    feed_tokens_impl(history);
-                    auto feed_end = chrono::high_resolution_clock::now();
-                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
-                } else {
-                    // Mode 2 (cache-aware): re-feed pre-decoded token sequence directly.
-                    // Simulates systems that have a persistent token cache but rebuild
-                    // the KV-cache per request.
-                    history = saved_history;
-                    diag("Chatbot mode 2: re-feeding " + to_string(history.size()) +
-                         " cached tokens", "\033[90m");
-                    auto feed_start = chrono::high_resolution_clock::now();
-                    feed_tokens_impl(history);
-                    auto feed_end = chrono::high_resolution_clock::now();
-                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                string history_text;
+                for (llama_token t : saved_history) {
+                    history_text += common_token_to_piece(ctx_, t);
                 }
+                auto feed_start = chrono::high_resolution_clock::now();
+                auto history = common_tokenize(ctx_, history_text, false, true);
+                diag("Chatbot mode 1: re-tokenized " + to_string(history.size()) +
+                     " tokens from " + to_string(saved_history.size()) +
+                     " history tokens", "\033[90m");
+                feed_tokens_impl(history);
+                auto feed_end = chrono::high_resolution_clock::now();
+                state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+
+            } else if (chatbot_mode == 2 && !mode2_cache_path_.empty()) {
+                // Mode 2: restore KV-cache from disk (simulates cache-aware systems)
+                vector<llama_token> saved_history = state_.all_context_tokens;
+                auto feed_start = chrono::high_resolution_clock::now();
+                llama_memory_clear(llama_get_memory(ctx_), true);
+                vector<llama_token> load_tokens(cparams_.n_ctx);
+                size_t n_loaded = 0;
+                if (!llama_state_load_file(ctx_, mode2_cache_path_.c_str(), load_tokens.data(),
+                                           load_tokens.capacity(), &n_loaded)) {
+                    diag("Chatbot mode 2: failed to load cache from " + mode2_cache_path_, "\033[33m");
+                    state_.last_feed_time = 0.0;
+                } else {
+                    n_past_ = (int)n_loaded;
+                    state_.all_context_tokens = saved_history;
+                    state_.prompt_checkpoints.clear();
+                    llama_sampler_reset(smpl_);
+                    auto feed_end = chrono::high_resolution_clock::now();
+                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                    struct stat st;
+                    if (stat(mode2_cache_path_.c_str(), &st) == 0) {
+                        diag("Chatbot mode 2: loaded cache (" + to_string(st.st_size / (1024*1024)) +
+                             " MB, " + to_string(n_past_) + " tokens)", "\033[90m");
+                    }
+                }
+
             } else {
                 state_.last_feed_time = 0.0;
             }
@@ -1673,6 +1684,18 @@ bool ChatSession::run() {
 
         // 7. Generate response
         auto gen_result = generate_response();
+
+        // Mode 2: save KV-cache to disk after generation for next turn's restore
+        if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {
+            if (mode2_cache_path_.empty()) {
+                mode2_cache_path_ = LIM_CACHE_DIR + "/mode2_cache.bin";
+            }
+            if (!llama_state_save_file(ctx_, mode2_cache_path_.c_str(),
+                                       state_.all_context_tokens.data(),
+                                       state_.all_context_tokens.size())) {
+                diag("Chatbot mode 2: failed to save cache to " + mode2_cache_path_, "\033[33m");
+            }
+        }
 
         // 8. Process tool call
         if (process_tool_call()) {
