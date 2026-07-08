@@ -24,6 +24,12 @@
 using json = nlohmann::json;
 using namespace std;
 
+// Helper: read an env var with a fallback default value.
+static string getenvOrDefault(const char* name, const string& fallback) {
+    const char* env = getenv(name);
+    return (env && env[0]) ? string(env) : fallback;
+}
+
 // --- Helper to strip trailing whitespace from each line ---
 static std::string strip_trailing_whitespace(const std::string& text) {
     std::string result;
@@ -294,7 +300,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stdout);
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stderr);
 
-        string cmd = "exec "+Taskset::e_core_taskset()+"/usr/bin/python " + HOME + "/searxng/searx/webapp.py";
+        string cmd = "exec "+Taskset::e_core_taskset()+"cd "+HOME+"/searxng && exec python -m searx.webapp";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
@@ -351,7 +357,8 @@ void NetworkTools::start_docling_if_needed() {
         freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
         freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
 
-        string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+HOME+"/venv/bin/docling-serve run --enable-ui";
+        string docling_cmd = getenvOrDefault("LIM_DOCLING_CMD", HOME+"/venv/bin/docling-serve run --enable-ui");
+        string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+docling_cmd;
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {

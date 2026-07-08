@@ -35,9 +35,10 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 ## Prerequisites
 
 1. A GPU with CUDA support (NVIDIA recommended) and the CUDA toolkit installed.
+   For CPU-only builds, run `make GGML_CUDA=off`.
 2. Python 3 with `aiohttp` for the browser server: `pip3 install aiohttp`.
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
-4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search, [Docling](https://github.com/DS4SD/docling) for PDF reading.
+4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search and [Docling](https://github.com/DS4SD/docling) for PDF reading. LIM auto-starts them on demand; override the commands with `LIM_SEARXNG_CMD` / `LIM_DOCLING_CMD` (see **Web Search & PDF Setup** below).
 
 > **Note:** llama is bundled as a git subrepo and will be built automatically by the Makefile.
 
@@ -307,6 +308,8 @@ Set via `LIM_OUTPUT`:
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
 | `LIM_WEB_TIMEOUT` | `600` | HTTP request timeout in seconds for fetches and searches |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
+| `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
+| `LIM_SEARXNG_CMD` | `cd ~/searxng && python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
 | `LIM_EOG_RESAMPLE_MAX` | `64` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings with Qwen3.6 or similar models. |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
@@ -539,6 +542,71 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
 > **Note:** For fair comparisons, run benchmarks with an empty system prompt (remove `~/.config/lim/prompt`) to inhibit tool calls. In mode 1, previous tool calls would be both re-decoded **and re-executed** on every turn, causing massive slowdowns plus unwanted side effects.
+
+---
+
+## Web Search & PDF Setup
+
+LIM can start SearXNG and Docling automatically when needed, but you must install them first:
+
+### SearXNG (Web Search)
+
+```bash
+cd ~
+git clone https://github.com/searxng/searxng.git
+cd searxng
+pip install --no-build-isolation -e .
+```
+
+Then edit `searx/settings.yml`: set a value for `server.secret_key` (required). The defaults for `bind_address` (`127.0.0.1`) and `port` (`8888`) are already correct for LIM. You may need to disable some search engines that block automated queries -- see the [SearXNG docs](https://docs.searxng.org/) for details. Override the start command with `LIM_SEARXNG_CMD` if installed elsewhere.
+
+### Docling (PDF Reading)
+
+```bash
+cd ~
+python3 -m venv venv
+source venv/bin/activate
+pip3 install docling-serve
+deactivate
+```
+
+LIM expects the Docling binary at `~/venv/bin/docling-serve` and starts it on port 5001. Override the start command with `LIM_DOCLING_CMD` if installed elsewhere.
+
+---
+
+## Troubleshooting
+
+### "FIFO not found" or browser output fails
+
+The FIFO at `/tmp/lim.fifo` is created automatically when LIM starts. If it was removed manually, restart your LIM session. Ensure `aiohttp` is installed: `pip3 install aiohttp`.
+
+### "SearxNG connection failed"
+
+LIM tries to connect to SearXNG on `127.0.0.1:8888`. Make sure SearXNG is installed at `~/searxng/` and configured to listen on that port in `settings.yaml`. You can also run SearXNG externally and point LIM to it -- just ensure the server is already listening before your first web search.
+
+### "Docling Error" when reading PDFs
+
+Ensure Docling is installed. If it's not at `~/venv/bin/docling-serve`, set `LIM_DOCLING_CMD` to the correct command, e.g.:
+```bash
+export LIM_DOCLING_CMD="/opt/docling/bin/docling-serve run --enable-ui"
+```
+
+### "No GPU detected and CUDA_ARCH_FLAGS not set"
+
+If you don't have an NVIDIA GPU, build for CPU only:
+```bash
+make GGML_CUDA=off
+```
+
+### Browser viewer shows nothing / won't connect
+
+1. Start LIM first, then open the viewer URL. The server must be running before the browser connects.
+2. Check that nothing else is using port 8765 (or your custom `LIM_PORT`).
+3. If behind a firewall or SSH tunnel, set `LIM_VIEWER_URL` to the correct address.
+
+### "detected dubious ownership in repository"
+
+See **Git Safe Directories** in the User Setup section. Add `[safe] directory = /home/$LIM_AI_USER` to your personal `~/.gitconfig`.
 
 ---
 
