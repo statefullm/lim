@@ -536,6 +536,8 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
+> **Note:** For fair comparisons, run benchmarks with an empty system prompt (remove `~/.config/lim/prompt`) to inhibit tool calls. In mode 1, previous tool calls would be both re-decoded **and re-executed** on every turn, causing massive slowdowns plus unwanted side effects.
+
 ---
 
 ## Session History
