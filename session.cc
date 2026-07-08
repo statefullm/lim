@@ -375,6 +375,20 @@ private:
 string ChatSession::get_user_input() {
     string user_input = "";
 
+    // If stdin is not a terminal (piped input), read lines directly.
+    // Empty lines are skipped; EOF returns empty string to trigger quit.
+    if (!isatty(STDIN_FILENO)) {
+        if (state_.first_turn_done && state_.last_t_count > 0) {
+            diag_speed(state_.last_n_past, cparams_.n_ctx, state_.last_t_count,
+                       state_.last_elapsed, state_.last_decode_time);
+        }
+        string line;
+        while (getline(cin, line)) {
+            if (!line.empty()) return line;
+        }
+        return "";  // EOF
+    }
+
     if (!state_.auto_continue) {
         // Print Speed from previous generation right before >>> (skip first turn).
         // Deferred here so we have all the information we need.
