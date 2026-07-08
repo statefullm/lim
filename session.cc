@@ -1262,6 +1262,7 @@ bool ChatSession::run() {
 
         if (last_cmd_ == Command::RESET) {
             reset_llm_state();
+            NetworkTools().reset_search();
             log_entry("SYSTEM", "Loop Counter Reset");
             diag("Loop Counter Reset Successfully", "\033[32m");
             continue;
