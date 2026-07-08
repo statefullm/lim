@@ -56,7 +56,7 @@ extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
 extern bool honest_speed;
-extern bool chatbot_mode;
+extern int chatbot_mode;
 
 // HOME is declared as extern std::string HOME in network.h
 
@@ -1582,7 +1582,7 @@ bool ChatSession::run() {
             last_user_input_ = user_input;
 
             // Chatbot mode: re-decode full history each turn for comparison
-            if (chatbot_mode && !state_.all_context_tokens.empty()) {
+            if (chatbot_mode > 0 && !state_.all_context_tokens.empty()) {
                 auto feed_start = chrono::high_resolution_clock::now();
                 vector<llama_token> history = state_.all_context_tokens;
                 diag("Chatbot mode: re-decoding " + to_string(history.size()) + " tokens", "\033[90m");

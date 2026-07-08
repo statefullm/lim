@@ -336,6 +336,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
+| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (O(1) KV-cache), `1` = standard chatbot (re-decode full history each turn), `2` = cache-aware simulation (re-feed pre-decoded history each turn) |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
@@ -523,9 +524,27 @@ make all
 
 ---
 
+## Benchmarking
+
+LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its O(1) KV-cache approach against standard chatbot and cache-aware decoding. Each mode writes a TPS log (`log/<N>.tps`) recording context position and tokens-per-second for every turn.
+
+| Value | Mode | Description |
+|---|---|---|
+| `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. New user input is decoded against the full context, then stays cached like everything else. |
+| `1` | Standard chatbot | Clears cache each turn and re-decodes full history + new input from scratch. All decode time included in TPS. |
+| `2` | Cache-aware | Clears cache each turn and re-feeds pre-decoded history. Simulates the per-request cache rebuild overhead of cache-aware systems. Compared to mode 0, the only extra cost is this per-turn clear and rebuild. |
+
+Set via environment variable:
+
+```bash
+LIM_CHATBOT_MODE=1 LIM_HONEST_SPEED=1 lim ~/models/model.gguf
+```
+
+---
+
 ## Session History
 
-Input history is persisted to `.lim_history` in the current working directory and survives across sessions. Use the Up/Down arrow keys to navigate previous inputs.
+Input history is persisted to `.lim_history` in the current working directory and survives across sessions.
 
 ---
 
