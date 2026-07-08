@@ -1620,18 +1620,45 @@ bool ChatSession::run() {
 
             // Chatbot mode: re-decode full history each turn for comparison
             if (chatbot_mode > 0 && !state_.all_context_tokens.empty()) {
-                auto feed_start = chrono::high_resolution_clock::now();
-                vector<llama_token> history = state_.all_context_tokens;
-                diag("Chatbot mode: re-decoding " + to_string(history.size()) + " tokens", "\033[90m");
+                // Save a copy of the history tokens before clearing state.
+                vector<llama_token> saved_history = state_.all_context_tokens;
+
                 llama_memory_clear(llama_get_memory(ctx_), true);
                 n_past_ = 0;
                 state_.all_context_tokens.clear();
                 state_.prompt_checkpoints.clear();
                 llama_sampler_reset(smpl_);
-                // Re-feed entire history (includes system prompt + all conversation)
-                feed_tokens_impl(history);
-                auto feed_end = chrono::high_resolution_clock::now();
-                state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+
+                vector<llama_token> history;
+                if (chatbot_mode == 1) {
+                    // Mode 1 (standard chatbot): detokenize to text, then re-tokenize
+                    // from scratch, simulating a real chat API that receives full
+                    // conversation text and tokenizes it each turn. Detokenization
+                    // is benchmark infrastructure only — not counted in TPS.
+                    string history_text;
+                    for (llama_token t : saved_history) {
+                        history_text += common_token_to_piece(ctx_, t);
+                    }
+                    auto feed_start = chrono::high_resolution_clock::now();
+                    history = common_tokenize(ctx_, history_text, false, true);
+                    diag("Chatbot mode 1: re-tokenized " + to_string(history.size()) +
+                         " tokens from " + to_string(saved_history.size()) +
+                         " history tokens", "\033[90m");
+                    feed_tokens_impl(history);
+                    auto feed_end = chrono::high_resolution_clock::now();
+                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                } else {
+                    // Mode 2 (cache-aware): re-feed pre-decoded token sequence directly.
+                    // Simulates systems that have a persistent token cache but rebuild
+                    // the KV-cache per request.
+                    history = saved_history;
+                    diag("Chatbot mode 2: re-feeding " + to_string(history.size()) +
+                         " cached tokens", "\033[90m");
+                    auto feed_start = chrono::high_resolution_clock::now();
+                    feed_tokens_impl(history);
+                    auto feed_end = chrono::high_resolution_clock::now();
+                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                }
             } else {
                 state_.last_feed_time = 0.0;
             }

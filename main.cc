@@ -35,7 +35,6 @@ ofstream chat_log;
 ofstream token_log;
 ofstream tps_log;
 string INITIAL_CWD;
-
 // LIM_HONEST_SPEED: how the t/s diagnostic is computed.
 //   0 (default): benchmark-style -- tokens / sample+sync window (first to last token),
 //                 covering N sampling ops + (N-1) decode cycles. Matches llama-cli.
@@ -44,8 +43,9 @@ bool honest_speed = false;  // default: benchmark-style
 
 // LIM_CHATBOT_MODE: benchmarking modes for comparing history handling
 //   0 (default): LIM normal mode -- O(1) KV-cache append, no re-decode
-//   1: Standard chatbot -- re-decode full history each turn (includes feed time)
-//   2: Cache-aware -- re-feed pre-decoded history each turn (includes feed time)
+//   1: Standard chatbot -- detokenize + re-tokenize + re-decode full history each turn.
+//   2: Cache-aware -- re-feed pre-decoded token sequence through model each turn.
+//   Both modes force honest speed measurement so TPS includes re-decode overhead.
 int chatbot_mode = 0;
 
 // LIM_SPEED_INTERVAL: how often (in tokens) to update the speed diagnostic.
@@ -202,15 +202,17 @@ int main(int argc, char ** argv) {
     }
 
     // LIM_CHATBOT_MODE: benchmarking modes for comparing history handling
-    //   0 (default): LIM normal mode -- O(1) KV-cache append, no re-decode
-    //   1: Standard chatbot -- re-decode full history each turn (includes feed time)
-    //   2: Cache-aware -- re-feed pre-decoded history each turn (includes feed time)
     {
         const char* env = getenv("LIM_CHATBOT_MODE");
         if (env != nullptr && strlen(env) > 0) {
             int val = atoi(env);
             if (val >= 1 && val <= 2) chatbot_mode = val;
         }
+    }
+
+    // Chatbot modes force honest speed measurement so TPS includes re-decode overhead.
+    if (chatbot_mode > 0 && !honest_speed) {
+        honest_speed = true;
     }
 
     // LIM_SPEED_INTERVAL: tokens between speed diagnostic updates (default 100)
@@ -296,9 +298,9 @@ int main(int argc, char ** argv) {
 
     diag("Session #" + to_string(log_index) + " started: type /help to see a list of commands", "\033[35m");
     if (chatbot_mode == 1) {
-        diag("Chatbot mode enabled: full history re-decoded each turn", "\033[33m");
+        diag("Chatbot mode 1 enabled: full re-tokenize + re-decode each turn", "\033[33m");
     } else if (chatbot_mode == 2) {
-        diag("Cache-aware mode enabled: history re-fed each turn", "\033[33m");
+        diag("Chatbot mode 2 enabled: pre-decoded history re-feed each turn", "\033[33m");
     }
     if (is_debug) Taskset::log_core_detection(std::cerr);
     log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(log_index) + ")");
