@@ -89,6 +89,10 @@ vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string 
 //   user_turn_start + content + turn_end + "\n" + assistant_turn_start
 vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content);
 
+// Text-only variant: returns the formatted string without tokenizing.
+// Used by chatbot mode 1 to reconstruct the full conversation for re-tokenization.
+string build_user_assistant_turn_text(const string &user_content);
+
 // Build user turn only (no assistant prefill):
 //   user_turn_start + content + turn_end + "\n"
 vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_content);

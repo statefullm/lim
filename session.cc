@@ -1628,7 +1628,8 @@ bool ChatSession::run() {
 
             // Chatbot mode: re-decode full history each turn for comparison
             if (chatbot_mode == 1 && !state_.all_context_tokens.empty()) {
-                // Mode 1: clear cache, re-tokenize from text, re-decode everything
+                // Mode 1: clear cache, reconstruct text, re-tokenize, re-decode everything
+                // (history + new user message together, like a real chat API prefill)
                 vector<llama_token> saved_history = state_.all_context_tokens;
 
                 llama_memory_clear(llama_get_memory(ctx_), true);
@@ -1637,19 +1638,43 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints.clear();
                 llama_sampler_reset(smpl_);
 
+                // Reconstruct full conversation text: history + new user message.
+                // Timing starts here to include text reconstruction + tokenization + decode,
+                // matching the full per-turn cost of a real chatbot API.
+                auto feed_start = chrono::high_resolution_clock::now();
+
                 string history_text;
                 for (llama_token t : saved_history) {
                     history_text += common_token_to_piece(ctx_, t);
                 }
-                auto feed_start = chrono::high_resolution_clock::now();
-                auto history = common_tokenize(ctx_, history_text, false, true);
+
+                // Build the user turn text the same way feed_user_message does,
+                // so the re-tokenized prefill includes the new input.
+                string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
+                state_.prev_was_interrupted = false;
+                string full_text = history_text + turn_close_str;
+
+                // Append user/assistant role markers and content via the chat template.
+                full_text += build_user_assistant_turn_text(user_input);
+
+                auto history = common_tokenize(ctx_, full_text, false, true);
                 diag("Chatbot mode 1: re-tokenized " + to_string(history.size()) +
                      " tokens from " + to_string(saved_history.size()) +
-                     " history tokens", "\033[90m");
-                feed_tokens_impl(history);
+                     " history tokens (incl. new input)", "\033[90m");
+                if (!feed_tokens_impl(history)) continue;
                 auto feed_end = chrono::high_resolution_clock::now();
                 state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
 
+                // Perform the logging/browser output that feed_user_message would do,
+                // but skip its token feeding since we already included the input above.
+                if (!state_.auto_continue) {
+                    log_entry("USER", user_input);
+                    if (should_output_to_browser() && pipe_fd >= 0) {
+                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(user_input) + "</code></pre></div>\n\n";
+                        stream_html(user_html);
+                    }
+                }
+                // Skip feed_user_message -- tokens already fed. Fall through to generate_response().
             } else if (chatbot_mode == 2 && !mode2_cache_path_.empty()) {
                 // Mode 2: restore KV-cache from disk (simulates cache-aware systems)
                 vector<llama_token> saved_history = state_.all_context_tokens;
@@ -1679,7 +1704,9 @@ bool ChatSession::run() {
                 state_.last_feed_time = 0.0;
             }
 
-            if (!feed_user_message(user_input)) continue;
+            // Mode 1 already fed the user input as part of the combined prefill.
+            // Modes 0 and 2 need feed_user_message to handle the new input normally.
+            if (chatbot_mode != 1 && !feed_user_message(user_input)) continue;
         }
 
         // 7. Generate response

@@ -460,11 +460,16 @@ vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string 
 }
 
 vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content) {
+    string msg = build_user_assistant_turn_text(user_content);
+    return common_tokenize(ctx, msg, false, true);
+}
+
+string build_user_assistant_turn_text(const string &user_content) {
     string msg = g_model_tokens.user_turn_start.text + user_content;
     if (g_model_tokens.has_explicit_turn_end())
         msg += g_model_tokens.turn_end.text;
     msg += g_model_tokens.assistant_turn_start.text;
-    return common_tokenize(ctx, msg, false, true);
+    return msg;
 }
 
 vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_content) {
