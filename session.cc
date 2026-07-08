@@ -1605,7 +1605,25 @@ bool ChatSession::run() {
 
         // 3. Reject unrecognized commands before they reach the LLM
         if (last_cmd_ == Command::NONE && !user_input.empty() && user_input[0] == '/') {
-            diag("Unknown command: " + user_input + ". Type /help for available commands.", "\033[33m");
+            // Only show "Unknown command" if no known command name was matched at all.
+            // If handle_command returned NONE because of extra arguments on a recognized
+            // command, it already printed its own warning — don't double-report.
+            string rest = user_input.substr(1);
+            bool known_prefix = false;
+            for (const auto& c : g_commands) {
+                if (!c.name) continue;
+                int len = (int)strlen(c.name);
+                bool matched = false;
+                if (rest.size() == (size_t)len) {
+                    matched = (rest.substr(0, len) == c.name);
+                } else if (rest.size() > (size_t)len && isspace(rest[len])) {
+                    matched = (rest.substr(0, len) == c.name);
+                }
+                if (matched) { known_prefix = true; break; }
+            }
+            if (!known_prefix) {
+                diag("Unknown command: " + user_input + ". Type /help for available commands.", "\033[33m");
+            }
             continue;
         }
 
