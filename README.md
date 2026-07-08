@@ -339,6 +339,12 @@ Set via `LIM_OUTPUT`:
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
 | `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
+### Sampling Behavior
+
+
+Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG seed). This means repetition penalties apply only to tokens generated *during the current turn*, not to stale tokens from previous responses, and not to the user's input. This differs from llama-cli, which feeds user input tokens into the sampler chain: in a chat interface, penalizing words the user explicitly used in their message would actively harm response quality. During auto-continue (tool-call chains, `/continue`), the sampler state is preserved so generation continues seamlessly.
+
+
 ---
 
 ## The AI Sandbox
@@ -527,7 +533,7 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 | Value | Mode | Description |
 |---|---|---|
 | `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. Same approach as llama-cli interactive mode.
-| `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (detokenization is excluded — it's a LIM implementation detail, not part of chatbot behavior). |
+| `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (detokenization is excluded -- it's a LIM implementation detail, not part of chatbot behavior). |
 | `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding. Illustrates that prefix matching overhead is negligible compared to decode cost.
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.

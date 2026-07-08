@@ -663,6 +663,14 @@ TokenGenerator::Result ChatSession::generate_response() {
     g_auto_continue_depth_ = state_.auto_continue ? g_auto_continue_depth_ : 0;
     allow_continue_resume_ = false;
 
+    // Reset sampler between user turns so the penalties ring buffer starts
+    // fresh.  Only generated tokens are tracked (user input goes through
+    // feed_tokens_impl, not the sampler chain), so repetition penalties
+    // apply only to what the model itself produces this turn.
+    if (!state_.auto_continue) {
+        llama_sampler_reset(smpl_);
+    }
+
     // Compute turn timeout from environment
     static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 300.0;
     const char* timeout_env = getenv("LIM_TURN_TIMEOUT");
