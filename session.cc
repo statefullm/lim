@@ -990,6 +990,12 @@ bool ChatSession::run() {
                     diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
                 }
             }
+
+            // Clean up mode 2 cache file on exit.
+            if (!mode2_cache_path_.empty()) {
+                remove(mode2_cache_path_.c_str());
+            }
+
             return false;
         }
 
