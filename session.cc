@@ -1728,6 +1728,10 @@ bool ChatSession::run() {
                         state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
                         continue;
                     }
+                } else {
+                    // Full match — nothing new to decode. This shouldn't happen in practice
+                    // since we always add new user input, but handle it gracefully.
+                    diag("Chatbot mode 2: full prefix match, no delta to decode", "\033[90m");
                 }
 
                 auto feed_end = chrono::high_resolution_clock::now();
@@ -1747,9 +1751,14 @@ bool ChatSession::run() {
             }
 
 
-            // Mode 1 and mode 2 already fed the user input as part of their combined prefill.
-            // Only mode 0 uses feed_user_message for the new input.
-            if (chatbot_mode == 0 && !feed_user_message(user_input)) continue;
+            // Mode 1 already fed tokens above and falls through to generate_response().
+            // Mode 2 fed tokens only when cache existed; otherwise needs feed_user_message.
+            // Mode 0 always uses feed_user_message.
+            if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {
+                // Already fed delta tokens above.
+            } else if (!feed_user_message(user_input)) {
+                continue;
+            }
         }
 
         // 7. Generate response
