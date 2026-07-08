@@ -8,6 +8,8 @@
 #include <fcntl.h>
 #include <poll.h>
 
+using namespace std;
+
 // --- Segment Constants ---
 const char SEG_LLM_TEXT   = '\x02';  // LLM-generated text (rendered through marked)
 const char SEG_HTML       = '\x04';  // Any other raw HTML (tool results, user input, dividers)

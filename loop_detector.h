@@ -9,13 +9,10 @@
 #include <cctype>
 #include "tokens.h"
 
-using namespace std;
-using namespace Tokens;
-
 // --- SEQUENTIAL INTERVENTION MESSAGES ---
-static const string SYSTEM_PROMPT_REMINDER = "Follow the system prompt strictly.";
+static const std::string SYSTEM_PROMPT_REMINDER = "Follow the system prompt strictly.";
 
-inline vector<string> loopMessages = {
+static const std::vector<std::string> loopMessages = {
     "You are in a loop.",
     "You already have this information.",
     "Please proceed.",
@@ -24,10 +21,10 @@ inline vector<string> loopMessages = {
     "Can we finish?",
     "Let's break out of this loop!"
 };
-inline int loopMessageIndex = 0;
+static int loopMessageIndex = 0;
 
-inline string get_next_loop_message() {
-    string msg = loopMessages[loopMessageIndex];
+inline std::string get_next_loop_message() {
+    std::string msg = loopMessages[loopMessageIndex];
     loopMessageIndex = (loopMessageIndex + 1) % loopMessages.size();
     return SYSTEM_PROMPT_REMINDER + " " + msg;
 }
@@ -35,37 +32,37 @@ inline string get_next_loop_message() {
 // --- Macro-Loop Detection ---
 class LoopDetector {
 private:
-    deque<size_t> tool_history;
-    map<size_t, int> freq_map;  // O(1) occurrence counts, kept in sync with tool_history
+    std::deque<size_t> tool_history;
+    std::map<size_t, int> freq_map;  // O(1) occurrence counts, kept in sync with tool_history
     size_t max_window_size;
 
-    string normalize_str(const string& s) const {
-        string tool_name;
-        size_t fs = s.find(FUNC_START);
-        if (fs != string::npos) {
+    std::string normalize_str(const std::string& s) const {
+        std::string tool_name;
+        size_t fs = s.find(Tokens::FUNC_START);
+        if (fs != std::string::npos) {
             size_t gt = s.find('>', fs);
-            if (gt != string::npos) {
+            if (gt != std::string::npos) {
                 tool_name = s.substr(fs, gt - fs);
             }
         }
 
         // Extract parameter values using PARAM_START / PARAM_END constants.
         // Captures semantic intent regardless of whitespace/formatting differences.
-        string param_values;
-        string pstart(PARAM_START);
-        string pend(PARAM_END);
+        std::string param_values;
+        std::string pstart(Tokens::PARAM_START);
+        std::string pend(Tokens::PARAM_END);
         size_t ps = 0;
-        while ((ps = s.find(pstart, ps)) != string::npos) {
+        while ((ps = s.find(pstart, ps)) != std::string::npos) {
             size_t pe = s.find('>', ps);
-            if (pe == string::npos) break;
+            if (pe == std::string::npos) break;
             size_t pc = s.find(pend, pe);
-            if (pc == string::npos) break;
-            string value = s.substr(pe + 1, pc - pe - 1);
+            if (pc == std::string::npos) break;
+            std::string value = s.substr(pe + 1, pc - pe - 1);
             // Collapse whitespace within each value
-            string collapsed;
+            std::string collapsed;
             bool last_space = true;
             for (char c : value) {
-                if (isspace(c)) {
+                if (std::isspace(c)) {
                     if (!last_space) { collapsed += ' '; last_space = true; }
                 } else { collapsed += c; last_space = false; }
             }
@@ -77,8 +74,8 @@ private:
         // stripping whitespace from the entire tool call body to avoid
         // hash collisions between different calls to the same tool.
         if (param_values.empty()) {
-            string fallback;
-            for (char c : s) { if (!isspace(c)) fallback += c; }
+            std::string fallback;
+            for (char c : s) { if (!std::isspace(c)) fallback += c; }
             return fallback;
         }
 
@@ -93,17 +90,17 @@ public:
 
     // O(1): Block if this command has appeared >= 2 times in the window.
     // Catches direct repeats (A->A) and cycles (A->B->C->D->E->A).
-    bool would_repeat(const string& tool_call) const {
-        string norm_tool = normalize_str(tool_call);
-        size_t tool_hash = hash<string>{}(norm_tool);
+    bool would_repeat(const std::string& tool_call) const {
+        std::string norm_tool = normalize_str(tool_call);
+        size_t tool_hash = std::hash<std::string>{}(norm_tool);
         auto it = freq_map.find(tool_hash);
         return (it != freq_map.end() && it->second >= 2);
     }
 
     // O(1): Record a tool call; return true if it now appears >= 3 times.
-    bool record_and_check(const string& tool_call) {
-        string norm_tool = normalize_str(tool_call);
-        size_t tool_hash = hash<string>{}(norm_tool);
+    bool record_and_check(const std::string& tool_call) {
+        std::string norm_tool = normalize_str(tool_call);
+        size_t tool_hash = std::hash<std::string>{}(norm_tool);
 
         tool_history.push_back(tool_hash);
         add_to_map(tool_hash);

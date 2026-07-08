@@ -6,8 +6,6 @@
 #include <sstream>
 #include <iostream>
 
-using namespace std;
-
 // --- Segment Constants ---
 // Segment prefix characters for viewer.html segment-based rendering.
 extern const char SEG_LLM_TEXT;  // LLM-generated text (rendered through marked)
@@ -35,11 +33,11 @@ void init_output_stream();
 void pipe_write(const char* data, size_t len);
 
 // --- Streaming Functions ---
-void stream(const string& raw_token);
-void stream_tool_result(const string& html);
-void stream_html(const string& html);
-void stream_speed(const string& speed_text);
-void stream_think(const string& text);
+void stream(const std::string& raw_token);
+void stream_tool_result(const std::string& html);
+void stream_html(const std::string& html);
+void stream_speed(const std::string& speed_text);
+void stream_think(const std::string& text);
 
 // --- Console Output Helpers ---
 // Track whether stdout ended with a newline, so callers can ensure clean line breaks.
@@ -47,9 +45,9 @@ extern bool g_stdout_ended_with_newline;
 
 template<typename... Args>
 void format_and_print(Args&&... args) {
-    ostringstream oss;
-    ((oss << forward<Args>(args)), ...);
-    cout << oss.str();
+    std::ostringstream oss;
+    ((oss << std::forward<Args>(args)), ...);
+    std::cout << oss.str();
 }
 
 #define message(...) format_and_print(__VA_ARGS__)
@@ -57,33 +55,33 @@ void format_and_print(Args&&... args) {
 template<typename... Args>
 void console(Args&&... args) {
   if (should_output_to_stdout())
-    ((cout << forward<Args>(args)), ...);
+    ((std::cout << std::forward<Args>(args)), ...);
 }
 
 // Special function for think block output - outputs to stdout when enabled (modes 1 and 3).
 template<typename... Args>
 void console_think(Args&&... args) {
   if (should_output_to_stdout()) {
-    cout << "\033[0m";  // Reset colors - thinking should NOT be blue
-    ((cout << forward<Args>(args)), ...);
+    std::cout << "\033[0m";  // Reset colors - thinking should NOT be blue
+    ((std::cout << std::forward<Args>(args)), ...);
   }
 }
 
 static inline void consoleFlush() {
-    if (should_output_to_stdout()) cout.flush();
+    if (should_output_to_stdout()) std::cout.flush();
 }
 
 static inline void consoleThinkFlush() {
-    if (should_output_think_blocks()) cout.flush();
+    if (should_output_think_blocks()) std::cout.flush();
 }
 
 // Ensure stdout cursor is at the start of a new line.
 // No-op if stdout already ended with '\n'; prints exactly one '\n' otherwise.
 static inline void consoleEnsureNewline() {
     if (should_output_to_stdout() && !g_stdout_ended_with_newline) {
-        cout << "\n";
+        std::cout << "\n";
         g_stdout_ended_with_newline = true;
-        cout.flush();
+        std::cout.flush();
     }
 }
 

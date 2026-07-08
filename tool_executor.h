@@ -10,9 +10,6 @@
 #include <vector>
 #include <functional>
 
-using namespace std;
-using namespace Tokens;
-
 class ToolExecutor {
 public:
     struct Result {
@@ -23,13 +20,13 @@ public:
 
     static Result execute(
         SessionState& state,
-        string& generated_text,
-        const string& full_generated,
+        std::string& generated_text,
+        const std::string& full_generated,
         size_t tool_start,
         size_t tool_end,
         bool was_mid_tool_call,
-        function<vector<llama_token>(string)> tokenize,
-        function<bool(const vector<llama_token>&)> feed_tokens,
+        std::function<std::vector<llama_token>(std::string)> tokenize,
+        std::function<bool(const std::vector<llama_token>&)> feed_tokens,
         llama_context* ctx,
         int& n_past,
         const llama_context_params& cparams,

@@ -29,6 +29,8 @@
 #include <unistd.h>
 #include <pwd.h>
 
+using namespace std;
+
 // --- Global State ---
 bool is_debug = false;
 ofstream chat_log;

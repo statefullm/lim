@@ -7,6 +7,9 @@
 #include <sys/stat.h>
 #include <sys/inotify.h>
 #include <cstdlib>
+#include <cerrno>
+
+using namespace std;
 
 // --- LIM Server Process Management ---
 pid_t g_lim_server_pid = -1;
@@ -92,38 +95,24 @@ static void kill_stale_server() {
 
 bool is_lim_server_running() {
     int port = get_server_port();
-    char port_str[16];
-    snprintf(port_str, sizeof(port_str), "%d", port);
 
-    // Build check commands with the configured port.
-    string cmd_ss = "ss -tlnp 2>/dev/null | grep -q ':" + string(port_str) + " '";
-    string cmd_netstat = "netstat -tlnp 2>/dev/null | grep -q ':" + string(port_str) + " '";
-    string cmd_lsof = "lsof -i :" + string(port_str) + " 2>/dev/null | grep -q LISTEN";
-    string cmd_python = "python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); s.bind(('0.0.0.0', " + string(port_str) + ")); s.close(); exit(1)\" 2>/dev/null || exit 0";
+    // Robust approach: try to bind the port ourselves. If it succeeds, nobody
+    // is listening; if EADDRINUSE, someone is. This avoids spawning subprocesses
+    // (ss/netstat/lsof) and works consistently across all Linux distributions.
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return false;  // Can't create socket -- assume not running
 
-    const char* commands[] = { cmd_ss.c_str(), cmd_netstat.c_str(), cmd_lsof.c_str(), cmd_python.c_str() };
+    int opt = 1;
+    setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    for (const char* cmd : commands) {
-        FILE* fp = popen(cmd, "r");
-        if (fp != nullptr) {
-            int status = pclose(fp);
-            if (WEXITSTATUS(status) == 1) {
-                continue;
-            } else if (WEXITSTATUS(status) != 0) {
-                return true;
-            }
-        }
-    }
+    struct sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-    string cmd_fallback = "python3 -c \"import socket; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); "
-                          "s.bind(('0.0.0.0', " + to_string(port) + ")); s.close();\" 2>/dev/null";
-    FILE* fp = popen(cmd_fallback.c_str(), "r");
-    if (fp != nullptr) {
-        int status = pclose(fp);
-        return status != 0;
-    }
-
-    return false;
+    bool in_use = (bind(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0 && errno == EADDRINUSE);
+    close(sock);
+    return in_use;
 }
 
 void start_lim_server_if_needed() {

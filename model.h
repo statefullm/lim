@@ -5,8 +5,6 @@
 #include <string>
 #include <vector>
 
-using namespace std;
-
 // --- Model Detection and Chat Template Selection ---
 
 // Mirror of llama.cpp's internal llm_chat_template enum (from llama/src/llama-chat.h).
@@ -31,8 +29,8 @@ enum class ModelType {
 // A template fragment: human-readable text + pre-computed token IDs.
 // Text is used for display/logging; tokens are fed into the KV cache.
 struct ModelFragment {
-    string text;
-    vector<llama_token> tokens;
+    std::string text;
+    std::vector<llama_token> tokens;
 };
 
 // Pre-computed model-specific turn delimiters, populated at startup by
@@ -73,37 +71,37 @@ ModelType detect_model_type(const llama_model *model);
 // Must be called after model and context are loaded.
 void init_model_tokens(llama_context *ctx, const llama_model *model);
 
-string get_chat_template_name(ModelType model_type);
+std::string get_chat_template_name(ModelType model_type);
 
 // Generate the complete reserved-token escape contract for the system prompt.
 // Covers PARAM_END (always active) plus model-specific turn delimiters.
 // Returns a string with explicit token list, rules, and examples.
-string generate_turn_escape_contract();
+std::string generate_turn_escape_contract();
 
 // --- Convenience helpers for message construction (token-vector based) ---
 
 // Build system prompt tokens: BOS + system_turn_start + content + turn_end
-vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string &content);
+std::vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const std::string &content);
 
 // Build user turn + assistant prefill as token vector:
 //   user_turn_start + content + turn_end + "\n" + assistant_turn_start
-vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content);
+std::vector<llama_token> build_user_assistant_turn(llama_context *ctx, const std::string &user_content);
 
 // Text-only variant: returns the formatted string without tokenizing.
 // Used by chatbot mode 1 to reconstruct the full conversation for re-tokenization.
-string build_user_assistant_turn_text(const string &user_content);
+std::string build_user_assistant_turn_text(const std::string &user_content);
 
 // Build user turn only (no assistant prefill):
 //   user_turn_start + content + turn_end + "\n"
-vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_content);
+std::vector<llama_token> build_user_turn_only(llama_context *ctx, const std::string &user_content);
 
 // Build a tool result injection:
 //   user_turn_start + "[Tool Result]\n" + content + turn_end + "\n" + assistant_turn_start
-vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output);
+std::vector<llama_token> build_tool_result_turn(llama_context *ctx, const std::string &tool_output);
 
 // Build forced-close tokens for EOG recovery / loop detection:
 //   "\n" + turn_end + "\n"  (FUNC_END is added separately since it's lim protocol)
-vector<llama_token> build_forced_close_tokens(llama_context *ctx);
+std::vector<llama_token> build_forced_close_tokens(llama_context *ctx);
 
 // --- Decode Error Handling ---
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true);

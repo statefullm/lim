@@ -13,6 +13,8 @@
 #include <cctype>
 #include <algorithm>
 
+using namespace std;
+using namespace Tokens;
 
 // Forward declarations for functions defined in main.cc
 extern void diag(const string& msg, const char* color);

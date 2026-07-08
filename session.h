@@ -14,10 +14,9 @@
 #include <chrono>
 #include "loop_detector.h"
 #include "filesystem.h"
-using namespace std;
 
 // Forward declaration for INITIAL_CWD from main.cc
-extern string INITIAL_CWD;
+extern std::string INITIAL_CWD;
 
 struct SessionState {
     bool auto_continue = false;
@@ -29,17 +28,17 @@ struct SessionState {
     double last_decode_time = 0.0;  // Wall-clock generation time (first-token to last-token decode)
     double last_feed_time = 0.0;    // Time spent feeding/re-decoding tokens (chatbot mode)
     int last_n_past = 0;
-    map<string, string> file_cache;  // path -> content hash (for cache validation)
+    std::map<std::string, std::string> file_cache;  // path -> content hash (for cache validation)
     LoopDetector loop_guard;
     int invalid_tool_strikes = 0;
     // Internal state (was static inside the function)
     int auto_continue_depth_val = 0;
     bool tool_interrupt_pending = false;
-    string partial_tool_text;
+    std::string partial_tool_text;
     // All tokens fed into context, for save/restore
-    vector<llama_token> all_context_tokens;
+    std::vector<llama_token> all_context_tokens;
     // Token positions and prompt text at each prompt return, for partial restore
-    vector<PromptCheckpoint> prompt_checkpoints;
+    std::vector<PromptCheckpoint> prompt_checkpoints;
     // Number of historical checkpoints not present in the live recurrent checkpoint
     // stack (e.g., after a fast restore from cache where only new prompts get saved).
     // Used to offset rs_checkpoint_restore/prune indices during undo.
@@ -60,7 +59,7 @@ bool run_chat_session(
     const llama_context_params& cparams,
 
     // System prompt tokens
-    const vector<llama_token>& system_tokens,
+    const std::vector<llama_token>& system_tokens,
 
     // Configuration
     bool use_dummy_thought,

@@ -12,8 +12,6 @@
 #include <pwd.h>
 #include <signal.h>
 
-using namespace std;
-
 // --- LIM Server Process Management ---
 extern pid_t g_lim_server_pid;
 
@@ -24,8 +22,8 @@ void cleanup_lim_server();
 
 // --- Browser Connection ---
 bool check_browser_connected();
-string get_hostname();
-string get_viewer_url();
+std::string get_hostname();
+std::string get_viewer_url();
 int get_server_port();
 
 void disable_browser_output();
