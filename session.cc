@@ -57,6 +57,7 @@ extern ofstream chat_log;
 extern ofstream token_log;
 extern bool honest_speed;
 extern int chatbot_mode;
+extern std::ofstream tps_log;
 
 // HOME is declared as extern std::string HOME in network.h
 
@@ -726,6 +727,9 @@ TokenGenerator::Result ChatSession::generate_response() {
     state_.last_decode_time = gen_result_.decode_time;
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
+
+    // Flush TPS log so data is durable after each turn
+    tps_log.flush();
 
     if (stop_generation) {
         stop_generation = 0;
