@@ -969,9 +969,8 @@ string NetworkTools::web_search(const string& query) {
         return cached_content;
     }
 
-    // Ensure both services are running
+    // Ensure SearxNG is running. Docling will be started on demand if a PDF is encountered.
     start_searxng_if_needed(base_url);
-    start_docling_if_needed();
 
     auto now = chrono::steady_clock::now();
     auto elapsed = chrono::duration_cast<chrono::seconds>(now - g_last_network_request).count();
@@ -1058,7 +1057,7 @@ string NetworkTools::web_search(const string& query) {
                 }
 
                 if (!result_url.empty()) {
-                    cerr << "Fetching full text/PDF from: " + result_url << endl;
+                    cerr << "Fetching text from: " + result_url << endl;
                     string full_text = fetch_and_clean_html(result_url);
 
                     // Added check for "[Failed to process" to ensure Docling errors trigger snippet fallback
