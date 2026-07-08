@@ -531,7 +531,7 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 | Value | Mode | Description |
 |---|---|---|
 | `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. New user input is decoded against the full context, then stays cached like everything else. |
-| `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (the text reconstruction step is excluded since it exists only to enable the benchmark). |
+| `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (detokenization is excluded — it's a LIM implementation detail, not part of chatbot behavior). |
 | `2` | Cache-aware | Emulates llama.cpp's `--prompt-cache` feature. After the first turn, saves the full KV-cache state to disk. Each subsequent turn clears the cache and restores it from disk (I/O only, no model compute), then decodes only new tokens. Simulates systems that persist the KV-cache between requests. Compared to mode 0, the only extra cost is the per-turn save and disk restore. |
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.

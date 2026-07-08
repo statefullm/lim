@@ -1639,10 +1639,9 @@ bool ChatSession::run() {
                 llama_sampler_reset(smpl_);
 
                 // Reconstruct full conversation text: history + new user message.
-                // Timing starts here to include text reconstruction + tokenization + decode,
-                // matching the full per-turn cost of a real chatbot API.
-                auto feed_start = chrono::high_resolution_clock::now();
-
+                // This detokenization is a LIM implementation detail (needed because LIM
+                // stores tokens internally), not something a real chatbot does.
+                // We exclude it from timing so the benchmark fairly emulates chatbot behavior.
                 string history_text;
                 for (llama_token t : saved_history) {
                     history_text += common_token_to_piece(ctx_, t);
@@ -1656,6 +1655,9 @@ bool ChatSession::run() {
 
                 // Append user/assistant role markers and content via the chat template.
                 full_text += build_user_assistant_turn_text(user_input);
+
+                // Timing starts here: tokenize + decode only, matching real chatbot behavior.
+                auto feed_start = chrono::high_resolution_clock::now();
 
                 auto history = common_tokenize(ctx_, full_text, false, false);
                 diag("Chatbot mode 1: re-tokenized " + to_string(history.size()) +
