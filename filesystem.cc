@@ -24,7 +24,7 @@
 #include <limits.h>
 #include <climits>
 #include <csignal>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 using namespace std;
 using namespace Tokens;
@@ -259,10 +259,24 @@ int read_save_session(const string& save_path) {
 #include <dirent.h>
 
 static std::string sha256_hex(const std::string& data) {
-    std::array<uint8_t, SHA256_DIGEST_LENGTH> hash;
-    SHA256(reinterpret_cast<const uint8_t*>(data.data()), data.size(), hash.data());
+    std::array<uint8_t, EVP_MAX_MD_SIZE> hash;
+    unsigned int hash_len = 0;
+
+    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+    if (!ctx) return "";
+
+    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
+        EVP_DigestUpdate(ctx, data.data(), data.size()) == 1 &&
+        EVP_DigestFinal_ex(ctx, hash.data(), &hash_len) == 1) {
+        EVP_MD_CTX_free(ctx);
+    } else {
+        EVP_MD_CTX_free(ctx);
+        return "";
+    }
+
     std::ostringstream oss;
-    for (auto b : hash) oss << std::hex << std::setfill('0') << std::setw(2) << (int)b;
+    for (unsigned int i = 0; i < hash_len; i++)
+        oss << std::hex << std::setfill('0') << std::setw(2) << (int)hash[i];
     return oss.str();
 }
 

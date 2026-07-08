@@ -16,6 +16,11 @@
 using namespace std;
 using namespace Tokens;
 
+// Shared loop-message index (declared extern in loop_detector.h).
+// Single definition so all translation units see the same counter,
+// allowing LoopDetector::clear_history() to reset it reliably.
+int loopMessageIndex = 0;
+
 // Forward declarations for functions defined in main.cc
 extern void diag(const string& msg, const char* color);
 extern bool is_debug;

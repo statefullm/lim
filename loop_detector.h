@@ -21,7 +21,7 @@ static const std::vector<std::string> loopMessages = {
     "Can we finish?",
     "Let's break out of this loop!"
 };
-static int loopMessageIndex = 0;
+extern int loopMessageIndex;  // Defined in tool_executor.cc
 
 inline std::string get_next_loop_message() {
     std::string msg = loopMessages[loopMessageIndex];

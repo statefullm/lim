@@ -44,10 +44,12 @@ CXXFLAGS = -std=c++17 -O3 \
 	-I$(LLAMA_DIR)/vendor \
 	-I/usr/include/libxml2
 
+CUDA_LIB_DIR ?= $(shell N=$$(readlink -f "$$(which nvcc 2>/dev/null)" 2>/dev/null) && dirname "$$(dirname "$$N")" || echo /usr/local/cuda-13.0)/targets/x86_64-linux/lib
+
 LDFLAGS = -L$(LIM_LLAMA_BUILD_DIR)/bin \
-	-L/usr/local/cuda-13.0/targets/x86_64-linux/lib \
+	-L$(CUDA_LIB_DIR) \
 	-Wl,-rpath,$(shell readlink -f $(LIM_LLAMA_BUILD_DIR)/bin) \
-	-Wl,-rpath,/usr/local/cuda-13.0/targets/x86_64-linux/lib \
+	-Wl,-rpath,$(CUDA_LIB_DIR) \
 	-lllama -lggml-base -lggml -lggml-cpu -lggml-cuda \
 	-lcudart -l:libllama-common.so -lreadline -lcurl -lxml2 -lcrypto
 

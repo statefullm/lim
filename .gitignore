@@ -40,6 +40,10 @@
 # Build directories
 llama/build/
 build/
+node_modules/
+
+# Generated artifacts
+vscode-extension/*.vsix
 
 # debug information files
 *.dwo
