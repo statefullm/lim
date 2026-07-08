@@ -328,6 +328,15 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
                 retries++;
             }
             curl_easy_cleanup(wait_curl);
+
+            // If SearXNG never became ready after max retries, reset PID so it can
+            // be retried on the next request.
+            if (retries >= 40) {
+                std::cerr << "SearxNG failed to start after waiting. Will retry on next request." << std::endl;
+                kill(-pid, SIGKILL);
+                waitpid(pid, NULL, 0);
+                g_searxng_pid = -1;
+            }
         }
     }
 }
@@ -385,6 +394,15 @@ void NetworkTools::start_docling_if_needed() {
                 retries++;
             }
             curl_easy_cleanup(wait_curl);
+
+            // If Docling never became ready after max retries, reset PID so it can
+            // be retried on the next request (e.g., after a dependency is fixed).
+            if (retries >= 40) {
+                std::cerr << "Docling failed to start after waiting. Will retry on next request." << std::endl;
+                kill(-pid, SIGKILL);
+                waitpid(pid, NULL, 0);
+                g_docling_pid = -1;
+            }
         }
     }
 }
