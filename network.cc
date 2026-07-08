@@ -1108,5 +1108,4 @@ string NetworkTools::web_search(const string& query) {
 void NetworkTools::reset_search() {
     g_searxng_disabled = false;
     g_consecutive_empty_searches = 0;
-    cerr << "Web search re-enabled." << endl;
 }
