@@ -1166,7 +1166,7 @@
         /* ------------------------------------------------------------------ */
         /*  Export session as standalone HTML                                  */
         /* ------------------------------------------------------------------ */
-        function exportHtml() {
+        async function exportHtml() {
             var now = new Date();
             var ts = now.getFullYear() + '-' +
                 String(now.getMonth() + 1).padStart(2, '0') + '-' +
@@ -1183,15 +1183,22 @@
                 cssText += s.textContent + '\n';
             });
 
-            // Build a standalone HTML document.  Include the KaTeX CDN CSS
-            // so that pre-rendered KaTeX spans (with their class names and
-            // structure) display correctly in the exported file.
+            // Inline KaTeX CSS with embedded fonts so exports render math correctly offline.
+            try {
+                var katexCss = await fetch('libs/katex-standalone.css').then(function(r) { return r.text(); });
+                cssText += katexCss + '\n';
+            } catch(e) {
+                // Fallback: no KaTeX CSS, math may look unstyled.
+            }
+
+            // Build a standalone HTML document.  KaTeX CSS (with fonts embedded as
+            // data URIs) is inlined above so that pre-rendered KaTeX spans display
+            // correctly in the exported file -- no CDN or external font files needed.
             var html = '<!DOCTYPE html>\n' +
                 '<html lang="en">\n<head>\n' +
                 '  <meta charset="UTF-8">\n' +
                 '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
                 '  <title>LIM Session Export</title>\n' +
-                '  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">\n' +
                 '  <style>\n' + cssText + '\n  </style>\n' +
                 '</head>\n<body>\n' +
                 bodyContent + '\n' +
