@@ -85,7 +85,7 @@ static const struct CmdInfo {
     { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
     { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
     { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
-    { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset loop detector and file cache" },
+    { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, loop detector, and web search" },
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/.config/lim/userprompt, then restart (auto-saves first)" },
     { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
     { "load",         Cmd::RESTORE,     ArgType::PATH,   "Load session from <path>.save (must be used after /clear)" },
@@ -1267,8 +1267,9 @@ bool ChatSession::run() {
         if (last_cmd_ == Command::RESET) {
             reset_llm_state();
             NetworkTools().reset_search();
-            log_entry("SYSTEM", "Loop Counter Reset");
-            diag("Loop Counter Reset Successfully", "\033[32m");
+            system("reset");
+            log_entry("SYSTEM", "Terminal and loop counter reset");
+            diag("Terminal Reset Successfully", "\033[32m");
             continue;
         }
 
