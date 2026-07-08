@@ -590,6 +590,10 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
             case ArgType::NONE:
                 save_prefix_.clear();
                 restore_path_.clear();
+                if (!arg.empty()) {
+                    diag("/" + string(c.name) + " does not accept arguments", "\033[31m");
+                    return Command::NONE;
+                }
                 return static_cast<Command>(c.cmd);
         }
     }
