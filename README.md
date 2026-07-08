@@ -336,7 +336,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
-| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (O(1) KV-cache), `1` = standard chatbot (detokenize + re-tokenize + re-decode each turn), `2` = cache-aware (save/restore KV-cache to disk each turn, like llama.cpp `--prompt-cache`). Modes 1 and 2 force honest speed measurement. |
+| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (O(1) KV-cache), `1` = standard chatbot (detokenize + re-tokenize + re-decode each turn), `2` = cache-aware prefix match (KV-cache stays in memory, re-tokenize each turn and decode only the delta after the matched prefix). Modes 1 and 2 force honest speed measurement. |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
@@ -532,7 +532,7 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 |---|---|---|
 | `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. New user input is decoded against the full context, then stays cached like everything else. |
 | `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (detokenization is excluded — it's a LIM implementation detail, not part of chatbot behavior). |
-| `2` | Cache-aware | Emulates llama.cpp's `--prompt-cache` feature. After the first turn, saves the full KV-cache state to disk. Each subsequent turn clears the cache and restores it from disk (I/O only, no model compute), then decodes only new tokens. Simulates systems that persist the KV-cache between requests. Compared to mode 0, the only extra cost is the per-turn save and disk restore. |
+| `2` | Cache-aware prefix match | Emulates llama-server's cache-aware prefix matching. KV-cache stays in memory across turns (never cleared). Each turn reconstructs the full conversation text, re-tokenizes it, compares tokens against the cached prefix to find the divergence point, and decodes only new tokens after the match point. TPS includes tokenize + prefix match + decode delta. |
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 

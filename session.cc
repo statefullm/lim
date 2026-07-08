@@ -371,8 +371,7 @@ private:
     bool allow_continue_resume_;
     int max_auto_continue_;
 
-    // Mode 2 (cache-aware): saved KV-cache for per-turn restore
-    string mode2_cache_path_;  // Path to on-disk cache file
+
 };
 
 // --- get_user_input: readline callback interface with Ctrl+J newline support ---
@@ -989,11 +988,6 @@ bool ChatSession::run() {
                 } else {
                     diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
                 }
-            }
-
-            // Clean up mode 2 cache file on exit.
-            if (!mode2_cache_path_.empty()) {
-                remove(mode2_cache_path_.c_str());
             }
 
             return false;
@@ -1683,28 +1677,68 @@ bool ChatSession::run() {
                     }
                 }
                 // Skip feed_user_message -- tokens already fed. Fall through to generate_response().
-            } else if (chatbot_mode == 2 && !mode2_cache_path_.empty()) {
-                // Mode 2: restore KV-cache from disk (simulates cache-aware systems)
+            } else if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {
+                // Mode 2: cache-aware prefix matching (emulates llama-server behavior).
+                // Build new tokens the same way mode 0 does, prepend cached tokens to
+                // simulate a full request, then find the prefix match and decode only delta.
                 vector<llama_token> saved_history = state_.all_context_tokens;
+
+                string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
+                state_.prev_was_interrupted = false;
+
+                // Timing: build new tokens + prefix match + decode delta.
                 auto feed_start = chrono::high_resolution_clock::now();
-                llama_memory_clear(llama_get_memory(ctx_), true);
-                vector<llama_token> load_tokens(cparams_.n_ctx);
-                size_t n_loaded = 0;
-                if (!llama_state_load_file(ctx_, mode2_cache_path_.c_str(), load_tokens.data(),
-                                           load_tokens.capacity(), &n_loaded)) {
-                    diag("Chatbot mode 2: failed to load cache from " + mode2_cache_path_, "\033[33m");
-                    state_.last_feed_time = 0.0;
-                } else {
-                    n_past_ = (int)n_loaded;
-                    state_.all_context_tokens = saved_history;
-                    state_.prompt_checkpoints.clear();
-                    llama_sampler_reset(smpl_);
-                    auto feed_end = chrono::high_resolution_clock::now();
-                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
-                    struct stat st;
-                    if (stat(mode2_cache_path_.c_str(), &st) == 0) {
-                        diag("Chatbot mode 2: loaded cache (" + to_string(st.st_size / (1024*1024)) +
-                             " MB, " + to_string(n_past_) + " tokens)", "\033[90m");
+
+                // Build just the new user turn tokens (same as feed_user_message).
+                vector<llama_token> new_turn_tokens;
+                if (!turn_close_str.empty()) {
+                    auto close_tok = common_tokenize(ctx_, turn_close_str, false, true);
+                    new_turn_tokens.insert(new_turn_tokens.end(), close_tok.begin(), close_tok.end());
+                }
+                auto user_ass = build_user_assistant_turn(ctx_, user_input);
+                new_turn_tokens.insert(new_turn_tokens.end(), user_ass.begin(), user_ass.end());
+
+                // Simulate full request: cached tokens + new turn tokens.
+                // The prefix match is trivially the full cache since we built new tokens
+                // the same way. This measures the O(N) comparison cost, not decode cost.
+                vector<llama_token> full_request;
+                full_request.reserve(saved_history.size() + new_turn_tokens.size());
+                full_request.insert(full_request.end(), saved_history.begin(), saved_history.end());
+                full_request.insert(full_request.end(), new_turn_tokens.begin(), new_turn_tokens.end());
+
+                // Prefix match: compare against cached tokens (O(N) comparison).
+                size_t match_len = 0;
+                size_t min_len = std::min(saved_history.size(), full_request.size());
+                for (size_t i = 0; i < min_len; i++) {
+                    if (saved_history[i] == full_request[i]) {
+                        match_len = i + 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                // Decode only the delta after the matched prefix.
+                if ((int)match_len < (int)full_request.size()) {
+                    diag("Chatbot mode 2: prefix match " + to_string(match_len) + "/" +
+                         to_string(saved_history.size()) + " tokens, decoding " +
+                         to_string(full_request.size() - match_len) + " new", "\033[90m");
+                    vector<llama_token> delta(full_request.begin() + match_len, full_request.end());
+                    if (!feed_tokens_impl(delta)) {
+                        auto feed_end = chrono::high_resolution_clock::now();
+                        state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                        continue;
+                    }
+                }
+
+                auto feed_end = chrono::high_resolution_clock::now();
+                state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+
+                // Logging
+                if (!state_.auto_continue) {
+                    log_entry("USER", user_input);
+                    if (should_output_to_browser() && pipe_fd >= 0) {
+                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(user_input) + "</code></pre></div>\n\n";
+                        stream_html(user_html);
                     }
                 }
 
@@ -1712,25 +1746,14 @@ bool ChatSession::run() {
                 state_.last_feed_time = 0.0;
             }
 
-            // Mode 1 already fed the user input as part of the combined prefill.
-            // Modes 0 and 2 need feed_user_message to handle the new input normally.
-            if (chatbot_mode != 1 && !feed_user_message(user_input)) continue;
+
+            // Mode 1 and mode 2 already fed the user input as part of their combined prefill.
+            // Only mode 0 uses feed_user_message for the new input.
+            if (chatbot_mode == 0 && !feed_user_message(user_input)) continue;
         }
 
         // 7. Generate response
         auto gen_result = generate_response();
-
-        // Mode 2: save KV-cache to disk after generation for next turn's restore
-        if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {
-            if (mode2_cache_path_.empty()) {
-                mode2_cache_path_ = LIM_CACHE_DIR + "/mode2_cache.bin";
-            }
-            if (!llama_state_save_file(ctx_, mode2_cache_path_.c_str(),
-                                       state_.all_context_tokens.data(),
-                                       state_.all_context_tokens.size())) {
-                diag("Chatbot mode 2: failed to save cache to " + mode2_cache_path_, "\033[33m");
-            }
-        }
 
         // 8. Process tool call
         if (process_tool_call()) {
