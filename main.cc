@@ -272,7 +272,6 @@ int main(int argc, char ** argv) {
         tps_log.open(tps_log_name, ios::trunc);
         if (tps_log.is_open()) {
             tps_log << "# TPS Log - Session #" << log_index << "\n";
-            tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
         }
     }
 
@@ -458,6 +457,7 @@ int main(int argc, char ** argv) {
         tps_log << "# Penalty repeat: " << penalty_repeat << "\n";
         tps_log << "# Penalty freq: " << penalty_freq << "\n";
         tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
+        tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
     }
 
     // Report GPU layer offload with total layer count.
