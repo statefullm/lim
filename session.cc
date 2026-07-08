@@ -1607,7 +1607,7 @@ bool ChatSession::run() {
         if (last_cmd_ == Command::NONE && !user_input.empty() && user_input[0] == '/') {
             // Only show "Unknown command" if no known command name was matched at all.
             // If handle_command returned NONE because of extra arguments on a recognized
-            // command, it already printed its own warning — don't double-report.
+            // command, it already printed its own warning -- don't double-report.
             string rest = user_input.substr(1);
             bool known_prefix = false;
             for (const auto& c : g_commands) {
@@ -1760,7 +1760,7 @@ bool ChatSession::run() {
                         continue;
                     }
                 } else {
-                    // Full match — nothing new to decode. This shouldn't happen in practice
+                    // Full match -- nothing new to decode. This shouldn't happen in practice
                     // since we always add new user input, but handle it gracefully.
                     diag("Chatbot mode 2: full prefix match, no delta to decode", "\033[90m");
                 }

@@ -64,7 +64,7 @@ async def broadcast_llm_stream():
                 except Exception as e:
                     print(f"[WARNING] Send failed for a client: {e}")
 
-        # Re-arm — the writer keeps its end open, so we'll be notified again.
+        # Re-arm -- the writer keeps its end open, so we'll be notified again.
         loop.add_reader(fd, _on_fifo_readable)
 
     loop.add_reader(fd, _on_fifo_readable)
