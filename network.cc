@@ -300,7 +300,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stdout);
         freopen(SEARXNG_LOG_PATH.c_str(), "w", stderr);
 
-        string cmd = "exec "+Taskset::e_core_taskset()+"cd "+HOME+"/searxng && exec python -m searx.webapp";
+        string cmd = Taskset::e_core_taskset()+"cd "+HOME+"/searxng && exec python -m searx.webapp";
         execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
         exit(1);
     } else if (pid > 0) {
