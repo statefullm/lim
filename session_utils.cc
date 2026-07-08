@@ -2,6 +2,7 @@
 #include "common.h"
 #include "token_generator.h"
 #include "output.h"
+#include "tokens.h"
 #include <fstream>
 #include <iomanip>
 #include <string>
@@ -10,11 +11,13 @@
 
 using namespace std;
 
-// Forward declarations for globals in main.cc
+// Forward declarations
 extern bool is_debug;
 extern std::ofstream token_log;
 extern std::ofstream tps_log;
 extern bool honest_speed;
+
+vector<llama_token> build_user_assistant_turn(llama_context* ctx, const string& input);
 
 std::string html_escape(const std::string& s) {
     std::string out;
@@ -73,6 +76,42 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
 
 void diag_restore(const std::string& path, int token_count) {
     diag("Restoring session from " + path + "... (" + std::to_string(token_count) + " tokens)", "\033[35m");
+}
+
+// Check git HEAD against saved SHA. If mismatched, warns the user and
+// injects a message into restored_tokens (and decodes it via batch/n_past).
+// Returns true if there was a mismatch.
+bool check_git_head_on_restore(const std::string& save_path, const std::string& saved_sha,
+                                llama_context* ctx, llama_batch& batch, int& n_past,
+                                std::vector<llama_token>& restored_tokens) {
+    if (saved_sha.empty()) return false;
+
+    FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
+    std::string current_sha;
+    if (pipe) {
+        char buf[48];
+        if (fgets(buf, sizeof(buf), pipe)) {
+            current_sha = buf;
+            while (!current_sha.empty() && (current_sha.back() == '\n' || current_sha.back() == '\r')) current_sha.pop_back();
+        }
+        pclose(pipe);
+    }
+
+    if (current_sha.empty() || saved_sha == current_sha) return false;
+
+    std::string short_saved = saved_sha.substr(0, 7);
+    std::string short_current = current_sha.substr(0, 7);
+    diag("Git HEAD mismatch: session was at " + short_saved + ", currently at " + short_current, "\033[33m");
+
+    // Inform the LLM about code changes.
+    auto git_msg = build_user_assistant_turn(ctx,
+        "Note: Git HEAD has changed since this session was saved (was " + short_saved + ", now " + short_current + "). Code or configuration may have been modified.");
+    batch.n_tokens = 0;
+    for (size_t i = 0; i < git_msg.size(); i++) {
+        common_batch_add(batch, git_msg[i], n_past++, {0}, (i == git_msg.size() - 1));
+    }
+    restored_tokens.insert(restored_tokens.end(), git_msg.begin(), git_msg.end());
+    return true;
 }
 
 void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, const std::string& git_short) {

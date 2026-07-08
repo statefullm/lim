@@ -1453,6 +1453,25 @@ bool ChatSession::run() {
             }
 
 
+            // Check git HEAD against saved session
+            {
+                string saved_sha;
+                FILE* fp_git = fopen(rpath.c_str(), "rb");
+                if (fp_git) {
+                    char hdr_buf[256];
+                    if (fgets(hdr_buf, sizeof(hdr_buf), fp_git)) {
+                        const char* sha_ptr = strstr(hdr_buf, "git_sha=");
+                        if (sha_ptr) {
+                            sha_ptr += 8;
+                            while (*sha_ptr && *sha_ptr != ' ') saved_sha += *sha_ptr++;
+                        }
+                    }
+                    fclose(fp_git);
+                }
+
+                check_git_head_on_restore(rpath, saved_sha, ctx_, batch_, n_past_, state_.all_context_tokens);
+            }
+
             // Reset sampler state for a clean generation start.
             llama_sampler_reset(smpl_);
 
