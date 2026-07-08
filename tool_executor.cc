@@ -22,26 +22,35 @@ extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
 
-// Truncate large parameter values (OLD_TEXT, NEW_TEXT, TEXT, CONTENT) inside a
-// tool call XML string so the raw output fits on one console line.
+// Truncate large parameter values inside a tool call XML string so the raw
+// output fits on one console line.  Uses constants from tokens.h to match
+// the actual token forms emitted by the model.
 static string truncate_tool_call_params(const string& tool_call) {
     static const char* long_params[] = {"content", "old", "new", "text"};
     string result = tool_call;
     for (const char* param : long_params) {
-        string open_tag = string(PARAM_START) + param + PARAM_END;
-        string close_tag = string("</") + param + ">";
+        // Opening tag: <parameter=NAME>  (PARAM_START is "<parameter=")
+        string open_tag = string(PARAM_START) + param + ">";
         size_t pos = 0;
         while ((pos = result.find(open_tag, pos)) != string::npos) {
-            pos += open_tag.length();
-            size_t end = result.find(close_tag, pos);
-            string replacement = "...";
+            size_t content_start = pos + open_tag.length();
+            // Closing tag: </parameter> (PARAM_END is "<\/parameter>")
+            size_t end = result.find(PARAM_END, content_start);
+            if (end == string::npos) {
+                // Fallback for unescaped form in malformed calls.
+                string close_unescaped;
+                close_unescaped += '<';
+                close_unescaped += '/';
+                close_unescaped += "parameter>";
+                end = result.find(close_unescaped, content_start);
+            }
             if (end != string::npos) {
-                result.replace(pos, end - pos, "...");
-                pos += 3;
+                result.replace(content_start, end - content_start, "...");
+                pos = content_start + 3;
             } else {
-                // Unclosed param — truncate rest of string after a budget.
-                if (pos + 40 < result.length()) {
-                    result = result.substr(0, pos + 40) + "...";
+                // Unclosed param -- truncate rest of string after a budget.
+                if (content_start + 40 < result.length()) {
+                    result = result.substr(0, content_start + 40) + "...";
                     break;
                 }
             }
