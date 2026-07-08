@@ -1657,7 +1657,7 @@ bool ChatSession::run() {
                 // Append user/assistant role markers and content via the chat template.
                 full_text += build_user_assistant_turn_text(user_input);
 
-                auto history = common_tokenize(ctx_, full_text, false, true);
+                auto history = common_tokenize(ctx_, full_text, false, false);
                 diag("Chatbot mode 1: re-tokenized " + to_string(history.size()) +
                      " tokens from " + to_string(saved_history.size()) +
                      " history tokens (incl. new input)", "\033[90m");
