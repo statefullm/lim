@@ -1,9 +1,11 @@
+
 #include "tool_executor.h"
 #include "model.h"
 #include "session_utils.h"
 #include "output.h"
 #include "signals.h"
 #include "parsers.h"
+#include "tokens.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -11,11 +13,45 @@
 #include <cctype>
 #include <algorithm>
 
+
 // Forward declarations for functions defined in main.cc
 extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
+
+// Truncate large parameter values (OLD_TEXT, NEW_TEXT, TEXT, CONTENT) inside a
+// tool call XML string so the raw output fits on one console line.
+static string truncate_tool_call_params(const string& tool_call) {
+    static const char* long_params[] = {"CONTENT", "OLD_TEXT", "NEW_TEXT", "TEXT"};
+    string result = tool_call;
+    for (const char* param : long_params) {
+        string open_tag = string(PARAM_START) + param + string(PARAM_END);
+        string close_tag = string("</") + param + ">";
+        size_t pos = 0;
+        while ((pos = result.find(open_tag, pos)) != string::npos) {
+            pos += open_tag.length();
+            size_t end = result.find(close_tag, pos);
+            string replacement = "...";
+            if (end != string::npos) {
+                result.replace(pos, end - pos, "...");
+                pos += 3;
+            } else {
+                // Unclosed param — truncate rest of string after a budget.
+                if (pos + 40 < result.length()) {
+                    result = result.substr(0, pos + 40) + "...";
+                    break;
+                }
+            }
+        }
+    }
+    // Hard cap: if still too long for one line, truncate the whole thing.
+    static constexpr size_t MAX_DISPLAY_LEN = 200;
+    if (result.length() > MAX_DISPLAY_LEN) {
+        result = result.substr(0, MAX_DISPLAY_LEN) + "...";
+    }
+    return result;
+}
 
 ToolExecutor::Result ToolExecutor::execute(
     SessionState& state,
@@ -111,8 +147,12 @@ ToolExecutor::Result ToolExecutor::execute(
         if (!tool_out.recognized || !tool_out.params_valid) {
             state.invalid_tool_strikes++;
 
+
             string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
             diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
+
+            // Always show the raw tool call so the user can diagnose what went wrong.
+            diag("  Tool call: " + truncate_tool_call_params(tool_call), "\033[90m");
 
             if (is_debug) {
                 diag("  Raw tool_call: " + tool_call, "\033[90m");
