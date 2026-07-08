@@ -23,10 +23,10 @@ extern ofstream token_log;
 // Truncate large parameter values (OLD_TEXT, NEW_TEXT, TEXT, CONTENT) inside a
 // tool call XML string so the raw output fits on one console line.
 static string truncate_tool_call_params(const string& tool_call) {
-    static const char* long_params[] = {"CONTENT", "OLD_TEXT", "NEW_TEXT", "TEXT"};
+    static const char* long_params[] = {"content", "old", "new", "text"};
     string result = tool_call;
     for (const char* param : long_params) {
-        string open_tag = string(PARAM_START) + param + string(PARAM_END);
+        string open_tag = string(PARAM_START) + param + PARAM_END;
         string close_tag = string("</") + param + ">";
         size_t pos = 0;
         while ((pos = result.find(open_tag, pos)) != string::npos) {
@@ -152,7 +152,7 @@ ToolExecutor::Result ToolExecutor::execute(
             diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
 
             // Always show the raw tool call so the user can diagnose what went wrong.
-            diag("  Tool call: " + truncate_tool_call_params(tool_call), "\033[90m");
+            diag("  " + truncate_tool_call_params(tool_call), "\033[90m");
 
             if (is_debug) {
                 diag("  Raw tool_call: " + tool_call, "\033[90m");
