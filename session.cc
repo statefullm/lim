@@ -377,7 +377,7 @@ string ChatSession::get_user_input() {
     string user_input = "";
 
     // If stdin is not a terminal (piped input), read lines directly.
-    // Empty lines are skipped; EOF returns empty string to trigger quit.
+    // Empty lines are skipped; EOF returns "/quit" to exit cleanly.
     if (!isatty(STDIN_FILENO)) {
         if (state_.first_turn_done && state_.last_t_count > 0) {
             diag_speed(state_.last_n_past, cparams_.n_ctx, state_.last_t_count,
@@ -387,7 +387,7 @@ string ChatSession::get_user_input() {
         while (getline(cin, line)) {
             if (!line.empty()) return line;
         }
-        return "";  // EOF
+        return "/quit";  // EOF
     }
 
     if (!state_.auto_continue) {
@@ -413,6 +413,11 @@ string ChatSession::get_user_input() {
             // Ensure the diagnostic appears on its own line.
             consoleEnsureNewline();
             diag_speed_impl(speed_str + " | " + ctx_str);
+
+            // Write to TPS log (once per turn)
+            if (denom > 0) {
+                tps_log << state_.last_n_past << " " << std::fixed << std::setprecision(3) << speed << "\n";
+            }
         }
 
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
