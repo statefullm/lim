@@ -1,16 +1,12 @@
-# LIM: Stateful, O(1) Local Inference Manager
+# LIM: Stateful Local Inference Manager
 
-**LIM** (Local Inference Manager) is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session with **true O(1) history injection** via a continuously appended KV-cache: no context transmission or re-tokenization on every turn. The O(1) claim refers to per-turn history injection cost, not attention complexity. LIM has native filesystem tools for reading, searching, editing, and writing files, plus web searching and PDF reading.
+**LIM** (Local Inference Manager) is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session where the KV-cache is never discarded: each turn's tokens are simply appended, so new input costs only O(input tokens), not O(total history). LIM has native filesystem tools for reading, searching, editing, and writing files, plus web searching and PDF reading.
 
-## Why O(1)? The Fundamental Difference
+## How It Works
 
-Every mainstream chatbot (and most local LLM frontends) follows the *reprocess-every-turn* model: each time you send a message, the **entire conversation history** is re-transmitted in full and re-tokenized from scratch. Cost grows **quadratically with conversation length**.
+Every mainstream chatbot (and most local LLM frontends using server APIs) follows the *reprocess-every-turn* model: each time you send a message, the **entire conversation history** is re-transmitted in full and re-tokenized from scratch. The per-turn decode cost grows linearly with context length, making long conversations progressively slower.
 
-LIM takes full advantage of what a single-user local setup affords:
-
-- **The KV-cache is never discarded.** Each turn's tokens are simply appended to `n_past`. The model continues generating from exactly where it left off.
-- **New user input costs O(input tokens)**, not O(total history). Even after hundreds of turns, each new message processes only its own tokens plus the delta since last turn.
-- **No re-tokenization overhead.** The system prompt is tokenized once at startup and lives in the cache forever.
+LIM avoids this by design: it runs locally as a single persistent process where the KV-cache is never discarded. Each turn simply continues from where the last one left off. This is the same approach used by llama-cli in interactive mode. LIM includes an integrated tool system, session save/restore, interactive undo, and LaTeX-aware browser output.
 
 ---
 
@@ -336,7 +332,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
-| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (O(1) KV-cache), `1` = standard chatbot (detokenize + re-tokenize + re-decode each turn), `2` = cache-aware prefix match (KV-cache stays in memory, re-tokenize each turn and decode only the delta after the matched prefix). Modes 1 and 2 force honest speed measurement. |
+| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (persistent KV-cache, same as llama-cli interactive), `1` = standard chatbot (re-decode full history each turn), `2` = cache-aware prefix match (emulates llama-server). Modes 1 and 2 force honest speed measurement. |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
@@ -526,13 +522,13 @@ make all
 
 ## Benchmarking
 
-LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its O(1) KV-cache approach against standard chatbot and cache-aware decoding. Each mode writes a TPS log (`log/<N>.tps`) recording context position and tokens-per-second for every turn.
+LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its persistent KV-cache approach against standard chatbot and cache-aware decoding. Each mode writes a TPS log (`log/<N>.tps`) recording context position and tokens-per-second for every turn.
 
 | Value | Mode | Description |
 |---|---|---|
-| `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. New user input is decoded against the full context, then stays cached like everything else. |
+| `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. Same approach as llama-cli interactive mode.
 | `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (detokenization is excluded — it's a LIM implementation detail, not part of chatbot behavior). |
-| `2` | Cache-aware prefix match | Emulates llama-server's cache-aware prefix matching. KV-cache stays in memory across turns (never cleared). Each turn reconstructs the full conversation text, re-tokenizes it, compares tokens against the cached prefix to find the divergence point, and decodes only new tokens after the match point. TPS includes tokenize + prefix match + decode delta. |
+| `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding. Illustrates that prefix matching overhead is negligible compared to decode cost.
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
