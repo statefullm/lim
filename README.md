@@ -234,12 +234,12 @@ cd() {
     builtin cd "$@" && pwd > $HOME/.cwd
 }
 
-# Block git add -A / --all to prevent the LLM from staging untracked files
+# Block git add -A / --all and git add . to prevent the LLM from staging untracked files
 git() {
     if [ "$1" = "add" ]; then
         for arg in "$@"; do
-            if [ "$arg" = "-A" ] || [ "$arg" = "--all" ] || [[ "$arg" =~ ^-[a-zA-Z]*A[a-zA-Z]*$ ]]; then
-                echo "ERROR: git add -A / --all is disabled: use -a" >&2
+            if [ "$arg" = "-A" ] || [ "$arg" = "--all" ] || [[ "$arg" =~ ^-[a-zA-Z]*A[a-zA-Z]*$ ]] || [ "$arg" = "." ]; then
+                echo "ERROR: git add -A / --all / . is disabled: use git commit -a or specify files explicitly" >&2
                 return 1
             fi
         done
