@@ -29,6 +29,11 @@
 #include <unistd.h>
 #include <pwd.h>
 
+// Version is passed from the Makefile via -DLIM_VERSION="x.y.z"
+#ifndef LIM_VERSION
+#define LIM_VERSION "0.1.0"
+#endif
+
 using namespace std;
 
 // --- Global State ---
@@ -106,7 +111,7 @@ int main(int argc, char ** argv) {
 
     umask(0002);
     atexit([]() {
-        cout << "\033[0m";  // Reset terminal colors on exit
+        if (isatty(STDOUT_FILENO)) cout << "\033[0m";  // Reset terminal colors on exit
         NetworkTools::cleanup_services();
         cleanup_lim_server();
     });
@@ -114,8 +119,16 @@ int main(int argc, char ** argv) {
     setup_signals();
 
     if (argc < 2) {
-        cerr << "Usage: " << argv[0] << " <model_path> [--checkpoints] [restore_file]" << endl;
+        cerr << "Usage: " << argv[0] << " <model_path> [--checkpoints] [--version] [restore_file]" << endl;
         return 1;
+    }
+
+    // Check for --version anywhere in args
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--version") == 0) {
+            cout << LIM_VERSION << endl;
+            return 0;
+        }
     }
 
     g_model_path = argv[1];

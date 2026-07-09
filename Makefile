@@ -37,7 +37,7 @@ ifeq ($(GGML_HIPBLAS),on)
   GGML_HIPBLAS_FLAG := -DGGML_HIPBLAS=ON
 endif
 
-CXXFLAGS = -std=c++17 -O3 \
+CXXFLAGS = -std=c++17 -O3 -DLIM_VERSION=\"$(VERSION)\" \
 	-I$(LLAMA_DIR)/include \
 	-I$(LLAMA_DIR)/common \
 	-I$(LLAMA_DIR)/ggml/include \
@@ -88,7 +88,8 @@ $(TARGET): $(FILES:=.o)
 	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 endif
 
-VSIX = vscode-extension/vscode-extension-0.1.0.vsix
+VERSION := $(shell cat VERSION 2>/dev/null || echo 0.1.0)
+VSIX = vscode-extension/vscode-extension-$(VERSION).vsix
 
 vscode: $(VSIX)
 
@@ -96,6 +97,7 @@ $(VSIX): vscode-extension/src/extension.ts \
 		 vscode-extension/package.json \
 		 vscode-extension/tsconfig.json \
 		 vscode-extension/resources/lim.png
+	sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' vscode-extension/package.json
 	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
 
 
