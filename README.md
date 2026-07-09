@@ -40,7 +40,7 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
 4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search and [Docling](https://github.com/DS4SD/docling) for PDF reading. LIM auto-starts them on demand; override the commands with `LIM_SEARXNG_CMD` / `LIM_DOCLING_CMD` (see **Web Search & PDF Setup** below).
 
-> **Note:** llama is bundled as a git subrepo and will be built automatically by the Makefile.
+> **Note:** llama.cpp is bundled as a git subrepo with a LIM-specific patch for recurrent state checkpointing (required for instant `/undo` on hybrid models). The patched code is built automatically by the Makefile. A PR upstream to llama.cpp is pending.
 
 ---
 
