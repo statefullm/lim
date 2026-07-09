@@ -255,7 +255,7 @@ The `cd` override writes the current directory to `$HOME/.cwd`, which LIM reads 
 
 ### 6. The System Prompt
 
-Place your system prompt in `~/.config/lim/prompt`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. A default `prompt` file ships with this repository and is installed to `~/.config/lim/prompt` by `make install`. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
+The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
 
 ### 7. Message Shortcuts
 
@@ -265,14 +265,17 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 # ~/.lim_aliases: one key=value per line; # comments are ignored
 # Keys must start with / to distinguish them from regular messages
 
-/test=test the filesystem tools and clean up after
-/message=show me a 1-sentence concise git commit message
-/commit=run git commit -a
+/test=Test the filesystem tools and clean up after.
+/message=Show me a 1-sentence concise git commit message relative to HEAD.
+/commit=run git commit -a -m "<message>"
 /make=run make
-/amend=amend the previous commit
+/amend=Amend the previous commit.
+/remind=Read the system prompt from ~/.config/lim/prompt and follow it strictly!
+/prompt=Follow the system prompt strictly!
+/tools=Use our robust filesystem tools.
 ```
 
-At the `>>>` prompt, typing `/commit` expands to `run git commit -a` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. Built-in command names (e.g., `/quit`, `/clear`) cannot be used as alias keys. This is loaded fresh each session.
+At the `>>>` prompt, typing `/commit` expands to `run git commit -a -m "<message>"` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. Built-in command names (e.g., `/quit`, `/clear`) cannot be used as alias keys. This is loaded fresh each session.
 
 ---
 
