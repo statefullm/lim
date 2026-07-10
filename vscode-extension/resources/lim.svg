@@ -1,9 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 56 48">
-  <rect x="0" y="0" width="56" height="48" rx="4" fill="#1e1e1e"/>
-  <text x="28" y="27" text-anchor="middle" font-family="system-ui, sans-serif" font-size="30" font-weight="bold">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect x="0" y="0" width="128" height="128" rx="9" fill="#1e1e1e"/>
+  <text x="64" y="75" text-anchor="middle" font-family="system-ui, sans-serif" font-size="72" font-weight="bold">
     <tspan fill="#79c0ff">L</tspan><tspan fill="#ce9178">I</tspan><tspan fill="#b5cea8">M</tspan>
   </text>
-  <text x="4" y="40" font-family="monospace" font-size="9">
+  <text x="8" y="105" font-family="monospace" font-size="21">
     <tspan fill="#79c0ff">&gt;&gt;&gt; /undo</tspan>
   </text>
 </svg>
