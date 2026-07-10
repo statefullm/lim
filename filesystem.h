@@ -17,8 +17,8 @@ std::string file_fingerprint(const std::string& path);
 bool read_token_save(const std::string& save_path, std::vector<llama_token>& tokens);
 
 struct PromptCheckpoint {
-    int n_past;
-    std::string prompt;
+  int n_past;
+  std::string prompt;
 };
 
 // V3 variant: includes prompt-return checkpoints for partial restore.

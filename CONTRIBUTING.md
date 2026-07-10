@@ -23,7 +23,7 @@ See [README.md](README.md) for full build and user setup instructions.
 
 ## Code Style
 
-- Follow the existing C++ style (4-space indentation, Allman braces).
+- Follow the existing C++ style (2-space indentation, Allman braces).
 - Use meaningful variable and function names.
 - Add comments for non-obvious logic, especially around KV-cache management and tool dispatch.
 

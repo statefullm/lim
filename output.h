@@ -45,9 +45,9 @@ extern bool g_stdout_ended_with_newline;
 
 template<typename... Args>
 void format_and_print(Args&&... args) {
-    std::ostringstream oss;
-    ((oss << std::forward<Args>(args)), ...);
-    std::cout << oss.str();
+  std::ostringstream oss;
+  ((oss << std::forward<Args>(args)), ...);
+  std::cout << oss.str();
 }
 
 #define message(...) format_and_print(__VA_ARGS__)
@@ -68,26 +68,26 @@ void console_think(Args&&... args) {
 }
 
 static inline void consoleFlush() {
-    if (should_output_to_stdout()) std::cout.flush();
+  if (should_output_to_stdout()) std::cout.flush();
 }
 
 static inline void consoleThinkFlush() {
-    if (should_output_think_blocks()) std::cout.flush();
+  if (should_output_think_blocks()) std::cout.flush();
 }
 
 // Ensure stdout cursor is at the start of a new line.
 // No-op if stdout already ended with '\n'; prints exactly one '\n' otherwise.
 static inline void consoleEnsureNewline() {
-    if (should_output_to_stdout() && !g_stdout_ended_with_newline) {
-        std::cout << "\n";
-        g_stdout_ended_with_newline = true;
-        std::cout.flush();
-    }
+  if (should_output_to_stdout() && !g_stdout_ended_with_newline) {
+    std::cout << "\n";
+    g_stdout_ended_with_newline = true;
+    std::cout.flush();
+  }
 }
 
 // Update the newline-tracking flag after a direct cout write.
 static inline void consoleMarkNewline(bool ended_with_nl) {
-    g_stdout_ended_with_newline = ended_with_nl;
+  g_stdout_ended_with_newline = ended_with_nl;
 }
 
 // --- Diagnostic Output ---

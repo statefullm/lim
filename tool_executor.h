@@ -12,27 +12,27 @@
 
 class ToolExecutor {
 public:
-    struct Result {
-        bool should_auto_continue = false;
-        bool was_interrupted = false;
-        bool context_exhausted = false;
-    };
+  struct Result {
+    bool should_auto_continue = false;
+    bool was_interrupted = false;
+    bool context_exhausted = false;
+  };
 
-    static Result execute(
-        SessionState& state,
-        std::string& generated_text,
-        const std::string& full_generated,
-        size_t tool_start,
-        size_t tool_end,
-        bool was_mid_tool_call,
-        std::function<std::vector<llama_token>(std::string)> tokenize,
-        std::function<bool(const std::vector<llama_token>&)> feed_tokens,
-        llama_context* ctx,
-        int& n_past,
-        const llama_context_params& cparams,
-        int& g_auto_continue_depth,
-        int max_auto_continue,
-        bool allow_continue_resume
+  static Result execute(
+    SessionState& state,
+    std::string& generated_text,
+    const std::string& full_generated,
+    size_t tool_start,
+    size_t tool_end,
+    bool was_mid_tool_call,
+    std::function<std::vector<llama_token>(std::string)> tokenize,
+    std::function<bool(const std::vector<llama_token>&)> feed_tokens,
+    llama_context* ctx,
+    int& n_past,
+    const llama_context_params& cparams,
+    int& g_auto_continue_depth,
+    int max_auto_continue,
+    bool allow_continue_resume
     );
 };
 

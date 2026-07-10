@@ -10,51 +10,51 @@
 // Mirror of llama.cpp's internal llm_chat_template enum (from llama/src/llama-chat.h).
 // We only need the families that lim supports for incremental KV-cache appending.
 enum class ModelType {
-    UNKNOWN,
-    CHATML,       // Standard ChatML (Nemotron, Mistral, etc.)
-    LLAMA3,       // Llama 3 / 3.1 / 3.2 / 3.3
-    PHI_3,        // Phi-3 mini / medium
-    PHI_4,        // Phi-4
-    MISTRAL_V7,   // Mistral Instruct v7 (system via [SYSTEM_PROMPT])
-    MISTRAL_V1,   // Mistral Instruct v1 ([INST] ... [/INST])
-    MISTRAL_V3,   // Mistral Instruct v3
-    GEMMA,        // Gemma / Gemma-2 IT
-    ZEPHYR,       // Zephyr
-    VICUNA,       // Vicuna 1.1 / 1.5
-    DEEPSEEK_3,   // DeepSeek v3 / v3.1
-    GRANITE,      // Granite 3.x
-    LLAMA2,       // Llama 2 ([INST] ... [/INST])
+  UNKNOWN,
+  CHATML,       // Standard ChatML (Nemotron, Mistral, etc.)
+  LLAMA3,       // Llama 3 / 3.1 / 3.2 / 3.3
+  PHI_3,        // Phi-3 mini / medium
+  PHI_4,        // Phi-4
+  MISTRAL_V7,   // Mistral Instruct v7 (system via [SYSTEM_PROMPT])
+  MISTRAL_V1,   // Mistral Instruct v1 ([INST] ... [/INST])
+  MISTRAL_V3,   // Mistral Instruct v3
+  GEMMA,        // Gemma / Gemma-2 IT
+  ZEPHYR,       // Zephyr
+  VICUNA,       // Vicuna 1.1 / 1.5
+  DEEPSEEK_3,   // DeepSeek v3 / v3.1
+  GRANITE,      // Granite 3.x
+  LLAMA2,       // Llama 2 ([INST] ... [/INST])
 };
 
 // A template fragment: human-readable text + pre-computed token IDs.
 // Text is used for display/logging; tokens are fed into the KV cache.
 struct ModelFragment {
-    std::string text;
-    std::vector<llama_token> tokens;
+  std::string text;
+  std::vector<llama_token> tokens;
 };
 
 // Pre-computed model-specific turn delimiters, populated at startup by
 // asking llama.cpp (llama_chat_apply_template) what the correct tokens are.
 struct ModelTokens {
-    ModelType type = ModelType::UNKNOWN;
+  ModelType type = ModelType::UNKNOWN;
 
-    // Turn boundaries for each role (include role label + separator).
-    // E.g. for ChatML: "user\n" / "\n"
-    //      for Llama3: "<|start_header_id|>user<|end_header_id|>\n\n" / "<|eot_id|>"
-    ModelFragment system_turn_start;
-    ModelFragment user_turn_start;
-    ModelFragment assistant_turn_start;
+  // Turn boundaries for each role (include role label + separator).
+  // E.g. for ChatML: "user\n" / "\n"
+  //      for Llama3: "<|start_header_id|>user<|end_header_id|>\n\n" / "<|eot_id|>"
+  ModelFragment system_turn_start;
+  ModelFragment user_turn_start;
+  ModelFragment assistant_turn_start;
 
-    // Turn end / EOT marker (may be empty for templates that rely on EOS).
-    ModelFragment turn_end;
+  // Turn end / EOT marker (may be empty for templates that rely on EOS).
+  ModelFragment turn_end;
 
-    // Thinking block delimiters, determined from the model's chat template.
-    // Empty strings if the model doesn't support thinking/reasoning blocks.
-    std::string think_start;
-    std::string think_end;
+  // Thinking block delimiters, determined from the model's chat template.
+  // Empty strings if the model doesn't support thinking/reasoning blocks.
+  std::string think_start;
+  std::string think_end;
 
-    // Whether turn_end tokens are meaningful (empty = template uses EOS only).
-    bool has_explicit_turn_end() const { return !turn_end.tokens.empty(); }
+  // Whether turn_end tokens are meaningful (empty = template uses EOS only).
+  bool has_explicit_turn_end() const { return !turn_end.tokens.empty(); }
 };
 
 // Global model tokens, initialized after model load.

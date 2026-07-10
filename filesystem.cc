@@ -35,23 +35,23 @@ extern std::ofstream tps_log;
 // Return "mtime:size" fingerprint for a file, or empty string on error.
 // Used by the read cache to detect unchanged files without reading content.
 string file_fingerprint(const string& path) {
-    struct stat st;
-    if (stat(path.c_str(), &st) != 0) return "";
-    ostringstream oss;
-    oss << st.st_mtime << ":" << st.st_size;
-    return oss.str();
+  struct stat st;
+  if (stat(path.c_str(), &st) != 0) return "";
+  ostringstream oss;
+  oss << st.st_mtime << ":" << st.st_size;
+  return oss.str();
 }
 
 // --- Save file header keys ---
 // Each string appears once; len is derived at compile time via STR.
 static const struct HeaderKey {
-    const char* name;
-    int len;
+  const char* name;
+  int len;
 } header_keys[] = {
-    STR("LIM_SAVE_V3 "),       // 0
-    STR("n_tokens="),          // 1
-    STR("n_checkpoints="),     // 2
-    STR("session="),           // 3
+  STR("LIM_SAVE_V3 "),       // 0
+  STR("n_tokens="),          // 1
+  STR("n_checkpoints="),     // 2
+  STR("session="),           // 3
 };
 
 static constexpr int HDR_MAGIC         = 0;
@@ -67,72 +67,72 @@ static constexpr int HDR_SESSION       = 3;
 static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
                             size_t* out_n_checkpoints = nullptr,
                             int* out_session = nullptr) {
-    // Validate magic prefix
-    if (header_str.substr(0, header_keys[0].len) != header_keys[0].name) return false;
+  // Validate magic prefix
+  if (header_str.substr(0, header_keys[0].len) != header_keys[0].name) return false;
 
-    // Parse n_tokens= (required)
-    size_t pos = header_str.find(header_keys[1].name);
+  // Parse n_tokens= (required)
+  size_t pos = header_str.find(header_keys[1].name);
+  if (pos == string::npos) return false;
+  string val = header_str.substr(pos + header_keys[1].len);
+  { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
+  *out_n_tokens = std::stoull(val);
+
+  // Parse n_checkpoints= (optional)
+  if (out_n_checkpoints) {
+    pos = header_str.find(header_keys[2].name);
     if (pos == string::npos) return false;
-    string val = header_str.substr(pos + header_keys[1].len);
+    val = header_str.substr(pos + header_keys[2].len);
     { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
-    *out_n_tokens = std::stoull(val);
+    *out_n_checkpoints = std::stoull(val);
+  }
 
-    // Parse n_checkpoints= (optional)
-    if (out_n_checkpoints) {
-        pos = header_str.find(header_keys[2].name);
-        if (pos == string::npos) return false;
-        val = header_str.substr(pos + header_keys[2].len);
-        { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
-        *out_n_checkpoints = std::stoull(val);
+  // Parse session= (optional; absent in older save files)
+  if (out_session) {
+    pos = header_str.find(header_keys[3].name);
+    if (pos != string::npos) {
+      val = header_str.substr(pos + header_keys[3].len);
+      { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
+      *out_session = std::stoi(val);
+    } else {
+      *out_session = -1; // No session number in this save file
     }
+  }
 
-    // Parse session= (optional; absent in older save files)
-    if (out_session) {
-        pos = header_str.find(header_keys[3].name);
-        if (pos != string::npos) {
-            val = header_str.substr(pos + header_keys[3].len);
-            { size_t sp = val.find(' '); if (sp != string::npos) val.resize(sp); }
-            *out_session = std::stoi(val);
-        } else {
-            *out_session = -1; // No session number in this save file
-        }
-    }
-
-    return true;
+  return true;
 }
 
 bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
-    FILE* fp = fopen(save_path.c_str(), "rb");
-    if (!fp) return false;
+  FILE* fp = fopen(save_path.c_str(), "rb");
+  if (!fp) return false;
 
-    static constexpr size_t MAX_HEAD = 128;
-    char head[MAX_HEAD];
-    size_t n = fread(head, 1, MAX_HEAD, fp);
-    if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return false; }
+  static constexpr size_t MAX_HEAD = 128;
+  char head[MAX_HEAD];
+  size_t n = fread(head, 1, MAX_HEAD, fp);
+  if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return false; }
 
-    string first_chunk(head, n);
-    size_t nl = first_chunk.find('\n');
-    if (nl == string::npos) { fclose(fp); return false; }
-    string header_str(first_chunk.begin(), first_chunk.begin() + nl);
+  string first_chunk(head, n);
+  size_t nl = first_chunk.find('\n');
+  if (nl == string::npos) { fclose(fp); return false; }
+  string header_str(first_chunk.begin(), first_chunk.begin() + nl);
 
-    size_t num_tokens = 0;
-    if (!parse_v3_header(header_str, &num_tokens)) { fclose(fp); return false; }
+  size_t num_tokens = 0;
+  if (!parse_v3_header(header_str, &num_tokens)) { fclose(fp); return false; }
 
-    long header_end = (long)(nl + 1);
-    if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }
+  long header_end = (long)(nl + 1);
+  if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }
 
-    tokens.resize(num_tokens);
-    if (num_tokens > 0) {
-        size_t n_read = fread(tokens.data(), sizeof(llama_token), num_tokens, fp);
-        fclose(fp);
-        if (n_read != num_tokens) {
-            tokens.clear();
-            return false;
-        }
-    } else {
-        fclose(fp);
+  tokens.resize(num_tokens);
+  if (num_tokens > 0) {
+    size_t n_read = fread(tokens.data(), sizeof(llama_token), num_tokens, fp);
+    fclose(fp);
+    if (n_read != num_tokens) {
+      tokens.clear();
+      return false;
     }
-    return true;
+  } else {
+    fclose(fp);
+  }
+  return true;
 }
 
 // --- V3 save: includes prompt-return checkpoints for partial restore ---
@@ -140,116 +140,116 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
 bool write_token_save_v3(const string& save_path, const vector<llama_token>& tokens,
                          const vector<PromptCheckpoint>& checkpoints,
                          int session_num) {
-    FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
-    char buf[48];
-    string sha;
-    if (pipe) {
-        if (fgets(buf, sizeof(buf), pipe)) {
-            sha = buf;
-            while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
-        }
-        pclose(pipe);
+  FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
+  char buf[48];
+  string sha;
+  if (pipe) {
+    if (fgets(buf, sizeof(buf), pipe)) {
+      sha = buf;
+      while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
     }
+    pclose(pipe);
+  }
 
-    // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M> session=<S>\n"
-    string header = string(header_keys[0].name) + "git_sha=" + sha +
-                    " " + header_keys[1].name + std::to_string(tokens.size()) +
-                    " " + header_keys[2].name + std::to_string(checkpoints.size());
-    if (session_num >= 0) {
-        header += string(" ") + header_keys[3].name + std::to_string(session_num);
+  // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M> session=<S>\n"
+  string header = string(header_keys[0].name) + "git_sha=" + sha +
+    " " + header_keys[1].name + std::to_string(tokens.size()) +
+    " " + header_keys[2].name + std::to_string(checkpoints.size());
+  if (session_num >= 0) {
+    header += string(" ") + header_keys[3].name + std::to_string(session_num);
+  }
+  header += "\n";
+
+  FILE* fp = fopen(save_path.c_str(), "wb");
+  if (!fp) return false;
+
+  if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
+  if (!tokens.empty()) {
+    size_t written = fwrite(tokens.data(), sizeof(llama_token), tokens.size(), fp);
+    if (written != tokens.size()) { fclose(fp); return false; }
+  }
+  // Append checkpoint entries: <n_past as int32><prompt_len as uint16><prompt_bytes>
+  for (const auto& cp : checkpoints) {
+    int32_t pos = static_cast<int32_t>(cp.n_past);
+    if (fwrite(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return false; }
+    uint16_t plen = static_cast<uint16_t>(cp.prompt.size());
+    if (fwrite(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return false; }
+    if (plen > 0) {
+      size_t written = fwrite(cp.prompt.data(), 1, plen, fp);
+      if (written != plen) { fclose(fp); return false; }
     }
-    header += "\n";
+  }
+  // Flush TPS log so it's consistent with the save point
+  tps_log.flush();
 
-    FILE* fp = fopen(save_path.c_str(), "wb");
-    if (!fp) return false;
-
-    if (fwrite(header.data(), 1, header.size(), fp) != header.size()) { fclose(fp); return false; }
-    if (!tokens.empty()) {
-        size_t written = fwrite(tokens.data(), sizeof(llama_token), tokens.size(), fp);
-        if (written != tokens.size()) { fclose(fp); return false; }
-    }
-    // Append checkpoint entries: <n_past as int32><prompt_len as uint16><prompt_bytes>
-    for (const auto& cp : checkpoints) {
-        int32_t pos = static_cast<int32_t>(cp.n_past);
-        if (fwrite(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return false; }
-        uint16_t plen = static_cast<uint16_t>(cp.prompt.size());
-        if (fwrite(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return false; }
-        if (plen > 0) {
-            size_t written = fwrite(cp.prompt.data(), 1, plen, fp);
-            if (written != plen) { fclose(fp); return false; }
-        }
-    }
-    // Flush TPS log so it's consistent with the save point
-    tps_log.flush();
-
-    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
-    return ok;
+  bool ok = fflush(fp) == 0 && fclose(fp) == 0;
+  return ok;
 }
 
 vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
-    FILE* fp = fopen(save_path.c_str(), "rb");
-    if (!fp) return {};
+  FILE* fp = fopen(save_path.c_str(), "rb");
+  if (!fp) return {};
 
-    static constexpr size_t MAX_HEAD = 128;
-    char head[MAX_HEAD];
-    size_t n = fread(head, 1, MAX_HEAD, fp);
-    if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return {}; }
+  static constexpr size_t MAX_HEAD = 128;
+  char head[MAX_HEAD];
+  size_t n = fread(head, 1, MAX_HEAD, fp);
+  if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return {}; }
 
-    string first_chunk(head, n);
-    size_t nl = first_chunk.find('\n');
-    if (nl == string::npos) { fclose(fp); return {}; }
-    string header_str(first_chunk.begin(), first_chunk.begin() + nl);
+  string first_chunk(head, n);
+  size_t nl = first_chunk.find('\n');
+  if (nl == string::npos) { fclose(fp); return {}; }
+  string header_str(first_chunk.begin(), first_chunk.begin() + nl);
 
-    size_t num_tokens = 0, num_checkpoints = 0;
-    if (!parse_v3_header(header_str, &num_tokens, &num_checkpoints)) { fclose(fp); return {}; }
+  size_t num_tokens = 0, num_checkpoints = 0;
+  if (!parse_v3_header(header_str, &num_tokens, &num_checkpoints)) { fclose(fp); return {}; }
 
-    if (num_checkpoints == 0) { fclose(fp); return {}; }
+  if (num_checkpoints == 0) { fclose(fp); return {}; }
 
-    // Skip header + tokens to reach checkpoint data
-    long header_end = (long)(nl + 1);
-    long token_data_size = (long)(num_tokens * sizeof(llama_token));
-    long cp_offset = header_end + token_data_size;
-    if (fseek(fp, cp_offset, SEEK_SET) != 0) { fclose(fp); return {}; }
+  // Skip header + tokens to reach checkpoint data
+  long header_end = (long)(nl + 1);
+  long token_data_size = (long)(num_tokens * sizeof(llama_token));
+  long cp_offset = header_end + token_data_size;
+  if (fseek(fp, cp_offset, SEEK_SET) != 0) { fclose(fp); return {}; }
 
-    vector<PromptCheckpoint> checkpoints;
-    checkpoints.reserve(num_checkpoints);
-    for (size_t i = 0; i < num_checkpoints; i++) {
-        int32_t pos;
-        uint16_t plen;
-        if (fread(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return {}; }
-        if (fread(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return {}; }
-        string prompt;
-        if (plen > 0) {
-            prompt.resize(plen);
-            if (fread(prompt.data(), 1, plen, fp) != plen) { fclose(fp); return {}; }
-        }
-        checkpoints.push_back({static_cast<int>(pos), std::move(prompt)});
+  vector<PromptCheckpoint> checkpoints;
+  checkpoints.reserve(num_checkpoints);
+  for (size_t i = 0; i < num_checkpoints; i++) {
+    int32_t pos;
+    uint16_t plen;
+    if (fread(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return {}; }
+    if (fread(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return {}; }
+    string prompt;
+    if (plen > 0) {
+      prompt.resize(plen);
+      if (fread(prompt.data(), 1, plen, fp) != plen) { fclose(fp); return {}; }
     }
-    fclose(fp);
-    return checkpoints;
+    checkpoints.push_back({static_cast<int>(pos), std::move(prompt)});
+  }
+  fclose(fp);
+  return checkpoints;
 }
 
 int read_save_session(const string& save_path) {
-    FILE* fp = fopen(save_path.c_str(), "rb");
-    if (!fp) return -1;
+  FILE* fp = fopen(save_path.c_str(), "rb");
+  if (!fp) return -1;
 
-    static constexpr size_t MAX_HEAD = 256;
-    char head[MAX_HEAD];
-    size_t n = fread(head, 1, MAX_HEAD, fp);
-    fclose(fp);
+  static constexpr size_t MAX_HEAD = 256;
+  char head[MAX_HEAD];
+  size_t n = fread(head, 1, MAX_HEAD, fp);
+  fclose(fp);
 
-    string header_line(head, n);
-    size_t nl = header_line.find('\n');
-    if (nl != string::npos) header_line.resize(nl);
+  string header_line(head, n);
+  size_t nl = header_line.find('\n');
+  if (nl != string::npos) header_line.resize(nl);
 
-    size_t pos = header_line.find(header_keys[HDR_SESSION].name);
-    if (pos == string::npos) return -1;
+  size_t pos = header_line.find(header_keys[HDR_SESSION].name);
+  if (pos == string::npos) return -1;
 
-    string val = header_line.substr(pos + header_keys[HDR_SESSION].len);
-    size_t sp = val.find(' ');
-    if (sp != string::npos) val.resize(sp);
+  string val = header_line.substr(pos + header_keys[HDR_SESSION].len);
+  size_t sp = val.find(' ');
+  if (sp != string::npos) val.resize(sp);
 
-    try { return std::stoi(val); } catch (...) { return -1; }
+  try { return std::stoi(val); } catch (...) { return -1; }
 }
 
 // --- V1 Cache: auto-cached KV cache for instant restores ---
@@ -259,72 +259,72 @@ int read_save_session(const string& save_path) {
 #include <dirent.h>
 
 static std::string sha256_hex(const std::string& data) {
-    std::array<uint8_t, EVP_MAX_MD_SIZE> hash;
-    unsigned int hash_len = 0;
+  std::array<uint8_t, EVP_MAX_MD_SIZE> hash;
+  unsigned int hash_len = 0;
 
-    EVP_MD_CTX* ctx = EVP_MD_CTX_new();
-    if (!ctx) return "";
+  EVP_MD_CTX* ctx = EVP_MD_CTX_new();
+  if (!ctx) return "";
 
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
-        EVP_DigestUpdate(ctx, data.data(), data.size()) == 1 &&
-        EVP_DigestFinal_ex(ctx, hash.data(), &hash_len) == 1) {
-        EVP_MD_CTX_free(ctx);
-    } else {
-        EVP_MD_CTX_free(ctx);
-        return "";
-    }
+  if (EVP_DigestInit_ex(ctx, EVP_sha256(), nullptr) == 1 &&
+      EVP_DigestUpdate(ctx, data.data(), data.size()) == 1 &&
+      EVP_DigestFinal_ex(ctx, hash.data(), &hash_len) == 1) {
+    EVP_MD_CTX_free(ctx);
+  } else {
+    EVP_MD_CTX_free(ctx);
+    return "";
+  }
 
-    std::ostringstream oss;
-    for (unsigned int i = 0; i < hash_len; i++)
-        oss << std::hex << std::setfill('0') << std::setw(2) << (int)hash[i];
-    return oss.str();
+  std::ostringstream oss;
+  for (unsigned int i = 0; i < hash_len; i++)
+    oss << std::hex << std::setfill('0') << std::setw(2) << (int)hash[i];
+  return oss.str();
 }
 
 static std::string get_cache_dir_internal() {
-    // Use LIM_CACHE_DIR subdirectory in the project directory alongside save files.
-    char cwd[4096];
-    std::string base = (getcwd(cwd, sizeof(cwd)) ? cwd : ".");
-    std::string dir = base + "/" + LIM_CACHE_DIR;
-    mkdir(dir.c_str(), 0755);
-    return dir;
+  // Use LIM_CACHE_DIR subdirectory in the project directory alongside save files.
+  char cwd[4096];
+  std::string base = (getcwd(cwd, sizeof(cwd)) ? cwd : ".");
+  std::string dir = base + "/" + LIM_CACHE_DIR;
+  mkdir(dir.c_str(), 0755);
+  return dir;
 }
 
 std::string get_cache_dir() { return get_cache_dir_internal(); }
 
 static std::string model_identifier(const std::string& model_path) {
-    // Use just the filename. Qwen3.6-27B-UD-Q5_K_XL.gguf is already a unique
-    // enough identifier -- encodes model, size, and quantization.
-    size_t slash = model_path.rfind('/');
-    return slash != std::string::npos ? model_path.substr(slash + 1) : model_path;
+  // Use just the filename. Qwen3.6-27B-UD-Q5_K_XL.gguf is already a unique
+  // enough identifier -- encodes model, size, and quantization.
+  size_t slash = model_path.rfind('/');
+  return slash != std::string::npos ? model_path.substr(slash + 1) : model_path;
 }
 
 // Compute content-based cache key: SHA-256 of (raw token bytes + model filename),
 // truncated to 12 hex characters.  This survives save file renames and moves.
 static std::string cache_hash(const std::vector<llama_token>& tokens,
                               const std::string& model_path) {
-    std::string combined;
-    combined.reserve(tokens.size() * sizeof(llama_token) + model_identifier(model_path).size() + 1);
-    combined.append(reinterpret_cast<const char*>(tokens.data()),
-                    tokens.size() * sizeof(llama_token));
-    combined += '|';
-    combined += model_identifier(model_path);
-    return sha256_hex(combined).substr(0, 12);
+  std::string combined;
+  combined.reserve(tokens.size() * sizeof(llama_token) + model_identifier(model_path).size() + 1);
+  combined.append(reinterpret_cast<const char*>(tokens.data()),
+                  tokens.size() * sizeof(llama_token));
+  combined += '|';
+  combined += model_identifier(model_path);
+  return sha256_hex(combined).substr(0, 12);
 }
 
 std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
                                 const std::string& model_path) {
-    return cache_hash(tokens, model_path);
+  return cache_hash(tokens, model_path);
 }
 
 // Extract the save file basename without directory path or .save extension.
 // Used as the human-readable prefix in cache filenames: $LIM_CACHE_DIR/<name>-<hash>
 static std::string save_file_name(const std::string& save_path) {
-    size_t slash = save_path.rfind('/');
-    std::string base = slash != std::string::npos ? save_path.substr(slash + 1) : save_path;
-    if (base.size() >= std::strlen(SAVE_EXT) && base.compare(base.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) == 0) {
-        base.resize(base.size() - std::strlen(SAVE_EXT));
-    }
-    return base;
+  size_t slash = save_path.rfind('/');
+  std::string base = slash != std::string::npos ? save_path.substr(slash + 1) : save_path;
+  if (base.size() >= std::strlen(SAVE_EXT) && base.compare(base.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) == 0) {
+    base.resize(base.size() - std::strlen(SAVE_EXT));
+  }
+  return base;
 }
 
 // Build the cache filename: <name>-<hash>.  The name is purely informational;
@@ -332,240 +332,240 @@ static std::string save_file_name(const std::string& save_path) {
 static std::string cache_filename(const std::string& save_path,
                                   const std::vector<llama_token>& tokens,
                                   const std::string& model_path) {
-    return save_file_name(save_path) + "-" + cache_hash(tokens, model_path);
+  return save_file_name(save_path) + "-" + cache_hash(tokens, model_path);
 }
 
 // Load a raw KV-cache blob from a file (no header).
 static bool load_raw_cache(const std::string& cache_path, struct llama_context* ctx) {
-    FILE* fp = fopen(cache_path.c_str(), "rb");
-    if (!fp) return false;
+  FILE* fp = fopen(cache_path.c_str(), "rb");
+  if (!fp) return false;
 
-    fseek(fp, 0, SEEK_END);
-    long fsize = ftell(fp);
-    fclose(fp);
-    if (fsize <= 0) return false;
+  fseek(fp, 0, SEEK_END);
+  long fsize = ftell(fp);
+  fclose(fp);
+  if (fsize <= 0) return false;
 
-    size_t state_size = static_cast<size_t>(fsize);
-    std::vector<uint8_t> state_buf(state_size);
+  size_t state_size = static_cast<size_t>(fsize);
+  std::vector<uint8_t> state_buf(state_size);
 
-    fp = fopen(cache_path.c_str(), "rb");
-    if (!fp || fread(state_buf.data(), 1, state_size, fp) != state_size) {
-        if (fp) fclose(fp);
-        return false;
-    }
-    fclose(fp);
+  fp = fopen(cache_path.c_str(), "rb");
+  if (!fp || fread(state_buf.data(), 1, state_size, fp) != state_size) {
+    if (fp) fclose(fp);
+    return false;
+  }
+  fclose(fp);
 
-    size_t n_loaded = llama_state_set_data(ctx, state_buf.data(), state_size);
-    return n_loaded == state_size;
+  size_t n_loaded = llama_state_set_data(ctx, state_buf.data(), state_size);
+  return n_loaded == state_size;
 }
 
 bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                        const std::string& model_path, struct llama_context* ctx) {
-    std::string dir = get_cache_dir_internal();
-    std::string hash = cache_hash(tokens, model_path);
-    std::string suffix = "-" + hash;
+  std::string dir = get_cache_dir_internal();
+  std::string hash = cache_hash(tokens, model_path);
+  std::string suffix = "-" + hash;
 
-    // Look for any file ending with -<hash> (glob-style via readdir).
-    DIR* d = opendir(dir.c_str());
-    if (!d) return false;
+  // Look for any file ending with -<hash> (glob-style via readdir).
+  DIR* d = opendir(dir.c_str());
+  if (!d) return false;
 
-    struct dirent* entry;
-    while ((entry = readdir(d)) != nullptr) {
-        std::string fname = entry->d_name;
-        if (fname.size() > suffix.size() &&
-            fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-            // Found a match. All matches share the same content+model hash,
-            // so any one of them is valid.
-            std::string cache_path = dir + "/" + fname;
-            if (load_raw_cache(cache_path, ctx)) {
-                closedir(d);
-                return true;
-            }
-        }
+  struct dirent* entry;
+  while ((entry = readdir(d)) != nullptr) {
+    std::string fname = entry->d_name;
+    if (fname.size() > suffix.size() &&
+        fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      // Found a match. All matches share the same content+model hash,
+      // so any one of them is valid.
+      std::string cache_path = dir + "/" + fname;
+      if (load_raw_cache(cache_path, ctx)) {
+        closedir(d);
+        return true;
+      }
     }
-    closedir(d);
-    return false;
+  }
+  closedir(d);
+  return false;
 }
 
 bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
                     const std::string& old_hash) {
-    std::string dir = get_cache_dir_internal();
-    std::string hash = cache_hash(tokens, model_path);
-    std::string suffix = "-" + hash;
+  std::string dir = get_cache_dir_internal();
+  std::string hash = cache_hash(tokens, model_path);
+  std::string suffix = "-" + hash;
 
-    // Check if an equivalent cache entry already exists (same content+model).
-    DIR* d = opendir(dir.c_str());
-    if (d) {
-        struct dirent* entry;
-        while ((entry = readdir(d)) != nullptr) {
-            std::string fname = entry->d_name;
-            if (fname.size() > suffix.size() &&
-                fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-                // Cache already present for this content+model combination.
-                closedir(d);
-                return true;
-            }
-        }
+  // Check if an equivalent cache entry already exists (same content+model).
+  DIR* d = opendir(dir.c_str());
+  if (d) {
+    struct dirent* entry;
+    while ((entry = readdir(d)) != nullptr) {
+      std::string fname = entry->d_name;
+      if (fname.size() > suffix.size() &&
+          fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+        // Cache already present for this content+model combination.
         closedir(d);
+        return true;
+      }
     }
+    closedir(d);
+  }
 
-    // Delete the stale cache entry from the previous save (if we know its hash).
-    if (!old_hash.empty()) {
-        std::string old_suffix = "-" + old_hash;
-        d = opendir(dir.c_str());
-        if (d) {
-            struct dirent* entry;
-            while ((entry = readdir(d)) != nullptr) {
-                std::string fname = entry->d_name;
-                if (fname.size() > old_suffix.size() &&
-                    fname.compare(fname.size() - old_suffix.size(), old_suffix.size(), old_suffix) == 0) {
-                    unlink((dir + "/" + fname).c_str());
-                }
-            }
-            closedir(d);
+  // Delete the stale cache entry from the previous save (if we know its hash).
+  if (!old_hash.empty()) {
+    std::string old_suffix = "-" + old_hash;
+    d = opendir(dir.c_str());
+    if (d) {
+      struct dirent* entry;
+      while ((entry = readdir(d)) != nullptr) {
+        std::string fname = entry->d_name;
+        if (fname.size() > old_suffix.size() &&
+            fname.compare(fname.size() - old_suffix.size(), old_suffix.size(), old_suffix) == 0) {
+          unlink((dir + "/" + fname).c_str());
         }
+      }
+      closedir(d);
     }
+  }
 
-    // Write the raw KV cache as $LIM_CACHE_DIR/<name>-<hash>
-    std::string cache_path = dir + "/" + cache_filename(save_path, tokens, model_path);
+  // Write the raw KV cache as $LIM_CACHE_DIR/<name>-<hash>
+  std::string cache_path = dir + "/" + cache_filename(save_path, tokens, model_path);
 
-    size_t state_size = llama_state_get_size(ctx);
-    if (state_size == 0) return false;
+  size_t state_size = llama_state_get_size(ctx);
+  if (state_size == 0) return false;
 
-    std::vector<uint8_t> state_buf(state_size);
-    size_t n_written = llama_state_get_data(ctx, state_buf.data(), state_size);
-    if (n_written == 0) return false;
+  std::vector<uint8_t> state_buf(state_size);
+  size_t n_written = llama_state_get_data(ctx, state_buf.data(), state_size);
+  if (n_written == 0) return false;
 
-    FILE* fp = fopen(cache_path.c_str(), "wb");
-    if (!fp) return false;
-    if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
+  FILE* fp = fopen(cache_path.c_str(), "wb");
+  if (!fp) return false;
+  if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
 
-    bool ok = fflush(fp) == 0 && fclose(fp) == 0;
-    return ok;
+  bool ok = fflush(fp) == 0 && fclose(fp) == 0;
+  return ok;
 }
 
 bool delete_save_and_cache(const std::string& save_path,
                            const std::string& model_path,
                            int* cache_deleted) {
-    if (cache_deleted) *cache_deleted = 0;
+  if (cache_deleted) *cache_deleted = 0;
 
-    // Read tokens from the save file to compute the cache hash.
-    std::vector<llama_token> tokens;
-    bool has_hash = read_token_save(save_path, tokens);
-    std::string hash;
-    if (has_hash) {
-        hash = cache_hash(tokens, model_path);
-    }
+  // Read tokens from the save file to compute the cache hash.
+  std::vector<llama_token> tokens;
+  bool has_hash = read_token_save(save_path, tokens);
+  std::string hash;
+  if (has_hash) {
+    hash = cache_hash(tokens, model_path);
+  }
 
-    // Delete the save file.
-    int rc = unlink(save_path.c_str());
-    if (rc != 0) return false;
+  // Delete the save file.
+  int rc = unlink(save_path.c_str());
+  if (rc != 0) return false;
 
-    // If we have a hash, scan $LIM_CACHE_DIR/ for matching entries and delete them.
-    if (!hash.empty()) {
-        std::string dir = get_cache_dir_internal();
-        std::string suffix = "-" + hash;
+  // If we have a hash, scan $LIM_CACHE_DIR/ for matching entries and delete them.
+  if (!hash.empty()) {
+    std::string dir = get_cache_dir_internal();
+    std::string suffix = "-" + hash;
 
-        DIR* d = opendir(dir.c_str());
-        if (d) {
-            struct dirent* entry;
-            while ((entry = readdir(d)) != nullptr) {
-                std::string fname = entry->d_name;
-                if (fname.size() > suffix.size() &&
-                    fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-                    unlink((dir + "/" + fname).c_str());
-                    if (cache_deleted) (*cache_deleted)++;
-                }
-            }
-            closedir(d);
+    DIR* d = opendir(dir.c_str());
+    if (d) {
+      struct dirent* entry;
+      while ((entry = readdir(d)) != nullptr) {
+        std::string fname = entry->d_name;
+        if (fname.size() > suffix.size() &&
+            fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+          unlink((dir + "/" + fname).c_str());
+          if (cache_deleted) (*cache_deleted)++;
         }
+      }
+      closedir(d);
     }
+  }
 
-    return true;
+  return true;
 }
 
 // Wrapper: outputs tool diagnostics with .tool-label styling in the browser.
 // Writes to chat_log, styled HTML to browser pipe, and plain text to stdout.
 void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
                          const string& tag /* = "" */) {
-    if (!chat_log.is_open()) return;
+  if (!chat_log.is_open()) return;
 
-    string final_message = tag.empty() ? message : tag + " " + message;
+  string final_message = tag.empty() ? message : tag + " " + message;
 
-    if (!debugOnly || is_debug) {
-        // Write to chat_log
-        chat_log << final_message << "\n";
-        chat_log.flush();
+  if (!debugOnly || is_debug) {
+    // Write to chat_log
+    chat_log << final_message << "\n";
+    chat_log.flush();
 
-        // Styled HTML to browser pipe (uses .tool-label colors from viewer.html)
-        if (should_output_to_browser()) {
-            if (pipe_fd < 0) {
-                pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
-            }
-            if (pipe_fd >= 0) {
-                string safe;
-                for (char c : final_message) {
-                    if (c == '&') safe += "&amp;";
-                    else if (c == '<') safe += "&lt;";
-                    else if (c == '>') safe += "&gt;";
-                    else safe += c;
-                }
-                string html = "<div class='tool-label'>" + safe + "</div>";
-                pipe_write(&SEG_HTML, 1);
-                pipe_write(html.c_str(), html.length());
-            }
+    // Styled HTML to browser pipe (uses .tool-label colors from viewer.html)
+    if (should_output_to_browser()) {
+      if (pipe_fd < 0) {
+        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+      }
+      if (pipe_fd >= 0) {
+        string safe;
+        for (char c : final_message) {
+          if (c == '&') safe += "&amp;";
+          else if (c == '<') safe += "&lt;";
+          else if (c == '>') safe += "&gt;";
+          else safe += c;
         }
-
-        // Plain text to stdout
-        if (should_output_to_stdout()) {
-            cout << final_message << endl;
-            consoleMarkNewline(true);
-            fflush(stdout);
-        }
+        string html = "<div class='tool-label'>" + safe + "</div>";
+        pipe_write(&SEG_HTML, 1);
+        pipe_write(html.c_str(), html.length());
+      }
     }
+
+    // Plain text to stdout
+    if (should_output_to_stdout()) {
+      cout << final_message << endl;
+      consoleMarkNewline(true);
+      fflush(stdout);
+    }
+  }
 }
 
 // --- Consolidated Diagnostic Logging Function ---
 void log_diagnostic(const string& message, bool logOnly /* = false */, bool debugOnly /* = false */,
                     const string& tag /* = "" */) {
-    if (!chat_log.is_open()) {
-        cerr << "[ERROR] log file is not open; cannot write diagnostic message\n";
-        return;
-    }
+  if (!chat_log.is_open()) {
+    cerr << "[ERROR] log file is not open; cannot write diagnostic message\n";
+    return;
+  }
 
-    // Prepend tag if provided
-    string final_message = tag.empty() ? message : tag + " " + message;
+  // Prepend tag if provided
+  string final_message = tag.empty() ? message : tag + " " + message;
 
-    if (!logOnly) {
-        if (!debugOnly || is_debug) {
-            if (should_output_to_browser()) {
-                // Output to browser via FIFO pipe
-                if (pipe_fd < 0) {
-                    pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
-                }
-                if (pipe_fd >= 0) {
-                  string browser_msg = final_message + "\n";
-                    ssize_t res = write(pipe_fd, browser_msg.c_str(), browser_msg.length());
-
-                    // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is full
-                    if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        close(pipe_fd);
-                        pipe_fd = -1;
-                    }
-                }
-            }
-            if (should_output_to_stdout()) {
-                // Output to stdout (when browser mode is off, or in combined mode 3)
-                cout << final_message << endl;
-                consoleMarkNewline(true);
-                fflush(stdout);
-            }
+  if (!logOnly) {
+    if (!debugOnly || is_debug) {
+      if (should_output_to_browser()) {
+        // Output to browser via FIFO pipe
+        if (pipe_fd < 0) {
+          pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
         }
-    }
+        if (pipe_fd >= 0) {
+          string browser_msg = final_message + "\n";
+          ssize_t res = write(pipe_fd, browser_msg.c_str(), browser_msg.length());
 
-    chat_log << final_message << "\n";
-    chat_log.flush();
+          // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is full
+          if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            close(pipe_fd);
+            pipe_fd = -1;
+          }
+        }
+      }
+      if (should_output_to_stdout()) {
+        // Output to stdout (when browser mode is off, or in combined mode 3)
+        cout << final_message << endl;
+        consoleMarkNewline(true);
+        fflush(stdout);
+      }
+    }
+  }
+
+  chat_log << final_message << "\n";
+  chat_log.flush();
 }
 
 
@@ -611,28 +611,28 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
                                    function<void(const string&)> on_close) {
   // Output function call to stdout and logfile
   if (chat_log.is_open()) {
-      chat_log << "exec_shell(\"" << command << "\")" << "\n";
-      chat_log.flush();
+    chat_log << "exec_shell(\"" << command << "\")" << "\n";
+    chat_log.flush();
   }
   if (should_output_to_stdout()) {
-      cout << "exec_shell(\"" << command << "\")" << endl;
-      consoleMarkNewline(true);
-      fflush(stdout);
+    cout << "exec_shell(\"" << command << "\")" << endl;
+    consoleMarkNewline(true);
+    fflush(stdout);
   }
 
   // Stream tool call to browser in a code box
   if (should_output_to_browser()) {
-      string safe;
-      for (char c : command) {
-          if (c == '&') safe += "&amp;";
-          else if (c == '<') safe += "&lt;";
-          else if (c == '>') safe += "&gt;";
-          else safe += c;
-      }
-      string html = "<div class='tool-label'>exec_shell(<code>" + safe + "</code>)</div>";
-      uint8_t seg = SEG_HTML;
-      pipe_write(reinterpret_cast<const char*>(&seg), 1);
-      pipe_write(html.c_str(), html.length());
+    string safe;
+    for (char c : command) {
+      if (c == '&') safe += "&amp;";
+      else if (c == '<') safe += "&lt;";
+      else if (c == '>') safe += "&gt;";
+      else safe += c;
+    }
+    string html = "<div class='tool-label'>exec_shell(<code>" + safe + "</code>)</div>";
+    uint8_t seg = SEG_HTML;
+    pipe_write(reinterpret_cast<const char*>(&seg), 1);
+    pipe_write(html.c_str(), html.length());
   }
 
   string safe_cmd = command;
@@ -954,8 +954,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
       while ((pos = content.find(unescaped_text, pos)) != string::npos) {
         match_count++;
         if (match_count > 10) {
-            result += "... (Truncated after 10 matches)\n";
-            break;
+          result += "... (Truncated after 10 matches)\n";
+          break;
         }
 
         // Advance the running line counter from where we left off.
@@ -1037,10 +1037,10 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   // Single exit point: log and build display string from the final state of out.
   log_tool_diagnostic(search_label);
   if (out["error"].empty()) {
-      int n = atoi(out["match_count"].c_str());
-      out["display"] = "Search file: " + path + ": " + to_string(n) + (n == 1 ? " match" : " matches");
+    int n = atoi(out["match_count"].c_str());
+    out["display"] = "Search file: " + path + ": " + to_string(n) + (n == 1 ? " match" : " matches");
   } else {
-      out["display"] = "Search file: " + path + ": " + out["error"];
+    out["display"] = "Search file: " + path + ": " + out["error"];
   }
   return out;
 }
@@ -1267,11 +1267,11 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   int changes_count = 0;
 
   if (unescaped_old.empty()) {
-      map<string, string> result;
-      result["status"] = "error";
-      result["error"] = "OLD_TEXT cannot be empty";
-      log_diagnostic(result["error"], true /* logOnly */);
-      return result;
+    map<string, string> result;
+    result["status"] = "error";
+    result["error"] = "OLD_TEXT cannot be empty";
+    log_diagnostic(result["error"], true /* logOnly */);
+    return result;
   }
 
   while ((pos = content.find(unescaped_old, pos)) != string::npos) {
@@ -1289,11 +1289,11 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   }
 
   if (content.empty()) {
-      map<string, string> result;
-      result["status"] = "error";
-      result["error"] = "CRITICAL ERROR: Content is empty - refusing to write empty file";
-      log_diagnostic(result["error"], true /* logOnly */);
-      return result;
+    map<string, string> result;
+    result["status"] = "error";
+    result["error"] = "CRITICAL ERROR: Content is empty - refusing to write empty file";
+    log_diagnostic(result["error"], true /* logOnly */);
+    return result;
   }
 
   ofstream out_file(fullpath);
