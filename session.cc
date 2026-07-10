@@ -1126,6 +1126,15 @@ bool ChatSession::run() {
             string input = line;
             free(line);
 
+            // Treat /quit and /exit at the Undo> prompt as a graceful cancel,
+            // not as a failed checkpoint match.
+            if (input == "/quit" || input == "/exit") {
+                diag("Undo cancelled.", "\033[33m");
+                pop_history(undo_entries_added);
+                restore_saved_history(saved_b, saved_c);
+                continue;
+            }
+
             // Match the user's selection against checkpoint display strings.
             int selected_idx = -1;
             for (int i = 0; i < (int)state_.prompt_checkpoints.size(); i++) {
