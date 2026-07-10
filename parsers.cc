@@ -188,22 +188,50 @@ static string extract_param_name(const string& tool_call, size_t tag_pos, size_t
     return strip_quotes_from_name(tool_call.substr(after_prefix, gt - after_prefix));
 }
 
+// Find a parameter tag by name.  Accepts either the canonical form
+//   <parameter=name>...PARAM_END
+// or a bare tag form (LLM occasionally emits this):
+//   <name>...PARAM_END
+// Sets 'content_begin' to the position just past the opening '>'.
+// Returns true if found, false otherwise.
+static bool find_param_tag(const string& tool_call, const string& arg_name, size_t& content_begin) {
+    // First pass: look for canonical <parameter=name> form.
+    {
+        size_t pos = 0;
+        while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+            size_t cb = 0;
+            string found_name = extract_param_name(tool_call, pos, cb);
+            if (found_name == arg_name) {
+                content_begin = cb;
+                return true;
+            }
+            pos++;
+        }
+    }
+
+    // Second pass: fall back to bare <name> form.
+    string bare_open = "<" + arg_name + ">";
+    size_t pos = 0;
+    while ((pos = tool_call.find(bare_open, pos)) != string::npos) {
+        content_begin = pos + bare_open.length();
+        return true;
+    }
+
+    return false;
+}
+
 // Linear-time string parser for XML schema
 string extract_string_arg_bounded(const string& tool_call, const string& arg_name) {
-    size_t pos = 0;
-    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
-        size_t content_begin = 0;
-        string found_name = extract_param_name(tool_call, pos, content_begin);
-        if (found_name == arg_name) {
-            size_t end = find_unescaped_param_end(tool_call, content_begin);
-            if (end == string::npos) end = tool_call.length();
-
-            string val = tool_call.substr(content_begin, end - content_begin);
-            return strip_quotes(val);
-        }
-        pos++;
+    size_t content_begin = 0;
+    if (!find_param_tag(tool_call, arg_name, content_begin)) {
+        return "";
     }
-    return "";
+
+    size_t end = find_unescaped_param_end(tool_call, content_begin);
+    if (end == string::npos) end = tool_call.length();
+
+    string val = tool_call.substr(content_begin, end - content_begin);
+    return strip_quotes(val);
 }
 
 // Linear-time array parser for XML schema (Newline/Comma separated)
@@ -213,45 +241,41 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
 
-    size_t pos = 0;
-    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
-        size_t content_begin = 0;
-        string found_name = extract_param_name(tool_call, pos, content_begin);
-        if (found_name == arg_name) {
-            size_t end = find_unescaped_param_end(tool_call, content_begin);
-            if (end == string::npos) end = tool_call.length();
+    size_t content_begin = 0;
+    if (!find_param_tag(tool_call, arg_name, content_begin)) {
+        return result;
+    }
 
-            string val = tool_call.substr(content_begin, end - content_begin);
+    size_t end = find_unescaped_param_end(tool_call, content_begin);
+    if (end == string::npos) end = tool_call.length();
 
-            // If the llm bleeds its schema (</<), truncate the parameter exactly at the bleed.
-            size_t bleed_pos = val.find("</<");
-            if (bleed_pos != string::npos) {
-                val = val.substr(0, bleed_pos);
-            }
+    string val = tool_call.substr(content_begin, end - content_begin);
 
-            // --- Strip outer square brackets if present (handles multi-line bracket lists) ---
-            size_t first_bracket = val.find('[');
-            size_t last_bracket  = val.rfind(']');
-            if (first_bracket != string::npos && last_bracket != string::npos && last_bracket > first_bracket) {
-                val = val.substr(first_bracket + 1, last_bracket - first_bracket - 1);
-            }
+    // If the llm bleeds its schema (</<), truncate the parameter exactly at the bleed.
+    size_t bleed_pos = val.find("</<");
+    if (bleed_pos != string::npos) {
+        val = val.substr(0, bleed_pos);
+    }
 
-            // Split the parameter block by newlines. Each non-empty line is a candidate item.
-            stringstream ss(val);
-            string line;
-            while (getline(ss, line)) {
-                stringstream comma_ss(line);
-                string item;
-                while (getline(comma_ss, item, ',')) {
-                    size_t first = item.find_first_not_of(" \t\r\n");
-                    if (first == string::npos) continue;
-                    size_t last = item.find_last_not_of(" \t\r\n");
-                    result.push_back(strip_quotes(item.substr(first, last - first + 1)));
-                }
-            }
-            return result;
+    // --- Strip outer square brackets if present (handles multi-line bracket lists) ---
+    size_t first_bracket = val.find('[');
+    size_t last_bracket  = val.rfind(']');
+    if (first_bracket != string::npos && last_bracket != string::npos && last_bracket > first_bracket) {
+        val = val.substr(first_bracket + 1, last_bracket - first_bracket - 1);
+    }
+
+    // Split the parameter block by newlines. Each non-empty line is a candidate item.
+    stringstream ss(val);
+    string line;
+    while (getline(ss, line)) {
+        stringstream comma_ss(line);
+        string item;
+        while (getline(comma_ss, item, ',')) {
+            size_t first = item.find_first_not_of(" \t\r\n");
+            if (first == string::npos) continue;
+            size_t last = item.find_last_not_of(" \t\r\n");
+            result.push_back(strip_quotes(item.substr(first, last - first + 1)));
         }
-        pos++;
     }
     return result;
 }
