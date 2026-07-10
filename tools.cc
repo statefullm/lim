@@ -18,8 +18,7 @@ static bool param_has_newline_impl(const string& s) {
     return s.find('\n') != string::npos || s.find('\r') != string::npos;
 }
 
-const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter must not contain newlines.";
-
+const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter contains newlines, likely because a " + string(PARAM_END) + " closing tag is missing.";
 bool param_has_newline(const string& s) {
     return param_has_newline_impl(s);
 }
@@ -208,7 +207,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
     }
   } else if (tool_name == "search_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
+    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
@@ -237,7 +236,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
     }
   } else if (tool_name == "write_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
+    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
     file_cache.erase(path);
     out.is_mutating = true;
@@ -260,7 +259,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
     }
   } else if (tool_name == "edit_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; return out; }
+    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
     file_cache.erase(path);

@@ -160,11 +160,14 @@ ToolExecutor::Result ToolExecutor::execute(
         tool_out = execute_tool_call(tool_call, state.file_cache);
 
         // Handle validation errors reported by the struct.
-        if (!tool_out.recognized || !tool_out.params_valid) {
+        if (!tool_out.recognized || !tool_out.params_valid || tool_out.malformed_xml) {
             state.invalid_tool_strikes++;
 
 
-            string label = !tool_out.recognized ? "Invalid Tool Call" : "Malformed Tool Call";
+            string label;
+            if (!tool_out.recognized) label = "Invalid Tool Call";
+            else if (tool_out.malformed_xml) label = "Malformed Tool Call";
+            else label = "Malformed Tool Call";
             diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
 
             // Always show the raw tool call so the user can diagnose what went wrong.

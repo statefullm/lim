@@ -16,6 +16,7 @@ struct ToolResult {
     bool is_mutating = false;  // Whether the tool modifies files
     bool recognized = true;  // Whether the tool name was recognized
     bool params_valid = true;  // Whether required parameters are present
+    bool malformed_xml = false;  // Structural XML issue (e.g., missing PARAM_END causing param bleed)
     std::string parsed_tool_name; // The tool name as extracted from the XML tag (for diagnostics)
     std::vector<std::string> missing_params; // List of missing required param names (for diagnostics)
 };
