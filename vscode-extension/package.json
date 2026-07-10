@@ -3,6 +3,7 @@
   "displayName": "LIM Workspace",
   "description": "Integrated terminal and browser workspace for LIM",
   "version": "0.1.0",
+  "publisher": "statefullm",
   "repository": {
     "type": "git",
     "url": "https://github.com/statefullm/lim"

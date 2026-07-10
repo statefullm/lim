@@ -26,3 +26,8 @@ vscode-extension/*.vsix
 .cache/
 log/
 .lim_history
+userprompt
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -98,7 +98,7 @@ $(VSIX): vscode-extension/src/extension.ts \
 		 vscode-extension/tsconfig.json \
 		 vscode-extension/resources/lim.png
 	sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' vscode-extension/package.json
-	cd vscode-extension && npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && npx @vscode/vsce package
+	cd vscode-extension && NODE_NO_WARNINGS=1 npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && NODE_NO_WARNINGS=1 npx @vscode/vsce package
 
 
 LIM_CONFIG_DIR ?= $(HOME)/.config/lim
@@ -116,10 +116,10 @@ install: $(TARGET)
 	cp -r libs/fonts $(LIM_CONFIG_DIR)/libs/
 
 install-vscode: vscode
-	code --install-extension $(VSIX) --force
+	NODE_NO_WARNINGS=1 code --install-extension $(VSIX) --force
 
 uninstall-vscode: FORCE
-	-code --uninstall-extension undefined_publisher.vscode-extension
+	-NODE_NO_WARNINGS=1 code --uninstall-extension statefullm.vscode-extension
 
 install-all: install install-vscode
 

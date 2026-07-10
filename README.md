@@ -1,6 +1,12 @@
 # LIM: Stateful Local Inference Manager
 
+[![License](https://img.shields.io/github/license/statefullm/lim)](LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/statefullm/lim?style=social)](https://github.com/statefullm/lim)
+[![Release](https://img.shields.io/github/v/release/statefullm/lim)](https://github.com/statefullm/lim/releases)
+
 **LIM** (Local Inference Manager) is a C++ terminal-based LLM controller built on [llama.cpp](https://github.com/ggml-org/llama.cpp). It provides a persistent, stateful session where the KV-cache is never discarded: each turn's tokens are simply appended, so new input costs only O(input tokens), not O(total history). LIM has native filesystem tools for reading, searching, editing, and writing files, plus web searching and PDF reading.
+
+![LIM - Stateful Local Inference Manager](Screenshot.png)
 
 ## How It Works
 
