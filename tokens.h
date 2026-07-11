@@ -1,10 +1,6 @@
 #pragma once
 
 namespace Tokens {
-// --- XML Parameter Schema ---
-constexpr const char* THINK_START = "<think>";
-constexpr const char* THINK_END   = "</think>";
-
 // --- XML Tool Calling Schema ---
 constexpr const char* FUNC_START = "<function=";
 constexpr const char* FUNC_END   = "</function>";

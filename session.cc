@@ -628,7 +628,7 @@ bool ChatSession::feed_user_message(const string& input) {
 
     // If using dummy thought, append the thinking block as content tokens.
     if (use_dummy_thought_) {
-        string think_block = string(THINK_START) + "\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n" + THINK_END + "\n";
+        string think_block = string(g_model_tokens.think_start) + "\nThe user wants a direct answer. I will output the requested data immediately without preamble.\n" + g_model_tokens.think_end + "\n";
         auto think_tok = common_tokenize(ctx_, think_block, false, true);
         tokens.insert(tokens.end(), think_tok.begin(), think_tok.end());
     }
