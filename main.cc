@@ -50,7 +50,8 @@ bool honest_speed = false;  // default: benchmark-style
 
 // LIM_CHATBOT_MODE: benchmarking modes for comparing history handling
 //   0 (default): LIM normal mode -- O(1) KV-cache append, no re-decode
-//   1: Standard chatbot -- detokenize + re-tokenize + re-decode full history each turn.
+//   1: Standard chatbot -- clear cache + re-decode full history each turn.
+//      Re-feeds exact saved tokens (preserving per-turn BOS positions) plus new input.
 //   2: Cache-aware prefix match -- KV-cache stays in memory, re-tokenizes full conversation
 //      text and compares against cached prefix to find where to resume decoding.
 //   Both modes force honest speed measurement so TPS includes re-decode overhead.

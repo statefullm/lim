@@ -545,12 +545,14 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 | Value | Mode | Description |
 |---|---|---|
 | `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. Same approach as llama-cli interactive mode.
-| `1` | Standard chatbot | Clears cache each turn, reconstructs conversation text from stored tokens, re-tokenizes from scratch, and re-decodes through the model. Simulates a real chat API that receives the full conversation as text each request. TPS includes re-tokenize + re-decode (detokenization is excluded -- it's a LIM implementation detail, not part of chatbot behavior). |
+| `1` | Standard chatbot | Clears cache each turn and re-decodes the full history from scratch. Re-feeds exact saved tokens (preserving per-turn BOS positions) plus the new user input, so the model sees the same token sequence as in mode 0 while paying the full re-decode cost. TPS includes re-decode + generation. |
 | `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding. Illustrates that prefix matching overhead is negligible compared to decode cost.
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
 > **Note:** For fair comparisons, run benchmarks with an empty system prompt (remove `~/.config/lim/prompt`) to inhibit tool calls. In mode 1, previous tool calls would be both re-decoded **and re-executed** on every turn, causing massive slowdowns plus unwanted side effects.
+>
+> **Note:** Mode 1 re-decodes the same token sequence as mode 0 but through different `llama_decode` batch boundaries (large prefill batches vs. incremental). On GPU this can cause minor floating-point drift in layer normalization reductions, which may lead to slightly divergent token selections at `TEMP=0` after many turns. The TPS numbers still validly measure re-decode overhead; the context-position divergence is an artifact of comparing fundamentally different decode strategies, not a bug.
 
 ---
 
