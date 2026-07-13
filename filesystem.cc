@@ -519,7 +519,7 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
 
     // Plain text to stdout
     if (should_output_to_stdout()) {
-      cout << final_message << endl;
+      cout << "\033[0m" << final_message << endl;
       consoleMarkNewline(true);
       fflush(stdout);
     }

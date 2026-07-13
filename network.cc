@@ -292,7 +292,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
     curl_easy_cleanup(curl);
   }
 
-  std::cerr << "Spinning up local SearxNG instance..." << std::endl;
+  std::cerr << "\033[0mSpinning up local SearxNG instance..." << std::endl;
 
   pid_t pid = fork();
   if (pid == 0) {
@@ -307,7 +307,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
     g_searxng_pid = pid;
 
     // --- Wait for SearxNG to actually wake up! ---
-    std::cerr << "Waiting for SearxNG to become ready..." << std::endl;
+    std::cerr << "\033[0mWaiting for SearxNG to become ready..." << std::endl;
     CURL *wait_curl = curl_easy_init();
     if (wait_curl) {
       curl_easy_setopt(wait_curl, CURLOPT_URL, base_url.c_str());
@@ -317,11 +317,11 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
       int retries = 0;
       while (retries < 40) {
         if (stop_generation) {
-          std::cerr << "SearxNG startup interrupted by user" << std::endl;
+          std::cerr << "\033[0mSearxNG startup interrupted by user" << std::endl;
           break;
         }
         if (curl_easy_perform(wait_curl) == CURLE_OK) {
-          std::cerr << "SearxNG is ready and responding!" << std::endl;
+          std::cerr << "\033[0mSearxNG is ready and responding!" << std::endl;
           break;
         }
         this_thread::sleep_for(chrono::milliseconds(500));
@@ -332,7 +332,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
       // If SearXNG never became ready after max retries, reset PID so it can
       // be retried on the next request.
       if (retries >= 40) {
-        std::cerr << "SearxNG failed to start after waiting. Will retry on next request." << std::endl;
+        std::cerr << "\033[0mSearxNG failed to start after waiting. Will retry on next request." << std::endl;
         kill(-pid, SIGKILL);
         waitpid(pid, NULL, 0);
         g_searxng_pid = -1;
@@ -358,7 +358,7 @@ void NetworkTools::start_docling_if_needed() {
     curl_easy_cleanup(curl);
   }
 
-  std::cerr << "Spinning up local Docling instance..." << std::endl;
+  std::cerr << "\033[0mSpinning up local Docling instance..." << std::endl;
 
   pid_t pid = fork();
   if (pid == 0) {
@@ -374,7 +374,7 @@ void NetworkTools::start_docling_if_needed() {
     g_docling_pid = pid;
 
     // --- Wait for Docling to actually wake up! ---
-    std::cerr << "Waiting for Docling ML models to load into RAM..." << std::endl;
+    std::cerr << "\033[0mWaiting for Docling ML models to load into RAM..." << std::endl;
     CURL *wait_curl = curl_easy_init();
     if (wait_curl) {
       curl_easy_setopt(wait_curl, CURLOPT_URL, "http://127.0.0.1:5001/docs");
@@ -384,7 +384,7 @@ void NetworkTools::start_docling_if_needed() {
       int retries = 0;
       while (retries < 40) {
         if (stop_generation) {
-          std::cerr << "Docling startup interrupted by user" << std::endl;
+          std::cerr << "\033[0mDocling startup interrupted by user" << std::endl;
           break;
         }
         if (curl_easy_perform(wait_curl) == CURLE_OK) {
@@ -398,7 +398,7 @@ void NetworkTools::start_docling_if_needed() {
       // If Docling never became ready after max retries, reset PID so it can
       // be retried on the next request (e.g., after a dependency is fixed).
       if (retries >= 40) {
-        std::cerr << "Docling failed to start after waiting. Will retry on next request." << std::endl;
+        std::cerr << "\033[0mDocling failed to start after waiting. Will retry on next request." << std::endl;
         kill(-pid, SIGKILL);
         waitpid(pid, NULL, 0);
         g_docling_pid = -1;
@@ -449,7 +449,7 @@ void NetworkTools::init_ssl_certificates() {
   }
 
   if (needs_update) {
-    std::cerr << "Updating SSL certificate cache..." << std::endl;
+    std::cerr << "\033[0mUpdating SSL certificate cache..." << std::endl;
 
     // Get system CA bundle path
     string system_ca;
@@ -486,13 +486,13 @@ void NetworkTools::init_ssl_certificates() {
 
     int result = system(combine_cmd.c_str());
     if (result == 0 && stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
-      std::cerr << "Created combined CA bundle in cache: " + cached_ca << std::endl;
+      std::cerr << "\033[0mCreated combined CA bundle in cache: " + cached_ca << std::endl;
       setenv("CURL_CA_BUNDLE", cached_ca.c_str(), 1);
     } else {
-      std::cerr << "Failed to create combined CA bundle - using curl defaults" << std::endl;
+      std::cerr << "\033[0mFailed to create combined CA bundle - using curl defaults" << std::endl;
     }
   } else {
-    cout << "Using cached SSL certificate from: " << cached_ca << endl;
+    cout << "\033[0m" << "Using cached SSL certificate from: " << cached_ca << endl;
     consoleMarkNewline(true);
     cout.flush();
     setenv("CURL_CA_BUNDLE", cached_ca.c_str(), 1);
@@ -562,7 +562,7 @@ static void configure_curl_ssl(CURL* curl, const string& base_url) {
     struct stat st;
     if (stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
       curl_easy_setopt(curl, CURLOPT_CAINFO, cached_ca.c_str());
-      cerr << "Using cached CA bundle: " + cached_ca << endl;
+      cerr << "\033[0mUsing cached CA bundle: " + cached_ca << endl;
     } else {
       // Fall back to system CA bundle paths
       static const char* ca_paths[] = {
@@ -575,7 +575,7 @@ static void configure_curl_ssl(CURL* curl, const string& base_url) {
       for (const char* path : ca_paths) {
         if (stat(path, &st) == 0 && st.st_size > 0) {
           curl_easy_setopt(curl, CURLOPT_CAINFO, path);
-          cerr << "Using system CA bundle: " + string(path) << endl;
+          cerr << "\033[0mUsing system CA bundle: " + string(path) << endl;
           found = true;
           break;
         }
@@ -583,14 +583,14 @@ static void configure_curl_ssl(CURL* curl, const string& base_url) {
       if (!found) {
         static const char* default_ca = "";
         curl_easy_setopt(curl, CURLOPT_CAINFO, default_ca);
-        cerr << "Using curl's built-in system certificate store" << endl;
+        cerr << "\033[0mUsing curl's built-in system certificate store" << endl;
       }
     }
   } else {
     // HTTP requests (localhost, http:// URLs) - disable SSL verification options
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    cerr << "HTTP request detected - SSL verification disabled" << endl;
+    cerr << "\033[0mHTTP request detected - SSL verification disabled" << endl;
   }
 }
 
@@ -646,7 +646,7 @@ string NetworkTools::strip_base64_images(const string& text) {
 string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
   start_docling_if_needed();
 
-  cerr << "Uploading PDF to Docling (Strict JSON Schema)..." << endl;
+  cerr << "\033[0mUploading PDF to Docling (Strict JSON Schema)..." << endl;
 
   CURL *curl = curl_easy_init();
   if (!curl) return "[Curl Init Failed]";
@@ -713,7 +713,7 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
     } catch (...) { return "[Docling JSON Parse Error]"; }
   }
 
-  cerr << "Docling Final Failure: " + to_string(http_code) + " | " + readBuffer << endl;
+  cerr << "\033[0mDocling Final Failure: " + to_string(http_code) + " | " + readBuffer << endl;
   return "[Docling Error " + to_string(http_code) + "]";
 }
 
@@ -805,12 +805,12 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
       if (doc) xmlFreeDoc(doc);
       // If parsing failed or no children, fall back to raw buffer
       decoded_html = readBuffer;
-      cerr << "XML parsing fallback - using raw buffer" << endl;
+      cerr << "\033[0mXML parsing fallback - using raw buffer" << endl;
     }
   } catch (...) {
     // On any exception, use the raw buffer as fallback
     decoded_html = readBuffer;
-    cerr << "XML parsing exception - using raw buffer" << endl;
+    cerr << "\033[0mXML parsing exception - using raw buffer" << endl;
   }
 
   // Ensure we have content to process
@@ -881,7 +881,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
     result["content"] = "";
     result["error"] = "";
 
-    cerr << "fetch_url(" + url + ")" << endl;
+    cerr << "\033[0mfetch_url(" + url + ")" << endl;
 
     // Check file extension to determine type
     string ext = url;
@@ -914,7 +914,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
           result["error"] = "[PDF fetch interrupted by user]";
           curl_easy_cleanup(curl);
         } else if (res != CURLE_OK || http_code >= 400 || (!state.is_pdf && !is_pdf_by_magic(state.buffer)) || state.exceeded_limit) {
-          cerr << "PDF fetch failed for: " + url + " - HTTP " << http_code << endl;
+          cerr << "\033[0mPDF fetch failed for: " + url + " - HTTP " << http_code << endl;
 
           if (state.exceeded_limit) {
             result["error"] = "[Failed to fetch PDF: file too large (exceeds 50MB)]";
@@ -973,7 +973,7 @@ string NetworkTools::web_search(const string& query) {
 
   string query_str = "\"" + query + "\"";
   log_tool_diagnostic("web_search(" + query_str + ")");
-  cerr << "web_search(" + query_str + ")" << endl;
+  cerr << "\033[0mweb_search(" + query_str + ")" << endl;
 
   string cache = LIM_CONFIG_DIR + "/searchCache";
   mkdir(cache.c_str(), 0777);
@@ -983,7 +983,7 @@ string NetworkTools::web_search(const string& query) {
   ifstream cache_file(cache_filepath);
   if (cache_file.is_open()) {
     string cached_content((istreambuf_iterator<char>(cache_file)), istreambuf_iterator<char>());
-    cerr << "Local file cache hit. Bypassing network & cooldown." << endl;
+    cerr << "\033[0mLocal file cache hit. Bypassing network & cooldown." << endl;
     return cached_content;
   }
 
@@ -994,7 +994,7 @@ string NetworkTools::web_search(const string& query) {
   auto elapsed = chrono::duration_cast<chrono::seconds>(now - g_last_network_request).count();
   if (elapsed < g_search_cooldown_seconds) {
     int sleep_time = g_search_cooldown_seconds - elapsed;
-    cerr << "Pacing network requests. Sleeping " + to_string(sleep_time) + " seconds..." << endl;
+    cerr << "\033[0mPacing network requests. Sleeping " + to_string(sleep_time) + " seconds..." << endl;
     this_thread::sleep_for(chrono::seconds(sleep_time));
   }
 
@@ -1075,7 +1075,7 @@ string NetworkTools::web_search(const string& query) {
         }
 
         if (!result_url.empty()) {
-          cerr << "Fetching text from: " + result_url << endl;
+          cerr << "\033[0mFetching text from: " + result_url << endl;
           string full_text = fetch_and_clean_html(result_url);
 
           // Added check for "[Failed to process" to ensure Docling errors trigger snippet fallback
@@ -1084,10 +1084,10 @@ string NetworkTools::web_search(const string& query) {
               full_text.find("[Skipped") == string::npos &&
               full_text.find("[Failed to process") == string::npos) {
 
-            cerr << "Successfully fetched & parsed text from: " + result_url << endl;
+            cerr << "\033[0mSuccessfully fetched & parsed text from: " + result_url << endl;
             llm_result += "Page Content: " + full_text + "\n\n";
           } else if (result.contains("content") && !result["content"].is_null()) {
-            cerr << "Skipped full fetch, using SearXNG snippet for: " + result_url << endl;
+            cerr << "\033[0mSkipped full fetch, using SearXNG snippet for: " + result_url << endl;
             llm_result += "Snippet: " + result["content"].get<string>() + "\n\n";
           }
         }
