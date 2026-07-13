@@ -230,6 +230,16 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
     size_t end = find_unescaped_param_end(tool_call, content_begin);
     if (end == string::npos) end = tool_call.length();
 
+    // For the path parameter, treat a newline as an implicit PARAM_END.
+    // If the LLM forgets to close the path param, the newline prevents
+    // bleeding into subsequent parameters.
+    if (arg_name == "path") {
+        size_t nl = tool_call.find('\n', content_begin);
+        if (nl != string::npos && nl < end) {
+            end = nl;
+        }
+    }
+
     string val = tool_call.substr(content_begin, end - content_begin);
     return strip_quotes(val);
 }
