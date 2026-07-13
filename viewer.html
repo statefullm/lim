@@ -229,24 +229,28 @@
         const SEG_THINK      = '\x06';
         const SEG_TURN_END   = '\x07';
 
+        /* Browser escape contract characters (mirrors tokens.h) */
+        const HTML_SENTINEL_CHAR = '|';   // Sentinel char: used in lt, gt, mth_N
+        const HTML_ESCAPE_CHAR   = '\\';  // Escape char for HTML sentinels
+
         /* ------------------------------------------------------------------ */
         /*  Math sentinel escaping (mirrors parsers.cc)                        */
         /* ------------------------------------------------------------------ */
-        /*  The internal math sentinel @mth_N@ can appear literally in LLM     */
+        /*  The internal math sentinel mth_N can appear literally in LLM     */
         /*  output.  To prevent marked/browser from interpreting it as an      */
         /*  HTML tag, we escape on input and unescape before DOM insertion.   */
         /*  Escape char: _ (underscore).                                      */
         /* ------------------------------------------------------------------ */
 
-        // Escape @mth_N@ tokens in incoming SSE payloads.
+        // Escape mth_N tokens in incoming SSE payloads.
         // Mirrors escape_one_token() in parsers.cc with '_' as the escape char.
         function escapeMth(str) {
             var start_pos = 0;
             while (start_pos < str.length) {
-                var pos = str.indexOf('@', start_pos);
+                var pos = str.indexOf(HTML_SENTINEL_CHAR, start_pos);
                 if (pos === -1) break;
 
-                // Skip any underscores after the @.
+                // Skip any underscores after the sentinel char.
                 var scan = pos + 1;
                 while (scan < str.length && str[scan] === '_') scan++;
 
@@ -257,13 +261,13 @@
                 } else {
                     var k = scan + 4;
                     while (k < str.length && str[k] >= '0' && str[k] <= '9') k++;
-                    if (k >= str.length || str[k] !== '@') {
+                    if (k >= str.length || str[k] !== HTML_SENTINEL_CHAR) {
                         match = false;
                     }
                 }
 
                 if (match) {
-                    // Insert one more underscore after the @.
+                    // Insert one more underscore after the first char.
                     str = str.substring(0, pos + 1) + '_' + str.substring(pos + 1);
                     start_pos = pos + 2 + (k - scan);
                 } else {
@@ -273,15 +277,15 @@
             return str;
         }
 
-        // Unescape @mth_N@ tokens before DOM insertion.
+        // Unescape mth_N tokens before DOM insertion.
         // Mirrors unescape_one_token() in parsers.cc with '_' as the escape char.
         function unescapeMth(str) {
             var start_pos = 0;
             while (start_pos < str.length) {
-                var pos = str.indexOf('@', start_pos);
+                var pos = str.indexOf(HTML_SENTINEL_CHAR, start_pos);
                 if (pos === -1) break;
 
-                // Count underscores after the @.
+                // Count underscores after the first char.
                 var scan = pos + 1;
                 var bs = 0;
                 while (scan < str.length && str[scan] === '_') { bs++; scan++; }
@@ -293,15 +297,15 @@
                 } else {
                     var k = scan + 4;
                     while (k < str.length && str[k] >= '0' && str[k] <= '9') k++;
-                    if (k >= str.length || str[k] !== '@') {
+                    if (k >= str.length || str[k] !== HTML_SENTINEL_CHAR) {
                         match = false;
                     }
                 }
 
                 if (match) {
                     if (bs > 0) {
-                        // Remove one underscore: @ + (bs-1) underscores + mth_N@.
-                        var replacement = '@';
+                        // Remove one underscore: first + (bs-1) underscores + mth_N@.
+                        var replacement = HTML_SENTINEL_CHAR;
                         for (var b = 0; b < bs - 1; b++) replacement += '_';
                         replacement += str.substring(scan, k + 1);
                         str = str.substring(0, pos) + replacement + str.substring(k + 1);
@@ -317,27 +321,29 @@
             return str;
         }
 
-        // Unescape @lt@ and @gt@ sentinel tokens before DOM insertion.
-        // Uses '\' as escape char (same as C++ side, mirrors parsers.cc).
-        // Escaped: @\lt@ -> literal text @lt@
-        // Raw:     @lt@  -> HTML entity &lt;
+        // Unescape lt and gt sentinel tokens before DOM insertion.
+        // Uses HTML_ESCAPE_CHAR as escape char (same as C++ side, mirrors parsers.cc).
+        // Example when HTML_SENTINEL_CHAR='|' and HTML_ESCAPE_CHAR='\'
+        // Escaped: |\lt| -> literal text |lt|
+        // Raw:     |lt|  -> HTML entity &lt;
         function htmlUnescapeSentinels(str) {
             var result = '';
             var i = 0;
             while (i < str.length) {
-                if (str[i] === '@') {
+                if (str[i] === HTML_SENTINEL_CHAR) {
                     var j = i + 1;
                     var bs = 0;
-                    while (j < str.length && str[j] === '\\') { bs++; j++; }
+                    while (j < str.length && str[j] === HTML_ESCAPE_CHAR) { bs++; j++; }
                     if (j + 3 <= str.length) {
                         var s3 = str.substring(j, j + 3);
-                        if (s3 === 'lt@') {
-                            if (bs > 0) { result += '@'; for (var b = 0; b < bs - 1; b++) result += '\\'; result += 'lt@'; }
+                        var sentinel_end = HTML_SENTINEL_CHAR;
+                        if (s3 === 'lt' + sentinel_end) {
+                            if (bs > 0) { result += HTML_SENTINEL_CHAR; for (var b = 0; b < bs - 1; b++) result += HTML_ESCAPE_CHAR; result += 'lt' + sentinel_end; }
                             else { result += '&lt;'; }
                             i = j + 3; continue;
                         }
-                        if (s3 === 'gt@') {
-                            if (bs > 0) { result += '@'; for (var b = 0; b < bs - 1; b++) result += '\\'; result += 'gt@'; }
+                        if (s3 === 'gt' + sentinel_end) {
+                            if (bs > 0) { result += HTML_SENTINEL_CHAR; for (var b = 0; b < bs - 1; b++) result += HTML_ESCAPE_CHAR; result += 'gt' + sentinel_end; }
                             else { result += '&gt;'; }
                             i = j + 3; continue;
                         }
@@ -355,9 +361,12 @@
         // Unlike the HTML version, converts sentinels back to raw characters
         // (not HTML entities) since KaTeX expects plain text input.
         function unescapeMathTex(str) {
-            str = str.replace(/@lt@/g, '<').replace(/@gt@/g, '>');
-            // Also handle escaped forms (literal @lt@ etc. in math).
-            str = str.replace(/@\lt@/g, '@lt@').replace(/@\gt@/g, '@gt@');
+            var s = HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
+            var e = HTML_ESCAPE_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
+            str = str.replace(new RegExp(s + 'lt' + s, 'g'), '<').replace(new RegExp(s + 'gt' + s, 'g'), '>');
+            // Also handle escaped forms
+            str = str.replace(new RegExp(s + e + 'lt' + s, 'g'), HTML_SENTINEL_CHAR + 'lt' + HTML_SENTINEL_CHAR)
+                     .replace(new RegExp(s + e + 'gt' + s, 'g'), HTML_SENTINEL_CHAR + 'gt' + HTML_SENTINEL_CHAR);
             return str.replace(/&amp;/g, '&');
         }
 
@@ -623,19 +632,21 @@
 
             var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
                 mathBlocks.push({ tex: m.trim(), display: true });
-                return '@mth_' + (mathBlocks.length - 1) + '@';
+                return HTML_SENTINEL_CHAR + 'mth_' + (mathBlocks.length - 1) + HTML_SENTINEL_CHAR;
             });
 
             // Extract inline math $...$ so that | inside $a|b$ doesn't get
             // treated as a table delimiter by marked.
             content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
                 mathBlocks.push({ tex: m.trim(), display: false });
-                return '@mth_' + (mathBlocks.length - 1) + '@';
+                return HTML_SENTINEL_CHAR + 'mth_' + (mathBlocks.length - 1) + HTML_SENTINEL_CHAR;
             });
 
             var html;
             if (typeof marked !== 'undefined') {
-                html = marked.parse(content, { breaks: true });
+                var content2 = content.replace(/\\\\/g, '\x00\x00');
+                html = marked.parse(content2, { breaks: true });
+                html = html.replace(/\x00\x00/g, '\\\\');
                 html = htmlUnescapeSentinels(html);
             } else {
                 var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -643,7 +654,7 @@
             }
 
             // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
-            html = html.replace(/@mth_(\d+)@/g, function(_, idx) {
+            html = html.replace(new RegExp(HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&') + 'mth_(\\d+)' + HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&'), 'g'), function(_, idx) {
                 var block = mathBlocks[parseInt(idx)];
                 var tex = unescapeMathTex(block.tex);
                 // When LIM_INLINE_LATEX is disabled, only render display-mode (block-level) math.

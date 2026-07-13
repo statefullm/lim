@@ -378,10 +378,10 @@ string generate_turn_escape_contract() {
     return broken;
   };
 
-  // Helper: produce escaped form of a token (one '\' after first char).
+  // Helper: produce escaped form of a token (one ESCAPE_CHAR after first char).
   auto esc = [](const string &t) -> string {
     if (t.size() < 2) return t;
-    return t.substr(0, 1) + "\\" + t.substr(1);
+    return t.substr(0, 1) + std::string(1, Tokens::ESCAPE_CHAR) + t.substr(1);
   };
 
   // Helper: produce double-escaped form.

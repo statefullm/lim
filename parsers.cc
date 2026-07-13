@@ -13,9 +13,9 @@ using namespace std;
 using namespace Tokens;
 extern bool is_debug;
 
-// Generic escape: insert one '\' after first char of every occurrence of 'token'.
-// Handles recursive escaping: if already escaped, adds another '\'.
-static void escape_one_token(string& str, const string& token) {
+// Generic escape: insert one copy of 'esc_char' after first char of every occurrence
+// of 'token'.  Handles recursive escaping: if already escaped, adds another esc_char.
+static void escape_one_token(string& str, const string& token, char esc_char) {
     if (token.size() < 2) return;
     char first = token[0];
     const string suffix = token.substr(1);
@@ -25,9 +25,9 @@ static void escape_one_token(string& str, const string& token) {
         size_t pos = str.find(first, start_pos);
         if (pos == string::npos) break;
 
-        // Skip any backslashes after the first character.
+        // Skip any esc_char after the first character.
         size_t scan = pos + 1;
-        while (scan < str.length() && str[scan] == '\\') scan++;
+        while (scan < str.length() && str[scan] == esc_char) scan++;
 
         // Check if suffix matches.
         bool match = true;
@@ -36,7 +36,7 @@ static void escape_one_token(string& str, const string& token) {
         }
 
         if (match) {
-            str.insert(pos + 1, 1, '\\');
+            str.insert(pos + 1, 1, esc_char);
             start_pos = pos + 2 + suffix.length();
         } else {
             start_pos = pos + 1;
@@ -44,9 +44,9 @@ static void escape_one_token(string& str, const string& token) {
     }
 }
 
-// Generic unescape: remove one '\' after first char of every occurrence of 'token'.
-// If no extra backslash, leave alone (raw token -- should not appear in practice).
-static void unescape_one_token(string& str, const string& token) {
+// Generic unescape: remove one copy of 'esc_char' after first char of every occurrence
+// of 'token'.  If no extra esc_char, leave alone (raw token -- should not appear in practice).
+static void unescape_one_token(string& str, const string& token, char esc_char) {
     if (token.size() < 2) return;
     char first = token[0];
     const string suffix = token.substr(1);
@@ -56,12 +56,12 @@ static void unescape_one_token(string& str, const string& token) {
         size_t pos = str.find(first, start_pos);
         if (pos == string::npos) break;
 
-        // Count backslashes after the first character.
+        // Count esc_char after the first character.
         size_t scan = pos + 1;
         int num_bs = 0;
-        while (scan < str.length() && str[scan] == '\\') { num_bs++; scan++; }
+        while (scan < str.length() && str[scan] == esc_char) { num_bs++; scan++; }
 
-        // Check if suffix matches after the backslashes.
+        // Check if suffix matches after the esc_char.
         bool match = true;
         for (size_t k = 0; k < suffix.length(); k++) {
             if (scan + k >= str.length() || str[scan + k] != suffix[k]) { match = false; break; }
@@ -69,14 +69,14 @@ static void unescape_one_token(string& str, const string& token) {
 
         if (match) {
             if (num_bs > 0) {
-                // Remove one backslash: first + (num_bs-1) backslashes + suffix.
+                // Remove one esc_char: first + (num_bs-1) esc_char + suffix.
                 string replacement(1, first);
-                for (int b = 0; b < num_bs - 1; b++) replacement += '\\';
+                for (int b = 0; b < num_bs - 1; b++) replacement += esc_char;
                 replacement += suffix;
                 str.replace(pos, scan - pos + suffix.length(), replacement);
                 start_pos = pos + replacement.length();
             } else {
-                // No backslashes -- raw token, leave alone.
+                // No esc_char -- raw token, leave alone.
                 start_pos = pos + 1 + suffix.length();
             }
         } else {
@@ -85,8 +85,8 @@ static void unescape_one_token(string& str, const string& token) {
     }
 }
 
-void escape_parameter_tags(string& str)     { escape_one_token(str, PARAM_END); }
-void unescape_parameter_tags(string& str)   { unescape_one_token(str, PARAM_END); }
+void escape_parameter_tags(string& str)     { escape_one_token(str, PARAM_END, ESCAPE_CHAR); }
+void unescape_parameter_tags(string& str)   { unescape_one_token(str, PARAM_END, ESCAPE_CHAR); }
 
 // Extract base turn tokens from model turn markers.
 void collect_base_turn_tokens(vector<string>& out) {
@@ -118,8 +118,8 @@ static void _escape_turn_tokens_impl(string& str, bool do_escape) {
     vector<string> tokens;
     collect_base_turn_tokens(tokens);
     for (auto &t : tokens) {
-        if (do_escape) escape_one_token(str, t);
-        else unescape_one_token(str, t);
+        if (do_escape) escape_one_token(str, t, ESCAPE_CHAR);
+        else unescape_one_token(str, t, ESCAPE_CHAR);
     }
 }
 
@@ -132,10 +132,10 @@ void unescape_turn_tags(string& str) {
 }
 
 // Find the next unescaped PARAM_END starting from 'from'.
-// Skips over backslash-escaped forms (backslash after first char).
+// Skips over backslash-escaped forms (ESCAPE_CHAR after first char).
 // Returns string::npos if no unescaped PARAM_END is found.
 static size_t find_unescaped_param_end(const string& text, size_t from) {
-    // The escaped form has a '\' after the first character, so str.find(PARAM_END)
+    // The escaped form has an ESCAPE_CHAR after the first character, so str.find(PARAM_END)
     // naturally skips escaped occurrences. Just find the raw token.
     return text.find(PARAM_END, from);
 }
