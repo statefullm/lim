@@ -126,6 +126,22 @@ ToolExecutor::Result ToolExecutor::execute(
     collect_base_turn_tokens(strip_tags_vec);
     strip_tags(tool_call, strip_tags_vec);
 
+    // Strip thinking blocks (think_start...think_end) that can leak into tool calls.
+    // The LLM sometimes emits thinking tags mid-tool-call, corrupting params.
+    if (!g_model_tokens.think_start.empty() && !g_model_tokens.think_end.empty()) {
+        size_t ts;
+        while ((ts = tool_call.find(g_model_tokens.think_start)) != string::npos) {
+            size_t te = tool_call.find(g_model_tokens.think_end, ts);
+            if (te != string::npos) {
+                tool_call.erase(ts, te + g_model_tokens.think_end.length() - ts);
+            } else {
+                // Unclosed think tag -- strip from marker to end of tool call.
+                tool_call.erase(ts);
+                break;
+            }
+        }
+    }
+
 
     ToolResult tool_out;
     bool was_loop = false;
