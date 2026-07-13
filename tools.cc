@@ -23,12 +23,19 @@ bool param_has_newline(const string& s) {
     return param_has_newline_impl(s);
 }
 
-// Strip leading/trailing whitespace (newlines, spaces, tabs) from a path.
-// Handles malformed tool calls where the LLM emits newlines inside parameter tags.
+// Trim a path parameter value. Paths cannot contain newlines.
+// If the LLM omitted the closing param tag, the extracted value bleeds into
+// subsequent content separated by newlines. Treat the first newline as
+// an implicit end-of-param boundary: truncate there, then strip whitespace.
 static string trim_path(const string& s) {
-    size_t first = s.find_first_not_of(" \t\r\n");
-    if (first == string::npos) return "";
-    size_t last = s.find_last_not_of(" \t\r\n");
+    // Truncate at first newline (implicit end-of-param fallback).
+    size_t nl = s.find_first_of("\r\n");
+    // Strip leading/trailing whitespace from the truncated range.
+    size_t limit = (nl != string::npos) ? nl : s.size();
+    size_t first = s.find_first_not_of(" \t", 0);
+    if (first == string::npos || first >= limit) return "";
+    size_t last = s.find_last_not_of(" \t", limit - 1);
+    if (last < first) return "";
     return s.substr(first, last - first + 1);
 }
 
