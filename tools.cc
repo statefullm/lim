@@ -23,6 +23,15 @@ bool param_has_newline(const string& s) {
     return param_has_newline_impl(s);
 }
 
+// Strip leading/trailing whitespace (newlines, spaces, tabs) from a path.
+// Handles malformed tool calls where the LLM emits newlines inside parameter tags.
+static string trim_path(const string& s) {
+    size_t first = s.find_first_not_of(" \t\r\n");
+    if (first == string::npos) return "";
+    size_t last = s.find_last_not_of(" \t\r\n");
+    return s.substr(first, last - first + 1);
+}
+
 // Tool metadata: required parameters per tool.
 struct ToolSpec { string name; vector<string> params; };
 static const vector<ToolSpec> tool_specs = {
@@ -206,8 +215,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       result = "Error: No paths provided to read_files";
     }
   } else if (tool_name == "search_file") {
-    string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+    string path = trim_path(extract_string_arg_bounded(tool_call, "path"));
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
@@ -235,8 +243,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       result = "Error: path is required for search_file";
     }
   } else if (tool_name == "write_file") {
-    string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+    string path = trim_path(extract_string_arg_bounded(tool_call, "path"));
     string content = extract_string_arg_bounded(tool_call, "content");
     file_cache.erase(path);
     out.is_mutating = true;
@@ -258,8 +265,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       result = "Error: No path provided to write_file";
     }
   } else if (tool_name == "edit_file") {
-    string path = extract_string_arg_bounded(tool_call, "path");
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+    string path = trim_path(extract_string_arg_bounded(tool_call, "path"));
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
     file_cache.erase(path);
