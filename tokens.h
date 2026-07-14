@@ -25,7 +25,7 @@ constexpr char ESCAPE_CHAR        = '\\';
 // Sentinel character used in HTML sentinel tokens like lt, gt, mth_N
 // to represent special characters (<, >) and math markers that must not be
 // interpreted as HTML tags by the browser.
-constexpr char HTML_SENTINEL_CHAR = '|';
+constexpr char HTML_SENTINEL_CHAR = '%';
 
 // Backslash escape specifically for HTML sentinel tokens in output.cc and
 // viewer.html.  Inserted after the first character of an HTML sentinel to
