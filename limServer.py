@@ -61,17 +61,16 @@ async def broadcast_llm_stream():
 
         if buf:
             text = buf.decode('utf-8', errors='ignore')
-            # Buffer SEG_SPEED (\x05) payload only when no clients are listening,
-            # so it can be replayed to a late-connecting browser.
-            if not clients:
-                i = text.rfind('\x05')
-                if i >= 0:
-                    e = len(text)
-                    for s in '\x02\x03\x04\x05\x06\x07':
-                        p = text.find(s, i + 1)
-                        if 0 <= p < e:
-                            e = p
-                    _last_speed[0] = text[i:e]
+            # Always buffer the latest SEG_SPEED (\x05) payload so reconnecting
+            # browsers receive the current context position.
+            i = text.rfind('\x05')
+            if i >= 0:
+                e = len(text)
+                for s in '\x02\x03\x04\x05\x06\x07':
+                    p = text.find(s, i + 1)
+                    if 0 <= p < e:
+                        e = p
+                _last_speed[0] = text[i:e]
 
             if clients:
                 for client in list(clients):
