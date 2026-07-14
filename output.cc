@@ -157,31 +157,39 @@ void stream(const string& raw_token) {
   // Uses sentinel-based recursive escape contract (mirrors parsers.cc).
   string escaped = html_escape(filtered);
 
-  pipe_write(&SEG_LLM_TEXT, 1);
-  pipe_write(escaped.c_str(), escaped.length());
+  // Combine prefix + content into a single pipe_write to prevent the
+  // Python FIFO reader from splitting them across separate WebSocket
+  // messages (which would cause untagged content to leak as LLM text).
+  string payload(1, SEG_LLM_TEXT);
+  payload += escaped;
+  pipe_write(payload.c_str(), payload.length());
 }
 
 void stream_tool_result(const string& html) {
   if (!should_output_to_browser()) return;
-  pipe_write(&SEG_HTML, 1);
-  pipe_write(html.c_str(), html.length());
+  string payload(1, SEG_HTML);
+  payload += html;
+  pipe_write(payload.c_str(), payload.length());
 }
 
 void stream_html(const string& html) {
   if (!should_output_to_browser()) return;
-  pipe_write(&SEG_HTML, 1);
-  pipe_write(html.c_str(), html.length());
+  string payload(1, SEG_HTML);
+  payload += html;
+  pipe_write(payload.c_str(), payload.length());
 }
 
 void stream_speed(const string& speed_text) {
   if (!should_output_to_browser()) return;
-  pipe_write(&SEG_SPEED, 1);
-  pipe_write(speed_text.c_str(), speed_text.length());
+  string payload(1, SEG_SPEED);
+  payload += speed_text;
+  pipe_write(payload.c_str(), payload.length());
 }
 
 void stream_think(const string& text) {
   if (!should_output_to_browser()) return;
   string escaped = html_escape(text);
-  pipe_write(&SEG_THINK, 1);
-  pipe_write(escaped.c_str(), escaped.length());
+  string payload(1, SEG_THINK);
+  payload += escaped;
+  pipe_write(payload.c_str(), payload.length());
 }
