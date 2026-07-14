@@ -13,6 +13,9 @@ LIM_PORT = int(os.environ.get('LIM_PORT', '8765'))
 # Keep track of connected browsers
 clients = set()
 
+# Buffer the last SEG_SPEED payload for late-connecting browsers.
+_last_speed = [""]
+
 # Marker file for browser connection signaling.
 
 BROWSER_READY_PATH = "/tmp/lim.browser_ready"
@@ -56,13 +59,26 @@ async def broadcast_llm_stream():
         except BlockingIOError:
             pass  # No more data right now
 
-        if buf and clients:
+        if buf:
             text = buf.decode('utf-8', errors='ignore')
-            for client in list(clients):
-                try:
-                    asyncio.ensure_future(client.send_str(text))
-                except Exception as e:
-                    print(f"[WARNING] Send failed for a client: {e}")
+            # Buffer SEG_SPEED (\x05) payload only when no clients are listening,
+            # so it can be replayed to a late-connecting browser.
+            if not clients:
+                i = text.rfind('\x05')
+                if i >= 0:
+                    e = len(text)
+                    for s in '\x02\x03\x04\x05\x06\x07':
+                        p = text.find(s, i + 1)
+                        if 0 <= p < e:
+                            e = p
+                    _last_speed[0] = text[i:e]
+
+            if clients:
+                for client in list(clients):
+                    try:
+                        asyncio.ensure_future(client.send_str(text))
+                    except Exception as e:
+                        print(f"[WARNING] Send failed for a client: {e}")
 
         # Re-arm -- the writer keeps its end open, so we'll be notified again.
         loop.add_reader(fd, _on_fifo_readable)
@@ -78,6 +94,13 @@ async def websocket_handler(request):
     await ws.prepare(request)
     clients.add(ws)
     _update_browser_ready()
+
+    # Replay last speed message so late-connecting browsers see context info.
+    if _last_speed[0]:
+        try:
+            await ws.send_str(_last_speed[0])
+        except Exception:
+            pass
 
     try:
         async for msg in ws:

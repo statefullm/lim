@@ -420,6 +420,12 @@ string ChatSession::get_user_input() {
             if (denom > 0) {
                 tps_log << state_.last_n_past << " " << std::fixed << std::setprecision(3) << speed << "\n";
             }
+        } else if (!state_.first_turn_done && should_output_to_browser()) {
+            // First turn: show context position while user types their prompt.
+            double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+            ostringstream oss;
+            oss << n_past_ << " (" << (int)context_percent << "%)";
+            stream_speed(oss.str());
         }
 
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
@@ -1027,6 +1033,7 @@ bool ChatSession::run() {
             state_.last_t_count = 0;
             state_.last_elapsed = 0.0;
             state_.last_n_past = n_past_;
+            state_.first_turn_done = true;
             log_entry("SYSTEM", "Context Cleared");
 
             // Update browser: clear the viewer and immediately set the new
@@ -1257,6 +1264,7 @@ bool ChatSession::run() {
             state_.last_t_count = 0;
             state_.last_elapsed = 0.0;
             state_.last_n_past = n_past_;
+            state_.first_turn_done = true;
 
             log_entry("SYSTEM", "Restored to checkpoint: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\"");
 
