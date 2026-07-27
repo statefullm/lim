@@ -173,12 +173,11 @@ ToolExecutor::Result ToolExecutor::execute(
         }
     } else {
         // Execute the tool.
-        tool_out = execute_tool_call(tool_call, state.file_cache);
+        tool_out = execute_tool_call(tool_call, state);
 
         // Handle validation errors reported by the struct.
         if (!tool_out.recognized || !tool_out.params_valid || tool_out.malformed_xml) {
             state.invalid_tool_strikes++;
-
 
             string label;
             if (!tool_out.recognized) label = "Invalid Tool Call";

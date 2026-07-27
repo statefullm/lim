@@ -80,11 +80,13 @@ static bool is_known_tool(const string& name) {
     return false;
 }
 
-ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_cache) {
+ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   ToolResult out;
   string display_result = "";
   string result = "";
   string tool_name = "";
+  // Mutable copy of the tool call XML, since we may need to inject params.
+  string tool_call = tool_call_in;
   size_t ns = tool_call.find(FUNC_START);
   if (ns != string::npos) {
       ns += string(FUNC_START).length();
@@ -103,6 +105,22 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
 
   // Check for interrupt before starting tool execution
   if (stop_generation) { out.content = "[Tool interrupted by user]"; return out; }
+
+  // If this is an edit_file call missing a path but we just did a search_file,
+  // inject the inferred path into the XML before validation so check_params passes.
+  bool path_inferred = false;
+  if (tool_name == "edit_file" && !state.last_search_path.empty()) {
+      size_t path_tag_pos = tool_call.find(string(PARAM_START) + "path>");
+      if (path_tag_pos == string::npos) {
+          // Inject path parameter right after <function=edit_file>.
+          size_t inject_at = tool_call.find('>', ns);
+          if (inject_at != string::npos) {
+              string injection = string(PARAM_START) + "path>" + state.last_search_path + PARAM_END;
+              tool_call = tool_call.substr(0, inject_at + 1) + injection + tool_call.substr(inject_at + 1);
+              path_inferred = true;
+          }
+      }
+  }
 
   // Validate: is this a recognized tool with required parameters?
   out.recognized = is_known_tool(tool_name);
@@ -144,10 +162,10 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
       for (const auto& path : paths) {
         bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
 
-        if (!is_url && file_cache.count(path)) {
+        if (!is_url && state.file_cache.count(path)) {
           // Verify cached fingerprint matches current file metadata (mtime:size).
           string fp = file_fingerprint(path);
-          if (!fp.empty() && file_cache[path] == fp) {
+          if (!fp.empty() && state.file_cache[path] == fp) {
             // Fingerprint matches - cache hit, no need to include content.
             result += "Path: " + path + "\n";
             result += "Content:\n[Cache hit - unchanged since last read]\n";
@@ -193,7 +211,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
           if (!f_error.empty()) result += "Error: " + f_error + "\n";
           result += "---\n";
 
-          if (f_error.empty() && !f_path.empty()) file_cache[f_path] = file_fingerprint(f_path);
+          if (f_error.empty() && !f_path.empty()) state.file_cache[f_path] = file_fingerprint(f_path);
 
           if (!f_error.empty()) {
             display_result += (display_result.empty() ? "Read files: " : "\n            ") + f_path + ": " + f_error;
@@ -212,6 +230,9 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
     if (!path.empty()) {
+      // Remember this path for edit_file inference.
+      state.last_search_path = path;
+
       FileSystemTools fs;
       auto result_map = fs.search_file(path, text, begin_str, end_str);
 
@@ -238,7 +259,7 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
     string path = extract_string_arg_bounded(tool_call, "path");
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
-    file_cache.erase(path);
+    state.file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
       FileSystemTools fs;
@@ -260,11 +281,16 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
   } else if (tool_name == "edit_file") {
     string path = extract_string_arg_bounded(tool_call, "path");
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");
-    file_cache.erase(path);
+    state.file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
+      if (path_inferred) {
+          diag("System: edit_file path " + path + " inferred from preceding search_file.", "\033[90m");
+      }
+
       FileSystemTools fs;
       auto result_map = fs.edit_file(path, old_str, new_str);
       string r_status, r_changes, r_error;
@@ -362,6 +388,16 @@ ToolResult execute_tool_call(const string& tool_call, map<string, string>& file_
   if (result.find("Error:") != string::npos) {
       out.is_error = true;
   }
+
+  // Propagate path_inferred to the result so tool_executor can suppress strikes.
+  out.path_inferred = path_inferred;
+
+  // Clear last_search_path after any non-search_file tool, so path inference
+  // only applies when edit_file immediately follows search_file.
+  if (tool_name != "search_file") {
+      state.last_search_path.clear();
+  }
+
   return out;
 }
 

@@ -45,6 +45,8 @@ struct SessionState {
   int checkpoint_stack_offset = 0;
   // Log file index (set by main.cc), so save files match chat log numbering
   int log_index = 0;
+  // Path from the most recent search_file call, for edit_file path inference.
+  std::string last_search_path;
 };
 
 // Run the main chat session loop.
