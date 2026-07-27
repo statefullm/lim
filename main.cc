@@ -188,7 +188,7 @@ int main(int argc, char ** argv) {
   uint32_t seed = LLAMA_DEFAULT_SEED;
   bool use_dummy_thought = false;
   {
-    const char* env;
+    const char* env, *env2;
     if ((env = getenv("LIM_TEMP")) != nullptr) temp = atof(env);
     if ((env = getenv("LIM_TOP_P")) != nullptr) top_p = atof(env);
     if ((env = getenv("LIM_TOP_K")) != nullptr) top_k = atoi(env);
@@ -329,7 +329,7 @@ int main(int argc, char ** argv) {
   // Allow overriding model params with LIM_* environment variables
   bool gpu_layers_explicit = false;
   {
-    const char* env;
+    const char* env, *env2;
     if ((env = getenv("LIM_GPU_LAYERS")) != nullptr) {
       int val = atoi(env);
       mparams.n_gpu_layers = val;
@@ -338,15 +338,16 @@ int main(int argc, char ** argv) {
     } else {
       mparams.n_gpu_layers = -1; // -1 means "all layers" (auto-fit)
     }
-    if ((env = getenv("LIM_USE_MMAP")) != nullptr) {
-      mparams.use_mmap = atoi(env) != 0;
+    if ((env = getenv("LIM_USE_MMAP")) != nullptr && (env2 = getenv("LIM_USE_MLOCK")) != nullptr) {
+      bool use_mmap = atoi(env) != 0;
+      bool use_mlock = atoi(env2) != 0;
+      if (use_mmap && use_mlock) mparams.load_mode = LLAMA_LOAD_MODE_MMAP_MLOCK;
+      else if (use_mmap) mparams.load_mode = LLAMA_LOAD_MODE_MMAP;
+      else if (use_mlock) mparams.load_mode = LLAMA_LOAD_MODE_MLOCK;
+      else mparams.load_mode = LLAMA_LOAD_MODE_NONE;
     } else {
-      mparams.use_mmap = false;
-    }
-    if ((env = getenv("LIM_USE_MLOCK")) != nullptr) {
-      mparams.use_mlock = atoi(env) != 0;
-    } else {
-      mparams.use_mlock = true;
+      // Defaults: mmap=off, mlock=on
+      mparams.load_mode = LLAMA_LOAD_MODE_MLOCK;
     }
   }
 
@@ -354,7 +355,7 @@ int main(int argc, char ** argv) {
   // Allow overriding context params with LIM_* environment variables
   bool ctx_explicit = false;
   {
-    const char* env;
+    const char* env, *env2;
     if ((env = getenv("LIM_CTX")) != nullptr) {
       cparams.n_ctx = atoi(env);
       ctx_explicit = true;

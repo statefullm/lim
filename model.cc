@@ -325,8 +325,8 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
         if (!params.thinking_start_tag.empty()) {
           g_model_tokens.think_start = params.thinking_start_tag;
         }
-        if (!params.thinking_end_tag.empty()) {
-          g_model_tokens.think_end = params.thinking_end_tag;
+        if (!params.thinking_end_tags.empty()) {
+          g_model_tokens.think_end = params.thinking_end_tags[0];
         }
       } catch (...) {
         // Template application failed -- leave tags empty.
