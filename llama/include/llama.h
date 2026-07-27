@@ -155,6 +155,7 @@ extern "C" {
         LLAMA_FTYPE_MOSTLY_MXFP4_MOE     = 38, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_NVFP4         = 39, // except 1d tensors
         LLAMA_FTYPE_MOSTLY_Q1_0          = 40, // except 1d tensors
+        LLAMA_FTYPE_MOSTLY_Q2_0          = 41, // except 1d tensors
 
         LLAMA_FTYPE_GUESSED = 1024, // not specified in the model file
     };
@@ -200,6 +201,17 @@ extern "C" {
         LLAMA_SPLIT_MODE_ROW    = 2, // split layers and KV across GPUs, use tensor parallelism if supported
         LLAMA_SPLIT_MODE_TENSOR = 3,
     };
+
+    enum llama_load_mode {
+        LLAMA_LOAD_MODE_NONE       = 0, // no special loading mode
+        LLAMA_LOAD_MODE_MMAP       = 1, // memory map the model
+        LLAMA_LOAD_MODE_MLOCK      = 2, // force system to keep model in RAM rather than swapping or compressing
+        LLAMA_LOAD_MODE_MMAP_MLOCK = 3, // mmap + force system to keep model in RAM rather than swapping or compressing
+        LLAMA_LOAD_MODE_DIRECT_IO  = 4, // use direct I/O if available
+    };
+
+    LLAMA_API const char * llama_load_mode_name(enum llama_load_mode load_mode);
+    LLAMA_API enum llama_load_mode llama_load_mode_from_str(const char * str);
 
     enum llama_context_type {
         LLAMA_CONTEXT_TYPE_DEFAULT = 0,
@@ -300,6 +312,7 @@ extern "C" {
 
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
+        enum llama_load_mode  load_mode;  // how to load the model
 
         // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE
         int32_t main_gpu;
@@ -320,9 +333,6 @@ extern "C" {
 
         // Keep the booleans together to avoid misalignment during copy-by-value.
         bool vocab_only;      // only load the vocabulary, no weights
-        bool use_mmap;        // use mmap if possible
-        bool use_direct_io;   // use direct io, takes precedence over use_mmap when supported
-        bool use_mlock;       // force system to keep model in RAM
         bool check_tensors;   // validate model tensor data
         bool use_extra_bufts; // use extra buffer types (used for weight repacking)
         bool no_host;         // bypass host buffer allowing extra buffers to be used
@@ -779,25 +789,6 @@ extern "C" {
 
     // Check if the memory supports shifting
     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
-
-    // Recurrent state checkpointing (no-op for pure attention models).
-    // save() pushes current R/S state onto a per-seq stack.
-    // restore() restores from a specific stack index (0 = first saved).
-    // After restore, llama_memory_seq_rm will succeed on the recurrent cache
-    // even for large rollback distances, since plane 0 already holds correct state.
-    LLAMA_API void llama_memory_rs_checkpoint_save(
-            llama_memory_t mem,
-              llama_seq_id seq_id);
-    LLAMA_API void llama_memory_rs_checkpoint_restore(
-            llama_memory_t mem,
-              llama_seq_id seq_id,
-                     uint32_t checkpoint_idx);
-
-    // Discard checkpoints beyond keep_idx (0-based).  No-op for pure attention models.
-    LLAMA_API void llama_memory_rs_checkpoint_prune(
-            llama_memory_t mem,
-              llama_seq_id seq_id,
-                     uint32_t keep_idx);
 
     //
     // State / sessions

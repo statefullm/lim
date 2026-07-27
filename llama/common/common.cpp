@@ -55,6 +55,10 @@
 #include <pwd.h>
 #endif
 
+#if defined(_AIX)
+#include <sys/systemcfg.h>
+#endif
+
 #if defined(_MSC_VER)
 #pragma warning(disable: 4244 4267) // possible loss of data
 #endif
@@ -72,7 +76,16 @@ common_time_meas::~common_time_meas() {
 //
 
 int32_t common_cpu_get_num_physical_cores() {
-#ifdef __linux__
+#if defined(_AIX)
+    int32_t logical_cpus = _system_configuration.ncpus;
+    int32_t smt_threads = _system_configuration.smt_threads;
+    if (smt_threads > 0) {
+        return static_cast<int32_t>(logical_cpus / smt_threads);
+    }
+    if (logical_cpus > 0) {
+        return static_cast<int32_t>(logical_cpus);
+    }
+#elif defined(__linux__)
     // enumerate the set of thread siblings, num entries is num cores
     std::unordered_set<std::string> siblings;
     for (uint32_t cpu=0; cpu < UINT32_MAX; ++cpu) {
@@ -202,6 +215,14 @@ int32_t common_cpu_get_num_math() {
             }
         }
     }
+#elif defined(__powerpc64__) || defined(__powerpc__)
+    int32_t smt_factor = 1;
+    int phy_cpus = common_cpu_get_num_physical_cores();
+    int logical_cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    if (phy_cpus > 0 && logical_cpus > phy_cpus) {
+        smt_factor = logical_cpus / phy_cpus;
+    }
+    return phy_cpus * std::min(smt_factor, 2);
 #endif
     return common_cpu_get_num_physical_cores();
 }
@@ -1228,7 +1249,6 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         lora.reset(llama_adapter_lora_init(model, la.path.c_str()));
         if (lora == nullptr) {
             COM_ERR("failed to load lora adapter '%s'\n", la.path.c_str());
-            pimpl->model.reset(model);
             return;
         }
 
@@ -1537,10 +1557,8 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.n_gpu_layers    = params.n_gpu_layers;
     mparams.main_gpu        = params.main_gpu;
     mparams.split_mode      = params.split_mode;
+    mparams.load_mode       = params.load_mode;
     mparams.tensor_split    = params.tensor_split;
-    mparams.use_mmap        = params.use_mmap;
-    mparams.use_direct_io   = params.use_direct_io;
-    mparams.use_mlock       = params.use_mlock;
     mparams.check_tensors   = params.check_tensors;
     mparams.use_extra_bufts = !params.no_extra_bufts;
     mparams.no_host         = params.no_host;
