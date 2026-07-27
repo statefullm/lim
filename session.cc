@@ -1365,7 +1365,7 @@ bool ChatSession::run() {
             }
             stringstream reincarnate_buffer;
             reincarnate_buffer << "Use the write_file tool to write a new prompt to "
-                          << LIM_CONFIG_DIR << "/userprompt. Read the following instructions and compose an appropriate prompt, then write it and return without further comment. "
+                          << LIM_CONFIG_DIR << "/userprompt. Read the following instructions and compose an appropriate prompt, then write it and return without further comment. Do not resume your task. "
                           << reincarnate_file.rdbuf();
             string reincarnate_text = reincarnate_buffer.str();
             reincarnate_file.close();
