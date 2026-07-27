@@ -1,8 +1,8 @@
-diff --git a/include/llama.h b/include/llama.h
-index b89ab758b..e6a92dd0d 100644
---- a/include/llama.h
-+++ b/include/llama.h
-@@ -780,6 +780,25 @@ extern "C" {
+diff --git a/llama/include/llama.h b/llama/include/llama.h
+index 3c6d22be8..3f6ad9ddd 100644
+--- a/llama/include/llama.h
++++ b/llama/include/llama.h
+@@ -790,6 +790,25 @@ extern "C" {
      // Check if the memory supports shifting
      LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
  
@@ -28,11 +28,11 @@ index b89ab758b..e6a92dd0d 100644
      //
      // State / sessions
      //
-diff --git a/src/llama-context.cpp b/src/llama-context.cpp
-index 0465430df..c61e79b85 100644
---- a/src/llama-context.cpp
-+++ b/src/llama-context.cpp
-@@ -3925,6 +3925,18 @@ bool llama_memory_can_shift(llama_memory_t mem) {
+diff --git a/llama/src/llama-context.cpp b/llama/src/llama-context.cpp
+index 9b399d609..56117fc6c 100644
+--- a/llama/src/llama-context.cpp
++++ b/llama/src/llama-context.cpp
+@@ -3941,6 +3941,18 @@ bool llama_memory_can_shift(llama_memory_t mem) {
      return mem->get_can_shift();
  }
  
@@ -51,10 +51,10 @@ index 0465430df..c61e79b85 100644
  // llama state API
  
  // deprecated
-diff --git a/src/llama-kv-cache-dsa.h b/src/llama-kv-cache-dsa.h
+diff --git a/llama/src/llama-kv-cache-dsa.h b/llama/src/llama-kv-cache-dsa.h
 index e2b330993..1b9cb7061 100644
---- a/src/llama-kv-cache-dsa.h
-+++ b/src/llama-kv-cache-dsa.h
+--- a/llama/src/llama-kv-cache-dsa.h
++++ b/llama/src/llama-kv-cache-dsa.h
 @@ -64,6 +64,10 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
@@ -66,11 +66,11 @@ index e2b330993..1b9cb7061 100644
      //
      // llama_kv_cache_dsa specific API
      //
-diff --git a/src/llama-kv-cache-dsv4.h b/src/llama-kv-cache-dsv4.h
-index 772b428cd..a95ac0c40 100644
---- a/src/llama-kv-cache-dsv4.h
-+++ b/src/llama-kv-cache-dsv4.h
-@@ -118,6 +118,10 @@ public:
+diff --git a/llama/src/llama-kv-cache-dsv4.h b/llama/src/llama-kv-cache-dsv4.h
+index 76b1daf57..7ddbe5cc8 100644
+--- a/llama/src/llama-kv-cache-dsv4.h
++++ b/llama/src/llama-kv-cache-dsv4.h
+@@ -129,6 +129,10 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
@@ -81,10 +81,10 @@ index 772b428cd..a95ac0c40 100644
      //
      // llama_kv_cache_dsv4 specific API
      //
-diff --git a/src/llama-kv-cache-iswa.h b/src/llama-kv-cache-iswa.h
+diff --git a/llama/src/llama-kv-cache-iswa.h b/llama/src/llama-kv-cache-iswa.h
 index 7dab6eaa8..038aae91a 100644
---- a/src/llama-kv-cache-iswa.h
-+++ b/src/llama-kv-cache-iswa.h
+--- a/llama/src/llama-kv-cache-iswa.h
++++ b/llama/src/llama-kv-cache-iswa.h
 @@ -83,6 +83,10 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
@@ -96,10 +96,10 @@ index 7dab6eaa8..038aae91a 100644
      //
      // llama_kv_cache_iswa specific API
      //
-diff --git a/src/llama-kv-cache.h b/src/llama-kv-cache.h
-index 531d99dbd..5d0648742 100644
---- a/src/llama-kv-cache.h
-+++ b/src/llama-kv-cache.h
+diff --git a/llama/src/llama-kv-cache.h b/llama/src/llama-kv-cache.h
+index d5a92f440..3ec3718d9 100644
+--- a/llama/src/llama-kv-cache.h
++++ b/llama/src/llama-kv-cache.h
 @@ -149,6 +149,10 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
@@ -111,10 +111,10 @@ index 531d99dbd..5d0648742 100644
      //
      // llama_kv_cache specific API
      //
-diff --git a/src/llama-memory-hybrid-iswa.h b/src/llama-memory-hybrid-iswa.h
+diff --git a/llama/src/llama-memory-hybrid-iswa.h b/llama/src/llama-memory-hybrid-iswa.h
 index c9d3f9f57..a875442fa 100644
---- a/src/llama-memory-hybrid-iswa.h
-+++ b/src/llama-memory-hybrid-iswa.h
+--- a/llama/src/llama-memory-hybrid-iswa.h
++++ b/llama/src/llama-memory-hybrid-iswa.h
 @@ -76,6 +76,10 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
@@ -126,10 +126,10 @@ index c9d3f9f57..a875442fa 100644
      //
      // llama_memory_hybrid_iswa specific API
      //
-diff --git a/src/llama-memory-hybrid.h b/src/llama-memory-hybrid.h
+diff --git a/llama/src/llama-memory-hybrid.h b/llama/src/llama-memory-hybrid.h
 index 484eafb74..50a75ff29 100644
---- a/src/llama-memory-hybrid.h
-+++ b/src/llama-memory-hybrid.h
+--- a/llama/src/llama-memory-hybrid.h
++++ b/llama/src/llama-memory-hybrid.h
 @@ -76,6 +76,10 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
@@ -141,10 +141,10 @@ index 484eafb74..50a75ff29 100644
      //
      // llama_memory_hybrid specific API
      //
-diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
-index 6a4892fb4..464f26ebf 100644
---- a/src/llama-memory-recurrent.cpp
-+++ b/src/llama-memory-recurrent.cpp
+diff --git a/llama/src/llama-memory-recurrent.cpp b/llama/src/llama-memory-recurrent.cpp
+index ef82eb976..b5701bf54 100644
+--- a/llama/src/llama-memory-recurrent.cpp
++++ b/llama/src/llama-memory-recurrent.cpp
 @@ -33,7 +33,10 @@ llama_memory_recurrent::llama_memory_recurrent(
      used = 0;
  
@@ -277,10 +277,10 @@ index 6a4892fb4..464f26ebf 100644
  std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, size_t> ret;
      for (const auto & [_, buf] : ctxs_bufs) {
-diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+diff --git a/llama/src/llama-memory-recurrent.h b/llama/src/llama-memory-recurrent.h
 index b13b7b748..32e497bd0 100644
---- a/src/llama-memory-recurrent.h
-+++ b/src/llama-memory-recurrent.h
+--- a/llama/src/llama-memory-recurrent.h
++++ b/llama/src/llama-memory-recurrent.h
 @@ -78,6 +78,22 @@ public:
  
      void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
@@ -304,10 +304,10 @@ index b13b7b748..32e497bd0 100644
      // computed before each graph build
      uint32_t n = 0;
  
-diff --git a/src/llama-memory.h b/src/llama-memory.h
+diff --git a/llama/src/llama-memory.h b/llama/src/llama-memory.h
 index db8253966..6381c7e5e 100644
---- a/src/llama-memory.h
-+++ b/src/llama-memory.h
+--- a/llama/src/llama-memory.h
++++ b/llama/src/llama-memory.h
 @@ -124,6 +124,14 @@ struct llama_memory_i {
  
      virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
