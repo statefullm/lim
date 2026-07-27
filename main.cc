@@ -678,6 +678,7 @@ int main(int argc, char ** argv) {
           // Pressing up from empty line shows the most recent checkpoint first.
           for (const auto& cp : restored_checkpoints) {
             string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
+            if (label.size() > 120) label = label.substr(0, 120) + "...";
             string entry = label + " (" + to_string(cp.n_past) + " tokens)";
             add_history(entry.c_str());
           }
