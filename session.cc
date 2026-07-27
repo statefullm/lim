@@ -1647,6 +1647,7 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::CONTINUE) {
+            state_.invalid_tool_strikes = 0;
             if (state_.tool_interrupt_pending) {
                 state_.prev_was_interrupted = false;
                 diag("Resuming after tool interruption...", "\033[1;33m");
