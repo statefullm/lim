@@ -933,6 +933,9 @@ bool ChatSession::handle_reincarnate_completion() {
     // Log reincarnated session tokens to token_log when debug is enabled
     log_tokens("FEED USER_INPUT", new_session_tokens, ctx_);
 
+    // Record checkpoint for the reincarnated session prompt so saves and restores work.
+    state_.prompt_checkpoints.push_back({n_past_, follow_prompt});
+
     state_.auto_continue = true;
     reset_session_state();
     log_entry("SYSTEM", "Context Cleared and Reincarnated with New Prompt");
