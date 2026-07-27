@@ -361,6 +361,7 @@ private:
         // Reset context token tracker to empty; feed_tokens_impl will rebuild it.
         state_.all_context_tokens.clear();
         state_.prompt_checkpoints.clear();
+        state_.file_cache.clear();
         feed_tokens_impl(system_tokens_);
 
         // Reset sampler state (penalty history, RNG) for a fresh start
@@ -1074,7 +1075,6 @@ bool ChatSession::run() {
             }
 
             clear_context();
-            state_.file_cache.clear();
             state_.auto_continue = false;
             state_.prev_was_interrupted = false;
             reset_session_state();
