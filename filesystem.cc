@@ -649,12 +649,29 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   int fd = mkstemp(const_cast<char*>(exit_code_file.c_str()));
   if (fd >= 0) close(fd); // Close so bash can write to it
 
-  string full_command = "stdbuf -oL -eL bash -c 'source ~/.bashrc 2>/dev/null; cd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\" && " + safe_cmd + " ; echo \"$?\" > \"" + exit_code_file + "\"' 2>&1";
+  // Write the user command to a temp script to avoid shell-escaping issues
+  // with parentheses, dollar signs, backticks, etc. inside bash -c '...'.
+  string script_path = "/tmp/lim_cmd_XXXXXX";
+  int sfd = mkstemps(const_cast<char*>(script_path.c_str()), 0);
+  if (sfd < 0) {
+    unlink(exit_code_file.c_str());
+    return "Error: Failed to create temp script for shell execution.";
+  }
+  {
+    string script_content = "#!/bin/bash\nsource ~/.bashrc 2>/dev/null\ncd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\"\n" + command + "\necho \"$?\" > \"" + exit_code_file + "\"\n";
+    ssize_t written = write(sfd, script_content.c_str(), script_content.size());
+    (void)written; // Best effort; if it fails, the script will just be empty
+  }
+  close(sfd);
+  chmod(script_path.c_str(), 0700);
+
+  string full_command = "stdbuf -oL -eL bash " + script_path + " 2>&1";
 
   // Use fork + pipe to stream output as it becomes available.
   int pipefd[2];
   if (pipe(pipefd) == -1) {
     unlink(exit_code_file.c_str());
+    unlink(script_path.c_str());
     return "Error: Failed to create pipe for shell execution.";
   }
 
@@ -665,6 +682,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     close(pipefd[0]);
     close(pipefd[1]);
     unlink(exit_code_file.c_str());
+    unlink(script_path.c_str());
     return "Error: Failed to spawn shell process. The exec_shell tool may be temporarily unavailable.";
   }
 
@@ -788,6 +806,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     }
   }
   unlink(exit_code_file.c_str());
+  unlink(script_path.c_str());
 
   // Fallback: if we couldn't read the temp file, try pipe status
   if (exit_code == -1 && WIFEXITED(pipe_status)) {
