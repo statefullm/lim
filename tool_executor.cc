@@ -34,21 +34,11 @@ static string truncate_tool_call_params(const string& tool_call) {
     static const char* long_params[] = {"content", "old", "new", "text"};
     string result = tool_call;
     for (const char* param : long_params) {
-        // Opening tag: <parameter=NAME>  (PARAM_START is "<parameter=")
         string open_tag = string(PARAM_START) + param + ">";
         size_t pos = 0;
         while ((pos = result.find(open_tag, pos)) != string::npos) {
             size_t content_start = pos + open_tag.length();
-            // Closing tag: </parameter> (PARAM_END is "<\/parameter>")
             size_t end = result.find(PARAM_END, content_start);
-            if (end == string::npos) {
-                // Fallback for unescaped form in malformed calls.
-                string close_unescaped;
-                close_unescaped += '<';
-                close_unescaped += '/';
-                close_unescaped += "parameter>";
-                end = result.find(close_unescaped, content_start);
-            }
             if (end != string::npos) {
                 result.replace(content_start, end - content_start, "...");
                 pos = content_start + 3;
@@ -161,10 +151,11 @@ ToolExecutor::Result ToolExecutor::execute(
         tool_out.content = "System Error: Loop Detected -- you already called this exact tool recently. " + active_intervention_msg + " If searching code, use search_file instead of exec_shell.";
         tool_out.display = tool_out.content;
 
-        diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
+        if (current_strikes > 1)
+            diag("System: Pre-execution loop blocked (Strike " + std::to_string(current_strikes) + ").", "\033[35m");
 
         int max_attempts = loopMessages.size();
-        if (current_strikes <= max_attempts) {
+        if (current_strikes <= max_attempts && current_strikes > 1) {
             diag("System: Automating intervention (Attempt " + std::to_string(current_strikes) + "/" + std::to_string(max_attempts) + ").", "\033[35m");
             inject_auto_user_msg = true;
         } else {
@@ -177,40 +168,46 @@ ToolExecutor::Result ToolExecutor::execute(
 
         // Handle validation errors reported by the struct.
         if (!tool_out.recognized || !tool_out.params_valid || tool_out.malformed_xml) {
-            state.invalid_tool_strikes++;
+            // If path was auto-inferred, skip strike counting and diagnostics
+            if (tool_out.path_inferred) {
+                state.invalid_tool_strikes = 0;
+            } else {
+                state.invalid_tool_strikes++;
 
-            string label;
-            if (!tool_out.recognized) label = "Invalid Tool Call";
-            else if (tool_out.malformed_xml) label = "Malformed Tool Call";
-            else label = "Malformed Tool Call";
-            diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
+                string label;
+                if (!tool_out.recognized) label = "Invalid Tool Call";
+                else if (tool_out.malformed_xml) label = "Malformed Tool Call";
+                else label = "Malformed Tool Call";
+                if (state.invalid_tool_strikes > 1)
+                    diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
 
-            // Always show the raw tool call so the user can diagnose what went wrong.
-            diag("  " + truncate_tool_call_params(tool_call), "\033[90m");
+                // Always show the raw tool call so the user can diagnose what went wrong.
+                diag("  " + truncate_tool_call_params(tool_call), "\033[90m");
 
-            if (is_debug) {
-                diag("  Raw tool_call: " + tool_call, "\033[90m");
-                diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[90m");
-                if (!tool_out.recognized) {
-                    diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[90m");
-                }
-                if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
-                    string mp;
-                    for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
-                        if (i > 0) mp += ", ";
-                        mp += "\"" + tool_out.missing_params[i] + "\"";
+                if (is_debug) {
+                    diag("  Raw tool_call: " + tool_call, "\033[90m");
+                    diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[90m");
+                    if (!tool_out.recognized) {
+                        diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[90m");
                     }
-                    diag("  Missing required parameters: " + mp, "\033[90m");
+                    if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
+                        string mp;
+                        for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
+                            if (i > 0) mp += ", ";
+                            mp += "\"" + tool_out.missing_params[i] + "\"";
+                        }
+                        diag("  Missing required parameters: " + mp, "\033[90m");
+                    }
                 }
-            }
 
-            if (state.invalid_tool_strikes >= 5) {
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
-                abort_auto = true;
-            } else if (state.invalid_tool_strikes >= 2) {
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
-                inject_auto_user_msg = true;
-                active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+                if (state.invalid_tool_strikes >= 5) {
+                    diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                    abort_auto = true;
+                } else if (state.invalid_tool_strikes >= 2) {
+                    diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+                    inject_auto_user_msg = true;
+                    active_intervention_msg = SYSTEM_PROMPT_REMINDER;
+                }
             }
         } else {
             state.invalid_tool_strikes = 0;
@@ -409,4 +406,3 @@ ToolExecutor::Result ToolExecutor::execute(
 
     return result;
 }
-

@@ -41,7 +41,7 @@ static vector<string> find_missing_params(const string& tool_name, const string&
         if (spec.name == tool_name) {
             for (const auto& param : spec.params) {
                 // Search on PARAM_START only, then extract and compare the name
-                // tolerating stray quotes (e.g., <parameter=command">).
+                // tolerating stray quotes
                 bool found = false;
                 size_t pos = 0;
                 while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
@@ -400,6 +400,3 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
 
   return out;
 }
-
-
-

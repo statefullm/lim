@@ -189,13 +189,13 @@ static string extract_param_name(const string& tool_call, size_t tag_pos, size_t
 }
 
 // Find a parameter tag by name.  Accepts either the canonical form
-//   <parameter=name>...PARAM_END
+//   PARAM_STARTname>...PARAM_END
 // or a bare tag form (LLM occasionally emits this):
 //   <name>...PARAM_END
 // Sets 'content_begin' to the position just past the opening '>'.
 // Returns true if found, false otherwise.
 static bool find_param_tag(const string& tool_call, const string& arg_name, size_t& content_begin) {
-    // First pass: look for canonical <parameter=name> form.
+    // First pass: look for canonical PARAM_STARTname> form.
     {
         size_t pos = 0;
         while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
@@ -289,4 +289,3 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
     }
     return result;
 }
-
