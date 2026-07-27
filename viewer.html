@@ -1176,6 +1176,32 @@
         /* ------------------------------------------------------------------ */
         /*  Export session as standalone HTML                                  */
         /* ------------------------------------------------------------------ */
+
+        // Finish rendering raw segments within a given container element.
+        // Like finishAllRawSegments() but operates on an arbitrary parent
+        // (e.g., a DOM clone) rather than the live outputDiv.
+        function finishRawSegmentsInElement(container) {
+            for (var i = 0; i < segments.length; i++) {
+                var wrapperDiv = container.querySelector('[data-seg="' + i + '"]');
+                if (!wrapperDiv) continue;
+                if (!wrapperDiv.hasAttribute('data-raw')) continue;
+                var fullText = segments[i].content;
+                var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
+                var tail = fullText.substring(renderedPrefixLen);
+                if (tail.length === 0) { wrapperDiv.removeAttribute('data-raw'); continue; }
+                var html = rawTextToHtml(tail, segments[i].type);
+                var target = (segments[i].type === SEG_THINK) ?
+                    wrapperDiv.querySelector('.think-body') : wrapperDiv;
+                if (target) target.innerHTML += html;
+                wrapperDiv.removeAttribute('data-raw');
+            }
+            container.querySelectorAll('.think-block').forEach(function (block) {
+                if (!block.hasAttribute('data-think-collapsed')) {
+                    collapseThinkBlock(block, 'auto');
+                }
+            });
+        }
+
         async function exportHtml() {
             var now = new Date();
             var ts = now.getFullYear() + '-' +
@@ -1186,7 +1212,13 @@
                 String(now.getSeconds()).padStart(2, '0');
             var filename = 'lim_export_' + ts + '.html';
 
-            var bodyContent = document.getElementById('output').innerHTML;
+            // Finish rendering any remaining raw segments (including active think blocks)
+            // into a DOM clone so the export is complete without mutating the live session.
+            var outputDiv = document.getElementById('output');
+            var clone = outputDiv.cloneNode(true);
+            finishRawSegmentsInElement(clone);
+
+            var bodyContent = clone.innerHTML;
 
             var cssText = '';
             document.querySelectorAll('style').forEach(function(s) {
@@ -1201,6 +1233,13 @@
                 // Fallback: no KaTeX CSS, math may look unstyled.
             }
 
+            // Minimal inline script to keep think-block toggling and copy buttons working
+            // in the exported file without needing the full viewer JS or WebSocket connection.
+            var exportScript = '<script>\n' +
+                'function toggleThinkBlock(headerEl){var b=headerEl.nextElementSibling;var bl=headerEl.parentElement;var c=b.classList.toggle("hidden");headerEl.classList.toggle("collapsed",c);bl.setAttribute("data-think-collapsed",c?"1":"0")}\n' +
+                'document.querySelectorAll(".copy-btn").forEach(function(btn){btn.addEventListener("click",function(){var code=btn.parentElement.querySelector("code");if(navigator.clipboard){navigator.clipboard.writeText(code.textContent).then(function(){btn.textContent="Copied!";setTimeout(function(){btn.textContent="Copy"},1500)})}})});\n' +
+                '<' + '/script>';
+
             // Build a standalone HTML document.  KaTeX CSS (with fonts embedded as
             // data URIs) is inlined above so that pre-rendered KaTeX spans display
             // correctly in the exported file -- no CDN or external font files needed.
@@ -1212,6 +1251,7 @@
                 '  <style>\n' + cssText + '\n  </style>\n' +
                 '</head>\n<body>\n' +
                 bodyContent + '\n' +
+                exportScript + '\n' +
                 '<hr style="border-color:#555;margin-top:30px;">\n' +
                 '<p style="color:#888;font-size:0.75em;text-align:center;">Exported from LIM on ' + now.toISOString() + '</p>\n' +
                 '</body>\n</html>';
