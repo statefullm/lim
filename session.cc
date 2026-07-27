@@ -1108,7 +1108,8 @@ bool ChatSession::run() {
             log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(new_log_index) + ")");
 
             // Remove B (checkpoint prompts) while preserving A (persistent)
-            // and C (user inputs since last restore).
+            // and C (user inputs since last restore).  After flush_history above,
+            // the surviving C entries are now on disk, so promote them into A.
             // NOTE: history_get() uses 1-based indexing (last entry at history_length).
             {
                 vector<string> saved_c;
@@ -1120,6 +1121,9 @@ bool ChatSession::run() {
                 for (auto it = saved_c.rbegin(); it != saved_c.rend(); ++it) {
                     add_history(it->c_str());
                 }
+                // Promote C into A: these entries are now persisted on disk.
+                persistent_history_len_ = history_length;
+                c_count_since_restore_ = 0;
             }
 
             continue;
@@ -1572,9 +1576,24 @@ bool ChatSession::run() {
             // Reset sampler state for a clean generation start.
             llama_sampler_reset(smpl_);
 
-            // Repopulate readline history from restored checkpoints so up-arrow
-            // navigates through the restored session's prompts.
-            repopulate_history();
+            // Save C (user inputs since last restore/clear) before repopulating,
+            // so they survive the restore and appear after the restored prompts.
+            {
+                vector<string> saved_c;
+                for (int i = 0; i < c_count_since_restore_; i++) {
+                    HIST_ENTRY* he = history_get(history_length - i);
+                    if (he) saved_c.push_back(he->line);
+                }
+
+                // Repopulate readline history from restored checkpoints so up-arrow
+                // navigates through the restored session's prompts.
+                repopulate_history();
+
+                // Re-push C entries on top of the restored checkpoint prompts.
+                for (const auto& s : saved_c) {
+                    add_history(s.c_str());
+                }
+            }
 
             continue;
         }
