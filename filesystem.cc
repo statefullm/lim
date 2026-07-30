@@ -4,6 +4,7 @@
 #include "parsers.h"
 #include "tokens.h"
 #include "network.h"  // For process_pdf_with_docling and base64_encode
+#include "signals.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -732,8 +733,18 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     // Block until the pipe has data or the child exits.
     int ready = poll(&pfd, 1, -1);  // -1 = block indefinitely
     if (ready < 0) {
-      // Interrupted by signal - retry.
-      if (errno == EINTR) continue;
+      // Interrupted by signal (e.g., Ctrl+C).
+      if (errno == EINTR) {
+        if (stop_generation) {
+          // User pressed Ctrl+C: kill the child and abort.
+          kill(pid, SIGTERM);
+          // Drain remaining pipe data to prevent zombie/EPIPE.
+          char drain[65536];
+          while (read(pipefd[0], drain, sizeof(drain)) > 0) {}
+          break;
+        }
+        continue;  // Retry poll on non-interrupt EINTR.
+      }
       break;  // Unexpected error, bail out.
     }
 
