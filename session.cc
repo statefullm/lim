@@ -1610,6 +1610,15 @@ bool ChatSession::run() {
                 }
             }
 
+            // Update browser status bar with restored context position
+            if (should_output_to_browser()) {
+                double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+                string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+                pipe_write(&SEG_SPEED, 1);
+                string speed_msg = "Loaded | " + ctx_str;
+                pipe_write(speed_msg.c_str(), speed_msg.length());
+            }
+
             continue;
         }
 
