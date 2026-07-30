@@ -1204,15 +1204,25 @@ bool ChatSession::run() {
                 continue;
             }
 
-            // Match the user's selection against checkpoint display strings.
+            // Match the user's selection by extracting the token count from
+            // the display string's "(N tokens)" suffix.  Since n_past is unique
+            // per checkpoint, this works even when prompts are truncated or
+            // duplicated.
             int selected_idx = -1;
-            for (int i = 0; i < (int)state_.prompt_checkpoints.size(); i++) {
-                const auto& cp = state_.prompt_checkpoints[i];
-                string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
-                string expected = label + " (" + to_string(cp.n_past) + " tokens)";
-                if (input == expected) {
-                    selected_idx = i;
-                    break;
+            {
+                size_t paren_open = input.rfind('(');
+                size_t paren_close = input.rfind(')');
+                if (paren_open != string::npos && paren_close > paren_open) {
+                    string num_str = input.substr(paren_open + 1, paren_close - paren_open - 1);
+                    try {
+                        int target_n_past = std::stoi(num_str);
+                        for (int i = 0; i < (int)state_.prompt_checkpoints.size(); i++) {
+                            if (state_.prompt_checkpoints[i].n_past == target_n_past) {
+                                selected_idx = i;
+                                break;
+                            }
+                        }
+                    } catch (...) {}
                 }
             }
 

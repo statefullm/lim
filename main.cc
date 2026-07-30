@@ -705,14 +705,22 @@ int main(int argc, char ** argv) {
               return 0;
             }
             try {
-              // Match against checkpoint display strings.
-              for (const auto& cp : restored_checkpoints) {
-                string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
-                string expected = label + " (" + to_string(cp.n_past) + " tokens)";
-                if (input == expected) {
-                  restore_limit = cp.n_past;
-                  break;
-                }
+              // Match by extracting the token count from the "(N tokens)" suffix.
+              // Since n_past is unique per checkpoint, this works even when
+              // prompts are truncated or duplicated.
+              size_t paren_open = input.rfind('(');
+              size_t paren_close = input.rfind(')');
+              if (paren_open != string::npos && paren_close > paren_open) {
+                string num_str = input.substr(paren_open + 1, paren_close - paren_open - 1);
+                try {
+                  int target_n_past = std::stoi(num_str);
+                  for (const auto& cp : restored_checkpoints) {
+                    if (cp.n_past == target_n_past) {
+                      restore_limit = cp.n_past;
+                      break;
+                    }
+                  }
+                } catch (...) {}
               }
             } catch (...) {}
           }
