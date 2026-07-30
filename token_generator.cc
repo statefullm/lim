@@ -182,7 +182,8 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                double turn_timeout_sec, bool was_mid_tool_call,
                                int last_n_past,
                                std::vector<llama_token>* out_tokens,
-                               double feed_time)
+                               double feed_time,
+                               bool is_reincarnating)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
@@ -201,6 +202,7 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       t_count_(0),
       last_n_past_(last_n_past),
       was_mid_tool_call_(was_mid_tool_call),
+      is_reincarnating_(is_reincarnating),
       out_tokens_(out_tokens)
 {
     generated_text_.reserve(32768);
@@ -250,7 +252,7 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         {
             int context_90pct = (int)(cparams_.n_ctx * 0.9);
-            if (n_past_ >= context_90pct && !context_warned_this_turn_) {
+            if (n_past_ >= context_90pct && !context_warned_this_turn_ && !is_reincarnating_) {
                 context_warned_this_turn_ = true;
                 if (!unprinted_text_.empty()) {
                     console(unprinted_text_.c_str());

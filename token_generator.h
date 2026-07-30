@@ -33,7 +33,8 @@ public:
                  double turn_timeout_sec, bool was_mid_tool_call,
                  int last_n_past,
                  std::vector<llama_token>* out_tokens = nullptr,
-                 double feed_time = 0.0);
+                 double feed_time = 0.0,
+                 bool is_reincarnating = false);
 
   Result generate();
 
@@ -68,6 +69,7 @@ private:
   int t_count_;
   int last_n_past_;
   bool was_mid_tool_call_;
+  bool is_reincarnating_;
   std::vector<llama_token>* out_tokens_;  // If non-null, each sampled token is appended here
 };
 

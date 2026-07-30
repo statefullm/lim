@@ -760,7 +760,8 @@ TokenGenerator::Result ChatSession::generate_response() {
     // --- TOKEN GENERATION via TokenGenerator class ---
     TokenGenerator tg(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
-                      &state_.all_context_tokens, state_.last_feed_time);
+                      &state_.all_context_tokens, state_.last_feed_time,
+                      state_.reincarnate_mode);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
