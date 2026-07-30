@@ -32,6 +32,16 @@ std::string html_escape(const std::string& s) {
     return out;
 }
 
+std::string html_escape_for_browser(const std::string& s) {
+    std::string escaped = html_escape(s);
+    size_t pos = 0;
+    while ((pos = escaped.find('\n', pos)) != std::string::npos) {
+        escaped.replace(pos, 1, "<br>");
+        pos += 3;
+    }
+    return escaped;
+}
+
 void log_tokens(const std::string& label, const std::vector<llama_token>& toks, llama_context* ctx) {
     if (!is_debug || !token_log.is_open()) return;
     for (llama_token t : toks) {

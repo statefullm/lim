@@ -668,7 +668,7 @@ bool ChatSession::feed_user_message(const string& input) {
     if (!state_.auto_continue) {
         log_entry("USER", input);
         if (should_output_to_browser() && pipe_fd >= 0) {
-            string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(input) + "</code></pre></div>\n\n";
+            string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(input) + "</code></pre></div>\n\n";
             stream_html(user_html);
         }
     }
@@ -1811,7 +1811,7 @@ bool ChatSession::run() {
                 if (!state_.auto_continue) {
                     log_entry("USER", user_input);
                     if (should_output_to_browser() && pipe_fd >= 0) {
-                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(user_input) + "</code></pre></div>\n\n";
+                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(user_input) + "</code></pre></div>\n\n";
                         stream_html(user_html);
                     }
                 }
@@ -1880,7 +1880,7 @@ bool ChatSession::run() {
                 if (!state_.auto_continue) {
                     log_entry("USER", user_input);
                     if (should_output_to_browser() && pipe_fd >= 0) {
-                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape(user_input) + "</code></pre></div>\n\n";
+                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(user_input) + "</code></pre></div>\n\n";
                         stream_html(user_html);
                     }
                 }
