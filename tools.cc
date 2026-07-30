@@ -13,6 +13,7 @@ using namespace std;
 using namespace Tokens;
 
 extern volatile sig_atomic_t stop_generation;
+extern bool is_debug;
 
 static bool param_has_newline_impl(const string& s) {
     return s.find('\n') != string::npos || s.find('\r') != string::npos;
@@ -287,8 +288,8 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     state.file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
-      if (path_inferred) {
-          diag("System: edit_file path " + path + " inferred from preceding search_file.", "\033[90m");
+      if (path_inferred && is_debug) {
+          diag("System: edit_file path " + path + " inferred from preceding search_file.", "\033[2;90m");
       }
 
       FileSystemTools fs;
