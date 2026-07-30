@@ -1333,6 +1333,11 @@ bool ChatSession::run() {
             state_.auto_continue = false;
             state_.prev_was_interrupted = false;
             reset_session_state();
+            // Clear file cache: after undo, the LLM may re-read files it "already saw"
+            // in the undone-away turns, but from its current conversation position it
+            // has no context of having seen them.  Without clearing, read_files would
+            // return false cache hits and skip content the LLM genuinely needs.
+            state_.file_cache.clear();
             state_.last_t_count = 0;
             state_.last_elapsed = 0.0;
             state_.last_n_past = n_past_;
