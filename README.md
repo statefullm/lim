@@ -363,17 +363,7 @@ The `$LIM_AI_USER` operates in a sandboxed environment:
 
 - **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `aishare` to grant access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment.
-- **Git integration**: The sandbox repo is a separate git repository that is writable by `$LIM_AI_USER` using a dedicated AI GitHub account. This allows the LLM to commit, push, and manage version control autonomously without needing your personal credentials.
-
-Set up an SSH key:
-
-```bash
-# As `$LIM_AI_USER`, generate a dedicated key
-ssh-keygen -N ""
-
-# Add the public key to your Git hosting provider
-cat ~/.ssh/id_ed25519.pub
-```
+- **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories.
 
 ---
 
