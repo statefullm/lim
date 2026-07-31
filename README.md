@@ -180,7 +180,7 @@ alias coder='lim ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
 Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`:
 
 ```bash
-ssh $LIM_AI_USER@$LIM_HOST
+ssh -a $LIM_AI_USER@$LIM_HOST
 coder
 ```
 
@@ -291,10 +291,10 @@ Set via `LIM_OUTPUT`:
 
 | Value | stdout | Browser | Description |
 |-------|--------|---------|-------------|
-| 3 | ✅ | ✅ | Both stdout and browser |
-| 2 (default) | ❌ | ✅ | Browser only |
-| 1 | ✅ | ❌ | Stdout only |
-| 0 | ❌ | ❌ | No output (system stderr still works) |
+| 3 | Y | Y | Both stdout and browser |
+| 2 (default) | N | Y | Browser only |
+| 1 | Y | N | Stdout only |
+| 0 | N | N | No output (system stderr still works) |
 
 ---
 
