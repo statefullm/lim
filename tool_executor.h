@@ -4,7 +4,6 @@
 #include "session.h"
 #include "tools.h"
 #include "tokens.h"
-#include "loop_detector.h"
 #include "token_generator.h"
 #include <string>
 #include <vector>

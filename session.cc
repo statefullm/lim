@@ -3,7 +3,6 @@
 #include "output.h"
 #include "server.h"
 #include "model.h"
-#include "loop_detector.h"
 #include "signals.h"
 #include "parsers.h"
 #include "filesystem.h"
@@ -379,7 +378,6 @@ private:
     }
 
     void reset_llm_state() {
-        state_.loop_guard.clear_history();
         state_.invalid_tool_strikes = 0;
     }
 
@@ -1380,7 +1378,7 @@ bool ChatSession::run() {
             reset_llm_state();
             NetworkTools().reset_search();
             system("reset");
-            log_entry("SYSTEM", "Terminal and loop counter reset");
+            log_entry("SYSTEM", "Terminal and search reset");
             diag("Terminal Reset Successfully", "\033[32m");
             continue;
         }

@@ -46,7 +46,6 @@ Instead, use this 2-step workflow:
    - Only use edit_file to do plain text substitutions.
 
 If you need to understand the big picture or analyze the logic of an entire file, use read_files ONCE.
-- If a tool returns an error stating you are in a loop or repeating a command, you MUST stop attempting that command.
 - Always batch multiple read requests into a single read_files call.
 
 When all of your edits are complete, read the file in its entirety to verify its integrity.

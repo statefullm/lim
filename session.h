@@ -12,7 +12,6 @@
 #include <fstream>
 #include <functional>
 #include <chrono>
-#include "loop_detector.h"
 #include "filesystem.h"
 
 // Forward declaration for INITIAL_CWD from main.cc
@@ -29,7 +28,6 @@ struct SessionState {
   double last_feed_time = 0.0;    // Time spent feeding/re-decoding tokens (chatbot mode)
   int last_n_past = 0;
   std::map<std::string, std::string> file_cache;  // path -> content hash (for cache validation)
-  LoopDetector loop_guard;
   int invalid_tool_strikes = 0;
   // Internal state (was static inside the function)
   int auto_continue_depth_val = 0;
