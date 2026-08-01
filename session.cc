@@ -755,6 +755,14 @@ TokenGenerator::Result ChatSession::generate_response() {
     was_mid_tool_call_ = state_.tool_interrupt_pending;
     state_.tool_interrupt_pending = false;
 
+    // Save recurrent-state slot checkpoint for potential tool-call rollback.
+    // For pure attention models this is a no-op.  For hybrid models it saves
+    // the current R/S state into a fixed slot (overwritten each turn).
+    llama_memory_rs_slot_save(llama_get_memory(ctx_), 0, 0);
+    state_.tool_correction_n_past = n_past_;
+    state_.has_tool_correction_checkpoint = true;
+    state_.correction_attempted_this_turn = false;
+
     auto start = chrono::high_resolution_clock::now();
 
     // --- TOKEN GENERATION via TokenGenerator class ---
@@ -859,6 +867,15 @@ bool ChatSession::process_tool_call() {
 
         if (tool_result.should_auto_continue) {
             return true; // Signal to continue outer loop
+        }
+
+        // Tool-call correction: feed system prompt reminder, generate once,
+        // parse for a valid tool call, roll back to the slot checkpoint,
+        // and inject the good tool call + its output cleanly.
+        if (tool_result.needs_correction) {
+            state_.tool_correction_mode = true;
+            // Return false so we fall through to step 8b in the same iteration,
+            // where the correction cycle is handled before generating again.
         }
     }
 
@@ -1922,6 +1939,97 @@ bool ChatSession::run() {
 
         // 8. Process tool call
         if (process_tool_call()) {
+            continue;
+        }
+
+        // 8b. Tool-call correction: feed system prompt, wait for valid tool call,
+        // roll back, inject into Assistant field, then let process_tool_call execute.
+        if (state_.tool_correction_mode) {
+            state_.tool_correction_mode = false;
+
+            string system_prompt;
+            {
+                string config_prompt_path = LIM_CONFIG_DIR + "/prompt";
+                string legacy_prompt_path = string(HOME) + "/prompt";
+                ifstream prompt_file(config_prompt_path);
+                if (!prompt_file.is_open()) {
+                    prompt_file.open(legacy_prompt_path);
+                }
+                if (prompt_file.is_open()) {
+                    stringstream buf;
+                    buf << prompt_file.rdbuf();
+                    system_prompt = buf.str();
+                    prompt_file.close();
+                }
+            }
+
+            string correction_msg = "System Error: Invalid tool call. Follow these instructions:\n\n";
+            correction_msg += system_prompt;
+
+            vector<llama_token> correction_tokens = build_tool_result_turn(ctx_, correction_msg);
+            if (n_past_ + (int)correction_tokens.size() < (int)cparams_.n_ctx) {
+                feed_tokens_impl(correction_tokens);
+                log_tokens("FEED TOOL_CORRECTION", correction_tokens, ctx_);
+
+                // Generate once -- LLM produces corrected tool call.
+                gen_result_ = generate_response();
+                generated_text_ = gen_result_.text;
+                t_count_ = gen_result_.token_count;
+                elapsed_ = gen_result_.decode_time;
+
+                // If valid, roll back to checkpoint, inject good call, hand off to process_tool_call.
+                if (gen_result_.has_tool_call && gen_result_.tool_start != string::npos && gen_result_.tool_end != string::npos) {
+                    diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
+                    state_.invalid_tool_strikes = 0;
+
+                    // Roll back to the slot checkpoint (removes bad call + system prompt + correction).
+                    llama_memory_t mem = llama_get_memory(ctx_);
+                    llama_memory_rs_slot_restore(mem, 0, 0);
+                    bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
+                    if (rm_ok) {
+                        n_past_ = state_.tool_correction_n_past;
+                    } else {
+                        diag("System: Correction rollback failed, re-decoding...", "\033[33m");
+                        llama_memory_clear(mem, true);
+                        n_past_ = 0;
+                        if (!feed_tokens_impl(state_.all_context_tokens)) {
+                            diag("Correction restore failed. Type /clear to reset.", "\033[31m");
+                            continue;
+                        }
+                        state_.all_context_tokens.resize(state_.tool_correction_n_past);
+                        n_past_ = state_.tool_correction_n_past;
+                    }
+
+                    // Inject the corrected tool call into the Assistant field.
+                    string corr_text = gen_result_.text;
+                    size_t cs = gen_result_.tool_start;
+                    size_t ce = gen_result_.tool_end;
+                    string corr_preamble = (cs > 0) ? corr_text.substr(0, cs) : "";
+                    string corr_tool_call = corr_text.substr(cs, ce - cs + string(FUNC_END).length());
+                    string injected_text = corr_preamble + corr_tool_call;
+                    vector<llama_token> inj_tokens = tokenize(injected_text);
+                    feed_tokens_impl(inj_tokens);
+                    log_tokens("FEED TOOL_CORRECTION_INJECT", inj_tokens, ctx_);
+
+                    // Set up gen_result_ to reflect the injected call.
+                    generated_text_ = injected_text;
+                    gen_result_.tool_start = corr_preamble.length();
+                    size_t fe_pos = corr_tool_call.find(string(FUNC_END));
+                    gen_result_.tool_end = corr_preamble.length() + (fe_pos != string::npos ? fe_pos : corr_tool_call.length());
+                    was_mid_tool_call_ = false;
+
+                    // Reset sampler: the penalty ring buffer contains stale tokens
+                    // from the correction phase that were rolled back.
+                    llama_sampler_reset(smpl_);
+
+                    // Hand off to process_tool_call -- it executes normally from here.
+                    if (process_tool_call()) {
+                        continue;
+                    }
+                } else {
+                    diag("System: Correction failed to produce valid tool call. Falling through.", "\033[33m");
+                }
+            }
             continue;
         }
 

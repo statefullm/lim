@@ -809,6 +809,17 @@ extern "C" {
               llama_seq_id seq_id,
                      uint32_t keep_idx);
 
+    // Fixed-slot checkpoint: save/restore to a named slot (overwrites on save).
+    // Independent of the stack-based checkpoint API.  No-op for pure attention models.
+    LLAMA_API void llama_memory_rs_slot_save(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                     uint32_t slot);
+    LLAMA_API void llama_memory_rs_slot_restore(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                     uint32_t slot);
+
     //
     // State / sessions
     //
@@ -1378,7 +1389,7 @@ extern "C" {
     /// @details XTC sampler as described in https://github.com/oobabooga/text-generation-webui/pull/6335
     LLAMA_API struct llama_sampler * llama_sampler_init_xtc        (float   p, float   t,     size_t min_keep, uint32_t seed);
 
-    /// @details Top n sigma sampling as described in academic paper "Top-nσ: Not All Logits Are You Need" https://arxiv.org/pdf/2411.07641
+    /// @details Top n sigma sampling as described in academic paper "Top-ns: Not All Logits Are You Need" https://arxiv.org/pdf/2411.07641
     LLAMA_API struct llama_sampler * llama_sampler_init_top_n_sigma(float   n);
 
     /// @details Mirostat 1.0 algorithm described in the paper https://arxiv.org/abs/2007.14966. Uses tokens instead of words.
@@ -1472,7 +1483,7 @@ extern "C" {
     /// before adaptive-p as the only other active sampler in the chain.
     ///
     /// @param target select tokens near this probability (valid range 0.0 to 1.0; negative = disabled)
-    /// @param decay  EMA decay for adaptation; history ≈ 1/(1-decay) tokens (valid range 0.0 - 0.99)
+    /// @param decay  EMA decay for adaptation; history  1/(1-decay) tokens (valid range 0.0 - 0.99)
     /// @param seed   RNG seed
     ///
     /// ref: https://github.com/ggml-org/llama.cpp/pull/17927

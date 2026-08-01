@@ -47,6 +47,12 @@ struct SessionState {
   int log_index = 0;
   // Path from the most recent search_file call, for edit_file path inference.
   std::string last_search_path;
+  // Tool-correction checkpoint: saved at start of each generate_response()
+  int tool_correction_n_past = 0;
+  bool has_tool_correction_checkpoint = false;
+  bool correction_attempted_this_turn = false;
+  // Correction mode: set by tool_executor when a bad tool call needs retry.
+  bool tool_correction_mode = false;
 };
 
 // Run the main chat session loop.

@@ -3953,6 +3953,14 @@ void llama_memory_rs_checkpoint_prune(llama_memory_t mem, llama_seq_id seq_id, u
     if (mem) mem->rs_checkpoint_prune(seq_id, keep_idx);
 }
 
+void llama_memory_rs_slot_save(llama_memory_t mem, llama_seq_id seq_id, uint32_t slot) {
+    if (mem) mem->rs_slot_save(seq_id, slot);
+}
+
+void llama_memory_rs_slot_restore(llama_memory_t mem, llama_seq_id seq_id, uint32_t slot) {
+    if (mem) mem->rs_slot_restore(seq_id, slot);
+}
+
 // llama state API
 
 // deprecated

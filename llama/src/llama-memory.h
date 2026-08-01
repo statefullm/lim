@@ -132,6 +132,10 @@ struct llama_memory_i {
     virtual void rs_checkpoint_save(llama_seq_id seq_id) = 0;
     virtual void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) = 0;
     virtual void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) = 0;
+
+    // Fixed-slot checkpoint (overwrites slot on save, independent of stack).
+    virtual void rs_slot_save(llama_seq_id seq_id, uint32_t slot) = 0;
+    virtual void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) = 0;
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

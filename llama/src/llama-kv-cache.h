@@ -152,6 +152,8 @@ public:
     void rs_checkpoint_save(llama_seq_id seq_id) override {}
     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
 
     //
     // llama_kv_cache specific API

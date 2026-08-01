@@ -79,6 +79,8 @@ public:
     void rs_checkpoint_save(llama_seq_id seq_id) override { mem_recr->rs_checkpoint_save(seq_id); }
     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { mem_recr->rs_checkpoint_restore(seq_id, checkpoint_idx); }
     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { mem_recr->rs_checkpoint_prune(seq_id, keep_idx); }
+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { mem_recr->rs_slot_save(seq_id, slot); }
+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { mem_recr->rs_slot_restore(seq_id, slot); }
 
     //
     // llama_memory_hybrid_iswa specific API

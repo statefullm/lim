@@ -202,6 +202,15 @@ ToolExecutor::Result ToolExecutor::execute(
                 if (state.invalid_tool_strikes >= 5) {
                     diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
                     abort_auto = true;
+                } else if (state.invalid_tool_strikes >= 1 && !state.correction_attempted_this_turn && state.has_tool_correction_checkpoint) {
+                    // Attempt tool-call correction on first strike: roll back via slot checkpoint,
+                    // feed full system prompt, let the LLM generate a fix, then
+                    // inject the good tool call cleanly.
+                    diag("System: " + std::to_string(state.invalid_tool_strikes) + " invalid tool call(s). Attempting correction.", "\033[1;33m");
+                    state.correction_attempted_this_turn = true;
+                    result.needs_correction = true;
+                    // Don't set inject_auto_user_msg or abort_auto -- the main loop
+                    // will handle the correction cycle.
                 } else if (state.invalid_tool_strikes >= 2) {
                     diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
                     inject_auto_user_msg = true;
@@ -235,6 +244,14 @@ ToolExecutor::Result ToolExecutor::execute(
     }
 
     if (!abort_auto) {
+        // If correction is needed, return immediately without feeding any tool
+        // result tokens.  The main loop will handle the correction cycle: feed
+        // the system prompt reminder, generate once, parse for a valid tool call,
+        // then roll back and inject cleanly.
+        if (result.needs_correction) {
+            state.auto_continue = false;
+            return result;
+        }
         if (is_debug) {
             console("\n\033[92m[Tool Result]\033[0m\n");
             string result_to_print = tool_out.display;
