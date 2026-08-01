@@ -971,9 +971,7 @@ string NetworkTools::web_search(const string& query) {
   // Initialize SSL certificates on first web search
   init_ssl_certificates();
 
-  string query_str = "\"" + query + "\"";
-  log_tool_diagnostic("web_search(" + query_str + ")");
-  cerr << "\033[0mweb_search(" + query_str + ")" << endl;
+  cerr << "\033[0mweb_search(\"" + query + "\")" << endl;
 
   string cache = LIM_CONFIG_DIR + "/searchCache";
   mkdir(cache.c_str(), 0777);

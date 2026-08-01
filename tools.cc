@@ -74,6 +74,16 @@ static bool check_params(const string& tool_name, const string& tool_call) {
     return find_missing_params(tool_name, tool_call).empty();
 }
 
+static string join_paths(const vector<string>& paths) {
+    string s = "\"";
+    for (size_t i = 0; i < paths.size(); i++) {
+        if (i > 0) s += "\", \"";
+        s += paths[i];
+    }
+    s += "\"";
+    return s;
+}
+
 static bool is_known_tool(const string& name) {
     for (const auto& spec : tool_specs) {
         if (spec.name == name) return true;
@@ -154,6 +164,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   if (tool_name == "read_files") {
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
     if (!paths.empty()) {
+      log_tool_diagnostic("read_files(" + join_paths(paths) + ")");
       FileSystemTools fs;
       NetworkTools net;
       result = "Files content:\n";
@@ -167,15 +178,16 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           // Verify cached fingerprint matches current file metadata (mtime:size).
           string fp = file_fingerprint(path);
           if (!fp.empty() && state.file_cache[path] == fp) {
-            // Fingerprint matches - cache hit, no need to include content.
+            // Fingerprint matches - cache hit.
             result += "Path: " + path + "\n";
-            result += "Content:\n[Cache hit - unchanged since last read]\n";
+            result += "[cached]\n";
             result += "---\n";
             display_result += (display_result.empty() ? "Read files: " : "\n            ") + path + " (cached)";
             continue;
           }
           // Fingerprint changed or stat failed - fall through to re-read.
-        } else if (is_url) {
+        }
+        if (is_url) {
           auto url_results = net.fetch_urls({path});
           for (const auto& file : url_results) {
             string f_path, f_content, f_error;
@@ -231,6 +243,16 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
     string end_str = extract_string_arg_bounded(tool_call, "end");
     if (!path.empty()) {
+      string search_label = "search_file(\"" + path + "\"";
+      if (!begin_str.empty() || !end_str.empty()) {
+          search_label += ", lines " + begin_str + "-" + end_str;
+      } else if (!text.empty()) {
+          // Truncate long search text for the diagnostic label.
+          string short_text = text.length() > 60 ? text.substr(0, 57) + "..." : text;
+          search_label += ", \"" + short_text + "\"";
+      }
+      search_label += ")";
+      log_tool_diagnostic(search_label);
       // Remember this path for edit_file inference.
       state.last_search_path = path;
 
@@ -263,6 +285,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     state.file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
+      log_tool_diagnostic("write_file(\"" + path + "\")");
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
       string r_status, r_error;
@@ -288,6 +311,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     state.file_cache.erase(path);
     out.is_mutating = true;
     if (!path.empty()) {
+      log_tool_diagnostic("edit_file(\"" + path + "\")");
       if (path_inferred && is_debug) {
           diag("System: edit_file path " + path + " inferred from preceding search_file.", "\033[2;90m");
       }
@@ -322,6 +346,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     string command = extract_string_arg_bounded(tool_call, "command");
     out.is_mutating = true;
     if (!command.empty()) {
+      log_tool_diagnostic("exec_shell(\"" + command + "\")");
       FileSystemTools fs;
       // Stream output to browser in real-time as the command produces it.
       // Output is wrapped in a green .tool-result box and streamed incrementally
@@ -359,6 +384,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   } else if (tool_name == "web_search") {
     string query = extract_string_arg_bounded(tool_call, "query");
     if (!query.empty()) {
+      log_tool_diagnostic("web_search(\"" + query + "\")");
       NetworkTools net;
       result = net.web_search(query);
       display_result = "Web search: \"" + query + "\"";

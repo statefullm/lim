@@ -79,7 +79,7 @@ public:
   // "actual_start", "actual_end" (for line-range mode), "error" (non-empty on failure).
   std::map<std::string, std::string> search_file(const std::string& path, const std::string& text, const std::string& begin_str = "", const std::string& end_str = "");
 
-private:
+public:
   std::string _get_fullpath(const std::string& path);
 };
 

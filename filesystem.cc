@@ -34,10 +34,12 @@ using namespace Tokens;
 extern std::ofstream tps_log;
 
 // Return "mtime:size" fingerprint for a file, or empty string on error.
-// Used by the read cache to detect unchanged files without reading content.
+// Uses _get_fullpath to resolve relative paths consistently with how files
+// are actually read.
 string file_fingerprint(const string& path) {
+  FileSystemTools fs;
   struct stat st;
-  if (stat(path.c_str(), &st) != 0) return "";
+  if (stat(fs._get_fullpath(path).c_str(), &st) != 0) return "";
   ostringstream oss;
   oss << st.st_mtime << ":" << st.st_size;
   return oss.str();
@@ -610,16 +612,7 @@ string FileSystemTools::_get_fullpath(const string& path) {
 string FileSystemTools::exec_shell(const string& command, function<void()> on_open,
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
-  // Output function call to stdout and logfile
-  if (chat_log.is_open()) {
-    chat_log << "exec_shell(\"" << command << "\")" << "\n";
-    chat_log.flush();
-  }
-  if (should_output_to_stdout()) {
-    cout << "exec_shell(\"" << command << "\")" << endl;
-    consoleMarkNewline(true);
-    fflush(stdout);
-  }
+  // Output is now handled by log_tool_diagnostic in tools.cc at dispatch time.
 
   // Stream tool call to browser in a code box
   if (should_output_to_browser()) {
@@ -867,42 +860,36 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   // Build human-readable function call syntax
   string path_str = "\"" + path + "\"";
 
-  // Build the function call label (logged at end with match count for text searches)
-  string search_label = "search_file(" + path_str;
-  if (!begin_str.empty() || !end_str.empty()) {
-    search_label += ", lines " + begin_str + "-" + end_str;
-  }
-  search_label += ")";
-
   // Parse and validate begin/end -- parse as integers first, then validate.
-  int begin_line = 0, end_line = 0;
+  int begin_line = 1, end_line = -1;
   if (!begin_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(begin_str.c_str(), &endptr, 10);
     if (*endptr != '\0' || begin_str.empty() || val < 1) {
       out["error"] = "Error: 'begin' must be a positive integer.";
-      log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
     begin_line = static_cast<int>(val);
+    if (begin_line < 1) begin_line = 1;
   }
   if (!end_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(end_str.c_str(), &endptr, 10);
     if (*endptr != '\0' || end_str.empty() || val < 1) {
       out["error"] = "Error: 'end' must be a positive integer.";
-      log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
     end_line = static_cast<int>(val);
   }
 
-  // Validate range: begin must not exceed end, whenever both are provided.
-  if (begin_line >= 1 && end_line >= 1 && begin_line > end_line) {
+  // If end was not provided, default it to begin (show that single line).
+  if (end_line < 1) end_line = begin_line;
+
+  // Validate range: begin must not exceed end.
+  if (begin_line > end_line) {
     out["error"] = "Invalid range: 'begin' (" + to_string(begin_line) + ") is greater than 'end' (" + to_string(end_line) + ").";
-    log_tool_diagnostic(search_label);
     out["display"] = "Search file: " + path + ": " + out["error"];
     return out;
   }
@@ -925,7 +912,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   ifstream in_file(fullpath);
   if (!in_file.is_open()) {
     out["error"] = "Failed to open file for reading: " + fullpath;
-    log_tool_diagnostic(search_label);
     out["display"] = "Search file: " + path + ": " + out["error"];
     return out;
   }
@@ -938,7 +924,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   // (Range validation moved earlier, after begin/end parsing.)
 
   // Line range reading mode: if text is empty and both begin and end are provided, return those lines directly
-  if (text.empty() && begin_line >= 1 && end_line >= begin_line) {
+  if (text.empty() && begin_line <= end_line) {
     vector<string> lines;
     string line;
     stringstream ss(content);
@@ -952,7 +938,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 
     if (start >= (int)lines.size()) {
       out["error"] = "Line " + to_string(begin_line) + " is beyond the end of file (" + to_string(lines.size()) + " lines).";
-      log_tool_diagnostic(search_label);
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
@@ -1027,7 +1012,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
       ifstream line_file(fullpath);
       if (!line_file.is_open()) {
         out["error"] = "Failed to reopen file for line-by-line reading: " + fullpath;
-        log_tool_diagnostic(search_label);
         out["display"] = "Search file: " + path + ": " + out["error"];
         return out;
       }
@@ -1064,8 +1048,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
     }
   }
 
-  // Single exit point: log and build display string from the final state of out.
-  log_tool_diagnostic(search_label);
+  // Build display string from the final state of out.
   if (out["error"].empty()) {
     int n = atoi(out["match_count"].c_str());
     out["display"] = "Search file: " + path + ": " + to_string(n) + (n == 1 ? " match" : " matches");
@@ -1076,12 +1059,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 }
 
 vector<map<string, string>> FileSystemTools::read_files(const vector<string>& paths) {
-  // Output function call to both stdout and logfile for each file
-  for (const auto& path : paths) {
-    string path_str = "\"" + path + "\"";
-    log_tool_diagnostic("read_file(" + path_str + ")");
-  }
-
   vector<map<string, string>> results;
 
   // Check if any file is a PDF to determine if we need Docling
@@ -1215,8 +1192,6 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
   string path_str = "\"" + path + "\"";
 
   // Output the tool function call to both stdout and logfile
-  log_tool_diagnostic("write_file(" + path_str + ")");
-
   string fullpath = _get_fullpath(path);
 
   // Unescape reserved tokens before writing to disk (LLM provides escaped content)
@@ -1348,6 +1323,5 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   }
   result["status"] = "updated";
   result["changes"] = to_string(changes_count);
-  log_tool_diagnostic(edit_label);
   return result;
 }
