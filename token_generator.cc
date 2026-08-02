@@ -136,8 +136,15 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
                 if (out_in_parameter) *out_in_parameter = in_parameter;
                 return pp + partial.length();
             }
+            // Partial match with no '>' after it -- the model clearly intended to
+            // close the tag but produced garbage instead.  Accept as completed so
+            // the caller can repair the missing '>' and break out of the loop.
+            if (out_in_parameter) *out_in_parameter = in_parameter;
+            return pp + partial.length();
         }
-        pos = pp + partial.length();
+        // Partial match at end of text -- accept as completed.
+        if (out_in_parameter) *out_in_parameter = in_parameter;
+        return pp + partial.length();
     }
     if (out_in_parameter) *out_in_parameter = in_parameter;
     return string::npos;
@@ -183,7 +190,8 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                int last_n_past,
                                std::vector<llama_token>* out_tokens,
                                double feed_time,
-                               bool is_reincarnating)
+                               bool is_reincarnating,
+                               bool is_auto_continue)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
@@ -203,7 +211,10 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       last_n_past_(last_n_past),
       was_mid_tool_call_(was_mid_tool_call),
       is_reincarnating_(is_reincarnating),
-      out_tokens_(out_tokens)
+      is_auto_continue_(is_auto_continue),
+      out_tokens_(out_tokens),
+      tool_call_outside_param_count_(0),
+      eog_recovered_this_token_(false)
 {
     generated_text_.reserve(32768);
     unprinted_text_.reserve(1024);
@@ -308,6 +319,21 @@ TokenGenerator::Result TokenGenerator::generate() {
             size_t active_te = find_tool_end_robust(generated_text_, active_ts != string::npos ? active_ts : 0);
             bool inside_unclosed_tool = (active_ts != string::npos && (active_te == string::npos || active_ts > active_te));
 
+            // Degeneration check: if the text contains PARAM_START or FUNC_END but no
+            // FUNC_START, the model is emitting broken XML fragments without a proper
+            // function call wrapper. This is always degeneration, never valid output.
+            // Also catches cases where FUNC_START exists but the tool call is structurally
+            // broken (no matching end tag found).
+            string ps_str(PARAM_START);
+            string fe_str(FUNC_END);
+            size_t ps_pos = generated_text_.find(ps_str);
+            size_t fe_pos = generated_text_.find(fe_str);
+            bool has_broken_xml = (ps_pos != string::npos || fe_pos != string::npos) && active_ts == string::npos;
+
+            // Also detect: FUNC_START found but no valid tool call end -- model started
+            // a tool call but never completed it properly.
+            bool incomplete_tool = (active_ts != string::npos && active_te == string::npos);
+
             int poll_iter_used = 0;
             static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 64;
             const char* eog_env = getenv("LIM_EOG_RESAMPLE_MAX");
@@ -356,6 +382,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                 }
                 had_eog_recovery_ = true;
+                eog_recovered_this_token_ = true;
 
                 // Reset sampler state after EOG recovery. Each call to
                 // llama_sampler_sample during polling accepted the rejected
@@ -385,6 +412,13 @@ TokenGenerator::Result TokenGenerator::generate() {
                     tool_end_ = generated_text_.length() - string(FUNC_END).length();
                     trigger_tool_execution_ = true;
                 }
+
+                // Note: has_broken_xml and incomplete_tool checks removed.
+                // Bare PARAM_START/FUNC_END in prose is not degeneration -- the model
+                // may be discussing tool calls.  The inside_unclosed_tool repair above
+                // handles genuine unclosed tool calls.  The tool executor validates
+                // structure on its own for anything that does look like a call.
+
                 break;
             }
         }
@@ -474,7 +508,23 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
 
         if (tool_end_ != string::npos) {
+            // Truncate generated_text_ to the end of the tool call, discarding
+            // any trailing garbage (e.g., ^L spam from spurious EOG recovery).
+            size_t tool_call_end = tool_end_ + strlen(FUNC_END);
+            generated_text_.resize(tool_call_end);
+            full_response_.resize(tool_call_end);
             trigger_tool_execution_ = true;
+            break;
+        }
+
+        // Silent-loop detection: if we're inside what looks like a tool call
+        // (FUNC_START found) but no complete tool call has been found yet,
+        // and we're NOT inside a parameter, the model may be generating garbage.
+        // Outside parameters, tool call tags are just a few tokens.  If 100+ pass
+        // without PARAM_START or FUNC_END, something is broken.
+        if (tool_call_outside_param_count_ >= 100) {
+            diag("System: Stuck generating tool call after " + std::to_string(tool_call_outside_param_count_) + " tokens outside parameters. Aborting to prompt.", "\033[1;31m");
+            stop_generation = 1;
             break;
         }
 
@@ -613,6 +663,24 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         t_count_++;
 
+        // Track tokens outside parameters while inside a tool call stream.
+        // Skip the region between FUNC_START and the first PARAM_START -- that's
+        // just the function name and any preamble, always legitimate.
+        // Ignore form whitespace (newlines, spaces) -- those are formatting, not garbage.
+        if (in_tool_call_stream_) {
+            if (in_parameter_) tool_call_seen_parameter_ = true;
+            if (tool_call_seen_parameter_ && !in_parameter_) {
+                // Check if the token just appended is purely form whitespace.
+                int piece_len = (n_chars > 0) ? n_chars : std::max(0, -n_chars - 1);
+                bool is_form_ws = true;
+                for (int i = 0; i < piece_len && is_form_ws; i++) {
+                    if (!isspace((unsigned char)generated_text_[generated_text_.size() - piece_len + i])) {
+                        is_form_ws = false;
+                    }
+                }
+                if (!is_form_ws && !eog_recovered_this_token_) tool_call_outside_param_count_++;            }
+        }
+
         {
             recent_token_count_tg++;
 
@@ -655,6 +723,9 @@ TokenGenerator::Result TokenGenerator::generate() {
                 }
             }
         }
+
+        // Reset EOG-recovery flag for the next iteration.
+        eog_recovered_this_token_ = false;
 
         batch_.n_tokens = 0;
         common_batch_add(batch_, next_token, n_past_++, {0}, true);

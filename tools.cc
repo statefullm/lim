@@ -91,6 +91,25 @@ static bool is_known_tool(const string& name) {
     return false;
 }
 
+bool validate_tool_call(const string& tool_call) {
+    size_t ns = tool_call.find(FUNC_START);
+    if (ns == string::npos) return false;
+    ns += string(FUNC_START).length();
+    size_t ne = tool_call.find('>', ns);
+    if (ne == string::npos) return false;
+
+    string raw_name = tool_call.substr(ns, ne - ns);
+    // Strip stray quotes from the name.
+    string clean_name;
+    for (char c : raw_name) {
+        if (c != '"' && c != '\'') clean_name += c;
+    }
+
+    if (!is_known_tool(clean_name)) return false;
+    if (!check_params(clean_name, tool_call)) return false;
+    return true;
+}
+
 ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   ToolResult out;
   string display_result = "";
@@ -123,7 +142,6 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   if (tool_name == "edit_file" && !state.last_search_path.empty()) {
       size_t path_tag_pos = tool_call.find(string(PARAM_START) + "path>");
       if (path_tag_pos == string::npos) {
-          // Inject path parameter right after <function=edit_file>.
           size_t inject_at = tool_call.find('>', ns);
           if (inject_at != string::npos) {
               string injection = string(PARAM_START) + "path>" + state.last_search_path + PARAM_END;

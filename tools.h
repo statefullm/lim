@@ -26,6 +26,9 @@ struct ToolResult {
 
 bool param_has_newline(const std::string& s);
 ToolResult execute_tool_call(const std::string& tool_call, SessionState& state);
+// Lightweight validation: check if a raw tool call XML has a recognized name and all required params.
+// Does NOT execute the tool; returns true only if the call is structurally valid.
+bool validate_tool_call(const std::string& tool_call);
 
 
 #endif // TOOLS_H

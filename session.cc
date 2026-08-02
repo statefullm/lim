@@ -767,7 +767,7 @@ TokenGenerator::Result ChatSession::generate_response() {
     TokenGenerator tg(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
                       &state_.all_context_tokens, state_.last_feed_time,
-                      state_.reincarnate_mode);
+                      state_.reincarnate_mode, state_.auto_continue);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
@@ -1977,6 +1977,23 @@ bool ChatSession::run() {
 
                 // If valid, roll back to checkpoint, inject good call, hand off to process_tool_call.
                 if (gen_result_.has_tool_call && gen_result_.tool_start != string::npos && gen_result_.tool_end != string::npos) {
+                    // Extract and validate the corrected tool call before injecting it.
+                    // The parser only checks for XML structure; we must verify the tool name
+                    // and parameters are actually correct to avoid injecting another bad call.
+                    string corr_text = gen_result_.text;
+                    size_t cs = gen_result_.tool_start;
+                    size_t ce = gen_result_.tool_end;
+                    string corr_tool_call_raw = corr_text.substr(cs, ce - cs + string(FUNC_END).length());
+
+                    if (!validate_tool_call(corr_tool_call_raw)) {
+                        diag("System: Correction produced another invalid tool call. Ejecting to prompt.", "\033[1;31m");
+                        state_.invalid_tool_strikes++;
+                        if (state_.invalid_tool_strikes >= 5) {
+                            diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                        }
+                        continue;
+                    }
+
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
                     state_.invalid_tool_strikes = 0;
 
@@ -1999,12 +2016,8 @@ bool ChatSession::run() {
                     }
 
                     // Inject the corrected tool call into the Assistant field.
-                    string corr_text = gen_result_.text;
-                    size_t cs = gen_result_.tool_start;
-                    size_t ce = gen_result_.tool_end;
                     string corr_preamble = (cs > 0) ? corr_text.substr(0, cs) : "";
-                    string corr_tool_call = corr_text.substr(cs, ce - cs + string(FUNC_END).length());
-                    string injected_text = corr_preamble + corr_tool_call;
+                    string injected_text = corr_preamble + corr_tool_call_raw;
                     vector<llama_token> inj_tokens = tokenize(injected_text);
                     feed_tokens_impl(inj_tokens);
                     log_tokens("FEED TOOL_CORRECTION_INJECT", inj_tokens, ctx_);
@@ -2012,8 +2025,8 @@ bool ChatSession::run() {
                     // Set up gen_result_ to reflect the injected call.
                     generated_text_ = injected_text;
                     gen_result_.tool_start = corr_preamble.length();
-                    size_t fe_pos = corr_tool_call.find(string(FUNC_END));
-                    gen_result_.tool_end = corr_preamble.length() + (fe_pos != string::npos ? fe_pos : corr_tool_call.length());
+                    size_t fe_pos = corr_tool_call_raw.find(string(FUNC_END));
+                    gen_result_.tool_end = corr_preamble.length() + (fe_pos != string::npos ? fe_pos : corr_tool_call_raw.length());
                     was_mid_tool_call_ = false;
 
                     // Reset sampler: the penalty ring buffer contains stale tokens
@@ -2025,7 +2038,11 @@ bool ChatSession::run() {
                         continue;
                     }
                 } else {
-                    diag("System: Correction failed to produce valid tool call. Falling through.", "\033[33m");
+                    diag("System: Correction failed to produce valid tool call. Ejecting to prompt.", "\033[1;31m");
+                    state_.invalid_tool_strikes++;
+                    if (state_.invalid_tool_strikes >= 5) {
+                        diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                    }
                 }
             }
             continue;

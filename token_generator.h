@@ -34,7 +34,8 @@ public:
                  int last_n_past,
                  std::vector<llama_token>* out_tokens = nullptr,
                  double feed_time = 0.0,
-                 bool is_reincarnating = false);
+                 bool is_reincarnating = false,
+                 bool is_auto_continue = false);
 
   Result generate();
 
@@ -70,8 +71,20 @@ private:
   int last_n_past_;
   bool was_mid_tool_call_;
   bool is_reincarnating_;
+  bool is_auto_continue_;
   std::vector<llama_token>* out_tokens_;  // If non-null, each sampled token is appended here
+
+  // Silent-loop detector: count tokens generated outside parameters while
+  // inside a tool call stream (FUNC_START found, FUNC_END not yet).
+  int tool_call_outside_param_count_ = 0;
+  // Whether we've seen at least one PARAM_START in the current tool call.
+  // Tokens between FUNC_START and the first PARAM_START are not counted,
+  // since that region is just the function name / preamble.
+  bool tool_call_seen_parameter_ = false;
+  // True when the token sampled this iteration came from EOG resampling.
+  // Those tokens are spurious artifacts and should not count toward the
+  // silent-loop detector.
+  bool eog_recovered_this_token_ = false;
 };
 
 #endif // TOKEN_GENERATOR_H
-
