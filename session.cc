@@ -753,29 +753,17 @@ TokenGenerator::Result ChatSession::generate_response() {
     was_mid_tool_call_ = state_.tool_interrupt_pending;
     state_.tool_interrupt_pending = false;
 
-    // Save recurrent-state checkpoint for potential tool-call rollback.
-    // For pure attention models this is a no-op.  For hybrid models it saves
-    // the current R/S state onto the stack.  On the first call within a turn
-    // we push a new checkpoint; on subsequent calls (auto-continue after tool
-    // execution) we overwrite the same slot in place to avoid alloc churn.
-    {
-        llama_memory_t mem = llama_get_memory(ctx_);
-
-        if (state_.tool_correction_checkpoint_idx < 0) {
-            // First generate_response() for this turn: push a new checkpoint.
-            // Its stack index equals the current number of undo checkpoints.
-            state_.tool_correction_checkpoint_idx =
-                (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
-            llama_memory_rs_checkpoint_save(mem, 0);
-        } else {
-            // Subsequent call within same turn (auto-continue): overwrite in place.
-            llama_memory_rs_checkpoint_overwrite(mem, 0,
-                (uint32_t)state_.tool_correction_checkpoint_idx);
-        }
+    // Don't save a checkpoint here -- we don't have useful state yet.
+    // The checkpoint is saved lazily: either when a tool call is detected
+    // (push for rollback), or at end-of-turn if no tools occurred.
+    // Only reset tracking on the first generate_response() of a turn;
+    // subsequent calls (auto-continue, correction cycle) preserve the
+    // existing checkpoint index and n_past so rollback still works.
+    if (state_.tool_correction_checkpoint_idx < 0) {
+        state_.tool_correction_n_past = n_past_;
+        state_.has_tool_correction_checkpoint = false;
+        state_.correction_attempted_this_turn = false;
     }
-    state_.tool_correction_n_past = n_past_;
-    state_.has_tool_correction_checkpoint = true;
-    state_.correction_attempted_this_turn = false;
 
     auto start = chrono::high_resolution_clock::now();
 
@@ -847,6 +835,21 @@ bool ChatSession::process_tool_call() {
     size_t tool_end = gen_result_.tool_end;
 
     if (trigger_tool_execution && tool_start != string::npos && tool_end != string::npos) {
+        // Save recurrent-state checkpoint lazily: push on first tool call,
+        // overwrite on subsequent ones within the same turn.
+        {
+            llama_memory_t mem = llama_get_memory(ctx_);
+            if (state_.tool_correction_checkpoint_idx < 0) {
+                state_.tool_correction_checkpoint_idx =
+                    (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
+                llama_memory_rs_checkpoint_save(mem, 0);
+            } else {
+                llama_memory_rs_checkpoint_overwrite(mem, 0,
+                    (uint32_t)state_.tool_correction_checkpoint_idx);
+            }
+        }
+        state_.has_tool_correction_checkpoint = true;
+
         // Log the assistant's preamble text (text before the tool call) so it
         // appears in the chat log just like it does in the browser.
         if (tool_start > 0) {
@@ -2099,12 +2102,13 @@ bool ChatSession::run() {
             // per prompt_checkpoint.  No pop needed -- same slot is reused.
             llama_memory_t mem = llama_get_memory(ctx_);
             if (state_.tool_correction_checkpoint_idx >= 0) {
+                // Tool calls occurred this turn: overwrite the existing slot
+                // with the final state after all tool executions.
                 llama_memory_rs_checkpoint_overwrite(mem, 0,
                     (uint32_t)state_.tool_correction_checkpoint_idx);
                 state_.tool_correction_checkpoint_idx = -1;
             } else {
-                // No tool-correction checkpoint was pushed this turn;
-                // push the undo checkpoint fresh.
+                // No tool calls this turn: push a fresh undo checkpoint.
                 llama_memory_rs_checkpoint_save(mem, 0);
             }
 
