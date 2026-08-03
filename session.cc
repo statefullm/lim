@@ -2033,7 +2033,6 @@ bool ChatSession::run() {
                     }
 
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
-                    state_.invalid_tool_strikes = 0;
 
                     // Roll back to the tool-correction checkpoint (removes bad call + system prompt + correction).
                     llama_memory_t mem = llama_get_memory(ctx_);
@@ -2067,6 +2066,10 @@ bool ChatSession::run() {
                     feed_tokens_impl(inj_tokens);
                     log_tokens("FEED TOOL_CORRECTION_INJECT", inj_tokens, ctx_);
 
+                    // Update n_past for a potential second correction: the rollback
+                    // target must match what the next checkpoint will capture.
+                    state_.tool_correction_n_past = n_past_;
+
                     // Set up gen_result_ to reflect the injected call.
                     generated_text_ = injected_text;
                     gen_result_.tool_start = corr_preamble.length();
@@ -2077,6 +2080,22 @@ bool ChatSession::run() {
                     // Reset sampler: the penalty ring buffer contains stale tokens
                     // from the correction phase that were rolled back.
                     llama_sampler_reset(smpl_);
+
+                    // Reset correction flags so that if this injected call also fails,
+                    // another correction cycle can run.  Overwrite the existing checkpoint
+                    // slot with the post-injection state and update n_past so the next
+                    // rollback target is correct -- no extra stack memory used.
+                    llama_memory_rs_checkpoint_overwrite(llama_get_memory(ctx_), 0,
+                        (uint32_t)state_.tool_correction_checkpoint_idx);
+                    state_.tool_correction_n_past = n_past_;
+                    state_.has_tool_correction_checkpoint = true;
+                    // Allow one more correction only if we haven't already used both.
+                    // After injection, invalid_tool_strikes is still at its pre-injection
+                    // value (>= 1). If it's already >= 2, don't reset the flag -- let the
+                    // next failure fall through to the eject path.
+                    if (state_.invalid_tool_strikes < 2) {
+                        state_.correction_attempted_this_turn = false;
+                    }
 
                     // Hand off to process_tool_call -- it executes normally from here.
                     if (process_tool_call()) {
