@@ -40,8 +40,8 @@ void llama_model_laguna::load_arch_hparams(llama_model_loader & ml) {
         ml.get_key_or_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, swa_period, false);
         hparams.set_swa_pattern(swa_period, /*dense_first=*/true);  // XS.2: FULL at il%4==0
 
-        // Per-layer-type RoPE: full layers use YaRN θ=500000 over 64 dims;
-        // SWA layers use default RoPE θ=10000 over 128 dims. Base load_hparams
+        // Per-layer-type RoPE: full layers use YaRN th=500000 over 64 dims;
+        // SWA layers use default RoPE th=10000 over 128 dims. Base load_hparams
         // already reads ROPE_FREQ_BASE and ROPE_DIMENSION_COUNT into the
         // non-SWA fields; we explicitly pull the SWA mirrors here.
         hparams.rope_freq_base_train_swa  = hparams.rope_freq_base_train;
@@ -58,6 +58,7 @@ void llama_model_laguna::load_arch_hparams(llama_model_loader & ml) {
 
     switch (hparams.n_layer()) {
         case 40: type = LLM_TYPE_30B_A3B;   break;  // Laguna-XS.2
+        case 48: type = LLM_TYPE_118B_A8B;  break;  // Laguna-S.2
         case 70: type = LLM_TYPE_230B_A10B; break;  // Laguna-M.1
         default: type = LLM_TYPE_UNKNOWN;
     }
@@ -81,7 +82,7 @@ void llama_model_laguna::load_arch_tensors(llama_model_loader & ml) {
     for (int i = 0; i < n_layer; ++i) {
         auto & layer = layers[i];
 
-        // Per-layer head count — Laguna varies n_head between full and SWA
+        // Per-layer head count -- Laguna varies n_head between full and SWA
         // layers (48 vs 64 in XS.2). KV head count is uniform.
         const int64_t n_head_il    = hparams.n_head(i);
         const int64_t n_head_kv_il = hparams.n_head_kv(i);

@@ -2,11 +2,11 @@
 
 | Install via | Windows | Mac  | Linux |
 |-------------|---------|------|-------|
-| conda-forge | ✅      | ✅   | ✅   |
-| Winget      | ✅      |      |      |
-| Homebrew    |         | ✅   | ✅   |
-| MacPorts    |         | ✅   |      |
-| Nix         |         | ✅   | ✅   |
+| conda-forge |       |    |    |
+| Winget      |       |      |      |
+| Homebrew    |         |    |    |
+| MacPorts    |         |    |      |
+| Nix         |         |    |    |
 
 ## conda-forge (Windows, Mac and Linux)
 
@@ -16,22 +16,22 @@ conda-forge provides builds for:
  - Apple Metal (macOS)
 
 ```sh
-conda install -c conda-forge llama-cpp
+conda install -c conda-forge llama.cpp
 ```
 
 ```sh
-mamba install -c conda-forge llama-cpp
+mamba install -c conda-forge llama.cpp
 ```
 
 ```sh
 # Project-local installation
-pixi add llama-cpp
+pixi add llama.cpp
 
 # Global installation
-pixi global install llama-cpp
+pixi global install llama.cpp
 ```
 
-This distribution is managed on [`conda-forge/llama-cpp-feedstock`](https://github.com/conda-forge/llama.cpp-feedstock/).
+This distribution is managed on [`conda-forge/llama.cpp-feedstock`](https://github.com/conda-forge/llama.cpp-feedstock/).
 
 Shall you have any problems, please open an issue on [its issue tracker](https://github.com/conda-forge/llama.cpp-feedstock/issues).
 

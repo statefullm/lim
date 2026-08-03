@@ -41,13 +41,13 @@ static bool should_stop() {
 static constexpr size_t FILE_GLOB_MAX_RESULTS = 100;
 
 const char * LLAMA_ASCII_LOGO = R"(
-▄▄ ▄▄
-██ ██
-██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
-██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
-██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
-                                    ██    ██
-                                    ▀▀    ▀▀
+ 
+ 
+            
+                 
+          
+                                        
+                                        
 )";
 
 // number of values an arg consumes on the command line
@@ -624,10 +624,14 @@ int cli_context::run() {
         generated_content content;
         generate_completion(content, timings);
 
-        impl->messages.push_back({
+        json assistant_msg = {
             {"role",    "assistant"},
             {"content", content.content}
-        });
+        };
+        if (!content.reasoning.empty()) {
+            assistant_msg["reasoning_content"] = content.reasoning;
+        }
+        impl->messages.push_back(std::move(assistant_msg));
 
         if (output_file) {
             std::string out_content = "Assistant:\n";

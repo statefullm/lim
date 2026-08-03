@@ -4,7 +4,6 @@
 #include "llama-graph.h"
 #include "llama-memory.h"
 
-#include <array>
 #include <map>
 #include <set>
 #include <vector>
@@ -78,30 +77,6 @@ public:
     std::vector<uint32_t> rs_idx;
 
     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
-
-    // Recurrent state checkpointing (stack-based)
-
-    void rs_checkpoint_save(llama_seq_id seq_id) override;
-    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
-    void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override;
-
-    // Fixed-slot checkpoint for ephemeral use (e.g., tool-call rollback).
-    // Overwrites the slot on each save; independent of rs_checkpoint_stacks.
-    void rs_slot_save(llama_seq_id seq_id, uint32_t slot);
-    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot);
-
-    struct rs_checkpoint {
-        std::vector<uint8_t> r_data; // R tensor row data for all layers
-        std::vector<uint8_t> s_data; // S tensor row data for all layers
-    };
-
-    // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
-    std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
-    // Fixed-slot checkpoints for ephemeral use (tool correction, etc.)
-    static constexpr uint32_t RS_SLOT_MAX = 1;
-    std::array<rs_checkpoint, RS_SLOT_MAX> rs_slots;
-    // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
-    std::vector<bool> rs_restored;
 
     // computed before each graph build
     uint32_t n = 0;

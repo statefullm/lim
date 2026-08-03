@@ -100,7 +100,7 @@ function splitChunks(text: string): string[] {
 
 /**
  * Parse a single chunk into a SearchResult. Returns null when the chunk
- * has neither a title nor a URL — those are required for an entry to be
+ * has neither a title nor a URL -- those are required for an entry to be
  * actionable (otherwise it is almost certainly malformed or a stray
  * separator line).
  */
@@ -155,48 +155,78 @@ function parseChunk(chunk: string): SearchResult | null {
 	return result;
 }
 
+/** Bounded cache for extractSearchResults results. */
+const SEARCH_RESULTS_CACHE_MAX_SIZE = 32;
+const searchResultsCache = new Map<string, SearchResult[]>();
+
 /**
  * Extract a SearchResult[] from a tool-result string. Returns `[]` when
- * the input does not match the expected shape — useful for branching
+ * the input does not match the expected shape -- useful for branching
  * between dedicated search-results rendering and the generic tool-call
- * block.
+ * block. Memoized: called per render during streaming on unchanged
+ * tool result strings.
  */
 export function extractSearchResults(text: string | undefined | null): SearchResult[] {
 	if (!text) return [];
+
+	const cached = searchResultsCache.get(text);
+	if (cached) return cached;
 
 	const results: SearchResult[] = [];
 	for (const chunk of splitChunks(text)) {
 		const parsed = parseChunk(chunk);
 		if (parsed) results.push(parsed);
 	}
+
+	if (searchResultsCache.size >= SEARCH_RESULTS_CACHE_MAX_SIZE) {
+		searchResultsCache.delete(searchResultsCache.keys().next().value!);
+	}
+	searchResultsCache.set(text, results);
+
 	return results;
 }
+
+/** Bounded cache for extractSearchQuery results. */
+const SEARCH_QUERY_CACHE_MAX_SIZE = 32;
+const searchQueryCache = new Map<string, string>();
 
 /**
  * Best-effort extraction of the search query out of a tool call's JSON
  * argument blob. Currently looks for a `query` field (the convention
  * used by Exa and most web-search MCP servers); returns an empty string
- * if it cannot be located.
+ * if it cannot be located. Memoized: called per render during streaming
+ * on unchanged tool args strings.
  */
 export function extractSearchQuery(toolArgs: string | undefined | null): string {
 	if (!toolArgs) return '';
+
+	const cached = searchQueryCache.get(toolArgs);
+	if (cached !== undefined) return cached;
+
+	let result = '';
 	try {
 		const parsed: unknown = JSON.parse(toolArgs);
 		if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
 			const candidate = (parsed as Record<string, unknown>)[SEARCH_TOOL_QUERY_FIELD];
-			if (typeof candidate === 'string') return candidate.trim();
+			if (typeof candidate === 'string') result = candidate.trim();
 		}
 	} catch {
-		return '';
+		result = '';
 	}
-	return '';
+
+	if (searchQueryCache.size >= SEARCH_QUERY_CACHE_MAX_SIZE) {
+		searchQueryCache.delete(searchQueryCache.keys().next().value!);
+	}
+	searchQueryCache.set(toolArgs, result);
+
+	return result;
 }
 
 /**
  * Resolve a best-effort favicon URL for a search result, derived from the
  * result's origin (`https://host/favicon.ico`). Returns `null` when the
  * URL is malformed, has no recognizable host, or uses a non-http(s)
- * scheme — callers should fall back to a generic globe icon.
+ * scheme -- callers should fall back to a generic globe icon.
  */
 export function faviconForUrl(url: string): string | null {
 	try {

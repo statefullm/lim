@@ -60,6 +60,7 @@ add_library(mtmd
             models/mobilenetv5.cpp
             models/youtuvl.cpp
             models/yasa2.cpp
+            models/parakeet.cpp
             )
 
 set_target_properties(mtmd PROPERTIES
@@ -125,7 +126,7 @@ if (TARGET mtmd)
 endif()
 
 # Gate CLI binaries on LLAMA_BUILD_TOOLS so that standalone library-only
-# builds (LLAMA_BUILD_MTMD=ON with LLAMA_BUILD_TOOLS=OFF — e.g. Apple
+# builds (LLAMA_BUILD_MTMD=ON with LLAMA_BUILD_TOOLS=OFF -- e.g. Apple
 # XCFramework packaging) skip the executables entirely. LLAMA_BUILD_COMMON
 # defaults to ON in standalone builds, so we cannot rely on it for gating.
 if (LLAMA_BUILD_TOOLS)

@@ -308,10 +308,10 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM:
                 regex_exprs = {
                     "[\r\n]",
-                    "\\s?[A-Za-zµÀ-ÖØ-öø-ƺƼ-ƿǄ-ʓʕ-ʯͰ-ͳͶͷͻ-ͽͿΆΈ-ΊΌΎ-ΡΣ-ϵϷ-ҁҊ-ԯԱ-ՖႠ-ჅᎠ-Ᏽᏸ-ᏽᲐ-ᲺᲽ-Ჿᴀ-ᴫᵫ-ᵷᵹ-ᶚḀ-ἕἘ-Ἕἠ-ὅὈ-Ὅὐ-ὗὙὛὝὟ-ώᾀ-ᾴᾶ-ᾼιῂ-ῄῆ-ῌῐ-ΐῖ-Ίῠ-Ῥῲ-ῴῶ-ῼℂℇℊ-ℓℕℙ-ℝℤΩℨK-ℭℯ-ℴℹℼ-ℿⅅ-ⅉⅎↃↄⰀ-ⱻⱾ-ⳤⳫ-ⳮⳲⳳꙀ-ꙭꚀ-ꚛꜢ-ꝯꝱ-ꞇꞋ-ꞎꭰ-ꮿﬀ-ﬆﬓ-ﬗＡ-Ｚａ-ｚ𐐀-𐑏𐒰-𐓓𐓘-𐓻𐲀-𐲲𐳀-𐳲𑢠-𑣟𞤀-𞥃]+",
-                    "\\s?[!-/:-~！-／：-～‘-‟　-。]+",
+                    "\\s?[A-Za-zmA-OO-oo--DZ----AE-IOY-RS-eS--A-F-----A-ue--A-heE-Hee-hoO-Hoy-hyHHYUHYHY-oai-aia-AIiei-eie-EIi-ii-Iy-Rhoi-oio-OICEg-lNP-RZOZK-Ce-oip-PD-j-S-----d-t--ff-stmn-mxA-Za-z-------]+",
+                    "\\s?[!-/:-~!-/:-~'-" -.]+",
                     "\\s+$",
-                    "[一-龥ࠀ-一가-퟿]+",
+                    "[yi-yu-yiga-]+",
                     "\\p{N}+",
                 };
                 break;
@@ -320,13 +320,13 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM:
                 regex_exprs = {
                     "\\p{N}{1,3}",
-                    "[一-龥぀-ゟ゠-ヿ]+",
+                    "[yi-yu-yori-koto]+",
                     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_YOUTU:
                 regex_exprs = {
-                    "[가-힣ㄱ-ㆎ]+|[！…“”‘’—：；，、-〿︰-﹏]+|[ㄅ-ㄯ]+|[一-龥぀-ゟ゠-ヿ]+",
+                    "[ga-hihg-]+|[!...""''--:;,,-..-_]+|[b-]+|[yi-yu-yori-koto]+",
                     "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
@@ -335,7 +335,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     "[\r\n]",
                     "\\s?\\p{L}+",
                     "\\s?\\p{P}+",
-                    "[一-龥ࠀ-一가-퟿]+",
+                    "[yi-yu-yiga-]+",
                     "\\p{N}",
                 };
                 break;
@@ -390,7 +390,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_BLOOM:
             case LLAMA_VOCAB_PRE_TYPE_GPT3_FINNISH:
                 regex_exprs = {
-                    " ?[^(\\s|.,!?…。，、।۔،)]+",
+                    " ?[^(\\s|.,!?....,,.,)]+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_CHATGLM4:
@@ -400,7 +400,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 break;
             case LLAMA_VOCAB_PRE_TYPE_VIKING:
                 regex_exprs = {
-                    " ?[^(\\s|.,!?…。，、।۔،)]+",
+                    " ?[^(\\s|.,!?....,,.,)]+",
                     "\\p{N}",
                 };
                 break;
@@ -491,7 +491,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                     // Groups digits with leading 1-2 based on total length modulo 3
                     "\\p{AFMoE_digits}",
                     // CJK and Asian scripts (using direct Unicode literals)
-                    "[一-鿿㐀-䶿豈-﫿぀-ゟ゠-ヿ･-ﾟ⼀-⿟เ-๿຀-໿ក-៿က-႟ꩠ-ꩿꧠ-꧿가-힯ᄀ-ᇿ]+",
+                    "[yi-xing qiu- qi--yori-koto-yi-e---k---ga-g-]+",
                     // Main BPE pattern
                     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
@@ -510,7 +510,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_GEMMA4:
-                // Gemma4 uses SPM-style BPE: spaces are replaced with ▁ by the
+                // Gemma4 uses SPM-style BPE: spaces are replaced with  by the
                 // normalizer, then BPE merges run on the whole text without
                 // word-level pre-splitting. We only need to split on newlines
                 // since BPE merge lookup asserts no newlines in tokens.
@@ -2578,7 +2578,14 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
             if (suppress_idx != -1) {
                 const int n = gguf_get_arr_n(ctx, suppress_idx);
                 const int32_t * data = (const int32_t *) gguf_get_arr_data(ctx, suppress_idx);
-                suppress_tokens.assign(data, data + n);
+                // drop out-of-range ids
+                suppress_tokens.reserve(n);
+                for (int i = 0; i < n; ++i) {
+                    const int32_t id = data[i];
+                    if (id >= 0 && id < (int) id_to_token.size()) {
+                        suppress_tokens.push_back(id);
+                    }
+                }
             }
         }
 
@@ -2601,7 +2608,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<EOT>"
                         || t.first == "_<EOT>"
                         || t.first == "[EOT]" // Kimi-K2
-                        || t.first == "<｜end▁of▁sentence｜>" // DeepSeek
+                        || t.first == "<|endofsentence|>" // DeepSeek
                         || t.first == "<end_of_utterance>" // smoldocling
                    ) {
                     special_eot_id = t.second;
@@ -2633,9 +2640,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|fim_prefix|>"  // Qwen
                         || t.first == "<fim-prefix>"
                         || t.first == "<fim_prefix>"    // Granite
-                        || t.first == "<｜fim▁begin｜>" // DeepSeek
+                        || t.first == "<|fimbegin|>" // DeepSeek
                         || t.first == "<PRE>"
-                        || t.first == "▁<PRE>"          // CodeLlama
+                        || t.first == "<PRE>"          // CodeLlama
                         || t.first == "<|code_prefix|>" // GLM-4.5
                         || t.first == "<|prefix|>"      // Falcon-H1-Tiny-Coder
                         ) {
@@ -2654,9 +2661,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|fim_suffix|>" // Qwen
                         || t.first == "<fim-suffix>"
                         || t.first == "<fim_suffix>"   // Granite
-                        || t.first == "<｜fim▁hole｜>" // DeepSeek
+                        || t.first == "<|fimhole|>" // DeepSeek
                         || t.first == "<SUF>"
-                        || t.first == "▁<SUF>"         // CodeLlama
+                        || t.first == "<SUF>"         // CodeLlama
                         || t.first == "<|code_suffix|>" // GLM-4.5
                         || t.first == "<|suffix|>"      // Falcon-H1-Tiny-Coder
                         ) {
@@ -2675,9 +2682,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|fim_middle|>" // Qwen
                         || t.first == "<fim-middle>"
                         || t.first == "<fim_middle>"   // Granite
-                        || t.first == "<｜fim▁end｜>"  // DeepSeek
+                        || t.first == "<|fimend|>"  // DeepSeek
                         || t.first == "<MID>"
-                        || t.first == "▁<MID>"         // CodeLlama
+                        || t.first == "<MID>"         // CodeLlama
                         || t.first == "<|code_middle|>" // GLM-4.5
                         || t.first == "<|middle|>"      // Falcon-H1-Tiny-Coder
                         ) {
@@ -2808,7 +2815,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     || t.first == "<eos>"            // gemma4
                     || t.first == "<turn|>"          // gemma4
                     || t.first == "<|tool_response>" // gemma4
-                    || t.first == "<｜end▁of▁sentence｜>" // deepseek-ocr
+                    || t.first == "<|endofsentence|>" // deepseek-ocr
                     || t.first == "[e~[" // minimax-m2/m3
                ) {
                 special_eog_ids.insert(t.second);
@@ -3582,7 +3589,7 @@ int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
                 }
                 if (attr & LLAMA_TOKEN_ATTR_NORMAL) {
                     if (escape_whitespaces) {
-                        // SPM-style BPE: tokens contain ▁ for spaces
+                        // SPM-style BPE: tokens contain  for spaces
                         std::string result = token_text;
                         llama_unescape_whitespace(result);
                         return _try_copy(result.data(), result.size());
@@ -4203,6 +4210,14 @@ bool llama_vocab_get_add_eos(const struct llama_vocab * vocab) {
 
 bool llama_vocab_get_add_sep(const struct llama_vocab * vocab) {
     return vocab->get_add_sep();
+}
+
+const llama_token * llama_vocab_get_suppress_tokens(const struct llama_vocab * vocab, int32_t * n_suppress_tokens) {
+    const std::vector<llama_token> & tokens = vocab->get_suppress_tokens();
+    if (n_suppress_tokens) {
+        *n_suppress_tokens = (int32_t) tokens.size();
+    }
+    return tokens.data();
 }
 
 llama_token llama_vocab_fim_pre(const struct llama_vocab * vocab) {

@@ -259,7 +259,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-draft-device, -devd, --device-draft <dev1,dev2,..>` | comma-separated list of devices to use for offloading the draft model (none = don't offload)<br/>use --list-devices to see a list of available devices |
 | `--spec-draft-ngl, -ngld, --gpu-layers-draft, --n-gpu-layers-draft N` | max. number of draft model layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)<br/>(env: LLAMA_ARG_N_GPU_LAYERS_DRAFT) |
 | `--spec-draft-model, -md, --model-draft FNAME` | draft model for speculative decoding (default: unused)<br/>(env: LLAMA_ARG_SPEC_DRAFT_MODEL) |
-| `--spec-type none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` | comma-separated list of types of speculative decoding to use (default: none)<br/><br/>(env: LLAMA_ARG_SPEC_TYPE) |
+| `--spec-type none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` | comma-separated list of types of speculative decoding to use (default: none)<br/><br/>(env: LLAMA_ARG_SPEC_TYPE) |
 | `--spec-ngram-mod-n-min N` | minimum number of ngram tokens to use for ngram-based speculative decoding (default: 48) |
 | `--spec-ngram-mod-n-max N` | maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64) |
 | `--spec-ngram-mod-n-match N` | ngram-mod lookup length (default: 24) |
@@ -643,7 +643,7 @@ If `with_pieces` is `true`:
 }
 ```
 
-With input 'á' (utf8 hex: C3 A1) on tinyllama/stories260k
+With input 'a' (utf8 hex: C3 A1) on tinyllama/stories260k
 ```
 {
   "tokens": [
@@ -1611,22 +1611,22 @@ If the model contains multiple GGUF (for multimodal or multi-shard), files shoul
 
 ```sh
 models_directory
- │
- │  # single file
- ├─ llama-3.2-1b-Q4_K_M.gguf
- ├─ Qwen3-8B-Q4_K_M.gguf
- │
- │  # multimodal
- ├─ gemma-3-4b-it-Q8_0
- │    ├─ gemma-3-4b-it-Q8_0.gguf
- │    └─ mmproj-F16.gguf   # file name must start with "mmproj"
- │
- │  # multi-shard
- ├─ Kimi-K2-Thinking-UD-IQ1_S
- │    ├─ Kimi-K2-Thinking-UD-IQ1_S-00001-of-00006.gguf
- │    ├─ Kimi-K2-Thinking-UD-IQ1_S-00002-of-00006.gguf
- │    ├─ ...
- │    └─ Kimi-K2-Thinking-UD-IQ1_S-00006-of-00006.gguf
+ 
+   # single file
+  llama-3.2-1b-Q4_K_M.gguf
+  Qwen3-8B-Q4_K_M.gguf
+ 
+   # multimodal
+  gemma-3-4b-it-Q8_0
+      gemma-3-4b-it-Q8_0.gguf
+      mmproj-F16.gguf   # file name must start with "mmproj"
+ 
+   # multi-shard
+  Kimi-K2-Thinking-UD-IQ1_S
+      Kimi-K2-Thinking-UD-IQ1_S-00001-of-00006.gguf
+      Kimi-K2-Thinking-UD-IQ1_S-00002-of-00006.gguf
+      ...
+      Kimi-K2-Thinking-UD-IQ1_S-00006-of-00006.gguf
 ```
 
 You may also specify default arguments that will be passed to every model instance:

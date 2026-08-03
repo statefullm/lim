@@ -251,7 +251,7 @@
       xs = x.s,
       ys = y.s;
 
-    // Either NaN or ±Infinity?
+    // Either NaN or +/-Infinity?
     if (!xd || !yd) {
       return !xs || !ys ? NaN : xs !== ys ? xs : xd === yd ? 0 : !xd ^ xs < 0 ? 1 : -1;
     }
@@ -1273,12 +1273,12 @@
       // Return NaN if either is NaN.
       if (!x.s || !y.s) y = new Ctor(NaN);
 
-      // Return y negated if x is finite and y is ±Infinity.
+      // Return y negated if x is finite and y is +/-Infinity.
       else if (x.d) y.s = -y.s;
 
-      // Return x if y is finite and x is ±Infinity.
-      // Return x if both are ±Infinity with different signs.
-      // Return NaN if both are ±Infinity with the same sign.
+      // Return x if y is finite and x is +/-Infinity.
+      // Return x if both are +/-Infinity with different signs.
+      // Return NaN if both are +/-Infinity with the same sign.
       else y = new Ctor(y.d || x.s !== y.s ? x : NaN);
 
       return y;
@@ -1441,10 +1441,10 @@
 
     y = new Ctor(y);
 
-    // Return NaN if x is ±Infinity or NaN, or y is NaN or ±0.
+    // Return NaN if x is +/-Infinity or NaN, or y is NaN or +/-0.
     if (!x.d || !y.s || y.d && !y.d[0]) return new Ctor(NaN);
 
-    // Return x if y is ±Infinity or x is ±0.
+    // Return x if y is +/-Infinity or x is +/-0.
     if (!y.d || x.d && !x.d[0]) {
       return finalise(new Ctor(x), Ctor.precision, Ctor.rounding);
     }
@@ -1537,10 +1537,10 @@
       // Return NaN if either is NaN.
       if (!x.s || !y.s) y = new Ctor(NaN);
 
-      // Return x if y is finite and x is ±Infinity.
-      // Return x if both are ±Infinity with the same sign.
-      // Return NaN if both are ±Infinity with different signs.
-      // Return y if x is finite and y is ±Infinity.
+      // Return x if y is finite and x is +/-Infinity.
+      // Return x if both are +/-Infinity with the same sign.
+      // Return NaN if both are +/-Infinity with different signs.
+      // Return y if x is finite and y is +/-Infinity.
       else if (!x.d) y = new Ctor(y.d || x.s === y.s ? x : NaN);
 
       return y;
@@ -1878,17 +1878,17 @@
 
     y.s *= x.s;
 
-     // If either is NaN, ±Infinity or ±0...
+     // If either is NaN, +/-Infinity or +/-0...
     if (!xd || !xd[0] || !yd || !yd[0]) {
 
       return new Ctor(!y.s || xd && !xd[0] && !yd || yd && !yd[0] && !xd
 
         // Return NaN if either is NaN.
-        // Return NaN if x is ±0 and y is ±Infinity, or y is ±0 and x is ±Infinity.
+        // Return NaN if x is +/-0 and y is +/-Infinity, or y is +/-0 and x is +/-Infinity.
         ? NaN
 
-        // Return ±Infinity if either is ±Infinity.
-        // Return ±0 if either is ±0.
+        // Return +/-Infinity if either is +/-Infinity.
+        // Return +/-0 if either is +/-0.
         : !xd || !yd ? y.s / 0 : y.s * 0);
     }
 
@@ -2228,12 +2228,12 @@
    * ECMAScript compliant.
    *
    *   pow(x, NaN)                           = NaN
-   *   pow(x, ±0)                            = 1
+   *   pow(x, +/-0)                            = 1
 
    *   pow(NaN, non-zero)                    = NaN
    *   pow(abs(x) > 1, +Infinity)            = +Infinity
    *   pow(abs(x) > 1, -Infinity)            = +0
-   *   pow(abs(x) == 1, ±Infinity)           = NaN
+   *   pow(abs(x) == 1, +/-Infinity)           = NaN
    *   pow(abs(x) < 1, +Infinity)            = +0
    *   pow(abs(x) < 1, -Infinity)            = +Infinity
    *   pow(+Infinity, y > 0)                 = +Infinity
@@ -2270,7 +2270,7 @@
       Ctor = x.constructor,
       yn = +(y = new Ctor(y));
 
-    // Either ±Infinity, NaN or ±0?
+    // Either +/-Infinity, NaN or +/-0?
     if (!x.d || !y.d || !x.d[0] || !y.d[0]) return new Ctor(mathpow(+x, yn));
 
     x = new Ctor(x);
@@ -2738,7 +2738,7 @@
         return new Ctor(// Return NaN if either NaN, or both Infinity or 0.
           !x.s || !y.s || (xd ? yd && xd[0] == yd[0] : !yd) ? NaN :
 
-          // Return ±0 if x is 0 or y is ±Infinity, or return ±Infinity as y is 0.
+          // Return +/-0 if x is 0 or y is +/-Infinity, or return +/-Infinity as y is 0.
           xd && xd[0] == 0 || !yd ? sign * 0 : sign / 0);
       }
 
@@ -3296,7 +3296,7 @@
    *  exp(Infinity)  = Infinity
    *  exp(-Infinity) = 0
    *  exp(NaN)       = NaN
-   *  exp(±0)        = 1
+   *  exp(+/-0)        = 1
    *
    *  exp(x) is non-terminating for any finite, non-zero x.
    *
@@ -3509,7 +3509,7 @@
   }
 
 
-  // ±Infinity, NaN.
+  // +/-Infinity, NaN.
   function nonFiniteToString(x) {
     // Unsigned.
     return String(x.s * x.s / 0);
@@ -4093,17 +4093,17 @@
    * y {number|string|bigint|Decimal} The y-coordinate.
    * x {number|string|bigint|Decimal} The x-coordinate.
    *
-   * atan2(±0, -0)               = ±pi
-   * atan2(±0, +0)               = ±0
-   * atan2(±0, -x)               = ±pi for x > 0
-   * atan2(±0, x)                = ±0 for x > 0
-   * atan2(-y, ±0)               = -pi/2 for y > 0
-   * atan2(y, ±0)                = pi/2 for y > 0
-   * atan2(±y, -Infinity)        = ±pi for finite y > 0
-   * atan2(±y, +Infinity)        = ±0 for finite y > 0
-   * atan2(±Infinity, x)         = ±pi/2 for finite x
-   * atan2(±Infinity, -Infinity) = ±3*pi/4
-   * atan2(±Infinity, +Infinity) = ±pi/4
+   * atan2(+/-0, -0)               = +/-pi
+   * atan2(+/-0, +0)               = +/-0
+   * atan2(+/-0, -x)               = +/-pi for x > 0
+   * atan2(+/-0, x)                = +/-0 for x > 0
+   * atan2(-y, +/-0)               = -pi/2 for y > 0
+   * atan2(y, +/-0)                = pi/2 for y > 0
+   * atan2(+/-y, -Infinity)        = +/-pi for finite y > 0
+   * atan2(+/-y, +Infinity)        = +/-0 for finite y > 0
+   * atan2(+/-Infinity, x)         = +/-pi/2 for finite x
+   * atan2(+/-Infinity, -Infinity) = +/-3*pi/4
+   * atan2(+/-Infinity, +Infinity) = +/-pi/4
    * atan2(NaN, x) = NaN
    * atan2(y, NaN) = NaN
    *
@@ -4120,17 +4120,17 @@
     if (!y.s || !x.s) {
       r = new this(NaN);
 
-    // Both ±Infinity
+    // Both +/-Infinity
     } else if (!y.d && !x.d) {
       r = getPi(this, wpr, 1).times(x.s > 0 ? 0.25 : 0.75);
       r.s = y.s;
 
-    // x is ±Infinity or y is ±0
+    // x is +/-Infinity or y is +/-0
     } else if (!x.d || y.isZero()) {
       r = x.s < 0 ? getPi(this, pr, rm) : new this(0);
       r.s = y.s;
 
-    // y is ±Infinity or x is ±0
+    // y is +/-Infinity or x is +/-0
     } else if (!y.d || x.isZero()) {
       r = getPi(this, wpr, 1).times(0.5);
       r.s = y.s;

@@ -1658,7 +1658,8 @@ class ChatStore {
 					generateConversationTitle(newContent, Boolean(config().titleGenerationUseFirstLine))
 				);
 			const messagesToRemove = conversationsStore.activeMessages.slice(messageIndex + 1);
-			for (const message of messagesToRemove) await DatabaseService.deleteMessage(message.id);
+			if (messagesToRemove.length > 0)
+				await DatabaseService.deleteMessageCascading(activeConv.id, messagesToRemove[0].id);
 			conversationsStore.sliceActiveMessages(messageIndex + 1);
 			conversationsStore.updateConversationTimestamp();
 			this.setChatLoading(activeConv.id, true);
@@ -1690,7 +1691,7 @@ class ChatStore {
 		const { index: messageIndex } = result;
 		try {
 			const messagesToRemove = conversationsStore.activeMessages.slice(messageIndex);
-			for (const message of messagesToRemove) await DatabaseService.deleteMessage(message.id);
+			await DatabaseService.deleteMessageCascading(activeConv.id, messagesToRemove[0].id);
 			conversationsStore.sliceActiveMessages(messageIndex);
 			conversationsStore.updateConversationTimestamp();
 			this.setChatLoading(activeConv.id, true);
@@ -2037,7 +2038,7 @@ class ChatStore {
 							timings
 						});
 
-						conversationsStore.updateConversationTimestamp();
+						conversationsStore.updateConversationTimestamp(msg.convId);
 
 						this.setChatLoading(msg.convId, false);
 						this.clearChatStreaming(msg.convId);
@@ -2211,7 +2212,7 @@ class ChatStore {
 			const hasChildren = dbMsg ? dbMsg.children.length > 0 : msg.children.length > 0;
 
 			if (!hasChildren) {
-				// No responses after this message — update in place instead of branching
+				// No responses after this message -- update in place instead of branching
 				const updates: Partial<DatabaseMessage> = {
 					content: newContent,
 					timestamp: Date.now(),
@@ -2221,7 +2222,7 @@ class ChatStore {
 				conversationsStore.updateMessageAtIndex(idx, updates);
 				messageIdForResponse = msg.id;
 			} else {
-				// Has children — create a new branch as sibling
+				// Has children -- create a new branch as sibling
 				const parentId = msg.parent || rootMessage?.id;
 				if (!parentId) return;
 				const newMessage = await DatabaseService.createMessageBranch(

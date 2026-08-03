@@ -33,10 +33,7 @@ llama_memory_recurrent::llama_memory_recurrent(
     used = 0;
 
     this->n_rs_seq = n_rs_seq;
-
     rs_idx.assign(n_seq_max, 0);
-    rs_checkpoint_stacks.resize(n_seq_max);
-    rs_restored.assign(n_seq_max, false);
 
     cells.clear();
     cells.resize(mem_size);
@@ -148,12 +145,6 @@ void llama_memory_recurrent::clear(bool data) {
     }
 
     std::fill(rs_idx.begin(), rs_idx.end(), 0);
-
-    // Clear checkpoint stacks and restored flags
-    for (auto & stack : rs_checkpoint_stacks) {
-        stack.clear();
-    }
-    std::fill(rs_restored.begin(), rs_restored.end(), false);
 }
 
 bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
@@ -193,14 +184,6 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                 if (rollback >= 1 && rollback <= (llama_pos) n_rs_seq) {
                     set_rs_idx(seq_id, (uint32_t) rollback);
                     cell.pos = p0 - 1;
-                    return true;
-                }
-                // If the recurrent state was externally restored (via
-                // rs_checkpoint_restore), plane 0 already holds the correct
-                // state for the target position.  Just update metadata.
-                if ((size_t) seq_id < rs_restored.size() && rs_restored[seq_id]) {
-                    cell.pos = p0 - 1;
-                    rs_restored[seq_id] = false;
                     return true;
                 }
                 return false;
@@ -411,175 +394,6 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
         return;
     }
     rs_idx[seq_id] = (idx > n_rs_seq) ? n_rs_seq : idx;
-}
-
-void llama_memory_recurrent::rs_checkpoint_save(llama_seq_id seq_id) {
-    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-    int32_t tail_id = cells[seq_id].tail;
-    if (tail_id < 0) return;
-
-    const int32_t n_layer = hparams.n_layer();
-    rs_checkpoint cp;
-
-    // Save R data for each layer
-    size_t total_r = 0;
-    for (int32_t il = 0; il < n_layer; ++il) {
-        if (r_l[il]) total_r += ggml_row_size(r_l[il]->type, hparams.n_embd_r());
-    }
-    cp.r_data.resize(total_r);
-    {
-        uint8_t * ptr = cp.r_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!r_l[il]) continue;
-            const size_t row_size = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
-            ggml_backend_tensor_get(r_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    // Save S data for each layer
-    size_t total_s = 0;
-    for (int32_t il = 0; il < n_layer; ++il) {
-        if (s_l[il]) total_s += ggml_row_size(s_l[il]->type, hparams.n_embd_s());
-    }
-    cp.s_data.resize(total_s);
-    {
-        uint8_t * ptr = cp.s_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!s_l[il]) continue;
-            const size_t row_size = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
-            ggml_backend_tensor_get(s_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    rs_checkpoint_stacks[seq_id].push_back(std::move(cp));
-}
-
-void llama_memory_recurrent::rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) {
-    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-    auto & stack = rs_checkpoint_stacks[seq_id];
-    if (checkpoint_idx >= stack.size()) return;
-    int32_t tail_id = cells[seq_id].tail;
-    if (tail_id < 0) return;
-
-    const auto & cp = stack[checkpoint_idx];
-    const int32_t n_layer = hparams.n_layer();
-
-    // Restore R data
-    {
-        const uint8_t * ptr = cp.r_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!r_l[il]) continue;
-            const size_t row_size = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
-            ggml_backend_tensor_set(r_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    // Restore S data
-    {
-        const uint8_t * ptr = cp.s_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!s_l[il]) continue;
-            const size_t row_size = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
-            ggml_backend_tensor_set(s_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    // Reset rollback index and mark state as externally restored
-    set_rs_idx(seq_id, 0);
-    rs_restored[seq_id] = true;
-}
-
-void llama_memory_recurrent::rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) {
-    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-    // Keep checkpoints 0..keep_idx, discard the rest
-    rs_checkpoint_stacks[seq_id].resize(keep_idx + 1);
-}
-
-void llama_memory_recurrent::rs_slot_save(llama_seq_id seq_id, uint32_t slot) {
-    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-    if (slot >= RS_SLOT_MAX) return;
-    int32_t tail_id = cells[seq_id].tail;
-    if (tail_id < 0) return;
-
-    const int32_t n_layer = hparams.n_layer();
-    rs_checkpoint cp;
-
-    // Save R data for each layer
-    size_t total_r = 0;
-    for (int32_t il = 0; il < n_layer; ++il) {
-        if (r_l[il]) total_r += ggml_row_size(r_l[il]->type, hparams.n_embd_r());
-    }
-    cp.r_data.resize(total_r);
-    {
-        uint8_t * ptr = cp.r_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!r_l[il]) continue;
-            const size_t row_size = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
-            ggml_backend_tensor_get(r_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    // Save S data for each layer
-    size_t total_s = 0;
-    for (int32_t il = 0; il < n_layer; ++il) {
-        if (s_l[il]) total_s += ggml_row_size(s_l[il]->type, hparams.n_embd_s());
-    }
-    cp.s_data.resize(total_s);
-    {
-        uint8_t * ptr = cp.s_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!s_l[il]) continue;
-            const size_t row_size = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
-            ggml_backend_tensor_get(s_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    rs_slots[slot] = std::move(cp);
-}
-
-void llama_memory_recurrent::rs_slot_restore(llama_seq_id seq_id, uint32_t slot) {
-    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-    if (slot >= RS_SLOT_MAX) return;
-    int32_t tail_id = cells[seq_id].tail;
-    if (tail_id < 0) return;
-
-    const auto & cp = rs_slots[slot];
-    // Check if slot has data (non-empty r_data means a valid checkpoint was saved)
-    if (cp.r_data.empty() && cp.s_data.empty()) return;
-
-    const int32_t n_layer = hparams.n_layer();
-
-    // Restore R data
-    {
-        const uint8_t * ptr = cp.r_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!r_l[il]) continue;
-            const size_t row_size = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
-            ggml_backend_tensor_set(r_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    // Restore S data
-    {
-        const uint8_t * ptr = cp.s_data.data();
-        for (int32_t il = 0; il < n_layer; ++il) {
-            if (!s_l[il]) continue;
-            const size_t row_size = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
-            ggml_backend_tensor_set(s_l[il], ptr, tail_id * row_size, row_size);
-            ptr += row_size;
-        }
-    }
-
-    // Reset rollback index and mark state as externally restored
-    set_rs_idx(seq_id, 0);
-    rs_restored[seq_id] = true;
 }
 
 std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {

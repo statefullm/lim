@@ -46,7 +46,7 @@ The server supports two primary operating modes:
 The core architecture consists of the following components:
 
 - `server_context`: Holds the primary inference state, including the main `llama_context` and all active slots.
-- `server_slot`: An abstraction over a single “sequence” in llama.cpp, responsible for managing individual parallel inference requests.
+- `server_slot`: An abstraction over a single "sequence" in llama.cpp, responsible for managing individual parallel inference requests.
 - `server_routes`: Middleware layer between `server_context` and the HTTP interface; handles JSON parsing/formatting and request routing logic.
 - `server_http_context`: Implements the HTTP server using `cpp-httplib`.
 - `server_queue`: Thread-safe queue used by HTTP workers to submit new tasks to `server_context`.
@@ -199,6 +199,9 @@ Invoke a tool call, request body is a JSON object with:
 - `tool` (string): the name of the tool
 - `params` (object): a mapping from argument name (string) to argument value
 
+Headers:
+- `x-tool-cwd`: optional; if set, use as the CWD for tool; this is not part of tool's params because it's meant to be set by the runtime, not the LLM itself
+
 Returns JSON object. There are two response formats (MCP tools use the same two formats: their result content is concatenated into `plain_text_response`, and RPC or tool errors are surfaced as the `error` string):
 
 Format 1: Plain text. The text will be placed into a field called `plain_text_response`, example:
@@ -335,7 +338,7 @@ The SvelteKit-based Web UI is introduced in this PR: https://github.com/ggml-org
 The UI follows a layered architecture:
 
 ```
-Routes → Components → Hooks → Stores → Services → Storage/API
+Routes -> Components -> Hooks -> Stores -> Services -> Storage/API
 ```
 
 -   **Stores** - reactive state management (`chatStore`, `conversationsStore`, `modelsStore`, `serverStore`, `settingsStore`)
