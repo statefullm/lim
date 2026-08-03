@@ -857,15 +857,18 @@ int main(int argc, char ** argv) {
     state.all_context_tokens = restored_tokens;
     state.prompt_checkpoints = restored_checkpoints;
     // After a fast restore, the recurrent checkpoint stack is empty.
-    // The prompt_checkpoints list has entries from the save file that have
-    // no corresponding stack entries.  Record this offset so undo can
-    // translate between the two index spaces.
-    // Also save one live checkpoint at the current tail position so that
-    // undoing back to the restore boundary can use rs_checkpoint_restore
-    // for an instant undo without re-decode.
-    state.checkpoint_stack_offset = cache_hit ? (int)restored_checkpoints.size() : 0;
+    // We save one live checkpoint at the current tail position so that
+    // undoing back to the restore boundary (the last restored checkpoint)
+    // can use rs_checkpoint_restore for an instant undo without re-decode.
+    // That boundary checkpoint occupies stack index 0 and corresponds to
+    // prompt_checkpoints[N-1].  So the offset is N-1: checkpoints 0..N-2
+    // have no live stack entries, checkpoint N-1 maps to stack index 0,
+    // and subsequent new-turn checkpoints map to indices 1, 2, ....
     if (cache_hit && !restored_checkpoints.empty()) {
       llama_memory_rs_checkpoint_save(llama_get_memory(ctx), 0);
+      state.checkpoint_stack_offset = (int)restored_checkpoints.size() - 1;
+    } else {
+      state.checkpoint_stack_offset = 0;
     }
     state.log_index = log_index;
 

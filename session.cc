@@ -1327,10 +1327,10 @@ bool ChatSession::run() {
                     // Restore recurrent state from the target checkpoint.
                     // No-op for pure attention models (no recurrent state).
                     llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)stack_idx);
-                } else if (stack_idx == -1 && state_.checkpoint_stack_offset > 0) {
-                    // Undoing back to the restore boundary: use the boundary checkpoint.
-                    llama_memory_rs_checkpoint_restore(mem, 0, 0);
                 }
+                // If stack_idx < 0: no live recurrent checkpoint exists for this
+                // pre-restore position.  Skip the restore; seq_rm below will fail
+                // on hybrid models (no rs_restored flag), triggering the clear+re-decode fallback.
 
                 bool ok = llama_memory_seq_rm(mem, 0, target.n_past, -1);
                 if (ok) {
@@ -1338,10 +1338,8 @@ bool ChatSession::run() {
                     // Prune stale recurrent checkpoints beyond the restored index.
                     if (stack_idx >= 0) {
                         llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)stack_idx);
-                    } else if (stack_idx == -1) {
-                        // Keep only the boundary checkpoint.
-                        llama_memory_rs_checkpoint_prune(mem, 0, 0);
                     }
+                    // If stack_idx < 0: nothing to prune (no live entries for pre-restore).
                 } else {
                     diag("Regenerating KV cache for " + to_string(target.n_past) + " tokens...", "\033[35m");
                     llama_memory_clear(mem, true);
