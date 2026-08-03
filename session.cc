@@ -753,10 +753,25 @@ TokenGenerator::Result ChatSession::generate_response() {
     was_mid_tool_call_ = state_.tool_interrupt_pending;
     state_.tool_interrupt_pending = false;
 
-    // Save recurrent-state slot checkpoint for potential tool-call rollback.
+    // Save recurrent-state checkpoint for potential tool-call rollback.
     // For pure attention models this is a no-op.  For hybrid models it saves
-    // the current R/S state into a fixed slot (overwritten each turn).
-    llama_memory_rs_slot_save(llama_get_memory(ctx_), 0, 0);
+    // the current R/S state onto the stack.  We pop any leftover checkpoint
+    // from a previous generate_response() call (auto-continue loop) first,
+    // then push a new one and track its index.
+    {
+        llama_memory_t mem = llama_get_memory(ctx_);
+
+        // Pop leftover tool-correction checkpoint from a prior iteration.
+        if (state_.tool_correction_checkpoint_idx >= 0) {
+            llama_memory_rs_checkpoint_pop(mem, 0);
+        }
+
+        // Push new tool-correction checkpoint; its index equals the current
+        // number of undo checkpoints on the stack.
+        state_.tool_correction_checkpoint_idx =
+            (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
+        llama_memory_rs_checkpoint_save(mem, 0);
+    }
     state_.tool_correction_n_past = n_past_;
     state_.has_tool_correction_checkpoint = true;
     state_.correction_attempted_this_turn = false;
@@ -1997,9 +2012,10 @@ bool ChatSession::run() {
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
                     state_.invalid_tool_strikes = 0;
 
-                    // Roll back to the slot checkpoint (removes bad call + system prompt + correction).
+                    // Roll back to the tool-correction checkpoint (removes bad call + system prompt + correction).
                     llama_memory_t mem = llama_get_memory(ctx_);
-                    llama_memory_rs_slot_restore(mem, 0, 0);
+                    llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+                    llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
                     bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
                     if (rm_ok) {
                         n_past_ = state_.tool_correction_n_past;
@@ -2059,8 +2075,16 @@ bool ChatSession::run() {
         // subsequent tool-call iterations within the same turn don't create duplicates.
         if (!last_user_input_.empty()) {
             state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
-            // Save recurrent state for instant undo on hybrid models.
-            llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+
+            // Pop the stale tool-correction checkpoint and push the undo checkpoint
+            // in its place, keeping the stack at exactly one entry per prompt_checkpoint.
+            llama_memory_t mem = llama_get_memory(ctx_);
+            if (state_.tool_correction_checkpoint_idx >= 0) {
+                llama_memory_rs_checkpoint_pop(mem, 0);
+                state_.tool_correction_checkpoint_idx = -1;
+            }
+            llama_memory_rs_checkpoint_save(mem, 0);
+
             last_user_input_.clear();
         }
     }

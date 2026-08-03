@@ -792,6 +792,34 @@ extern "C" {
     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
 
     //
+    // Recurrent state checkpointing (no-op for pure attention models)
+    //
+
+    // Push current R/S state onto a per-seq stack.
+    LLAMA_API void llama_memory_rs_checkpoint_save(
+            llama_memory_t mem,
+              llama_seq_id seq_id);
+
+    // Restore from a specific stack index (0 = first saved).
+    // After restore, llama_memory_seq_rm will succeed on the recurrent cache
+    // even for large rollback distances, since plane 0 already holds correct state.
+    LLAMA_API void llama_memory_rs_checkpoint_restore(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                     uint32_t checkpoint_idx);
+
+    // Discard checkpoints beyond keep_idx (0-based).
+    LLAMA_API void llama_memory_rs_checkpoint_prune(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                     uint32_t keep_idx);
+
+    // Pop the most recent checkpoint from the stack.
+    LLAMA_API void llama_memory_rs_checkpoint_pop(
+            llama_memory_t mem,
+              llama_seq_id seq_id);
+
+    //
     // State / sessions
     //
 

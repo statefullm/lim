@@ -49,6 +49,8 @@ struct SessionState {
   int tool_correction_n_past = 0;
   bool has_tool_correction_checkpoint = false;
   bool correction_attempted_this_turn = false;
+  // Stack index of the most recent tool-correction checkpoint (for pruning).
+  int tool_correction_checkpoint_idx = -1;
   // Correction mode: set by tool_executor when a bad tool call needs retry.
   bool tool_correction_mode = false;
 };
