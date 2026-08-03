@@ -966,6 +966,8 @@ bool ChatSession::handle_reincarnate_completion() {
 
     // Record checkpoint for the reincarnated session prompt so saves and restores work.
     state_.prompt_checkpoints.push_back({n_past_, follow_prompt});
+    // Save recurrent state for instant undo on hybrid models.
+    llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
 
     state_.auto_continue = true;
     reset_session_state();
