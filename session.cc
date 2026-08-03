@@ -2101,10 +2101,10 @@ bool ChatSession::run() {
             if (state_.tool_correction_checkpoint_idx >= 0) {
                 llama_memory_rs_checkpoint_overwrite(mem, 0,
                     (uint32_t)state_.tool_correction_checkpoint_idx);
+                state_.tool_correction_checkpoint_idx = -1;
             } else {
-                // Should not normally happen, but fall back to push.
-                state_.tool_correction_checkpoint_idx =
-                    (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
+                // No tool-correction checkpoint was pushed this turn;
+                // push the undo checkpoint fresh.
                 llama_memory_rs_checkpoint_save(mem, 0);
             }
 
