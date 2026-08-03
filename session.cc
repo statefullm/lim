@@ -1556,7 +1556,14 @@ bool ChatSession::run() {
                 // Update session state.
                 state_.all_context_tokens = restored_tokens;
                 state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
-                state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
+                // Save a boundary checkpoint so instant undo works for the restore
+                // point and subsequent new turns (same logic as CLI fast restore).
+                if (!state_.prompt_checkpoints.empty()) {
+                    llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+                    state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size() - 1;
+                } else {
+                    state_.checkpoint_stack_offset = 0;
+                }
 
                 diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
                 log_entry("SYSTEM", "Restored session from " + rpath);
