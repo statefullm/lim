@@ -1,133 +1,237 @@
 diff --git a/llama/include/llama.h b/llama/include/llama.h
-index 3f6ad9ddd..76e7ece74 100644
+index 59c9bad3e..6865970ce 100644
 --- a/llama/include/llama.h
 +++ b/llama/include/llama.h
-@@ -809,6 +809,17 @@ extern "C" {
-               llama_seq_id seq_id,
-                      uint32_t keep_idx);
+@@ -791,6 +791,34 @@ extern "C" {
+     // Check if the memory supports shifting
+     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
  
-+    // Fixed-slot checkpoint: save/restore to a named slot (overwrites on save).
-+    // Independent of the stack-based checkpoint API.  No-op for pure attention models.
-+    LLAMA_API void llama_memory_rs_slot_save(
++    //
++    // Recurrent state checkpointing (no-op for pure attention models)
++    //
++
++    // Push current R/S state onto a per-seq stack.
++    LLAMA_API void llama_memory_rs_checkpoint_save(
++            llama_memory_t mem,
++              llama_seq_id seq_id);
++
++    // Restore from a specific stack index (0 = first saved).
++    // After restore, llama_memory_seq_rm will succeed on the recurrent cache
++    // even for large rollback distances, since plane 0 already holds correct state.
++    LLAMA_API void llama_memory_rs_checkpoint_restore(
 +            llama_memory_t mem,
 +              llama_seq_id seq_id,
-+                     uint32_t slot);
-+    LLAMA_API void llama_memory_rs_slot_restore(
++                     uint32_t checkpoint_idx);
++
++    // Discard checkpoints beyond keep_idx (0-based).
++    LLAMA_API void llama_memory_rs_checkpoint_prune(
 +            llama_memory_t mem,
 +              llama_seq_id seq_id,
-+                     uint32_t slot);
++                     uint32_t keep_idx);
++
++    // Pop the most recent checkpoint from the stack.
++    LLAMA_API void llama_memory_rs_checkpoint_pop(
++            llama_memory_t mem,
++              llama_seq_id seq_id);
 +
      //
      // State / sessions
      //
 diff --git a/llama/src/llama-context.cpp b/llama/src/llama-context.cpp
-index 56117fc6c..c9d7b8e86 100644
+index 19cca7df1..c2b8b8ffe 100644
 --- a/llama/src/llama-context.cpp
 +++ b/llama/src/llama-context.cpp
-@@ -3953,6 +3953,14 @@ void llama_memory_rs_checkpoint_prune(llama_memory_t mem, llama_seq_id seq_id, u
-     if (mem) mem->rs_checkpoint_prune(seq_id, keep_idx);
+@@ -3968,6 +3968,24 @@ bool llama_memory_can_shift(llama_memory_t mem) {
+     return mem->get_can_shift();
  }
  
-+void llama_memory_rs_slot_save(llama_memory_t mem, llama_seq_id seq_id, uint32_t slot) {
-+    if (mem) mem->rs_slot_save(seq_id, slot);
++// --- Recurrent state checkpointing ---
++
++void llama_memory_rs_checkpoint_save(llama_memory_t mem, llama_seq_id seq_id) {
++    if (mem) mem->rs_checkpoint_save(seq_id);
 +}
 +
-+void llama_memory_rs_slot_restore(llama_memory_t mem, llama_seq_id seq_id, uint32_t slot) {
-+    if (mem) mem->rs_slot_restore(seq_id, slot);
++void llama_memory_rs_checkpoint_restore(llama_memory_t mem, llama_seq_id seq_id, uint32_t checkpoint_idx) {
++    if (mem) mem->rs_checkpoint_restore(seq_id, checkpoint_idx);
++}
++
++void llama_memory_rs_checkpoint_prune(llama_memory_t mem, llama_seq_id seq_id, uint32_t keep_idx) {
++    if (mem) mem->rs_checkpoint_prune(seq_id, keep_idx);
++}
++
++void llama_memory_rs_checkpoint_pop(llama_memory_t mem, llama_seq_id seq_id) {
++    if (mem) mem->rs_checkpoint_pop(seq_id);
 +}
 +
  // llama state API
  
  // deprecated
 diff --git a/llama/src/llama-kv-cache-dsa.h b/llama/src/llama-kv-cache-dsa.h
-index 1b9cb7061..fdcfa3a75 100644
+index e74fc4d91..bc793e1a8 100644
 --- a/llama/src/llama-kv-cache-dsa.h
 +++ b/llama/src/llama-kv-cache-dsa.h
-@@ -67,6 +67,8 @@ public:
-     void rs_checkpoint_save(llama_seq_id seq_id) override {}
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
+@@ -65,6 +65,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
++    // Recurrent state checkpointing (no-op for pure attention models)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++
      //
      // llama_kv_cache_dsa specific API
+     //
 diff --git a/llama/src/llama-kv-cache-dsv4.h b/llama/src/llama-kv-cache-dsv4.h
-index 7ddbe5cc8..1a3981430 100644
+index ce39867c0..1660b927c 100644
 --- a/llama/src/llama-kv-cache-dsv4.h
 +++ b/llama/src/llama-kv-cache-dsv4.h
-@@ -132,6 +132,8 @@ public:
-     void rs_checkpoint_save(llama_seq_id seq_id) override {}
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
+@@ -136,6 +136,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
++    // Recurrent state checkpointing (no-op for pure attention models)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++
      //
      // llama_kv_cache_dsv4 specific API
+     //
 diff --git a/llama/src/llama-kv-cache-iswa.h b/llama/src/llama-kv-cache-iswa.h
-index 038aae91a..8c606d978 100644
+index 7dab6eaa8..75fd1c871 100644
 --- a/llama/src/llama-kv-cache-iswa.h
 +++ b/llama/src/llama-kv-cache-iswa.h
-@@ -86,6 +86,8 @@ public:
-     void rs_checkpoint_save(llama_seq_id seq_id) override {}
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
+@@ -83,6 +83,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
++    // Recurrent state checkpointing (no-op for pure attention models)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++
      //
      // llama_kv_cache_iswa specific API
+     //
+diff --git a/llama/src/llama-kv-cache-msa.h b/llama/src/llama-kv-cache-msa.h
+index f09b6d32b..ad65bf426 100644
+--- a/llama/src/llama-kv-cache-msa.h
++++ b/llama/src/llama-kv-cache-msa.h
+@@ -62,6 +62,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
+ 
++    // Recurrent state checkpointing (no-op for pure attention models)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++
+     // llama_kv_cache_msa specific API
+ 
+     llama_kv_cache * get_base() const;
 diff --git a/llama/src/llama-kv-cache.h b/llama/src/llama-kv-cache.h
-index 3ec3718d9..556165f3e 100644
+index 6cb6dbd2f..6c75095f3 100644
 --- a/llama/src/llama-kv-cache.h
 +++ b/llama/src/llama-kv-cache.h
-@@ -152,6 +152,8 @@ public:
-     void rs_checkpoint_save(llama_seq_id seq_id) override {}
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { GGML_UNUSED(seq_id); GGML_UNUSED(slot); }
+@@ -149,6 +149,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
++    // Recurrent state checkpointing (no-op for pure attention models)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++
      //
      // llama_kv_cache specific API
+     //
 diff --git a/llama/src/llama-memory-hybrid-iswa.h b/llama/src/llama-memory-hybrid-iswa.h
-index a875442fa..0e0b342e7 100644
+index c9d3f9f57..cdd5dc3b2 100644
 --- a/llama/src/llama-memory-hybrid-iswa.h
 +++ b/llama/src/llama-memory-hybrid-iswa.h
-@@ -79,6 +79,8 @@ public:
-     void rs_checkpoint_save(llama_seq_id seq_id) override { mem_recr->rs_checkpoint_save(seq_id); }
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { mem_recr->rs_checkpoint_restore(seq_id, checkpoint_idx); }
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { mem_recr->rs_checkpoint_prune(seq_id, keep_idx); }
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { mem_recr->rs_slot_save(seq_id, slot); }
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { mem_recr->rs_slot_restore(seq_id, slot); }
+@@ -76,6 +76,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
  
++    // Recurrent state checkpointing (pass-through to mem_recr)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { mem_recr->rs_checkpoint_save(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { mem_recr->rs_checkpoint_restore(seq_id, checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { mem_recr->rs_checkpoint_prune(seq_id, keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { mem_recr->rs_checkpoint_pop(seq_id); }
++
      //
      // llama_memory_hybrid_iswa specific API
+     //
 diff --git a/llama/src/llama-memory-hybrid.h b/llama/src/llama-memory-hybrid.h
-index 50a75ff29..1442ebd8a 100644
+index 484eafb74..c995a4c14 100644
 --- a/llama/src/llama-memory-hybrid.h
 +++ b/llama/src/llama-memory-hybrid.h
-@@ -79,6 +79,8 @@ public:
-     void rs_checkpoint_save(llama_seq_id seq_id) override { mem_recr->rs_checkpoint_save(seq_id); }
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { mem_recr->rs_checkpoint_restore(seq_id, checkpoint_idx); }
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override { mem_recr->rs_checkpoint_prune(seq_id, keep_idx); }
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot) override { mem_recr->rs_slot_save(seq_id, slot); }
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) override { mem_recr->rs_slot_restore(seq_id, slot); }
+@@ -76,6 +76,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0)       override;
  
++    // Recurrent state checkpointing (pass-through to mem_recr)
++    void rs_checkpoint_save (llama_seq_id seq_id) override { mem_recr->rs_checkpoint_save(seq_id); }
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override { mem_recr->rs_checkpoint_restore(seq_id, checkpoint_idx); }
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override { mem_recr->rs_checkpoint_prune(seq_id, keep_idx); }
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override { mem_recr->rs_checkpoint_pop(seq_id); }
++
      //
      // llama_memory_hybrid specific API
+     //
 diff --git a/llama/src/llama-memory-recurrent.cpp b/llama/src/llama-memory-recurrent.cpp
-index b5701bf54..15a04e3a7 100644
+index ef82eb976..f9567fad3 100644
 --- a/llama/src/llama-memory-recurrent.cpp
 +++ b/llama/src/llama-memory-recurrent.cpp
-@@ -499,6 +499,89 @@ void llama_memory_recurrent::rs_checkpoint_prune(llama_seq_id seq_id, uint32_t k
-     rs_checkpoint_stacks[seq_id].resize(keep_idx + 1);
+@@ -35,6 +35,10 @@ llama_memory_recurrent::llama_memory_recurrent(
+     this->n_rs_seq = n_rs_seq;
+     rs_idx.assign(n_seq_max, 0);
+ 
++    // Recurrent state checkpoint stacks and restore flags
++    rs_checkpoint_stacks.resize(n_seq_max);
++    rs_restored.assign(n_seq_max, false);
++
+     cells.clear();
+     cells.resize(mem_size);
+ 
+@@ -145,6 +149,8 @@ void llama_memory_recurrent::clear(bool data) {
+     }
+ 
+     std::fill(rs_idx.begin(), rs_idx.end(), 0);
++    std::fill(rs_restored.begin(), rs_restored.end(), false);
++    for (auto & stack : rs_checkpoint_stacks) stack.clear();
  }
  
-+void llama_memory_recurrent::rs_slot_save(llama_seq_id seq_id, uint32_t slot) {
+ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
+@@ -186,6 +192,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+                     cell.pos = p0 - 1;
+                     return true;
+                 }
++                // If state was externally restored via rs_checkpoint_restore,
++                // plane 0 already holds the correct state for the rollback target.
++                if (rs_restored[seq_id]) {
++                    set_rs_idx(seq_id, 0);
++                    rs_restored[seq_id] = false;
++                    cell.pos = p0 - 1;
++                    return true;
++                }
+                 return false;
+             }
+             // invalidate tails which will be cleared
+@@ -396,6 +410,101 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
+     rs_idx[seq_id] = (idx > n_rs_seq) ? n_rs_seq : idx;
+ }
+ 
++// --- Recurrent state checkpointing ---
++
++void llama_memory_recurrent::rs_checkpoint_save(llama_seq_id seq_id) {
 +    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-+    if (slot >= RS_SLOT_MAX) return;
 +    int32_t tail_id = cells[seq_id].tail;
 +    if (tail_id < 0) return;
 +
@@ -166,19 +270,17 @@ index b5701bf54..15a04e3a7 100644
 +        }
 +    }
 +
-+    rs_slots[slot] = std::move(cp);
++    rs_checkpoint_stacks[seq_id].push_back(std::move(cp));
 +}
 +
-+void llama_memory_recurrent::rs_slot_restore(llama_seq_id seq_id, uint32_t slot) {
++void llama_memory_recurrent::rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) {
 +    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
-+    if (slot >= RS_SLOT_MAX) return;
++    auto & stack = rs_checkpoint_stacks[seq_id];
++    if (checkpoint_idx >= stack.size()) return;
 +    int32_t tail_id = cells[seq_id].tail;
 +    if (tail_id < 0) return;
 +
-+    const auto & cp = rs_slots[slot];
-+    // Check if slot has data (non-empty r_data means a valid checkpoint was saved)
-+    if (cp.r_data.empty() && cp.s_data.empty()) return;
-+
++    const auto & cp = stack[checkpoint_idx];
 +    const int32_t n_layer = hparams.n_layer();
 +
 +    // Restore R data
@@ -208,55 +310,75 @@ index b5701bf54..15a04e3a7 100644
 +    rs_restored[seq_id] = true;
 +}
 +
++void llama_memory_recurrent::rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) {
++    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
++    // Keep checkpoints 0..keep_idx, discard the rest
++    rs_checkpoint_stacks[seq_id].resize(keep_idx + 1);
++}
++
++void llama_memory_recurrent::rs_checkpoint_pop(llama_seq_id seq_id) {
++    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
++    auto & stack = rs_checkpoint_stacks[seq_id];
++    if (stack.empty()) return;
++    stack.pop_back();
++}
++
  std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, size_t> ret;
      for (const auto & [_, buf] : ctxs_bufs) {
 diff --git a/llama/src/llama-memory-recurrent.h b/llama/src/llama-memory-recurrent.h
-index 32e497bd0..d77d584ba 100644
+index b13b7b748..1ff737d7d 100644
 --- a/llama/src/llama-memory-recurrent.h
 +++ b/llama/src/llama-memory-recurrent.h
-@@ -4,6 +4,7 @@
- #include "llama-graph.h"
- #include "llama-memory.h"
+@@ -66,6 +66,12 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
-+#include <array>
- #include <map>
- #include <set>
- #include <vector>
-@@ -84,6 +85,11 @@ public:
-     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
-     void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) override;
- 
-+    // Fixed-slot checkpoint for ephemeral use (e.g., tool-call rollback).
-+    // Overwrites the slot on each save; independent of rs_checkpoint_stacks.
-+    void rs_slot_save(llama_seq_id seq_id, uint32_t slot);
-+    void rs_slot_restore(llama_seq_id seq_id, uint32_t slot);
++    // Recurrent state checkpointing (stack-based)
++    void rs_checkpoint_save (llama_seq_id seq_id) override;
++    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
++    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override;
++    void rs_checkpoint_pop    (llama_seq_id seq_id) override;
 +
-     struct rs_checkpoint {
-         std::vector<uint8_t> r_data; // R tensor row data for all layers
-         std::vector<uint8_t> s_data; // S tensor row data for all layers
-@@ -91,6 +97,9 @@ public:
+     uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
+     uint32_t size = 0; // total number of cells, shared across all sequences
+     uint32_t used = 0; // used cells (i.e. at least one seq_id)
+@@ -78,6 +84,17 @@ public:
  
-     // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
-     std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
-+    // Fixed-slot checkpoints for ephemeral use (tool correction, etc.)
-+    static constexpr uint32_t RS_SLOT_MAX = 1;
-+    std::array<rs_checkpoint, RS_SLOT_MAX> rs_slots;
-     // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
-     std::vector<bool> rs_restored;
+     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
+ 
++    // Recurrent state checkpoint struct
++    struct rs_checkpoint {
++        std::vector<uint8_t> r_data; // R tensor row data for all layers
++        std::vector<uint8_t> s_data; // S tensor row data for all layers
++    };
++
++    // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
++    std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
++    // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
++    std::vector<bool> rs_restored;
++
+     // computed before each graph build
+     uint32_t n = 0;
  
 diff --git a/llama/src/llama-memory.h b/llama/src/llama-memory.h
-index 6381c7e5e..273af4801 100644
+index db8253966..b9f39fc50 100644
 --- a/llama/src/llama-memory.h
 +++ b/llama/src/llama-memory.h
-@@ -132,6 +132,10 @@ struct llama_memory_i {
-     virtual void rs_checkpoint_save(llama_seq_id seq_id) = 0;
-     virtual void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) = 0;
-     virtual void rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) = 0;
+@@ -124,6 +124,16 @@ struct llama_memory_i {
+ 
+     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
+     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
 +
-+    // Fixed-slot checkpoint (overwrites slot on save, independent of stack).
-+    virtual void rs_slot_save(llama_seq_id seq_id, uint32_t slot) = 0;
-+    virtual void rs_slot_restore(llama_seq_id seq_id, uint32_t slot) = 0;
++    // Recurrent state checkpointing (no-op for pure attention models).
++    // save() pushes current R/S state onto a per-seq stack.
++    // restore() restores from a specific stack index (0 = first saved).
++    // prune() discards checkpoints beyond keep_idx.
++    // pop() removes the most recent checkpoint from the stack.
++    virtual void rs_checkpoint_save (llama_seq_id seq_id) = 0;
++    virtual void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) = 0;
++    virtual void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) = 0;
++    virtual void rs_checkpoint_pop    (llama_seq_id seq_id) = 0;
  };
  
  using llama_memory_ptr = std::unique_ptr<llama_memory_i>;

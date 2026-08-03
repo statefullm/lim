@@ -3974,6 +3974,10 @@ void llama_memory_rs_checkpoint_save(llama_memory_t mem, llama_seq_id seq_id) {
     if (mem) mem->rs_checkpoint_save(seq_id);
 }
 
+void llama_memory_rs_checkpoint_overwrite(llama_memory_t mem, llama_seq_id seq_id, uint32_t checkpoint_idx) {
+    if (mem) mem->rs_checkpoint_overwrite(seq_id, checkpoint_idx);
+}
+
 void llama_memory_rs_checkpoint_restore(llama_memory_t mem, llama_seq_id seq_id, uint32_t checkpoint_idx) {
     if (mem) mem->rs_checkpoint_restore(seq_id, checkpoint_idx);
 }

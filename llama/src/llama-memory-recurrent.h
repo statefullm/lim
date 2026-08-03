@@ -68,6 +68,9 @@ public:
 
     // Recurrent state checkpointing (stack-based)
     void rs_checkpoint_save (llama_seq_id seq_id) override;
+    // Overwrite an existing checkpoint at a specific stack index (avoids push/pop churn).
+    // No-op if checkpoint_idx >= stack size.
+    void rs_checkpoint_overwrite(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
     void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
     void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override;
     void rs_checkpoint_pop    (llama_seq_id seq_id) override;

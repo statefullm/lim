@@ -455,6 +455,49 @@ void llama_memory_recurrent::rs_checkpoint_save(llama_seq_id seq_id) {
     rs_checkpoint_stacks[seq_id].push_back(std::move(cp));
 }
 
+void llama_memory_recurrent::rs_checkpoint_overwrite(llama_seq_id seq_id, uint32_t checkpoint_idx) {
+    if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
+    auto & stack = rs_checkpoint_stacks[seq_id];
+    if (checkpoint_idx >= stack.size()) return;
+    int32_t tail_id = cells[seq_id].tail;
+    if (tail_id < 0) return;
+
+    const int32_t n_layer = hparams.n_layer();
+    auto & cp = stack[checkpoint_idx];
+
+    // Overwrite R data in-place (reuses existing allocation)
+    size_t total_r = 0;
+    for (int32_t il = 0; il < n_layer; ++il) {
+        if (r_l[il]) total_r += ggml_row_size(r_l[il]->type, hparams.n_embd_r());
+    }
+    cp.r_data.resize(total_r);
+    {
+        uint8_t * ptr = cp.r_data.data();
+        for (int32_t il = 0; il < n_layer; ++il) {
+            if (!r_l[il]) continue;
+            const size_t row_size = ggml_row_size(r_l[il]->type, hparams.n_embd_r());
+            ggml_backend_tensor_get(r_l[il], ptr, tail_id * row_size, row_size);
+            ptr += row_size;
+        }
+    }
+
+    // Overwrite S data in-place (reuses existing allocation)
+    size_t total_s = 0;
+    for (int32_t il = 0; il < n_layer; ++il) {
+        if (s_l[il]) total_s += ggml_row_size(s_l[il]->type, hparams.n_embd_s());
+    }
+    cp.s_data.resize(total_s);
+    {
+        uint8_t * ptr = cp.s_data.data();
+        for (int32_t il = 0; il < n_layer; ++il) {
+            if (!s_l[il]) continue;
+            const size_t row_size = ggml_row_size(s_l[il]->type, hparams.n_embd_s());
+            ggml_backend_tensor_get(s_l[il], ptr, tail_id * row_size, row_size);
+            ptr += row_size;
+        }
+    }
+}
+
 void llama_memory_recurrent::rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) {
     if (seq_id < 0 || (size_t) seq_id >= rs_checkpoint_stacks.size()) return;
     auto & stack = rs_checkpoint_stacks[seq_id];

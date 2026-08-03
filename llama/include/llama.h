@@ -800,6 +800,13 @@ extern "C" {
             llama_memory_t mem,
               llama_seq_id seq_id);
 
+    // Overwrite an existing checkpoint at a specific stack index in place
+    // (avoids push/pop churn for ephemeral checkpoints like tool-correction).
+    LLAMA_API void llama_memory_rs_checkpoint_overwrite(
+            llama_memory_t mem,
+              llama_seq_id seq_id,
+                     uint32_t checkpoint_idx);
+
     // Restore from a specific stack index (0 = first saved).
     // After restore, llama_memory_seq_rm will succeed on the recurrent cache
     // even for large rollback distances, since plane 0 already holds correct state.
