@@ -590,11 +590,10 @@ TokenGenerator::Result TokenGenerator::generate() {
             size_t safe_len = generated_text_.length();
             string tend(g_model_tokens.think_end);
 
-            // Exclude the closing think tag from streamed output so it never
-            // leaks into the browser.  First check for a full match at the end
-            // (safety net; in_thinking_block_ should already be false if the
-            // tag is complete, but token boundaries can cause brief windows).
-            // Then fall back to prefix matching for partial tags.
+            // Exclude both opening and closing think tags from streamed output
+            // so they never leak into the browser.  Full-match check first,
+            // then fall back to prefix matching for partial tags split across
+            // token boundaries (e.g., after spurious EOG recovery).
             if (!tend.empty()) {
                 size_t last_occurrence = generated_text_.rfind(tend);
                 if (last_occurrence != string::npos &&
@@ -604,6 +603,21 @@ TokenGenerator::Result TokenGenerator::generate() {
                     for (size_t len = 1; len <= tend.length() && len <= generated_text_.length(); ++len) {
                         if (generated_text_.compare(generated_text_.length() - len, len, tend, 0, len) == 0) {
                             safe_len = generated_text_.length() - len;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Also suppress partial opening think tags at the tail.
+            {
+                string tstart(g_model_tokens.think_start);
+                if (!tstart.empty()) {
+                    for (size_t len = 1; len <= tstart.length() && len <= generated_text_.length(); ++len) {
+                        if (generated_text_.compare(generated_text_.length() - len, len, tstart, 0, len) == 0) {
+                            if (safe_len > generated_text_.length() - len) {
+                                safe_len = generated_text_.length() - len;
+                            }
                             break;
                         }
                     }
