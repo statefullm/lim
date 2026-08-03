@@ -1989,7 +1989,7 @@ bool ChatSession::run() {
                         diag("System: Correction produced another invalid tool call. Ejecting to prompt.", "\033[1;31m");
                         state_.invalid_tool_strikes++;
                         if (state_.invalid_tool_strikes >= 5) {
-                            diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                            diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool call" + (state_.invalid_tool_strikes != 1 ? "s" : "") + ". Intervention failed, ejecting to prompt.", "\033[1;31m");
                         }
                         continue;
                     }
@@ -2041,7 +2041,7 @@ bool ChatSession::run() {
                     diag("System: Correction failed to produce valid tool call. Ejecting to prompt.", "\033[1;31m");
                     state_.invalid_tool_strikes++;
                     if (state_.invalid_tool_strikes >= 5) {
-                        diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                        diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool call" + (state_.invalid_tool_strikes != 1 ? "s" : "") + ". Intervention failed, ejecting to prompt.", "\033[1;31m");
                     }
                 }
             }

@@ -262,8 +262,12 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     string end_str = extract_string_arg_bounded(tool_call, "end");
     if (!path.empty()) {
       string search_label = "search_file(\"" + path + "\"";
-      if (!begin_str.empty() || !end_str.empty()) {
+      if (!begin_str.empty() && !end_str.empty()) {
           search_label += ", lines " + begin_str + "-" + end_str;
+      } else if (!begin_str.empty()) {
+          search_label += ", line " + begin_str;
+      } else if (!end_str.empty()) {
+          search_label += ", lines 1-" + end_str;
       } else if (!text.empty()) {
           // Truncate long search text for the diagnostic label.
           string short_text = text.length() > 60 ? text.substr(0, 57) + "..." : text;

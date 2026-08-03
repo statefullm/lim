@@ -170,19 +170,19 @@ ToolExecutor::Result ToolExecutor::execute(
             }
 
             if (state.invalid_tool_strikes >= 5) {
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Intervention failed, ejecting to prompt.", "\033[1;31m");
+                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool call" + (state.invalid_tool_strikes != 1 ? "s" : "") + ". Intervention failed, ejecting to prompt.", "\033[1;31m");
                 abort_auto = true;
             } else if (state.invalid_tool_strikes >= 1 && !state.correction_attempted_this_turn && state.has_tool_correction_checkpoint) {
                 // Attempt tool-call correction on first strike: roll back via slot checkpoint,
                 // feed full system prompt, let the LLM generate a fix, then
                 // inject the good tool call cleanly.
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " invalid tool call(s). Attempting correction.", "\033[1;33m");
+                diag("System: " + std::to_string(state.invalid_tool_strikes) + " invalid tool call" + (state.invalid_tool_strikes != 1 ? "s" : "") + ". Attempting correction.", "\033[1;33m");
                 state.correction_attempted_this_turn = true;
                 result.needs_correction = true;
                 // Don't set inject_auto_user_msg or abort_auto -- the main loop
                 // will handle the correction cycle.
             } else if (state.invalid_tool_strikes >= 2) {
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool calls. Injecting intervention.", "\033[1;31m");
+                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool call" + (state.invalid_tool_strikes != 1 ? "s" : "") + ". Injecting intervention.", "\033[1;31m");
                 inject_auto_user_msg = true;
                 active_intervention_msg = "Follow the system prompt strictly.";
             }

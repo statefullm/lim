@@ -614,21 +614,6 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
                                    function<void(const string&)> on_close) {
   // Output is now handled by log_tool_diagnostic in tools.cc at dispatch time.
 
-  // Stream tool call to browser in a code box
-  if (should_output_to_browser()) {
-    string safe;
-    for (char c : command) {
-      if (c == '&') safe += "&amp;";
-      else if (c == '<') safe += "&lt;";
-      else if (c == '>') safe += "&gt;";
-      else safe += c;
-    }
-    string html = "<div class='tool-label'>exec_shell(<code>" + safe + "</code>)</div>";
-    uint8_t seg = SEG_HTML;
-    pipe_write(reinterpret_cast<const char*>(&seg), 1);
-    pipe_write(html.c_str(), html.length());
-  }
-
   string safe_cmd = command;
   size_t pos = 0;
   while ((pos = safe_cmd.find("'", pos)) != string::npos) {
@@ -856,9 +841,6 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   out["actual_start"] = "0";
   out["actual_end"] = "0";
   out["error"] = "";
-
-  // Build human-readable function call syntax
-  string path_str = "\"" + path + "\"";
 
   // Parse and validate begin/end -- parse as integers first, then validate.
   int begin_line = 1, end_line = -1;
@@ -1189,8 +1171,6 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 
 map<string, string> FileSystemTools::write_file(const string& path, const string& content) {
   // Build human-readable function call syntax
-  string path_str = "\"" + path + "\"";
-
   // Output the tool function call to both stdout and logfile
   string fullpath = _get_fullpath(path);
 
@@ -1227,12 +1207,6 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
 }
 
 map<string, string> FileSystemTools::edit_file(const string& path, const string& old_str, const string& new_str) {
-  // Build human-readable function call syntax
-  string path_str = "\"" + path + "\"";
-
-  // Build the function call label (logged at end with change count)
-  string edit_label = "edit_file(" + path_str + ")";
-
   // If LIM_DEBUG=1, also output OLD and NEW text (truncated in stdout only)
   if (is_debug) {
     string old_str_trunc = "\"" + (old_str.length() > 80 ? old_str.substr(0, 77) + "..." : old_str) + "\"";
