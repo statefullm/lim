@@ -2042,6 +2042,9 @@ bool ChatSession::run() {
                     bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
                     if (rm_ok) {
                         n_past_ = state_.tool_correction_n_past;
+                        // Remove the stale correction tokens from the token tracker
+                        // so all_context_tokens matches the actual KV cache.
+                        state_.all_context_tokens.resize(state_.tool_correction_n_past);
                     } else {
                         diag("System: Correction rollback failed, re-decoding...", "\033[33m");
                         llama_memory_clear(mem, true);
