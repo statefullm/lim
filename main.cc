@@ -520,6 +520,21 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
+  // Load LoRA adapter if specified via LIM_LORA_ADAPTER environment variable.
+  {
+    const char* lora_env = getenv("LIM_LORA_ADAPTER");
+    if (lora_env && lora_env[0]) {
+      struct llama_adapter_lora * adapter = llama_adapter_lora_init(model, lora_env);
+      if (adapter) {
+        float scales[] = {1.0f};
+        llama_set_adapters_lora(ctx, &adapter, 1, scales);
+        diag("LoRA adapter loaded: " + string(lora_env), "\033[36m");
+      } else {
+        diag("Failed to load LoRA adapter: " + string(lora_env), "\033[31m");
+      }
+    }
+  }
+
   // Always load and tokenize the system prompt.
   // This is needed even during restore so that `system_tokens` holds only the
   // actual system prompt (not the full conversation).  clear_context() uses

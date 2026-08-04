@@ -1459,6 +1459,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     backend_cpu      (params.backend_cpu),
     cvec             (params.cvec),
     loras            (params.loras),
+    trainable_loras  (params.trainable_loras),
     mctx             (params.mctx),
     cross            (params.cross),
     samplers         (params.samplers),
@@ -1491,6 +1492,23 @@ ggml_tensor * llm_graph_context::build_lora_mm(
 
     if (w_s) {
         res = ggml_mul(ctx0, res, w_s);
+    }
+
+    // Trainable LoRA: check first, before inference adapters
+    if (trainable_loras) {
+        auto* lw = trainable_loras->get_weight(w);
+        if (lw && lw->first && lw->second) {
+            ggml_tensor * ab_cur = ggml_mul_mat(
+                    ctx0, lw->second,
+                    ggml_mul_mat(ctx0, lw->first, cur)
+                    );
+
+            float scale = trainable_loras->alpha > 0.0f
+                ? trainable_loras->alpha / (float)trainable_loras->rank
+                : 1.0f;
+            ab_cur = ggml_scale(ctx0, ab_cur, scale);
+            res = ggml_add(ctx0, res, ab_cur);
+        }
     }
 
     for (const auto & lora : *loras) {
@@ -1529,6 +1547,25 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
         s = ggml_get_rows(ctx0, s, ids);
         res = ggml_mul(ctx0, res, s);
     }
+
+    // Trainable LoRA: check first, before inference adapters
+    if (trainable_loras) {
+        auto* lw = trainable_loras->get_weight(w);
+        if (lw && lw->first && lw->second) {
+            ggml_tensor * ab_cur = ggml_mul_mat_id(
+                    ctx0, lw->second,
+                    ggml_mul_mat_id(ctx0, lw->first, cur, ids),
+                    ids
+                    );
+
+            float scale = trainable_loras->alpha > 0.0f
+                ? trainable_loras->alpha / (float)trainable_loras->rank
+                : 1.0f;
+            ab_cur = ggml_scale(ctx0, ab_cur, scale);
+            res = ggml_add(ctx0, res, ab_cur);
+        }
+    }
+
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);
         if (lw == nullptr) {

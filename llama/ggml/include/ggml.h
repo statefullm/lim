@@ -570,6 +570,7 @@ extern "C" {
         GGML_OP_RWKV_WKV7,
         GGML_OP_SOLVE_TRI,
         GGML_OP_GATED_DELTA_NET,
+        GGML_OP_GDN_BACK,
         GGML_OP_LIGHTNING_INDEXER,
         GGML_OP_DSV4_HC_COMB,
         GGML_OP_DSV4_HC_PRE,
@@ -2582,6 +2583,19 @@ extern "C" {
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state,
             int64_t               K);
+
+    // GDN backward -- single-op backward for fused Gated Delta Net.
+    // Returns flat tensor [d_q | d_k | d_v | d_g | d_beta | d_state].
+    // Only supports non-KDA, n_tokens==1. Caller extracts individual gradients via views.
+    GGML_API struct ggml_tensor * ggml_gdn_back(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * grad,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * state);
 
     // DSA lightning indexer
     //

@@ -31,3 +31,5 @@ userprompt
 # OS files
 .DS_Store
 Thumbs.db
+*.md
+gdn.md

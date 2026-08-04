@@ -5,6 +5,7 @@
 // try as much as possible to not include this header in the rest of the codebase
 
 #include "llama.h"
+#include "llama-lora-train.h"
 
 #include <cstdint>
 #include <map>
@@ -124,3 +125,15 @@ LLAMA_API llama_context * llama_get_ctx_other(struct llama_context * ctx);
 LLAMA_API const int32_t * llama_model_target_layer_ids  (const struct llama_model * model);
 // returns the number of extracted layers from target model
 LLAMA_API uint32_t        llama_model_target_layer_ids_n(const struct llama_model * model);
+
+//
+// trainable LoRA for fine-tuning
+//
+
+LLAMA_API void llama_set_trainable_loras(
+        struct llama_context * ctx,
+        llama_lora_trainable_ptr loras);
+
+LLAMA_API void llama_save_trainable_adapter(
+        struct llama_context * ctx,
+        const char * path);

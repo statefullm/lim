@@ -1303,6 +1303,15 @@ bool llama_context::adapters_lora_are_same(llama_adapter_lora ** adapters, size_
     return true;
 }
 
+void llama_context::set_trainable_loras(llama_lora_trainable_ptr loras) {
+    this->trainable_loras = std::move(loras);
+    sched_need_reserve = true;
+}
+
+llama_lora_trainable * llama_context::get_trainable_loras() {
+    return trainable_loras.get();
+}
+
 bool llama_context::set_adapter_cvec(
             const float * data,
                  size_t   len,
@@ -2363,6 +2372,10 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
     for (const auto & lora : model.loras) {
         res += lora->get_n_nodes();
     }
+    // Account for trainable LoRA nodes (6 per pair: A matmul, B matmul, scale, add + 2 intermediates)
+    if (trainable_loras) {
+        res += trainable_loras->ab_map.size() * 6u;
+    }
     return res;
 }
 
@@ -2442,9 +2455,10 @@ llm_graph_params llama_context::graph_params(
         /*.gtype       =*/ gtype,
         /*.sched       =*/ sched.get(),
         /*.backend_cpu =*/ backend_cpu,
-        /*.cvec        =*/ cvec.get(),
-        /*.loras       =*/ loras.get(),
-        /*.mctx        =*/ mctx,
+        /*.cvec            =*/ cvec.get(),
+        /*.loras           =*/ loras.get(),
+        /*.trainable_loras =*/ trainable_loras.get(),
+        /*.mctx            =*/ mctx,
         /*.cross       =*/ &cross,
         /*.samplers    =*/ sampling.samplers,
         /*.n_outputs   =*/ n_outputs,
@@ -3280,6 +3294,10 @@ static void llama_set_param(struct ggml_tensor * tensor, llama_opt_param_filter 
 
 void llama_context::opt_init(struct llama_model * model, struct llama_opt_params lopt_params) {
     GGML_ASSERT(!opt_ctx);
+
+    // Fused GDN forward + backward is now supported via custom GGML_OP_GDN_BACK kernel.
+    cparams.fused_gdn_ar = true;
+    cparams.fused_gdn_ch = true;
     model->hparams.n_ctx_train = lopt_params.n_ctx_train > 0 ? lopt_params.n_ctx_train : n_ctx();
     const uint32_t n_batch     = std::min(this->n_batch(),  model->hparams.n_ctx_train);
     const uint32_t n_ubatch    = std::min(this->n_ubatch(), n_batch);
@@ -3315,6 +3333,14 @@ void llama_context::opt_init(struct llama_model * model, struct llama_opt_params
     for (struct llama_layer & layer : model->layers) {
         for (size_t i = 0; i < sizeof(layer)/sizeof(struct ggml_tensor *); ++i) {
             llama_set_param(reinterpret_cast<struct ggml_tensor **>(&layer)[i], param_filter, param_filter_ud);
+        }
+    }
+
+    // Register trainable LoRA A/B tensors as params (they're F32, so pass the type check)
+    if (trainable_loras) {
+        for (auto& [name, ab] : trainable_loras->ab_map) {
+            ggml_set_param(ab.first);   // A matrix
+            ggml_set_param(ab.second);  // B matrix
         }
     }
 }
@@ -3853,6 +3879,23 @@ int32_t llama_set_adapters_lora(
     ctx->set_adapters_lora(adapters, n_adapters, scales);
 
     return 0;
+}
+
+void llama_set_trainable_loras(
+            llama_context * ctx,
+            llama_lora_trainable_ptr loras) {
+    ctx->set_trainable_loras(std::move(loras));
+}
+
+void llama_save_trainable_adapter(
+            llama_context * ctx,
+            const char * path) {
+    llama_lora_trainable * loras = ctx->get_trainable_loras();
+    if (loras) {
+        loras->save_adapter(path, ctx->get_model());
+    } else {
+        fprintf(stderr, "llama-save-trainable-adapter: no trainable LoRA found in context\n");
+    }
 }
 
 int32_t llama_set_adapter_cvec(

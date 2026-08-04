@@ -5,6 +5,7 @@
 #include "llama-cparams.h"
 #include "llama-graph.h"
 #include "llama-adapter.h"
+#include "llama-lora-train.h"
 #include "llama-impl.h"
 #include "llama-memory.h"
 
@@ -120,6 +121,9 @@ struct llama_context {
     void set_warmup(bool value);
 
     void set_adapters_lora(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
+
+    void set_trainable_loras(llama_lora_trainable_ptr loras);
+    llama_lora_trainable * get_trainable_loras();
 
     bool adapters_lora_are_same(llama_adapter_lora ** adapters, size_t n_adapters, float * scales);
 
@@ -283,6 +287,7 @@ private:
 
     llama_adapter_cvec_ptr  cvec;
     llama_adapter_loras_ptr loras;
+    llama_lora_trainable_ptr trainable_loras;
 
     llama_cross cross; // TODO: tmp for handling cross-attention - need something better probably
 
