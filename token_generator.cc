@@ -657,10 +657,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                 } else {
                     _strip_think_and_tool_tags(think_output);
-                    console_think(think_output.c_str());
-                    consoleThinkFlush();
-                    stream_think(think_output);
-                    if (!think_output.empty()) g_stdout_ended_with_newline = (think_output.back() == '\n');
+                    if (!think_output.empty()) {
+                        console_think(think_output.c_str());
+                        consoleThinkFlush();
+                        stream_think(think_output);
+                        g_stdout_ended_with_newline = (think_output.back() == '\n');
+                    }
                 }
                 print_pos_ = safe_len;
             }
