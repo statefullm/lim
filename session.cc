@@ -801,7 +801,15 @@ TokenGenerator::Result ChatSession::generate_response() {
         state_.reincarnate_mode = false;
     } else if (!gen_result_.has_tool_call) {
         // Normal EOG
-        state_.auto_continue = false;
+        if (state_.reincarnate_first_turn) {
+            // LLM hit EOG prematurely on the first turn after reincarnate.
+            // Auto-continue so it can produce a full response rather than
+            // dropping to the prompt and requiring the user to type /continue.
+            state_.reincarnate_first_turn = false;
+            // Keep auto_continue = true so generation resumes immediately.
+        } else {
+            state_.auto_continue = false;
+        }
     }
 
     auto end = chrono::high_resolution_clock::now();
@@ -978,6 +986,7 @@ bool ChatSession::handle_reincarnate_completion() {
     state_.tool_correction_checkpoint_idx = -1;
 
     state_.auto_continue = true;
+    state_.reincarnate_first_turn = true;
     reset_session_state();
     log_entry("SYSTEM", "Context Cleared and Reincarnated with New Prompt");
     return true; // continue outer loop
