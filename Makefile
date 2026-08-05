@@ -14,7 +14,7 @@ ifeq ($(CUDA_ARCH_FLAGS),)
       major=$$(echo $$cap | cut -d. -f1); \
       minor=$$(echo $$cap | cut -d. -f2); \
       arch=$${major}$${minor}; \
-      if { [ "$major" = "12" ] || [ "$major" = "9" ]; } && [ "$minor" = "0" ]; then echo "$${arch}a"; else echo "$$arch"; fi; \
+      if { [ "$$major" = "12" ] || [ "$$major" = "9" ]; } && [ "$$minor" = "0" ]; then echo "$${arch}a"; else echo "$$arch"; fi; \
     done | sort -u | paste -sd';')
   endif
 endif

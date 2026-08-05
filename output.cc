@@ -187,7 +187,7 @@ void stream_speed(const string& speed_text) {
 }
 
 void stream_think(const string& text) {
-  if (!should_output_to_browser()) return;
+  if (!should_output_to_browser() || text.empty()) return;
   string escaped = html_escape(text);
   string payload(1, SEG_THINK);
   payload += escaped;
