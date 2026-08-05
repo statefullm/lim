@@ -49,6 +49,7 @@ int main(int argc, char ** argv) {
     // LoRA-specific parameters
     int32_t lora_rank   = 64;
     float   lora_alpha  = 128.0f;
+    bool    static_graph = false;
     std::string target_modules =
         ".*attn_q.weight;"
         ".*attn_k.weight;"
@@ -72,6 +73,8 @@ int main(int argc, char ** argv) {
             lora_alpha = std::atof(argv[++i]);
         } else if ((strcmp(arg, "--target-modules") == 0 && i + 1 < argc)) {
             target_modules = argv[++i];
+        } else if (strcmp(arg, "--static-graph") == 0) {
+            static_graph = true;
         } else {
             filtered_argv.push_back(arg);
         }
@@ -118,14 +121,12 @@ int main(int argc, char ** argv) {
 
     auto cparams = llama_context_default_params();
     cparams.n_ctx       = params.n_ctx > 0 ? params.n_ctx : 2048;
-    // Hybrid models (Qwen3.5/3.6): the fused GDN kernel processes tokens
-    // sequentially per warp — it has no parallel chunked implementation
-    // (see TODO in gated_delta_net.cu:177). With -ub > 1, the GDN forward+backward
-    // kernels dominate with only ~H*n_seqs warps running, giving near-0% GPU
-    // utilization on large GPUs. With -ub 1, transformer MUL_MAT layers keep
-    // GPU busy between fast single-token GDN calls (~50% utilization).
-    // Use ubatch=1 by default; override with -ub N only if you have a parallel
-    // chunked GDN kernel or are training a non-hybrid model.
+    // Hybrid models (Qwen3.5/3.6): the fused GDN kernel has a chunked
+    // backward implementation (gdn_back.cu) that parallelizes across token
+    // chunks using grid sync, and a sequential forward kernel
+    // (gated_delta_net.cu). With -ub 1, transformer MUL_MAT layers keep
+    // GPU busy between GDN calls. Larger ubatch sizes benefit from the
+    // chunked backward kernel but are limited by the sequential forward.
     const int default_ubatch = 1;
     cparams.n_batch     = params.n_batch > 0 ? params.n_batch : cparams.n_ctx;
     cparams.n_ubatch    = params.n_ubatch > 0 ? params.n_ubatch : default_ubatch;
@@ -208,8 +209,13 @@ int main(int argc, char ** argv) {
 
     for (lr.epoch = 0; lr.epoch < lr.epochs; ++lr.epoch) {
         LOG_INF("\n=== Epoch %d / %d ===\n", lr.epoch + 1, lr.epochs);
-        llama_opt_epoch(ctx, dataset, result_train, result_eval, idata_split,
-                        ggml_opt_epoch_callback_progress_bar, ggml_opt_epoch_callback_progress_bar);
+        if (static_graph) {
+            llama_opt_epoch_static(ctx, dataset, result_train, result_eval, idata_split,
+                                   ggml_opt_epoch_callback_progress_bar, ggml_opt_epoch_callback_progress_bar);
+        } else {
+            llama_opt_epoch(ctx, dataset, result_train, result_eval, idata_split,
+                            ggml_opt_epoch_callback_progress_bar, ggml_opt_epoch_callback_progress_bar);
+        }
         fprintf(stderr, "\n");
 
         ggml_opt_result_reset(result_train);

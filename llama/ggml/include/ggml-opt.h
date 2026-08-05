@@ -188,6 +188,30 @@ extern "C" {
     // do forward pass, increment result if not NULL, do backward pass if allocated
     GGML_API void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result);
 
+    // same as ggml_opt_eval but uses async graph compute (does not block waiting for GPU).
+    // Caller must synchronize the scheduler before overwriting input/label tensors.
+    GGML_API void ggml_opt_eval_async(ggml_opt_context_t opt_ctx, ggml_opt_result_t result);
+
+    // Getters for cached graph pointers and backend (used by static-graph training)
+    GGML_API struct ggml_context * ggml_opt_ctx_compute(ggml_opt_context_t opt_ctx);
+    GGML_API struct ggml_cgraph  * ggml_opt_gb_grad(ggml_opt_context_t opt_ctx);
+    GGML_API struct ggml_cgraph  * ggml_opt_gb_opt(ggml_opt_context_t opt_ctx);
+    GGML_API struct ggml_cgraph  * ggml_opt_allocated_graph(ggml_opt_context_t opt_ctx);
+    GGML_API struct ggml_cgraph  * ggml_opt_allocated_graph_copy(ggml_opt_context_t opt_ctx);
+    GGML_API ggml_backend_sched_t  ggml_opt_backend_sched(ggml_opt_context_t opt_ctx);
+
+    // Set eval_ready flag (used by static-graph training to prepare for alloc)
+    GGML_API void ggml_opt_set_eval_ready(ggml_opt_context_t opt_ctx, bool ready);
+
+    // Setters for graph pointers (used by static-graph training)
+    GGML_API void ggml_opt_set_ctx_compute(ggml_opt_context_t opt_ctx, struct ggml_context * ctx);
+    GGML_API void ggml_opt_set_gf(ggml_opt_context_t opt_ctx, struct ggml_cgraph * gf);
+    GGML_API void ggml_opt_set_gb_grad(ggml_opt_context_t opt_ctx, struct ggml_cgraph * gb_grad);
+    GGML_API void ggml_opt_set_gb_opt(ggml_opt_context_t opt_ctx, struct ggml_cgraph * gb_opt);
+    GGML_API void ggml_opt_set_allocated_graph(ggml_opt_context_t opt_ctx, struct ggml_cgraph * graph);
+    GGML_API void ggml_opt_set_allocated_graph_copy(ggml_opt_context_t opt_ctx, struct ggml_cgraph * graph);
+    GGML_API void ggml_opt_set_labels(ggml_opt_context_t opt_ctx, struct ggml_tensor * labels);
+
     // ############################################################################
     // ## The high-level functions start here. They do not depend on any private ##
     // ## functions or structs and can be copied to and adapted for user code.   ##

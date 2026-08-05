@@ -715,7 +715,13 @@ void ggml_opt_prepare_alloc(
         struct ggml_cgraph  * gf,
         struct ggml_tensor  * inputs,
         struct ggml_tensor  * outputs) {
-    GGML_ASSERT(!opt_ctx->static_graphs);
+    // For static graphs: free old compute context but preserve backward/optimizer
+    // graphs so they can be rebuilt from the new forward graph without reallocating
+    // gradient accumulators and optimizer momenta.
+    // For non-static graphs: full reset as before.
+    if (opt_ctx->static_graphs) {
+        ggml_free(opt_ctx->ctx_compute);
+    }
     opt_ctx->ctx_compute = ctx_compute;
     opt_ctx->gf          = gf;
     opt_ctx->inputs      = inputs;
@@ -874,6 +880,113 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
     int64_t ncorrect;
     ggml_backend_tensor_get(opt_ctx->ncorrect, &ncorrect, 0, ggml_nbytes(opt_ctx->ncorrect));
     result->ncorrect += ncorrect;
+}
+
+void ggml_opt_eval_async(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
+    GGML_ASSERT(opt_ctx->eval_ready);
+    if (opt_ctx->allocated_graph == opt_ctx->gb_opt) {
+        const ggml_opt_optimizer_params & opt_pars = opt_ctx->get_opt_pars(opt_ctx->get_opt_pars_ud);
+
+        switch (opt_ctx->optimizer) {
+            case GGML_OPT_OPTIMIZER_TYPE_ADAMW: {
+                float * adamw_par_data = ggml_get_data_f32(opt_ctx->opt_step_params);
+                adamw_par_data[0] = opt_pars.adamw.alpha;
+                adamw_par_data[1] = opt_pars.adamw.beta1;
+                adamw_par_data[2] = opt_pars.adamw.beta2;
+                adamw_par_data[3] = opt_pars.adamw.eps;
+                adamw_par_data[4] = opt_pars.adamw.wd;
+                const float beta1h = 1.0f / (1.0f - powf(opt_pars.adamw.beta1, opt_ctx->iter));
+                const float beta2h = 1.0f / (1.0f - powf(opt_pars.adamw.beta2, opt_ctx->iter));
+                adamw_par_data[5] = beta1h;
+                adamw_par_data[6] = beta2h;
+            } break;
+            case GGML_OPT_OPTIMIZER_TYPE_SGD: {
+                float * sgd = ggml_get_data_f32(opt_ctx->opt_step_params);
+                sgd[0] = opt_pars.sgd.alpha;
+                sgd[1] = opt_pars.sgd.wd;
+            } break;
+            default:
+                GGML_ABORT("fatal error");
+        }
+    }
+
+    // Launch compute asynchronously — do NOT synchronize.
+    ggml_backend_sched_graph_compute_async(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+    opt_ctx->iter += opt_ctx->allocated_graph == opt_ctx->gb_opt;
+    opt_ctx->opt_i = (opt_ctx->opt_i + 1) % opt_ctx->opt_period;
+
+    if (!opt_ctx->static_graphs) {
+        opt_ctx->gf                   = nullptr;
+        opt_ctx->gb_grad              = nullptr;
+        opt_ctx->gb_opt               = nullptr;
+        opt_ctx->allocated_graph      = nullptr;
+        opt_ctx->allocated_graph_copy = nullptr;
+    }
+
+    opt_ctx->eval_ready = false;
+
+    // In async mode we skip result accumulation (loss/pred/ncorrect reads) since
+    // the compute hasn't finished yet. The caller must synchronize before reading
+    // results or before overwriting input/label tensors for the next ubatch.
+    GGML_UNUSED(result);
+}
+
+// ====== Getter/Setter API ======
+
+struct ggml_context * ggml_opt_ctx_compute(ggml_opt_context_t opt_ctx) {
+    return opt_ctx->ctx_compute;
+}
+
+struct ggml_cgraph * ggml_opt_gb_grad(ggml_opt_context_t opt_ctx) {
+    return opt_ctx->gb_grad;
+}
+
+struct ggml_cgraph * ggml_opt_gb_opt(ggml_opt_context_t opt_ctx) {
+    return opt_ctx->gb_opt;
+}
+
+struct ggml_cgraph * ggml_opt_allocated_graph(ggml_opt_context_t opt_ctx) {
+    return opt_ctx->allocated_graph;
+}
+
+struct ggml_cgraph * ggml_opt_allocated_graph_copy(ggml_opt_context_t opt_ctx) {
+    return opt_ctx->allocated_graph_copy;
+}
+
+ggml_backend_sched_t ggml_opt_backend_sched(ggml_opt_context_t opt_ctx) {
+    return opt_ctx->backend_sched;
+}
+
+void ggml_opt_set_eval_ready(ggml_opt_context_t opt_ctx, bool ready) {
+    opt_ctx->eval_ready = ready;
+}
+
+void ggml_opt_set_ctx_compute(ggml_opt_context_t opt_ctx, struct ggml_context * ctx) {
+    opt_ctx->ctx_compute = ctx;
+}
+
+void ggml_opt_set_gf(ggml_opt_context_t opt_ctx, struct ggml_cgraph * gf) {
+    opt_ctx->gf = gf;
+}
+
+void ggml_opt_set_gb_grad(ggml_opt_context_t opt_ctx, struct ggml_cgraph * gb_grad) {
+    opt_ctx->gb_grad = gb_grad;
+}
+
+void ggml_opt_set_gb_opt(ggml_opt_context_t opt_ctx, struct ggml_cgraph * gb_opt) {
+    opt_ctx->gb_opt = gb_opt;
+}
+
+void ggml_opt_set_allocated_graph(ggml_opt_context_t opt_ctx, struct ggml_cgraph * graph) {
+    opt_ctx->allocated_graph = graph;
+}
+
+void ggml_opt_set_allocated_graph_copy(ggml_opt_context_t opt_ctx, struct ggml_cgraph * graph) {
+    opt_ctx->allocated_graph_copy = graph;
+}
+
+void ggml_opt_set_labels(ggml_opt_context_t opt_ctx, struct ggml_tensor * labels) {
+    opt_ctx->labels = labels;
 }
 
 // ====== High-Level Functions ======

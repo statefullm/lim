@@ -3399,6 +3399,12 @@ void llama_context::opt_epoch_iter(
         };
 
         uint32_t pos_batch = 0;
+
+        // Reuse ctx_compute across ubatches within the same batch to avoid
+        // reallocating the backward/optimizer graph context every time.
+        size_t last_size_meta = 0;
+        struct ggml_context * ctx_compute_reused = nullptr;
+
         do {
             const auto & ubatch = mctx->get_ubatch();
 
@@ -3417,17 +3423,28 @@ void llama_context::opt_epoch_iter(
 
             auto * gf = model.build_graph(gparams);
 
+            // Create or reuse ctx_compute for backward/optimizer nodes.
+            const size_t size_gf  = ggml_graph_size(gf);
+            const size_t size_meta = 4 * size_gf * ggml_tensor_overhead()
+                                    + 2 * ggml_graph_overhead_custom(size_gf, /*grads=*/true);
+
             struct ggml_context * ctx_compute_opt;
-            {
-                const size_t size_gf = ggml_graph_size(gf);
-                const size_t size_meta = 4*size_gf*ggml_tensor_overhead() + 2*ggml_graph_overhead_custom(size_gf, /*grads = */ true);
-                struct ggml_init_params params = {
+            if (ctx_compute_reused && size_meta == last_size_meta) {
+                // Reuse existing context.
+                ctx_compute_opt = ctx_compute_reused;
+            } else {
+                // First ubatch or different graph size — allocate fresh.
+                if (ctx_compute_reused) ggml_free(ctx_compute_reused);
+                struct ggml_init_params params_comp = {
                     /*.mem_size   =*/ size_meta,
                     /*.mem_buffer =*/ nullptr,
                     /*.no_alloc   =*/ true,
                 };
-                ctx_compute_opt = ggml_init(params);
+                ctx_compute_opt = ggml_init(params_comp);
+                ctx_compute_reused = ctx_compute_opt;
+                last_size_meta = size_meta;
             }
+
             ggml_opt_prepare_alloc(opt_ctx, ctx_compute_opt, gf, res->get_inp_tokens(), res->get_logits());
             ggml_opt_alloc(opt_ctx, train);
 
@@ -3447,10 +3464,18 @@ void llama_context::opt_epoch_iter(
             if (callback) {
                 callback(train, opt_ctx, dataset, result, idata_in_loop + (pos_ctx + pos_batch)/n_ubatch + 1, ndata_in_loop, t_loop_start);
             }
-            ggml_free(ctx_compute_opt);
+
+            // Don't free ctx_compute — it's reused across ubatches.
+            // Freed at end of batch below.
 
             pos_batch += ubatch.n_tokens;
         } while (mctx->next());
+
+        // Free reused ctx_compute at end of batch.
+        if (ctx_compute_reused) {
+            ggml_free(ctx_compute_reused);
+            ctx_compute_reused = nullptr;
+        }
     }
 }
 
@@ -3497,6 +3522,197 @@ void llama_context::opt_epoch(
         ggml_opt_dataset_get_batch_host(dataset, tokens.data(), n_ctx*sizeof(llama_token), labels_sparse.data(), idata);
         opt_epoch_iter(dataset, result_eval, tokens, labels_sparse, batch,
             callback_eval, train, idata_in_loop, ndata_in_loop, t_loop_start);
+    }
+
+    llama_batch_free(batch);
+}
+
+// Static-graph training with profiling.
+void llama_context::opt_epoch_static(
+        ggml_opt_dataset_t        dataset,
+        ggml_opt_result_t         result_train,
+        ggml_opt_result_t         result_eval,
+        int64_t                   idata_split,
+        ggml_opt_epoch_callback   callback_train,
+        ggml_opt_epoch_callback   callback_eval) {
+    GGML_ASSERT(opt_ctx);
+
+    const uint32_t n_ctx    = this->n_ctx();
+    const uint32_t n_batch  = std::min(cparams.n_batch,  n_ctx);
+    const uint32_t n_ubatch = std::min(cparams.n_ubatch, n_batch);
+    const  int64_t ndata    = ggml_opt_dataset_ndata(dataset);
+
+    GGML_ASSERT(idata_split >= 0);
+    GGML_ASSERT(idata_split <= ndata);
+
+    const uint32_t ubatch_per_ctx = n_ctx / n_ubatch;
+
+    struct llama_batch batch = llama_batch_init(n_batch, 0, 1);
+    std::vector<llama_token>        tokens(n_ctx);
+    std::vector<llama_token> labels_sparse(n_ctx);
+
+    // CPU buffer for batched label uploads (reused across ubatches)
+    const int64_t n_vocab = model.vocab.n_tokens();
+    std::vector<float> label_buf(n_vocab * n_ubatch);
+
+    auto process_sample = [&](bool train, ggml_opt_result_t result,
+                              ggml_opt_epoch_callback callback,
+                              int64_t idata_in_loop, int64_t ndata_in_loop,
+                              int64_t t_loop_start) {
+        memory->clear(true);
+
+        for (uint32_t pos_ctx = 0; pos_ctx < n_ctx; pos_ctx += n_batch) {
+            batch.n_tokens = n_batch;
+            for (uint32_t i = 0; i < n_batch; ++i) {
+                batch.token   [i]    = tokens[pos_ctx + i];
+                batch.pos     [i]    = pos_ctx + i;
+                batch.n_seq_id[i]    = 1;
+                batch.seq_id  [i][0] = 0;
+                batch.logits  [i]    = true;
+            }
+
+            if (!balloc->init(batch, model.vocab, nullptr, model.hparams.n_embd_inp(),
+                              cparams.kv_unified ? LLAMA_MAX_SEQ : cparams.n_seq_max, true)) {
+                LLAMA_LOG_ERROR("%s: failed to init batch\n", __func__);
+                return;
+            }
+
+            const uint32_t n_tokens_all = balloc->get_n_tokens();
+            n_queued_tokens += n_tokens_all;
+            embd_seq.clear();
+
+            auto mctx = memory->init_batch(*balloc, cparams.n_ubatch, true);
+            if (!mctx || mctx->get_status() != LLAMA_MEMORY_STATUS_SUCCESS) {
+                LLAMA_LOG_ERROR("%s: could not init batch\n", __func__);
+                return;
+            }
+
+            if (output_reserve(n_tokens_all) < n_tokens_all) {
+                LLAMA_LOG_ERROR("%s: could not reserve output buffer\n", __func__);
+                GGML_ABORT("TODO");
+            }
+
+            uint32_t pos_batch = 0;
+
+            // Reuse ctx_compute across ubatches within the same batch to avoid
+            // reallocating the backward/optimizer graph context every time.
+            // The forward graph is rebuilt per-ubatch (recurrent state changes),
+            // but we free+recreate ctx_compute only once per batch.
+            size_t last_size_meta = 0;
+            struct ggml_context * ctx_compute_reused = nullptr;
+
+            do {
+                const auto & ubatch = mctx->get_ubatch();
+                n_outputs = ubatch.n_tokens;
+
+                if (!mctx->apply()) break;
+
+                auto * res = gf_res_prev.get();
+
+                const auto gparams = graph_params(res, ubatch, mctx.get(),
+                                                  ctx_type_to_graph_type(cparams.ctx_type));
+                res->reset();
+                auto * gf = model.build_graph(gparams);
+
+                // Create or reuse ctx_compute for backward/optimizer nodes.
+                const size_t size_gf  = ggml_graph_size(gf);
+                const size_t size_meta = 4 * size_gf * ggml_tensor_overhead()
+                                        + 2 * ggml_graph_overhead_custom(size_gf, /*grads=*/true);
+
+                struct ggml_context * ctx_compute_opt;
+                if (ctx_compute_reused && size_meta == last_size_meta) {
+                    // Reuse existing context — just reset it.
+                    ctx_compute_opt = ctx_compute_reused;
+                } else {
+                    // First ubatch or different graph size — allocate fresh.
+                    if (ctx_compute_reused) ggml_free(ctx_compute_reused);
+                    struct ggml_init_params params_comp = {
+                        /*.mem_size   =*/ size_meta,
+                        /*.mem_buffer =*/ nullptr,
+                        /*.no_alloc   =*/ true,
+                    };
+                    ctx_compute_opt = ggml_init(params_comp);
+                    ctx_compute_reused = ctx_compute_opt;
+                    last_size_meta = size_meta;
+                }
+
+                ggml_opt_prepare_alloc(opt_ctx, ctx_compute_opt, gf,
+                                       res->get_inp_tokens(), res->get_logits());
+                ggml_opt_alloc(opt_ctx, train);
+
+                // Update input tensor data
+                res->set_inputs(&ubatch);
+
+                // Set labels — batched write to reduce PCIe transfers.
+                {
+                    struct ggml_tensor * labels = ggml_opt_labels(opt_ctx);
+                    const uint32_t n_tokens = ubatch.n_tokens;
+
+                    std::fill(label_buf.begin(), label_buf.end(), 0.0f);
+                    for (uint32_t pu = 0; pu < n_tokens; ++pu) {
+                        const uint32_t ilabel = pos_ctx + pos_batch + pu;
+                        GGML_ASSERT(labels_sparse[ilabel] < n_vocab);
+                        label_buf[pu * n_vocab + labels_sparse[ilabel]] = 1.0f;
+                    }
+                    ggml_backend_tensor_set(labels, label_buf.data(), 0,
+                                            label_buf.size() * sizeof(float));
+                }
+
+                // Synchronous eval (forward + backward + optimizer step)
+                ggml_opt_eval(opt_ctx, result);
+
+                if (callback) {
+                    callback(train, opt_ctx, dataset, result,
+                             idata_in_loop + (pos_ctx + pos_batch) / n_ubatch + 1,
+                             ndata_in_loop, t_loop_start);
+                }
+
+                // Don't free ctx_compute — it's reused across ubatches.
+                // Freed at end of batch below.
+
+                pos_batch += ubatch.n_tokens;
+            } while (mctx->next());
+
+            // Free reused ctx_compute at end of batch.
+            if (ctx_compute_reused) {
+                ggml_free(ctx_compute_reused);
+                ctx_compute_reused = nullptr;
+            }
+        }
+    };
+
+    // Training loop
+    {
+        int64_t t_loop_start = ggml_time_us();
+        int64_t ndata_in_loop = idata_split * ubatch_per_ctx;
+        int64_t idata = 0;
+
+        for (; idata < idata_split; ++idata) {
+            constexpr bool train_flag = true;
+            const int64_t idata_in_loop = idata * ubatch_per_ctx;
+
+            ggml_opt_dataset_get_batch_host(dataset, tokens.data(), n_ctx * sizeof(llama_token),
+                                            labels_sparse.data(), idata);
+            process_sample(train_flag, result_train, callback_train,
+                           idata_in_loop, ndata_in_loop, t_loop_start);
+        }
+    }
+
+    // Evaluation loop
+    {
+        int64_t t_loop_start = ggml_time_us();
+        int64_t ndata_in_loop = (ndata - idata_split) * ubatch_per_ctx;
+        int64_t idata = idata_split;
+
+        for (; idata < ndata; ++idata) {
+            constexpr bool train_flag = false;
+            const int64_t idata_in_loop = (idata - idata_split) * ubatch_per_ctx;
+
+            ggml_opt_dataset_get_batch_host(dataset, tokens.data(), n_ctx * sizeof(llama_token),
+                                            labels_sparse.data(), idata);
+            process_sample(train_flag, result_eval, callback_eval,
+                           idata_in_loop, ndata_in_loop, t_loop_start);
+        }
     }
 
     llama_batch_free(batch);
@@ -4231,6 +4447,23 @@ void llama_opt_epoch(
         ggml_opt_epoch_callback   callback_train,
         ggml_opt_epoch_callback   callback_eval) {
     ctx->opt_epoch(
+        dataset,
+        result_train,
+        result_eval,
+        idata_split,
+        callback_train,
+        callback_eval);
+}
+
+void llama_opt_epoch_static(
+        struct llama_context    * ctx,
+        ggml_opt_dataset_t        dataset,
+        ggml_opt_result_t         result_train,
+        ggml_opt_result_t         result_eval,
+        int64_t                   idata_split,
+        ggml_opt_epoch_callback   callback_train,
+        ggml_opt_epoch_callback   callback_eval) {
+    ctx->opt_epoch_static(
         dataset,
         result_train,
         result_eval,

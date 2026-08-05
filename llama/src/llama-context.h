@@ -208,6 +208,14 @@ struct llama_context {
             ggml_opt_epoch_callback callback_train,
             ggml_opt_epoch_callback callback_eval);
 
+    void opt_epoch_static(
+            ggml_opt_dataset_t      dataset,
+            ggml_opt_result_t       result_train,
+            ggml_opt_result_t       result_eval,
+            int64_t                 idata_split,
+            ggml_opt_epoch_callback callback_train,
+            ggml_opt_epoch_callback callback_eval);
+
     void opt_epoch_iter(
             ggml_opt_dataset_t               dataset,
             ggml_opt_result_t                result,
