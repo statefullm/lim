@@ -118,13 +118,15 @@ int main(int argc, char ** argv) {
 
     auto cparams = llama_context_default_params();
     cparams.n_ctx       = params.n_ctx > 0 ? params.n_ctx : 2048;
-    // Hybrid models (Qwen3.5/3.6) with recurrent GDN layers require the
-    // decomposed GDN path during training (no fused backward kernel exists).
-    // This creates a massive compute graph that must be rebuilt every
-    // micro-batch because recurrent state changes. Large ubatch minimizes
-    // rebuild overhead but uses more GPU memory. Start with 512 and increase
-    // if VRAM allows; decrease if OOM.
-    const int default_ubatch = 512;
+    // Hybrid models (Qwen3.5/3.6): the fused GDN kernel processes tokens
+    // sequentially per warp — it has no parallel chunked implementation
+    // (see TODO in gated_delta_net.cu:177). With -ub > 1, the GDN forward+backward
+    // kernels dominate with only ~H*n_seqs warps running, giving near-0% GPU
+    // utilization on large GPUs. With -ub 1, transformer MUL_MAT layers keep
+    // GPU busy between fast single-token GDN calls (~50% utilization).
+    // Use ubatch=1 by default; override with -ub N only if you have a parallel
+    // chunked GDN kernel or are training a non-hybrid model.
+    const int default_ubatch = 1;
     cparams.n_batch     = params.n_batch > 0 ? params.n_batch : cparams.n_ctx;
     cparams.n_ubatch    = params.n_ubatch > 0 ? params.n_ubatch : default_ubatch;
     cparams.type_k      = params.cache_type_k;

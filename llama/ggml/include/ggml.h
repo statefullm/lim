@@ -2586,7 +2586,7 @@ extern "C" {
 
     // GDN backward -- single-op backward for fused Gated Delta Net.
     // Returns flat tensor [d_q | d_k | d_v | d_g | d_beta | d_state].
-    // Only supports non-KDA, n_tokens==1. Caller extracts individual gradients via views.
+    // Supports both KDA and non-KDA, arbitrary n_tokens. Caller extracts individual gradients via views.
     GGML_API struct ggml_tensor * ggml_gdn_back(
             struct ggml_context * ctx,
             struct ggml_tensor  * grad,

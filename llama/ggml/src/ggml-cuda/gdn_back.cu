@@ -1,26 +1,25 @@
 #include "gdn_back.cuh"
 #include "ggml-cuda/common.cuh"
 
-// GDN backward CUDA kernel for non-KDA, arbitrary n_tokens.
+// GDN backward CUDA kernel for both KDA and non-KDA, arbitrary n_tokens.
 //
 // Strategy: each thread block owns one (head, sequence). Each warp owns columns.
 // Phase 1 (forward sweep): replay forward pass per column, store per-token scalars
-//   (g_exp_t, kv_t, delta_t) in shared memory — only 3 floats per token per block.
+//   in shared memory — only a few floats per token per block.
 //   At the end, s_reg holds S_T (final state after all tokens).
 // Phase 2 (backward sweep): walk tokens in reverse. Maintain s_reg = S_t by
-//   undoing the forward update: S_{t-1}[i] = (S_t[i] - k_t[i]*delta_t) / g_exp_t.
-//   This is O(T) total, no recomputation needed.
+//   undoing the forward update.
 //
 // d_v is written directly to global memory per column (no conflicts).
-// d_g and d_beta are per-head scalars — only col==0 writes them.
+// d_g and d_beta are per-head (non-KDA) or per-head-per-row (KDA).
 // d_q and d_k use atomicAdd for head expansion handling.
 
-template <int S_v>
+template <int S_v, bool KDA>
 __global__ void gdn_back_cuda(const float * grad,   // d_output: [S_v, H, n_tokens, n_seqs]
               const float * q,       // [S_k, H_k, n_tokens, ne3_q]
               const float * k,       // [S_k, H_k, n_tokens, ne3_q]
               const float * v,       // [S_v, H, n_tokens, n_seqs]
-              const float * g,       // [1, H, n_tokens, n_seqs]
+              const float * g,       // [1|S_v, H, n_tokens, n_seqs]
               const float * beta,    // [1, H, n_tokens, n_seqs]
               const float * state,   // [S_v, S_v, H, n_seqs]  (initial state s0)
               float *       dst,     // flat output: [d_q | d_k | d_v | d_g | d_beta | d_state]
@@ -60,7 +59,9 @@ __global__ void gdn_back_cuda(const float * grad,   // d_output: [S_v, H, n_toke
     static_assert(S_v % warp_size == 0, "S_v must be a multiple of warp_size");
     constexpr int rows_per_lane = (S_v + warp_size - 1) / warp_size;
 
-    // Shared memory: only per-token scalars. 3*n_tokens floats — tiny even for n_tokens=256.
+    // Shared memory layout: per-token scalars stored by lane 0.
+    // Non-KDA: g_exp_t, kv_t, delta_t — 3 floats per token.
+    // KDA:     delta_t — 1 float per token (g_exp and kv are per-row, not shared).
     float * s_g_exp = shared;
     float * s_kv    = shared + n_tokens;
     float * s_delta = shared + 2 * n_tokens;
@@ -111,46 +112,85 @@ __global__ void gdn_back_cuda(const float * grad,   // d_output: [S_v, H, n_toke
             }
         }
 
-        const float g_val_raw = g_ptr[t * sb2];
-        const float g_exp_val = expf(g_val_raw);
-        const float beta_val  = b_ptr[t * sb2];
+        const int64_t g_offset = t * sb2;
+        const float beta_val   = b_ptr[g_offset];
 
-        // kv = sum_i(S[i] * k[i])
-        float kv_shard = 0.0f;
+        if constexpr (!KDA) {
+            // Non-KDA: scalar gate, same g_exp for all rows in the column.
+            const float g_val_raw = g_ptr[g_offset];
+            const float g_exp_val = expf(g_val_raw);
+
+            // kv = sum_i(S[i] * k[i])
+            float kv_shard = 0.0f;
 #pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            kv_shard += s_reg[r] * k_reg[r];
-        }
-        float kv_val = warp_reduce_sum<warp_size>(kv_shard);
-
-        const float * v_t = v_base + t * sv2;
-        float delta_val = (v_t[col] - g_exp_val * kv_val) * beta_val;
-
-        // Update state: S[i] = g_exp * S[i] + k[i] * delta
-#pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            const int i = r * warp_size + lane;
-            if (i < S_k) {
-                s_reg[r] = g_exp_val * s_reg[r] + k_reg[r] * delta_val;
-            } else {
-                s_reg[r] = g_exp_val * s_reg[r];
+            for (int r = 0; r < rows_per_lane; r++) {
+                kv_shard += s_reg[r] * k_reg[r];
             }
-        }
+            float kv_val = warp_reduce_sum<warp_size>(kv_shard);
 
-        // Store scalars to shared memory (lane 0 only).
-        if (lane == 0) {
-            s_g_exp[t] = g_exp_val;
-            s_kv[t]    = kv_val;
-            s_delta[t] = delta_val;
+            const float * v_t = v_base + t * sv2;
+            float delta_val = (v_t[col] - g_exp_val * kv_val) * beta_val;
+
+            // Update state: S[i] = g_exp * S[i] + k[i] * delta
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    s_reg[r] = g_exp_val * s_reg[r] + k_reg[r] * delta_val;
+                } else {
+                    s_reg[r] = g_exp_val * s_reg[r];
+                }
+            }
+
+            // Store scalars to shared memory (lane 0 only).
+            if (lane == 0) {
+                s_g_exp[t] = g_exp_val;
+                s_kv[t]    = kv_val;
+                s_delta[t] = delta_val;
+            }
+        } else {
+            // KDA: per-row gate.
+            const float * g_t = g_ptr + g_offset * S_v;
+
+            // Load g_exp for this lane's rows.
+            float g_exp_reg[rows_per_lane];
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                g_exp_reg[r] = expf(g_t[i]);
+            }
+
+            // kv = sum_i(g_exp[i] * S[i] * k[i])
+            float kv_shard = 0.0f;
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                kv_shard += g_exp_reg[r] * s_reg[r] * k_reg[r];
+            }
+            float kv_val = warp_reduce_sum<warp_size>(kv_shard);
+
+            const float * v_t = v_base + t * sv2;
+            float delta_val = (v_t[col] - kv_val) * beta_val;
+
+            // Update state: S[i] = g_exp[i] * S[i] + k[i] * delta
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    s_reg[r] = g_exp_reg[r] * s_reg[r] + k_reg[r] * delta_val;
+                } else {
+                    s_reg[r] = g_exp_reg[r] * s_reg[r];
+                }
+            }
+
+            // Store delta to shared memory (lane 0 only).
+            if (lane == 0) {
+                s_delta[t] = delta_val;
+            }
         }
     }
     __syncthreads();
 
-    // After forward sweep, s_reg holds S_T (state after all tokens).
-    // For backward we need to undo: S_{t-1}[i] = (S_t[i] - k_t[i]*delta_t) / g_exp_t
-
     // ===== PHASE 2: BACKWARD SWEEP =====
-    // dS[i] accumulates gradient flowing backward through the recurrent state.
     float dS[rows_per_lane];
 #pragma unroll
     for (int r = 0; r < rows_per_lane; r++) {
@@ -184,12 +224,9 @@ __global__ void gdn_back_cuda(const float * grad,   // d_output: [S_v, H, n_toke
             }
         }
 
-        const float g_exp_val = s_g_exp[t];
-        const float kv_val    = s_kv[t];
+        const float beta_val = b_ptr[t * sb2];
         const float delta_val = s_delta[t];
-        const float beta_val  = b_ptr[t * sb2];
 
-        // At this point s_reg holds S_t (state after processing token t).
         const float d_out = grad_base[col + t * S_v * H];
 
         // --- Backward through output: o_t[c] = scale * sum_i(S_t[i] * q_t[i]) ---
@@ -208,99 +245,240 @@ __global__ void gdn_back_cuda(const float * grad,   // d_output: [S_v, H, n_toke
         }
         float d_delta_from_kd = warp_reduce_sum<warp_size>(d_delta_shard);
 
-        // --- Backward through delta = (v - kv)*beta: ---
-        float d_v_val     = d_delta_from_kd * beta_val;
-        float d_beta_val  = d_delta_from_kd * (v_t[col] - g_exp_val * kv_val);
-        float d_kv        = -d_delta_from_kd * beta_val;
+        if constexpr (!KDA) {
+            // Non-KDA backward.
+            const float g_exp_val = s_g_exp[t];
+            const float kv_val    = s_kv[t];
 
-        // --- d_S_t_total[i] = d_sn_o[i] + d_kv * k[i] ---
-        float d_st_total[rows_per_lane];
-#pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            const int i = r * warp_size + lane;
-            if (i < S_k) {
-                d_st_total[r] = d_sn_o[r] + d_kv * k_reg[r];
-            } else {
-                d_st_total[r] = d_sn_o[r];
-            }
-        }
+            // --- Backward through delta = (v - kv)*beta: ---
+            float d_v_val     = d_delta_from_kd * beta_val;
+            float d_beta_val  = d_delta_from_kd * (v_t[col] - g_exp_val * kv_val);
+            float d_kv        = -d_delta_from_kd * beta_val;
 
-        // Add accumulated dS from later tokens.
-        float d_sd_total[rows_per_lane];
-#pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            d_sd_total[r] = d_st_total[r] + dS[r];
-        }
-
-        // --- Backward through S_d = g_exp * S_{t-1}: ---
-        float d_g_exp_shard = 0.0f;
-#pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            const int i = r * warp_size + lane;
-            if (t > 0) {
-                float s_prev_i = (s_reg[r] - ((i < S_k) ? k_reg[r] * delta_val : 0.0f)) / g_exp_val;
-                d_g_exp_shard += d_sd_total[r] * s_prev_i;
-            } else {
-                d_g_exp_shard += d_sd_total[r] * s_reg[r];
-            }
-        }
-
-        float d_ge = warp_reduce_sum<warp_size>(d_g_exp_shard);
-        const float d_g_val = g_exp_val * d_ge;
-
-        // === WRITE GRADIENTS TO GLOBAL MEMORY ===
-
-        // d_v: each column writes its own unique location — no conflict.
-        {
-            const int64_t dv_idx = dv_base + col + t * S_v;
-            dst[dv_idx] = d_v_val;
-        }
-
-        // d_g and d_beta: per-head scalars, only col==0 writes.
-        if (col == 0 && lane == 0) {
-            dst[dg_base + t] = d_g_val;
-            dst[db_base + t] = d_beta_val;
-        }
-
-        // d_q and d_k: atomicAdd for head expansion.
-#pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            const int i = r * warp_size + lane;
-            if (i < S_k) {
-                atomicAdd(dst + dq_h_offs + t * S_k * H_k + i, d_out * scale * s_reg[r]);
-                float s_prev_i = (s_reg[r] - k_reg[r] * delta_val) / g_exp_val;
-                float dk_val = d_sn_o[r] * delta_val + d_kv * g_exp_val * s_prev_i;
-                atomicAdd(dst + nq + dk_h_offs + t * S_k * H_k + i, dk_val);
-            }
-        }
-
-        // d_state for t==0: each column writes its own rows.
-        if (t == 0) {
-            const int64_t ds_base = nq + nk + nv + ng + nb +
-                (sequence * H + h_idx) * S_v * S_v + col * S_v;
+            // --- d_S_t_total[i] = d_sn_o[i] + d_kv * k[i] ---
+            float d_st_total[rows_per_lane];
 #pragma unroll
             for (int r = 0; r < rows_per_lane; r++) {
                 const int i = r * warp_size + lane;
-                dst[ds_base + i] = g_exp_val * d_sd_total[r];
+                if (i < S_k) {
+                    d_st_total[r] = d_sn_o[r] + d_kv * k_reg[r];
+                } else {
+                    d_st_total[r] = d_sn_o[r];
+                }
             }
-        }
 
-        // Undo forward update: S_{t-1}[i] = (S_t[i] - k_t[i]*delta_t) / g_exp_t
-        // Propagate dS: d_S_{t-1}[i] += g_exp_t * d_sd_total[i]
+            // Add accumulated dS from later tokens.
+            float d_sd_total[rows_per_lane];
 #pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            const int i = r * warp_size + lane;
-            if (i < S_k) {
-                s_reg[r] = (s_reg[r] - k_reg[r] * delta_val) / g_exp_val;
-            } else {
-                s_reg[r] = s_reg[r] / g_exp_val;
+            for (int r = 0; r < rows_per_lane; r++) {
+                d_sd_total[r] = d_st_total[r] + dS[r];
             }
-            dS[r] = g_exp_val * d_sd_total[r];
+
+            // --- Backward through S_d = g_exp * S_{t-1}: ---
+            float d_g_exp_shard = 0.0f;
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (t > 0) {
+                    float s_prev_i = (s_reg[r] - ((i < S_k) ? k_reg[r] * delta_val : 0.0f)) / g_exp_val;
+                    d_g_exp_shard += d_sd_total[r] * s_prev_i;
+                } else {
+                    d_g_exp_shard += d_sd_total[r] * s_reg[r];
+                }
+            }
+
+            float d_ge = warp_reduce_sum<warp_size>(d_g_exp_shard);
+            const float d_g_val = g_exp_val * d_ge;
+
+            // === WRITE GRADIENTS TO GLOBAL MEMORY ===
+
+            // d_v: each column writes its own unique location — no conflict.
+            {
+                const int64_t dv_idx = dv_base + col + t * S_v;
+                dst[dv_idx] = d_v_val;
+            }
+
+            // d_g and d_beta: per-head scalars, only col==0 writes.
+            if (col == 0 && lane == 0) {
+                dst[dg_base + t] = d_g_val;
+                dst[db_base + t] = d_beta_val;
+            }
+
+            // d_q and d_k: atomicAdd for head expansion.
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    atomicAdd(dst + dq_h_offs + t * S_k * H_k + i, d_out * scale * s_reg[r]);
+                    float s_prev_i = (s_reg[r] - k_reg[r] * delta_val) / g_exp_val;
+                    float dk_val = d_sn_o[r] * delta_val + d_kv * g_exp_val * s_prev_i;
+                    atomicAdd(dst + nq + dk_h_offs + t * S_k * H_k + i, dk_val);
+                }
+            }
+
+            // d_state for t==0: each column writes its own rows.
+            if (t == 0) {
+                const int64_t ds_base = nq + nk + nv + ng + nb +
+                    (sequence * H + h_idx) * S_v * S_v + col * S_v;
+#pragma unroll
+                for (int r = 0; r < rows_per_lane; r++) {
+                    const int i = r * warp_size + lane;
+                    dst[ds_base + i] = g_exp_val * d_sd_total[r];
+                }
+            }
+
+            // Undo forward update: S_{t-1}[i] = (S_t[i] - k_t[i]*delta_t) / g_exp_t
+            // Propagate dS: d_S_{t-1}[i] += g_exp_t * d_sd_total[i]
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    s_reg[r] = (s_reg[r] - k_reg[r] * delta_val) / g_exp_val;
+                } else {
+                    s_reg[r] = s_reg[r] / g_exp_val;
+                }
+                dS[r] = g_exp_val * d_sd_total[r];
+            }
+
+        } else {
+            // KDA backward.
+            const float * g_t = g_ptr + t * sb2 * S_v;
+
+            // Recompute g_exp per row.
+            float g_exp_reg[rows_per_lane];
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                g_exp_reg[r] = expf(g_t[i]);
+            }
+
+            // Recompute kv per column: sum_i(g_exp[i] * S[i] * k[i]).
+            float kv_shard = 0.0f;
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                kv_shard += g_exp_reg[r] * s_reg[r] * k_reg[r];
+            }
+            float kv_val = warp_reduce_sum<warp_size>(kv_shard);
+
+            // --- Backward through delta = (v - kv)*beta: ---
+            float d_v_val     = d_delta_from_kd * beta_val;
+            float d_beta_val  = d_delta_from_kd * (v_t[col] - kv_val);
+            float d_kv        = -d_delta_from_kd * beta_val;
+
+            // --- Backward through kv = sum_i(g_exp[i] * S[i] * k[i]): ---
+            // d_S from kv: d_kv * g_exp[i] * k[i]
+            // d_g_exp from kv: d_kv * S[i] * k[i]
+            // d_k from kv: d_kv * g_exp[i] * S[i]
+
+            // --- d_S_t_total[i] = d_sn_o[i] + d_kv * g_exp[i] * k[i] ---
+            float d_st_total[rows_per_lane];
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    d_st_total[r] = d_sn_o[r] + d_kv * g_exp_reg[r] * k_reg[r];
+                } else {
+                    d_st_total[r] = d_sn_o[r];
+                }
+            }
+
+            // Add accumulated dS from later tokens.
+            float d_sd_total[rows_per_lane];
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                d_sd_total[r] = d_st_total[r] + dS[r];
+            }
+
+            // --- Backward through S_d[i] = g_exp[i] * S_{t-1}[i]: ---
+            float d_g_shard[rows_per_lane];
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (t > 0) {
+                    float s_prev_i = (s_reg[r] - ((i < S_k) ? k_reg[r] * delta_val : 0.0f)) / g_exp_reg[r];
+                    d_g_shard[r] = d_sd_total[r] * s_prev_i;
+                } else {
+                    d_g_shard[r] = d_sd_total[r] * s_reg[r];
+                }
+            }
+
+            // Also add d_g_exp contribution from kv: d_kv * S[i] * k[i].
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    d_g_shard[r] += d_kv * s_reg[r] * k_reg[r];
+                }
+            }
+
+            // === WRITE GRADIENTS TO GLOBAL MEMORY ===
+
+            // d_v: each column writes its own unique location — no conflict.
+            {
+                const int64_t dv_idx = dv_base + col + t * S_v;
+                dst[dv_idx] = d_v_val;
+            }
+
+            // d_g: per-row values, each lane writes its own rows via atomicAdd.
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (lane == 0) {
+                    // g_exp[i] * d_g_shard[i] to get d_g_raw[i].
+                    float d_g_val = g_exp_reg[r] * d_g_shard[r];
+                    // KDA: g is [S_v, H, n_tokens, n_seqs], stride in dim 0 is sb1/sizeof(float).
+                    atomicAdd(dst + dg_base + i * (sb1 / sizeof(float)) + t, d_g_val);
+                }
+            }
+
+            // d_beta: per-head scalar, only col==0 writes.
+            if (col == 0 && lane == 0) {
+                dst[db_base + t] = d_beta_val;
+            }
+
+            // d_q and d_k: atomicAdd for head expansion.
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    atomicAdd(dst + dq_h_offs + t * S_k * H_k + i, d_out * scale * s_reg[r]);
+
+                    float s_prev_i = (s_reg[r] - k_reg[r] * delta_val) / g_exp_reg[r];
+                    // d_k from output: d_sn_o[i] * delta_val
+                    // d_k from kv:     d_kv * g_exp[i] * S[i]
+                    float dk_val = d_sn_o[r] * delta_val + d_kv * g_exp_reg[r] * s_reg[r];
+                    atomicAdd(dst + nq + dk_h_offs + t * S_k * H_k + i, dk_val);
+                }
+            }
+
+            // d_state for t==0: each column writes its own rows.
+            if (t == 0) {
+                const int64_t ds_base = nq + nk + nv + ng + nb +
+                    (sequence * H + h_idx) * S_v * S_v + col * S_v;
+#pragma unroll
+                for (int r = 0; r < rows_per_lane; r++) {
+                    const int i = r * warp_size + lane;
+                    dst[ds_base + i] = g_exp_reg[r] * d_sd_total[r];
+                }
+            }
+
+            // Undo forward update: S_{t-1}[i] = (S_t[i] - k_t[i]*delta_t) / g_exp[i]
+            // Propagate dS: d_S_{t-1}[i] += g_exp[i] * d_sd_total[i]
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; r++) {
+                const int i = r * warp_size + lane;
+                if (i < S_k) {
+                    s_reg[r] = (s_reg[r] - k_reg[r] * delta_val) / g_exp_reg[r];
+                } else {
+                    s_reg[r] = s_reg[r] / g_exp_reg[r];
+                }
+                dS[r] = g_exp_reg[r] * d_sd_total[r];
+            }
         }
     }
 }
 
-template <int S_v>
+template <bool KDA, int S_v>
 static void launch_gdn_back(
         const float * grad_d, const float * q_d, const float * k_d, const float * v_d,
         const float * g_d, const float * beta_d, const float * state_d,
@@ -319,11 +497,11 @@ static void launch_gdn_back(
     dim3 grid_dims(H, n_seqs, (S_v + num_warps - 1) / num_warps);
     dim3 block_dims(warp_size <= S_v ? warp_size : S_v, num_warps, 1);
 
-    // Shared memory: only 3 * n_tokens floats for scalars. For n_tokens=256: ~3KB.
+    // Shared memory: 3 * n_tokens floats for scalars. For n_tokens=256: ~3KB.
     size_t smem_bytes = 3 * n_tokens * sizeof(float);
 
     const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(grid_dims, block_dims, smem_bytes, stream);
-    ggml_cuda_kernel_launch(gdn_back_cuda<S_v>, launch_params,
+    ggml_cuda_kernel_launch(gdn_back_cuda<S_v, KDA>, launch_params,
         grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
         H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
         neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb);
@@ -334,7 +512,7 @@ void ggml_cuda_op_gdn_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     ggml_tensor * src_q     = dst->src[1];  // [S_k, H_k, n_tokens, ne3_q]
     ggml_tensor * src_k     = dst->src[2];  // [S_k, H_k, n_tokens, ne3_q]
     ggml_tensor * src_v     = dst->src[3];  // [S_v, H, n_tokens, n_seqs]
-    ggml_tensor * src_g     = dst->src[4];  // [1, H, n_tokens, n_seqs]
+    ggml_tensor * src_g     = dst->src[4];  // [1|S_v, H, n_tokens, n_seqs]
     ggml_tensor * src_beta  = dst->src[5];  // [1, H, n_tokens, n_seqs]
     ggml_tensor * src_state = dst->src[6];  // [S_v, S_v, H, n_seqs]
 
@@ -349,7 +527,7 @@ void ggml_cuda_op_gdn_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t n_tokens = nev2;
     const int64_t n_seqs   = nev3;
 
-    GGML_ASSERT(src_g->ne[0] == 1); // non-KDA only
+    const bool kda = (src_g->ne[0] == S_v);
 
     const int64_t S_k = neq0;
     const int64_t H_k = neq1;
@@ -398,30 +576,58 @@ void ggml_cuda_op_gdn_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const uint3 neqk1_magic = init_fastdiv_values(neq1 ? neq1 : 1);
     const uint3 rq3_magic   = init_fastdiv_values(rq3);
 
-    switch (S_v) {
-        case 16:
-            launch_gdn_back<16>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
-                H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
-                neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
-            break;
-        case 32:
-            launch_gdn_back<32>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
-                H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
-                neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
-            break;
-        case 64:
-            launch_gdn_back<64>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
-                H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
-                neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
-            break;
-        case 128:
-            launch_gdn_back<128>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
-                H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
-                neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
-            break;
-        default:
-            GGML_ABORT("unsupported S_v for GDN backward");
-            break;
+    if (kda) {
+        switch (S_v) {
+            case 16:
+                launch_gdn_back<true, 16>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            case 32:
+                launch_gdn_back<true, 32>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            case 64:
+                launch_gdn_back<true, 64>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            case 128:
+                launch_gdn_back<true, 128>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            default:
+                GGML_ABORT("unsupported S_v for GDN backward KDA");
+                break;
+        }
+    } else {
+        switch (S_v) {
+            case 16:
+                launch_gdn_back<false, 16>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            case 32:
+                launch_gdn_back<false, 32>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            case 64:
+                launch_gdn_back<false, 64>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            case 128:
+                launch_gdn_back<false, 128>(grad_d, q_d, k_d, v_d, g_d, beta_d, state_d, dst_d,
+                    H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3,
+                    neqk1_magic, rq3_magic, scale, S_k, H_k, nq, nk, nv, ng, nb, stream);
+                break;
+            default:
+                GGML_ABORT("unsupported S_v for GDN backward");
+                break;
+        }
     }
 }
 

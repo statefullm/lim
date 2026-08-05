@@ -6338,10 +6338,9 @@ struct ggml_tensor * ggml_gdn_back(
     const int64_t n_tokens = v->ne[2];
     const int64_t n_seqs   = v->ne[3];
 
-    // Only non-KDA supported.
-    GGML_ASSERT(g->ne[0] == 1);
+    // Supports both KDA (g->ne[0] == S_v) and non-KDA (g->ne[0] == 1).
+    GGML_ASSERT(g->ne[0] == 1 || g->ne[0] == S_v);
 
-    (void) S_v;
     (void) H;
     (void) n_seqs;
 
@@ -6360,7 +6359,7 @@ struct ggml_tensor * ggml_gdn_back(
     result->src[1] = q;      // [S_k, H_k, n_tokens, n_seqs]
     result->src[2] = k;      // [S_k, H_k, n_tokens, n_seqs]
     result->src[3] = v;      // [S_v, H_v, n_tokens, n_seqs]
-    result->src[4] = g;      // [1, H_v, n_tokens, n_seqs]
+    result->src[4] = g;      // [1|S_v, H_v, n_tokens, n_seqs]
     result->src[5] = beta;   // [1, H_v, n_tokens, n_seqs]
     result->src[6] = state;  // [S_v, S_v, H_v, n_seqs]
 
@@ -7221,9 +7220,10 @@ static void ggml_compute_backward(
             const int64_t H        = src_v->ne[1];
             const int64_t n_tokens = src_v->ne[2];
             const int64_t n_seqs   = src_v->ne[3];
+            (void) S_v;
             (void) H;
+            (void) n_tokens;
             (void) n_seqs;
-            const bool kda = (src_g->ne[0] == S_v);
 
             // Hash indices for src[3..5].
             const size_t isrc3 = src_g ? ggml_hash_find(hash_set, src_g) : (size_t)-1;
@@ -7233,51 +7233,35 @@ static void ggml_compute_backward(
             const bool src4_ng = src_beta && isrc4 != GGML_HASHSET_FULL && ggml_bitset_get(hash_set->used, isrc4) && grads_needed[isrc4];
             const bool src5_ng = src_state && isrc5 != GGML_HASHSET_FULL && ggml_bitset_get(hash_set->used, isrc5) && grads_needed[isrc5];
 
-            if (!kda) {
-                // Non-KDA AR backward via custom op.
-                struct ggml_tensor * all_grads = ggml_gdn_back(ctx, grad, src_q, src_k, src_v, src_g, src_beta, src_state);
+            // Backward via custom op (supports both KDA and non-KDA).
+            struct ggml_tensor * all_grads = ggml_gdn_back(ctx, grad, src_q, src_k, src_v, src_g, src_beta, src_state);
 
-                // Extract individual gradients from the flat output via views.
-                const size_t nq = ggml_nelements(src_q);
-                const size_t nk = ggml_nelements(src_k);
-                const size_t nv = ggml_nelements(src_v);
-                const size_t ng = ggml_nelements(src_g);
-                const size_t nb = ggml_nelements(src_beta);
+            // Extract individual gradients from the flat output via views.
+            const size_t nq = ggml_nelements(src_q);
+            const size_t nk = ggml_nelements(src_k);
+            const size_t nv = ggml_nelements(src_v);
+            const size_t ng = ggml_nelements(src_g);
+            const size_t nb = ggml_nelements(src_beta);
 
-                struct ggml_tensor * d_q = ggml_view_1d(ctx, all_grads, nq, 0);
-                d_q = ggml_reshape(ctx, d_q, src_q);
-                struct ggml_tensor * d_k = ggml_reshape(ctx,
-                    ggml_view_1d(ctx, all_grads, nk, nq * sizeof(float)), src_k);
-                struct ggml_tensor * d_v = ggml_reshape(ctx,
-                    ggml_view_1d(ctx, all_grads, nv, (nq+nk) * sizeof(float)), src_v);
-                struct ggml_tensor * d_g = ggml_reshape(ctx,
-                    ggml_view_1d(ctx, all_grads, ng, (nq+nk+nv) * sizeof(float)), src_g);
-                struct ggml_tensor * d_beta = ggml_reshape(ctx,
-                    ggml_view_1d(ctx, all_grads, nb, (nq+nk+nv+ng) * sizeof(float)), src_beta);
-                struct ggml_tensor * d_state = ggml_reshape(ctx,
-                    ggml_view_1d(ctx, all_grads, ggml_nelements(src_state), (nq+nk+nv+ng+nb) * sizeof(float)), src_state);
+            struct ggml_tensor * d_q = ggml_view_1d(ctx, all_grads, nq, 0);
+            d_q = ggml_reshape(ctx, d_q, src_q);
+            struct ggml_tensor * d_k = ggml_reshape(ctx,
+                ggml_view_1d(ctx, all_grads, nk, nq * sizeof(float)), src_k);
+            struct ggml_tensor * d_v = ggml_reshape(ctx,
+                ggml_view_1d(ctx, all_grads, nv, (nq+nk) * sizeof(float)), src_v);
+            struct ggml_tensor * d_g = ggml_reshape(ctx,
+                ggml_view_1d(ctx, all_grads, ng, (nq+nk+nv) * sizeof(float)), src_g);
+            struct ggml_tensor * d_beta = ggml_reshape(ctx,
+                ggml_view_1d(ctx, all_grads, nb, (nq+nk+nv+ng) * sizeof(float)), src_beta);
+            struct ggml_tensor * d_state = ggml_reshape(ctx,
+                ggml_view_1d(ctx, all_grads, ggml_nelements(src_state), (nq+nk+nv+ng+nb) * sizeof(float)), src_state);
 
-                if (src0_needs_grads) ggml_add_or_set(ctx, cgraph, isrc0, d_q);
-                if (src1_needs_grads) ggml_add_or_set(ctx, cgraph, isrc1, d_k);
-                if (src2_needs_grads) ggml_add_or_set(ctx, cgraph, isrc2, d_v);
-                if (src3_ng) ggml_add_or_set(ctx, cgraph, isrc3, d_g);
-                if (src4_ng) ggml_add_or_set(ctx, cgraph, isrc4, d_beta);
-                if (src5_ng) ggml_add_or_set(ctx, cgraph, isrc5, d_state);
-
-            } else {
-                // KDA or n_tokens>1: zero gradients.
-                if (src0_needs_grads && !cgraph->grads[isrc0]) {
-                    cgraph->grads[isrc0] = ggml_scale(ctx, tensor->src[0], 0.0f);
-                }
-                for (int si = 1; si <= 5; si++) {
-                    struct ggml_tensor * s = tensor->src[si];
-                    if (!s) continue;
-                    const size_t h = ggml_hash_find(hash_set, s);
-                    if (h == GGML_HASHSET_FULL || !ggml_bitset_get(hash_set->used, h)) continue;
-                    if (!grads_needed[h]) continue;
-                    if (!cgraph->grads[h]) cgraph->grads[h] = ggml_scale(ctx, s, 0.0f);
-                }
-            }
+            if (src0_needs_grads) ggml_add_or_set(ctx, cgraph, isrc0, d_q);
+            if (src1_needs_grads) ggml_add_or_set(ctx, cgraph, isrc1, d_k);
+            if (src2_needs_grads) ggml_add_or_set(ctx, cgraph, isrc2, d_v);
+            if (src3_ng) ggml_add_or_set(ctx, cgraph, isrc3, d_g);
+            if (src4_ng) ggml_add_or_set(ctx, cgraph, isrc4, d_beta);
+            if (src5_ng) ggml_add_or_set(ctx, cgraph, isrc5, d_state);
         } break;
 
         case GGML_OP_NONE: {

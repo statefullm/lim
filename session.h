@@ -20,6 +20,7 @@ extern std::string INITIAL_CWD;
 struct SessionState {
   bool auto_continue = false;
   bool reincarnate_mode = false;
+  bool reincarnate_first_turn = false;  // True for the first generation after reincarnate completes
   bool prev_was_interrupted = false;
   bool first_turn_done = false;
   int last_t_count = 0;
