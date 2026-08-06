@@ -1,4 +1,5 @@
 #include "out-prod.cuh"
+#include "convert.cuh"
 
 #include <cstdint>
 
@@ -24,29 +25,12 @@ static __global__ void k_compute_out_prod_ptrs(
     ptrs_c[idx] = dst_d  +  i3      *s3  +  i2      *s2;
 }
 
-void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
-    const ggml_tensor * src0 = dst->src[0];
-    const ggml_tensor * src1 = dst->src[1];
+// Helper: run the cuBLAS GEMM given F32 src0 data pointer and tensor metadata
+static void ggml_cuda_out_prod_gemm(ggml_backend_cuda_context & ctx,
+        const float * src0_d, const float * src1_d, float * dst_d,
+        const ggml_tensor * src0, const ggml_tensor * src1, const ggml_tensor * dst) {
 
     GGML_TENSOR_BINARY_OP_LOCALS
-
-    GGML_ASSERT(src0->type == GGML_TYPE_F32);
-    GGML_ASSERT(src1->type == GGML_TYPE_F32);
-    GGML_ASSERT(dst->type  == GGML_TYPE_F32);
-
-    GGML_ASSERT(ne01 == ne11);
-    GGML_ASSERT(ne0 == ne00);
-    GGML_ASSERT(ne1 == ne10);
-
-    GGML_ASSERT(ne2 % src0->ne[2] == 0);
-    GGML_ASSERT(ne3 % src0->ne[3] == 0);
-
-    GGML_ASSERT(ne2 == src1->ne[2]);
-    GGML_ASSERT(ne3 == src1->ne[3]);
-
-    const float * src0_d = (const float *) src0->data;
-    const float * src1_d = (const float *) src1->data;
-    float       *  dst_d = (float       *)  dst->data;
 
     cudaStream_t   stream = ctx.stream();
     cublasHandle_t handle = ctx.cublas_handle();
@@ -61,10 +45,12 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     const bool src1_T = ggml_is_transposed(src1);
     const cublasOperation_t src1_cublas_op =  src1_T ? CUBLAS_OP_N : CUBLAS_OP_T;
-    const int64_t           ldb            = (src1_T ?        nb10 :        nb11) /  sizeof(float);
-    GGML_ASSERT(                             (src1_T ?        nb11 :        nb10) == sizeof(float));
+    int64_t ldb = (src1_T ? nb10 : nb11) / sizeof(float);
 
-    // data strides in dimensions 2/3
+    // Fix cuBLAS stride requirements
+    if (ldb < ne01 && src1_T) ldb = ne01;
+    if (ldb < ne1  && !src1_T) ldb = ne1;
+
     const size_t s02 = nb02 / sizeof(float);
     const size_t s03 = nb03 / sizeof(float);
     const size_t s12 = nb12 / sizeof(float);
@@ -72,12 +58,10 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const size_t s2  = nb2  / sizeof(float);
     const size_t s3  = nb3  / sizeof(float);
 
-    // dps == dst per src0, used for group query attention
     const int64_t dps2 = ne2 / ne02;
     const int64_t dps3 = ne3 / ne03;
 
     if (dps2 == 1 && ne2 > 1) {
-        // src0 has uniform stride s02 along dim 2; batch the inner loop with a strided GEMM
         GGML_ASSERT(ne2 <= std::numeric_limits<int>::max());
         const int batch_count = (int) ne2;
         for (int64_t i3 = 0; i3 < ne3; ++i3) {
@@ -90,8 +74,6 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                         batch_count));
         }
     } else if (ne2 > 1 || ne3 > 1) {
-        // dps2 > 1 (src0 broadcast along dim 2 with non-uniform stride) or multiple GEMMs
-        // along dim 3: compute per-GEMM pointers on the device and use a single batched GEMM.
         GGML_ASSERT(ne3 > 0);
         GGML_ASSERT(ne2 <= (int64_t) std::numeric_limits<int>::max() / ne3);
         const int batch_count = (int) (ne2 * ne3);
@@ -116,7 +98,6 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                     &beta,  ptrs_c.get(), ldc,
                     batch_count));
     } else {
-        // ne2 == 1 && ne3 == 1: single GEMM
         CUBLAS_CHECK(
             cublasSgemm(handle, CUBLAS_OP_N, src1_cublas_op,
                     ne0, ne1, ne01,
@@ -125,3 +106,52 @@ void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
                     &beta,  dst_d,  ldc));
     }
 }
+
+void ggml_cuda_out_prod(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    GGML_ASSERT(src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+    GGML_ASSERT(ne01 == ne11);
+    GGML_ASSERT(ne0 == ne00);
+    GGML_ASSERT(ne1 == ne10);
+    GGML_ASSERT(ne2 % src0->ne[2] == 0);
+    GGML_ASSERT(ne3 % src0->ne[3] == 0);
+    GGML_ASSERT(ne2 == src1->ne[2]);
+    GGML_ASSERT(ne3 == src1->ne[3]);
+
+    const float * src1_d = (const float *) src1->data;
+    float       *  dst_d = (float       *)  dst->data;
+
+    if (!ggml_is_quantized(src0->type)) {
+        GGML_ASSERT(src0->type == GGML_TYPE_F32);
+        const float * src0_d = (const float *) src0->data;
+        ggml_cuda_out_prod_gemm(ctx, src0_d, src1_d, dst_d, src0, src1, dst);
+        return;
+    }
+
+    // Quantized src0: dequantize to F32 in a temporary pool buffer.
+    ggml_cuda_pool_alloc<float> tmp_src0(ctx.pool());
+    tmp_src0.alloc(ggml_nelements(src0));
+
+    to_fp32_cuda_t to_fp32 = ggml_get_to_fp32_cuda(src0->type);
+    GGML_ASSERT(to_fp32 != nullptr && "no dequantizer for this type");
+    to_fp32(src0->data, tmp_src0.get(), ggml_nelements(src0), ctx.stream());
+
+    // Create a temporary tensor with F32 layout for the GEMM call
+    ggml_tensor src0_f32;
+    memset(&src0_f32, 0, sizeof(src0_f32));
+    memcpy(&src0_f32, src0, sizeof(src0_f32));
+    src0_f32.type = GGML_TYPE_F32;
+    src0_f32.nb[0] = sizeof(float);
+    src0_f32.nb[1] = src0_f32.ne[0] * sizeof(float);
+    src0_f32.nb[2] = src0_f32.ne[1] * src0_f32.nb[1];
+    src0_f32.nb[3] = src0_f32.ne[2] * src0_f32.nb[2];
+
+    ggml_cuda_out_prod_gemm(ctx, tmp_src0.get(), src1_d, dst_d, &src0_f32, src1, dst);
+}
+
+

@@ -11,6 +11,7 @@
 #include <cinttypes>
 #include <map>
 #include <random>
+#include <unordered_map>
 #include <vector>
 
 struct ggml_opt_dataset {
@@ -715,12 +716,15 @@ void ggml_opt_prepare_alloc(
         struct ggml_cgraph  * gf,
         struct ggml_tensor  * inputs,
         struct ggml_tensor  * outputs) {
-    // For static graphs: free old compute context but preserve backward/optimizer
-    // graphs so they can be rebuilt from the new forward graph without reallocating
-    // gradient accumulators and optimizer momenta.
-    // For non-static graphs: full reset as before.
     if (opt_ctx->static_graphs) {
+        // Free the old compute context that owned the previous backward/optimizer nodes.
+        // Must nullify gb_grad/gb_opt so ggml_opt_alloc rebuilds them from the new forward graph.
         ggml_free(opt_ctx->ctx_compute);
+        opt_ctx->gf                = nullptr;
+        opt_ctx->gb_grad           = nullptr;
+        opt_ctx->gb_opt            = nullptr;
+        opt_ctx->allocated_graph   = nullptr;
+        opt_ctx->allocated_graph_copy = nullptr;
     }
     opt_ctx->ctx_compute = ctx_compute;
     opt_ctx->gf          = gf;
@@ -740,7 +744,9 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->build_type = GGML_OPT_BUILD_TYPE_FORWARD;
     }
 
-    if (!opt_ctx->static_graphs) {
+    if (!opt_ctx->static_graphs || !opt_ctx->gb_opt) {
+        // Rebuild backward/optimizer graphs if not yet built or if the forward
+        // graph was swapped in via a re-call to ggml_opt_prepare_alloc.
         ggml_opt_build(opt_ctx);
     }
 
