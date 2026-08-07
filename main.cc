@@ -529,18 +529,29 @@ int main(int argc, char ** argv) {
   bool prompt_file_exists = false;
   {
     string config_prompt_path = LIM_CONFIG_DIR + "/prompt";
-    string legacy_prompt_path = HOME + "/prompt";
     ifstream prompt_file(config_prompt_path);
-    if (!prompt_file.is_open()) {
-      // Backward compatibility: fall back to ~/prompt
-      prompt_file.open(legacy_prompt_path);
-    }
     if (prompt_file.is_open()) {
       stringstream buffer;
       buffer << prompt_file.rdbuf();
       system_prompt = buffer.str();
       prompt_file.close();
       prompt_file_exists = true;
+    }
+
+    // Load site-specific localprompt: check current directory first, then LIM_CONFIG_DIR.
+    {
+      string cwd_localprompt_path = "./localprompt";
+      string config_localprompt_path = LIM_CONFIG_DIR + "/localprompt";
+      ifstream localprompt_file(cwd_localprompt_path);
+      if (!localprompt_file.is_open()) {
+        localprompt_file.open(config_localprompt_path);
+      }
+      if (localprompt_file.is_open()) {
+        stringstream buffer;
+        buffer << localprompt_file.rdbuf();
+        system_prompt += "\n" + buffer.str();
+        localprompt_file.close();
+      }
     }
   }
 

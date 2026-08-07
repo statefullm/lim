@@ -1,1 +1,2 @@
-Explain everything needed to continue the current session without any prior knowledge, including the goal and the files to modify. Tell the llm to proceed incrementally, including how to compile.
+Explain everything needed to continue the current session without any prior knowledge, including the goal and the files to modify. Tell the llm to proceed incrementally, including how to compile and that it must *NOT* modify userprompt.
+
