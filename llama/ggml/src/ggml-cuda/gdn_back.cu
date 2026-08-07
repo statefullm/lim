@@ -580,11 +580,6 @@ __global__ void gdn_back_fwd_cuda(
 #pragma unroll
         for (int r = 0; r < rows_per_lane; r++) {
             const int i = r * warp_size + lane;
-            s_reg[r] = 0.0f; // placeholder, overwritten below
-        }
-#pragma unroll
-        for (int r = 0; r < rows_per_lane; r++) {
-            const int i = r * warp_size + lane;
             if (i < S_k) k_reg[r] = k_t[i]; else k_reg[r] = 0.0f;
         }
 
@@ -1005,10 +1000,13 @@ static void launch_gdn_back_chunked(
     CUDA_CHECK(cudaMallocAsync(&bwd_dS_d, bwd_dS_size, stream));
     CUDA_CHECK(cudaMemsetAsync(bwd_dS_d, 0, bwd_dS_size, stream));
 
-    // Phase 1: Forward sweep — all chunks in parallel.
-    {
+    // Phase 1: Forward sweep — chunks must run sequentially in forward order.
+    // Chunk N reads fwd_states[N-1] (written by chunk N-1), so parallel launch
+    // creates a data race.  Launch one chunk at a time from first to last.
+    for (int ci = 0; ci < n_chunks; ++ci) {
+        dim3 grid_one(H, n_seqs, 1);
         const ggml_cuda_kernel_launch_params lp =
-            ggml_cuda_kernel_launch_params(grid_dims, block_dims, 0, stream);
+            ggml_cuda_kernel_launch_params(grid_one, block_dims, 0, stream);
         ggml_cuda_kernel_launch(gdn_back_fwd_cuda<S_v, KDA>, lp,
             q_d, k_d, v_d, g_d, beta_d, state_d, fwd_states_d,
             H, n_tokens, n_seqs, n_chunks, chunk_size,
@@ -1016,10 +1014,14 @@ static void launch_gdn_back_chunked(
             neqk1_magic, rq3_magic, S_k);
     }
 
-    // Phase 2: Backward sweep — all chunks in parallel (process in reverse).
-    {
+    // Phase 2: Backward sweep — chunks must run sequentially in reverse order.
+    // Chunk N reads bwd_dS[chunk_id] (written by chunk N+1), so parallel launch
+    // creates a data race.  Launch one chunk at a time from last to first; each
+    // kernel covers all (head, seq) combinations for that chunk.
+    for (int ci = n_chunks - 1; ci >= 0; --ci) {
+        dim3 grid_one(H, n_seqs, 1);
         const ggml_cuda_kernel_launch_params lp =
-            ggml_cuda_kernel_launch_params(grid_dims, block_dims, 0, stream);
+            ggml_cuda_kernel_launch_params(grid_one, block_dims, 0, stream);
         ggml_cuda_kernel_launch(gdn_back_bwd_cuda<S_v, KDA>, lp,
             grad_d, q_d, k_d, v_d, g_d, beta_d, state_d,
             fwd_states_d, bwd_dS_d, dst_d,

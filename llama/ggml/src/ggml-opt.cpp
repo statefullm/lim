@@ -326,8 +326,7 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
 
     const enum ggml_opt_optimizer_type optimizer = opt_ctx->optimizer;
 
-    const bool accumulate = opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_GRAD &&
-        !(opt_ctx->static_graphs && opt_ctx->build_type_alloc == GGML_OPT_BUILD_TYPE_OPT && opt_ctx->opt_period == 1);
+    const bool accumulate = opt_ctx->build_type_alloc >= GGML_OPT_BUILD_TYPE_GRAD;
 
     const bool need_momenta = opt_ctx->build_type_alloc == GGML_OPT_BUILD_TYPE_OPT &&
         opt_ctx->optimizer == GGML_OPT_OPTIMIZER_TYPE_ADAMW;
@@ -545,6 +544,28 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     }
 
     opt_ctx->buf_cpu = ggml_backend_alloc_ctx_tensors_from_buft(opt_ctx->ctx_cpu, ggml_backend_cpu_buffer_type());
+
+    // Zero-initialize all optimizer state tensors (grad_accs, grad_m, grad_v).
+    // GPU memory from cudaMallocAsync is NOT zeroed, so these buffers contain
+    // garbage that would corrupt the first optimizer step.
+    for (size_t i = 0; i < opt_ctx->grad_accs.size(); ++i) {
+        struct ggml_tensor * acc = opt_ctx->grad_accs[i];
+        if (acc && acc->data) {
+            ggml_backend_tensor_memset(acc, 0, 0, ggml_nbytes(acc));
+        }
+    }
+    for (size_t i = 0; i < opt_ctx->grad_m.size(); ++i) {
+        struct ggml_tensor * m = opt_ctx->grad_m[i];
+        if (m && m->data) {
+            ggml_backend_tensor_memset(m, 0, 0, ggml_nbytes(m));
+        }
+    }
+    for (size_t i = 0; i < opt_ctx->grad_v.size(); ++i) {
+        struct ggml_tensor * v = opt_ctx->grad_v[i];
+        if (v && v->data) {
+            ggml_backend_tensor_memset(v, 0, 0, ggml_nbytes(v));
+        }
+    }
 }
 
 ggml_opt_context_t ggml_opt_init(struct ggml_opt_params params) {
@@ -834,6 +855,21 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
     }
 
     ggml_backend_sched_graph_compute(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+
+    // With static graphs, zero grad_accs after each optimizer step so the next
+    // batch starts from clean accumulators.  Without this, stale gradients from
+    // the previous batch would leak into the new backward pass because
+    // ggml_build_backward_expand is only called once and sets grads[i] = accs[i],
+    // causing all subsequent ggml_add_or_set calls to add-inplace on non-zero data.
+    if (opt_ctx->static_graphs && opt_ctx->allocated_graph == opt_ctx->gb_opt) {
+        for (size_t i = 0; i < opt_ctx->grad_accs.size(); ++i) {
+            struct ggml_tensor * acc = opt_ctx->grad_accs[i];
+            if (acc && acc->data) {
+                ggml_backend_tensor_memset(acc, 0, 0, ggml_nbytes(acc));
+            }
+        }
+    }
+
     opt_ctx->iter += opt_ctx->allocated_graph == opt_ctx->gb_opt;
     opt_ctx->opt_i = (opt_ctx->opt_i + 1) % opt_ctx->opt_period;
 

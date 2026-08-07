@@ -9708,6 +9708,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     // overflow: n_tokens > K -- only the last K snapshots kept.
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 32,   8, 1, 1, false, false, /*K=*/3));
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 4, 64,  16, 2, 1, false, false, /*K=*/4));
+    // Multi-sequence regression tests (n_seqs > 1 backward bug)
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 48, 128, 4, 4, 1, false, false, /*K=*/1));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 48, 128, 16, 4, 1, false, false, /*K=*/1));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 4, 2, 1, false, false, /*K=*/1));
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 16, 2, 1, false, false, /*K=*/1));
 
 #if 0
     // these tests are disabled to save execution time, sbut they can be handy for debugging
@@ -10064,6 +10069,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1));   // Qwen3.5-like: 32 heads, d=128
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 16, 64,  1, 1));   // smaller model
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 1, 1, 1, false, true)); // KDA
+    // Multi-sequence tests (regression for n_seqs > 1 backward bug)
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 48, 128, 4, 4));   // Qwen3.6-like: 48 heads, d=128, 4 seqs
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 48, 128, 16, 4));  // chunked path, 4 seqs
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 4, 2));   // 2 seqs
+    test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 16, 2));  // chunked path, 2 seqs
     // PP: n_seq_tokens=64,256 (prompt processing)
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 64, 1));  // PP-64
     test_cases.emplace_back(new test_gated_delta_net(GGML_TYPE_F32, 32, 128, 256, 1)); // PP-256
