@@ -80,6 +80,10 @@ $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-commo
 	@echo "[llama.cpp] Building..."
 	cd $(LLAMA_DIR) && cmake --build $(abspath $(LIM_LLAMA_BUILD_DIR)) --target llama --target llama-common
 
+.PHONY: lora
+lora: | $(LIM_LLAMA_BUILD_DIR)
+	cd $(LLAMA_DIR) && cmake --build $(abspath $(LIM_LLAMA_BUILD_DIR)) --target llama-finetune-lora
+
 $(TARGET): $(FILES:=.o) | $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so
 	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 else
