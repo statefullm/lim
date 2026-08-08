@@ -425,7 +425,6 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 
 | Command | Effect |
 |---|---|
-| `/quit` or `/exit` | Auto-save the current state to `$LIM_LOG_DIR/<N>.save`, then exit the session |
 | `/clear` | Auto-save the current state to `$LIM_LOG_DIR/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
 | `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models (Qwen3.5/3.6), instant undo works for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback unless restored via `--checkpoints`. Readline history is updated to reflect the restored session state. |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
@@ -433,6 +432,8 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
 | `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
+| `/quit` or `/exit` | Auto-save the current state to `$LIM_LOG_DIR/<N>.save`, then exit the session |
+| `/quit <path>` or `/exit <path>` | Named save with fast cache to `<path>.save`, then exit the session. Accepts the same path format as `/save`. |
 | `/load <path>` | Load a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
 | `/delete <path>` | Delete a save file and its associated fast restore cache entry (if any). Accepts the same path format as `/save`: `.save` is appended automatically if not already present. |
 | `/help` | Display a summary of all available commands |
