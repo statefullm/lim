@@ -853,17 +853,17 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
       return out;
     }
     begin_line = static_cast<int>(val);
-    if (begin_line < 1) begin_line = 1;
   }
   if (!end_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(end_str.c_str(), &endptr, 10);
-    if (*endptr != '\0' || end_str.empty() || val < 1) {
+    if (*endptr != '\0' || end_str.empty() || val < 0) {
       out["error"] = "Error: 'end' must be a positive integer.";
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
     end_line = static_cast<int>(val);
+    if (end_line < 1) end_line = begin_line;
   }
 
   // If end was not provided, default it to begin (show that single line).

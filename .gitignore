@@ -27,6 +27,7 @@ vscode-extension/*.vsix
 log/
 .lim_history
 userprompt
+localprompt
 
 # OS files
 .DS_Store

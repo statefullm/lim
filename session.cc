@@ -2033,11 +2033,39 @@ bool ChatSession::run() {
                     string corr_tool_call_raw = corr_text.substr(cs, ce - cs + string(FUNC_END).length());
 
                     if (!validate_tool_call(corr_tool_call_raw)) {
-                        diag("System: Correction produced another invalid tool call. Ejecting to prompt.", "\033[1;31m");
-                        state_.invalid_tool_strikes++;
-                        if (state_.invalid_tool_strikes >= 5) {
-                            diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool call" + (state_.invalid_tool_strikes != 1 ? "s" : "") + ". Intervention failed, ejecting to prompt.", "\033[1;31m");
+                        diag("System: Correction produced another invalid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
+
+                        // Roll back the failed correction tokens so the KV cache is left clean.
+                        // Restore to the checkpoint position (before the original bad tool call).
+                        {
+                            llama_memory_t mem = llama_get_memory(ctx_);
+                            llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+                            llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+                            bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
+                            if (rm_ok) {
+                                n_past_ = state_.tool_correction_n_past;
+                                state_.all_context_tokens.resize(state_.tool_correction_n_past);
+                            } else {
+                                diag("System: Correction rollback failed, re-decoding...", "\033[33m");
+                                llama_memory_clear(mem, true);
+                                n_past_ = 0;
+                                if (!feed_tokens_impl(state_.all_context_tokens)) {
+                                    diag("Correction restore failed. Type /clear to reset.", "\033[31m");
+                                    state_.auto_continue = false;
+                                    continue;
+                                }
+                                // Find the checkpoint position in the re-decoded tokens.
+                                n_past_ = state_.tool_correction_n_past;
+                                state_.all_context_tokens.resize(n_past_);
+                            }
                         }
+
+                        // Re-enable the checkpoint for a future correction attempt (e.g., after /continue).
+                        state_.has_tool_correction_checkpoint = true;
+                        state_.tool_correction_checkpoint_idx =
+                            (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
+                        state_.tool_correction_n_past = n_past_;
+                        state_.auto_continue = false;
                         continue;
                     }
 
@@ -2111,11 +2139,36 @@ bool ChatSession::run() {
                         continue;
                     }
                 } else {
-                    diag("System: Correction failed to produce valid tool call. Ejecting to prompt.", "\033[1;31m");
-                    state_.invalid_tool_strikes++;
-                    if (state_.invalid_tool_strikes >= 5) {
-                        diag("System: " + std::to_string(state_.invalid_tool_strikes) + " consecutive invalid tool call" + (state_.invalid_tool_strikes != 1 ? "s" : "") + ". Intervention failed, ejecting to prompt.", "\033[1;31m");
+                    diag("System: Correction failed to produce valid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
+
+                    // Roll back the failed correction tokens so the KV cache is left clean.
+                    {
+                        llama_memory_t mem = llama_get_memory(ctx_);
+                        llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+                        llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+                        bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
+                        if (rm_ok) {
+                            n_past_ = state_.tool_correction_n_past;
+                            state_.all_context_tokens.resize(state_.tool_correction_n_past);
+                        } else {
+                            diag("System: Correction rollback failed, re-decoding...", "\033[33m");
+                            llama_memory_clear(mem, true);
+                            n_past_ = 0;
+                            if (!feed_tokens_impl(state_.all_context_tokens)) {
+                                diag("Correction restore failed. Type /clear to reset.", "\033[31m");
+                                state_.auto_continue = false;
+                                continue;
+                            }
+                            n_past_ = state_.tool_correction_n_past;
+                            state_.all_context_tokens.resize(n_past_);
+                        }
                     }
+
+                    state_.has_tool_correction_checkpoint = true;
+                    state_.tool_correction_checkpoint_idx =
+                        (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
+                    state_.tool_correction_n_past = n_past_;
+                    state_.auto_continue = false;
                 }
             }
             continue;
@@ -2123,6 +2176,14 @@ bool ChatSession::run() {
 
         // 9. Log assistant output (skip if already logged via process_tool_call)
         if (!state_.auto_continue && !assistant_logged_this_turn_ && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
+
+        // Reset per-turn failure state before returning to the user prompt.
+        // Strikes, correction flags, and tool-interrupt state are only meaningful
+        // within a single auto-continue chain; once the user gets control back,
+        // they start fresh so that /continue or a new prompt behave correctly.
+        reset_llm_state();
+        state_.correction_attempted_this_turn = false;
+        state_.tool_interrupt_pending = false;
 
         // 10. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;

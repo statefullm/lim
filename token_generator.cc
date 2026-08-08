@@ -335,7 +335,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             bool incomplete_tool = (active_ts != string::npos && active_te == string::npos);
 
             int poll_iter_used = 0;
-            static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 64;
+            static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 256;
             const char* eog_env = getenv("LIM_EOG_RESAMPLE_MAX");
             int max_iterations = (eog_env != nullptr && strlen(eog_env) > 0) ? atoi(eog_env) : DEFAULT_EOG_RESAMPLE_MAX;
             max_iterations = std::max(1, max_iterations);
