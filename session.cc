@@ -79,8 +79,8 @@ static const struct CmdInfo {
     ArgType arg;
     const char* description;
 } g_commands[] = {
-    { "quit",         Cmd::QUIT,        ArgType::NONE,   "Save to log/<N>.save and exit" },
-    { "exit",         Cmd::QUIT,        ArgType::NONE,   nullptr },              // alias, not shown in help
+    { "quit",         Cmd::QUIT,        ArgType::PATH,   "Save session and exit; /quit <path> does a named save with fast cache" },
+    { "exit",         Cmd::QUIT,        ArgType::PATH,   nullptr },              // alias, not shown in help
     { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
     { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
     { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
@@ -642,6 +642,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
                 if (c.cmd == Cmd::SAVE)    save_prefix_   = arg;
                 if (c.cmd == Cmd::RESTORE) restore_path_  = arg;
                 if (c.cmd == Cmd::DELETE)  delete_path_   = arg;
+                if (c.cmd == Cmd::QUIT)    save_prefix_   = arg;
                 return static_cast<Command>(c.cmd);
 
             case ArgType::NONE:
@@ -1101,12 +1102,20 @@ bool ChatSession::run() {
             // If there's actual conversation to preserve, auto-save before exiting.
             // Skip if the user just manually saved -- nothing has changed since then.
             if (!state_.prompt_checkpoints.empty() && !prev_was_save_) {
-                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
-                if (!ok) {
-                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+                string save_path;
+                bool write_v1 = false;
+                if (!save_prefix_.empty()) {
+                    // Named save: use fast cache for instant future restores.
+                    save_path = apply_save_dir(make_save_path(save_prefix_, ""));
+                    write_v1 = true;
                 } else {
-                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
+                    save_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save";
+                }
+                bool ok = save_session_with_header(state_.all_context_tokens, save_path, write_v1, ctx_, &state_.prompt_checkpoints, state_.log_index);
+                if (!ok) {
+                    diag("Auto-save failed: could not write " + save_path, "\033[33m");
+                } else {
+                    diag("Auto-saved to " + save_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
                 }
             }
 
