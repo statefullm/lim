@@ -199,6 +199,14 @@ llama_model_qwen35::graph::graph(const llama_model & model, const llm_graph_para
         cur = ggml_add(ctx0, cur, ffn_residual);
         cb(cur, "post_ffn", il);
 
+        // Clamp layer output to prevent extreme values propagating through residuals
+        // This is a standard training safeguard (similar to SwiGLU clamp but on the residual)
+        {
+            constexpr float activation_clamp = 30.0f;
+            cur = ggml_clamp(ctx0, cur, -activation_clamp, activation_clamp);
+            cb(cur, "l_out_clamped", il);
+        }
+
         cur = build_cvec(cur, il);
         cb(cur, "l_out", il);
 

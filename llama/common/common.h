@@ -599,6 +599,7 @@ struct common_params {
     // finetune
     struct lr_opt lr;
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+    float max_grad_norm = 1.0f; // per-parameter gradient norm clipping (0 = disabled)
     float val_split = 0.05f; // fraction of the data used for the validation set
 
     // embedding

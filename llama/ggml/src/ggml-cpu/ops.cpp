@@ -11695,7 +11695,7 @@ static void ggml_compute_forward_opt_step_adamw_f32(
     GGML_ASSERT(ggml_are_same_shape(src0, src0_grad));
     GGML_ASSERT(ggml_are_same_shape(src0, src0_grad_m));
     GGML_ASSERT(ggml_are_same_shape(src0, src0_grad_v));
-    GGML_ASSERT(ggml_nelements(adamw_params) == 7);
+    GGML_ASSERT(ggml_nelements(adamw_params) == 8);
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -11773,7 +11773,7 @@ static void ggml_compute_forward_opt_step_sgd_f32(const ggml_compute_params * pa
     const ggml_tensor * sgd_params = dst->src[2];
 
     GGML_ASSERT(ggml_are_same_shape(src0, src0_grad));
-    GGML_ASSERT(ggml_nelements(sgd_params) == 2);
+    GGML_ASSERT(ggml_nelements(sgd_params) == 3);
 
     const int ith = params->ith;
     const int nth = params->nth;

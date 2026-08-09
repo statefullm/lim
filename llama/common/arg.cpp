@@ -4380,6 +4380,11 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
     add_opt(common_arg(
+        {"--grad-clip"}, "N",
+        string_format("per-parameter gradient norm clipping threshold, 0=disabled (default: %.2f)", params.max_grad_norm),
+        [](common_params & params, const std::string & value) { params.max_grad_norm = std::stof(value); }
+    ).set_examples({ LLAMA_EXAMPLE_FINETUNE }));
+    add_opt(common_arg(
         {"--check"},
         string_format("check rather than generate results (default: %s)", params.check ? "true" : "false"),
         [](common_params & params) {

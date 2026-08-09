@@ -127,6 +127,11 @@ extern "C" {
 
         // only GGML_OPT_OPTIMIZER_TYPE_ADAMW needs m, v momenta per parameter tensor
         enum ggml_opt_optimizer_type optimizer;
+
+        // Per-parameter gradient norm clipping.  If > 0, each parameter's gradient
+        // is scaled so that its L2 norm does not exceed this value before the
+        // optimizer step.  Prevents numerical instability during long training runs.
+        float max_grad_norm;
     };
 
     // get parameters for an optimization context with defaults set where possible

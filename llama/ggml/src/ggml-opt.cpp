@@ -47,9 +47,10 @@ struct ggml_opt_context {
     struct ggml_tensor * outputs = nullptr;
     struct ggml_tensor * labels  = nullptr;
 
-    struct ggml_tensor * loss     = nullptr;
-    struct ggml_tensor * pred     = nullptr;
-    struct ggml_tensor * ncorrect = nullptr;
+    struct ggml_tensor * loss       = nullptr;
+    struct ggml_tensor * pred       = nullptr;
+    struct ggml_tensor * ncorrect   = nullptr;
+    struct ggml_tensor * logits_diag = nullptr; // L2 norm of logits for NaN diagnostics
 
     struct ggml_cgraph * gf      = nullptr;
     struct ggml_cgraph * gb_grad = nullptr;
@@ -70,6 +71,7 @@ struct ggml_opt_context {
     struct ggml_tensor *          opt_step_params = nullptr; // Stores output of get_opt_pars.
 
     enum ggml_opt_optimizer_type optimizer = GGML_OPT_OPTIMIZER_TYPE_ADAMW;
+    float                        max_grad_norm = 0.0f;
 };
 
 struct ggml_opt_result {
@@ -257,6 +259,7 @@ struct ggml_opt_params ggml_opt_default_params(
         /*get_opt_pars    =*/ ggml_opt_get_default_optimizer_params,
         /*get_opt_pars_ud =*/ nullptr,
         /*optimizer       =*/ GGML_OPT_OPTIMIZER_TYPE_ADAMW,
+        /*max_grad_norm   =*/ 0.0f,
     };
 }
 
@@ -410,8 +413,7 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
                 ggml_set_name(opt_ctx->loss, "loss_cross_entropy_scaled");
             }
             opt_ctx->loss_per_datapoint = true;
-            break;
-        }
+        } break;
         case GGML_OPT_LOSS_TYPE_MEAN_SQUARED_ERROR: {
             opt_ctx->labels = ggml_dup_tensor(ctx_results, opt_ctx->outputs);
             ggml_set_input(opt_ctx->labels);
@@ -503,7 +505,7 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
     // gb_opt == graph backward optimize, forward pass, then backward pass to calculate gradients, then optimizer step.
     opt_ctx->gb_opt = ggml_graph_dup(opt_ctx->ctx_compute, opt_ctx->gb_grad, /*force_grads =*/ true);
 
-    opt_ctx->opt_step_params = ggml_new_tensor_1d(opt_ctx->ctx_cpu, GGML_TYPE_F32, need_momenta ? 7 : 2);
+    opt_ctx->opt_step_params = ggml_new_tensor_1d(opt_ctx->ctx_cpu, GGML_TYPE_F32, need_momenta ? 8 : 3);
     ggml_tensor * adamw_params = opt_ctx->opt_step_params;
     ggml_set_input(adamw_params);
     const char * optimizer_name = ggml_opt_optimizer_name(opt_ctx->optimizer);
@@ -521,13 +523,35 @@ static void ggml_opt_build(ggml_opt_context_t opt_ctx) {
                 ggml_format_name(m, "AdamW m for %s", node->name);
                 ggml_format_name(v, "AdamW v for %s", node->name);
             }
+            struct ggml_tensor * opt_grad = grad;
+            // Per-parameter gradient norm clipping to prevent numerical instability.
+            if (opt_ctx->max_grad_norm > 0.0f) {
+                // Compute ||grad||_2 = sqrt(sum(grad^2))
+                struct ggml_tensor * gnorm = ggml_sqrt(
+                    opt_ctx->ctx_compute,
+                    ggml_sum(opt_ctx->ctx_compute,
+                        ggml_mul(opt_ctx->ctx_compute, grad, grad)));
+                // clip_factor = clamp(max_grad_norm / ||grad||, 0, 1)
+                // max_grad_norm is stored in opt_step_params[7] (AdamW) or [2] (SGD),
+                // set at eval time — same pattern as adamw/sgd params.
+                int pidx = need_momenta ? 7 : 2;
+                struct ggml_tensor * max_norm_t = ggml_view_1d(
+                    opt_ctx->ctx_compute, opt_ctx->opt_step_params, 1, pidx * sizeof(float));
+                struct ggml_tensor * clip_factor = ggml_clamp(
+                    opt_ctx->ctx_compute,
+                    ggml_div(opt_ctx->ctx_compute, max_norm_t, gnorm),
+                    0.0f, 1.0f);
+                // scale grad by clip_factor (broadcast scalar over tensor)
+                opt_grad = ggml_mul(opt_ctx->ctx_compute, grad, clip_factor);
+                ggml_format_name(opt_grad, "clipped_grad for %s", node->name);
+            }
             struct ggml_tensor * opt_step;
             switch (optimizer) {
                 case GGML_OPT_OPTIMIZER_TYPE_ADAMW:
-                    opt_step = ggml_opt_step_adamw(opt_ctx->ctx_compute, node, grad, m, v, adamw_params);
+                    opt_step = ggml_opt_step_adamw(opt_ctx->ctx_compute, node, opt_grad, m, v, adamw_params);
                     break;
                 case GGML_OPT_OPTIMIZER_TYPE_SGD:
-                    opt_step = ggml_opt_step_sgd(opt_ctx->ctx_compute, node, grad, adamw_params);
+                    opt_step = ggml_opt_step_sgd(opt_ctx->ctx_compute, node, opt_grad, adamw_params);
                     break;
                 default:
                     GGML_ABORT("fatal error");
@@ -581,6 +605,7 @@ ggml_opt_context_t ggml_opt_init(struct ggml_opt_params params) {
     result->get_opt_pars     = params.get_opt_pars;
     result->get_opt_pars_ud  = params.get_opt_pars_ud;
     result->optimizer        = params.optimizer;
+    result->max_grad_norm    = params.max_grad_norm;
 
     GGML_ASSERT(result->opt_period >= 1);
 
@@ -840,6 +865,7 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
                 adamw_par_data[4] = opt_pars.adamw.wd;
                 adamw_par_data[5] = beta1h;
                 adamw_par_data[6] = beta2h;
+                adamw_par_data[7] = opt_ctx->max_grad_norm;
             } break;
             case GGML_OPT_OPTIMIZER_TYPE_SGD: {
                 GGML_ASSERT(opt_pars.sgd.alpha > 0.0f);
@@ -848,6 +874,7 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
                 float * sgd = ggml_get_data_f32(opt_ctx->opt_step_params);
                 sgd[0] = opt_pars.sgd.alpha;
                 sgd[1] = opt_pars.sgd.wd;
+                sgd[2] = opt_ctx->max_grad_norm;
             } break;
             default:
                 GGML_ABORT("fatal error");
@@ -905,6 +932,36 @@ void ggml_opt_eval(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
     ggml_backend_tensor_get(opt_ctx->loss, &loss, 0, ggml_nbytes(opt_ctx->loss));
     result->loss.push_back(loss);
 
+    // Diagnostic: when loss is NaN/Inf, sample logits to determine source.
+    // opt_ctx->outputs has shape [n_vocab, n_ubatch]. We read a few elements
+    // from different positions to check for NaN/Inf in the forward pass output.
+    if (opt_ctx->loss_type == GGML_OPT_LOSS_TYPE_CROSS_ENTROPY &&
+        (std::isnan(loss) || std::isinf(loss))) {
+        const int64_t n_vocab = opt_ctx->outputs->ne[0];
+        const int64_t n_tok   = opt_ctx->outputs->ne[1];
+        // Sample up to 8 positions: first/last token, various vocab indices
+        struct { int64_t v; int64_t t; } samples[] = {
+            {0, 0}, {(int64_t)(n_vocab/4), 0}, {(int64_t)(n_vocab/2), 0},
+            {(int64_t)(3*n_vocab/4), 0}, {0, n_tok-1}, {(int64_t)(n_vocab/2), n_tok-1},
+            {(int64_t)(n_vocab-1), 0}, {(int64_t)(n_vocab-1), n_tok-1},
+        };
+        bool any_bad = false;
+        fprintf(stderr, "\n[NaN DIAG] loss=nan at batch. Sampling logits (%ld x %ld):\n",
+                n_vocab, n_tok);
+        for (auto & s : samples) {
+            float val = 0;
+            size_t offset = (s.t * n_vocab + s.v) * sizeof(float);
+            ggml_backend_tensor_get(opt_ctx->outputs, &val, offset, sizeof(float));
+            const char * status = std::isnan(val) ? "NaN" :
+                                  std::isinf(val) ? "Inf" : "OK";
+            if (std::isnan(val) || std::isinf(val)) any_bad = true;
+            fprintf(stderr, "  logits[%ld][%ld] = %.6e (%s)\n",
+                    s.v, s.t, (double)val, status);
+        }
+        fprintf(stderr, "[NaN DIAG] -> %s\n", any_bad ? "FORWARD PASS BUG" : "CROSS-ENTROPY KERNEL BUG (sampled logits OK)");
+        fflush(stderr);
+    }
+
     if (opt_ctx->pred) {
         GGML_ASSERT(opt_ctx->pred->type == GGML_TYPE_I32);
         std::vector<int32_t> pred(ndata);
@@ -941,11 +998,13 @@ void ggml_opt_eval_async(ggml_opt_context_t opt_ctx, ggml_opt_result_t result) {
                 const float beta2h = 1.0f / (1.0f - powf(opt_pars.adamw.beta2, opt_ctx->iter));
                 adamw_par_data[5] = beta1h;
                 adamw_par_data[6] = beta2h;
+                adamw_par_data[7] = opt_ctx->max_grad_norm;
             } break;
             case GGML_OPT_OPTIMIZER_TYPE_SGD: {
                 float * sgd = ggml_get_data_f32(opt_ctx->opt_step_params);
                 sgd[0] = opt_pars.sgd.alpha;
                 sgd[1] = opt_pars.sgd.wd;
+                sgd[2] = opt_ctx->max_grad_norm;
             } break;
             default:
                 GGML_ABORT("fatal error");

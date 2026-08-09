@@ -1,6 +1,9 @@
 #include "clamp.cuh"
 
 static __device__ __forceinline__ float op_clamp(float x, float min, float max) {
+    // NaN-safe: if x is NaN, return min instead of propagating NaN.
+    // This is critical for gradient clipping where NaN clip_factor must become 0.
+    if (x != x) return min;
     return fminf(fmaxf(x, min), max);
 }
 
