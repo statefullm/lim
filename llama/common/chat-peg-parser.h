@@ -157,7 +157,7 @@ class common_chat_peg_builder : public common_peg_parser_builder {
     // Python values plus JSON true/false/null.
     common_peg_parser python_or_json_value();
 
-    // Implementation helpers for standard_json_tools -- one per JSON tool call layout mode
+    // Implementation helpers for standard_json_tools — one per JSON tool call layout mode
     common_peg_parser build_json_tools_function_is_key(const nlohmann::ordered_json & tools,
                                                        const std::string &            args_key,
                                                        const std::string &            effective_args_key,

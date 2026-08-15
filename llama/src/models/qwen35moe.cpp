@@ -675,7 +675,7 @@ llama_model_qwen35moe::graph_mtp::graph_mtp(const llama_model & model, const llm
     cur = build_norm(cur, layer.attn_post_norm, nullptr, LLM_NORM_RMS, il);
     cb(cur, "mtp_attn_post_norm", il);
 
-    // MoE FFN -- routed experts plus gated shared expert (mirrors qwen35moe).
+    // MoE FFN — routed experts plus gated shared expert (mirrors qwen35moe).
     ggml_tensor * moe_out =
         build_moe_ffn(cur,
             layer.ffn_gate_inp,

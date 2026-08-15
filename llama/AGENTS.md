@@ -70,7 +70,7 @@ For first-time contributors, confirm they have reviewed [CONTRIBUTING.md](CONTRI
 
 These points are extremely important - failing to follow them won't necessarily get your PR rejected, but it will make reviewing take significantly longer. Please follow them carefully:
 
-- Avoid emdash `--`, unicode arrow `->` or any unicode characters: `*`, `...` ; use ASCII equivalents instead: `-`, `->`, `x`, `...`
+- Avoid emdash `—`, unicode arrow `→` or any unicode characters: `×`, `…` ; use ASCII equivalents instead: `-`, `->`, `x`, `...`
 - Code comments:
     - Keep code comments concise (usually 1-2 lines)
     - Avoid redundant or excessive inline commentary

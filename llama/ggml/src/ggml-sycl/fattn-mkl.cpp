@@ -36,7 +36,7 @@ using oneapi::mkl::blas::column_major::gemm;
 // ---------------------------------------------------------------------------
 
 // Pack all GQA Q heads for one KV head into fp16, applying q_scale.
-// Launches one kernel per GQA group -- each kernel copies exactly
+// Launches one kernel per GQA group — each kernel copies exactly
 // n_queries * DKQ elements using the per-group dst offset and
 // per-head source stride.
 static void mkl_fa_pack_q_fp16(
@@ -78,7 +78,7 @@ static void mkl_fa_pack_q_fp16(
 }
 
 // Zero-initialize the online softmax state arrays.
-// KQ_max -> -inf, KQ_sum -> 0, VKQ_accum -> 0.
+// KQ_max → -inf, KQ_sum → 0, VKQ_accum → 0.
 // Merged into one kernel to avoid per-array launch overhead.
 static void mkl_fa_init_softmax_state(
     dpct::queue_ptr stream,
@@ -110,8 +110,8 @@ static void mkl_fa_init_softmax_state(
 // The tile spans absolute rows [q0, q0 + q_rows). Score buffers
 // (KQ_f32/S_f16) are indexed RELATIVE to the tile; the persistent state
 // (VKQ_accum/KQ_max/KQ_sum) and mask are indexed by ABSOLUTE row.
-// For each row: find local max -> rescale previous VKQ_accum ->
-// compute exp(s - max) -> write S_f16 -> update running max/sum.
+// For each row: find local max → rescale previous VKQ_accum →
+// compute exp(s - max) → write S_f16 → update running max/sum.
 static void mkl_fa_online_softmax_chunk(
     dpct::queue_ptr stream,
     float * __restrict KQ_f32,
@@ -287,7 +287,7 @@ static mkl_fa_kv_desc mkl_fa_make_desc(const ggml_tensor * T, bool interleaved, 
         const int64_t bs          = (int64_t)ggml_blck_size(T->type);
         const int64_t blk_per_row = T->ne[0] / bs;
         // True Gemma interleave packs heads within a row (nb[2] < ne[1]*nb[1])
-        // -> reconstruct physical strides. Padded seq-views (nb[2] > ne[1]*nb[1])
+        // → reconstruct physical strides. Padded seq-views (nb[2] > ne[1]*nb[1])
         // already have correct physical strides.
         const bool gemma = interleaved &&
             ((int64_t)T->nb[2] < (int64_t)T->ne[1] * (int64_t)T->nb[1]);
@@ -341,7 +341,7 @@ static void mkl_fa_dequant_chunk(
             const int64_t base_blocks = (int64_t)ikvh * d.s02
                 + (int64_t)chunk_start * d.s01;
             const char * base = d.data + base_blocks * d.ts;
-            // ne02 = ne03 = 1 -> s02/s03 inert; head+chunk offset carried by base.
+            // ne02 = ne03 = 1 → s02/s03 inert; head+chunk offset carried by base.
             to_fp16(base, out, D, this_chunk, 1, 1, d.s01, d.s02, d.s02, stream);
             break;
         }
@@ -351,9 +351,9 @@ static void mkl_fa_dequant_chunk(
 // ---------------------------------------------------------------------------
 // MKL Flash Attention orchestrator
 //
-// Pipeline: dequantize K/V -> for each KV head:
-//   pack GQA Q heads -> MKL GEMM KQ -> online softmax ->
-//   MKL GEMM VKQ -> accumulate -> normalize -> scatter to dst
+// Pipeline: dequantize K/V → for each KV head:
+//   pack GQA Q heads → MKL GEMM KQ → online softmax →
+//   MKL GEMM VKQ → accumulate → normalize → scatter to dst
 // ---------------------------------------------------------------------------
 void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor * dst) {
 
@@ -576,11 +576,11 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
                     MKL_ACCUM(dequant_time_us, t0);
                 }
 
-                // 3b. Query tile loop (INNER) -- bounds KQ_f32/S_f16 footprint.
+                // 3b. Query tile loop (INNER) — bounds KQ_f32/S_f16 footprint.
                 for (int q0 = 0; q0 < n_query_rows; q0 += q_tile_rows) {
                     int q_rows = std::min(q_tile_rows, n_query_rows - q0);
 
-                    // GEMM: KQ = Q_tile * K_chunk^T
+                    // GEMM: KQ = Q_tile × K_chunk^T
                     {
                         MKL_TAKE_TIME(t0);
                         sycl::event ev = gemm(*stream,
@@ -613,7 +613,7 @@ void ggml_sycl_flash_attn_ext_mkl(ggml_backend_sycl_context & ctx, ggml_tensor *
                         MKL_ACCUM(softmax_time_us, t0);
                     }
 
-                    // GEMM: VKQ_chunk = S * V_chunk
+                    // GEMM: VKQ_chunk = S × V_chunk
                     {
                         MKL_TAKE_TIME(t0);
                         sycl::event ev = gemm(*stream,

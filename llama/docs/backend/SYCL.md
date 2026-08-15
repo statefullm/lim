@@ -257,21 +257,21 @@ Platform #0: Intel(R) OpenCL HD Graphics
  `-- Device #0: Intel(R) Iris(R) Xe Graphics [0x9a49]
 ```
 
-2. **Install Intel(R) oneAPI Base toolkit**
+2. **Install Intel® oneAPI Base toolkit**
 
 SYCL backend depends on:
-  - Intel(R) oneAPI DPC++/C++ compiler/running-time.
-  - Intel(R) oneAPI DPC++/C++ library (oneDPL).
-  - Intel(R) oneAPI Deep Neural Network Library (oneDNN).
-  - Intel(R) oneAPI Math Kernel Library (oneMKL).
+  - Intel® oneAPI DPC++/C++ compiler/running-time.
+  - Intel® oneAPI DPC++/C++ library (oneDPL).
+  - Intel® oneAPI Deep Neural Network Library (oneDNN).
+  - Intel® oneAPI Math Kernel Library (oneMKL).
 
 - **For Intel GPU**
 
-All above are included in both **Intel(R) oneAPI Base toolkit** and **Intel(R) Deep Learning Essentials** packages.
+All above are included in both **Intel® oneAPI Base toolkit** and **Intel® Deep Learning Essentials** packages.
 
-It's recommended to install **Intel(R) Deep Learning Essentials** which only provides the necessary libraries with less size.
+It's recommended to install **Intel® Deep Learning Essentials** which only provides the necessary libraries with less size.
 
-The **Intel(R) oneAPI Base toolkit** and **Intel(R) Deep Learning Essentials** can be obtained from the official [Intel(R) oneAPI Base Toolkit](https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html) page.
+The **Intel® oneAPI Base toolkit** and **Intel® Deep Learning Essentials** can be obtained from the official [Intel® oneAPI Base Toolkit](https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html) page.
 
 Please follow the instructions for downloading and installing the Toolkit for Linux, and preferably keep the default installation values unchanged, notably the installation path *(`/opt/intel/oneapi` by default)*.
 
@@ -449,6 +449,8 @@ Or
 use 1 SYCL GPUs: [0] with Max compute units:512
 ```
 
+User can use the device management in [docs/multi-gpu.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/multi-gpu.md), like parameter `--device SYCL0,SYCL1` to assign one or more devices.
+
 ## Windows
 
 ### Install GPU driver
@@ -471,19 +473,19 @@ Note, the package includes the SYCL running time and all depended dll files, no 
 
 If you already have a recent version of Microsoft Visual Studio, you can skip this step. Otherwise, please refer to the official download page for [Microsoft Visual Studio](https://visualstudio.microsoft.com/).
 
-2. Install Intel(R) oneAPI Base toolkit
+2. Install Intel® oneAPI Base toolkit
 
 SYCL backend depends on:
-  - Intel(R) oneAPI DPC++/C++ compiler/running-time.
-  - Intel(R) oneAPI DPC++/C++ library (oneDPL).
-  - Intel(R) oneAPI Deep Neural Network Library (oneDNN).
-  - Intel(R) oneAPI Math Kernel Library (oneMKL).
+  - Intel® oneAPI DPC++/C++ compiler/running-time.
+  - Intel® oneAPI DPC++/C++ library (oneDPL).
+  - Intel® oneAPI Deep Neural Network Library (oneDNN).
+  - Intel® oneAPI Math Kernel Library (oneMKL).
 
-All above are included in both **Intel(R) oneAPI Base toolkit** and **Intel(R) Deep Learning Essentials** packages.
+All above are included in both **Intel® oneAPI Base toolkit** and **Intel® Deep Learning Essentials** packages.
 
-It's recommended to install **Intel(R) Deep Learning Essentials** which only provides the necessary libraries with less size.
+It's recommended to install **Intel® Deep Learning Essentials** which only provides the necessary libraries with less size.
 
-The **Intel(R) oneAPI Base toolkit** and **Intel(R) Deep Learning Essentials** can be obtained from the official [Intel(R) oneAPI Base Toolkit](https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html) page.
+The **Intel® oneAPI Base toolkit** and **Intel® Deep Learning Essentials** can be obtained from the official [Intel® oneAPI Base Toolkit](https://www.intel.com/content/www/us/en/developer/tools/oneapi/base-toolkit.html) page.
 
 Please follow the instructions for downloading and installing the Toolkit for Windows, and preferably keep the default installation values unchanged, notably the installation path *(`C:\Program Files (x86)\Intel\oneAPI` by default)*.
 
@@ -763,6 +765,7 @@ Or
 use 1 SYCL GPUs: [0] with Max compute units:512
 ```
 
+User can use the device management in [docs/multi-gpu.md](https://github.com/ggml-org/llama.cpp/blob/master/docs/multi-gpu.md), like parameter `--device SYCL0,SYCL1` to assign one or more devices.
 
 ## Environment Variable
 
@@ -792,15 +795,17 @@ use 1 SYCL GPUs: [0] with Max compute units:512
 | GGML_SYCL_ENABLE_FLASH_ATTN | 1 (default) or 0| Enable Flash-Attention. It can reduce memory usage. The performance impact depends on the LLM.|
 | GGML_SYCL_ENABLE_OPT | 0 or 1 (default)| Enable optimize features for Intel GPUs. (Recommended to 0 for Intel devices older than Gen 10) |
 | GGML_SYCL_ENABLE_GRAPH | 0 (default) or 1 | Enable running computations through SYCL Graphs feature. Disabled by default because SYCL Graph is still on development, no better performance. |
+| GGML_SYCL_ENABLE_HOST_PINNED_MEM | 0 or 1 (default) | Enable host pinned memory to speed up copy data from host to device. When disable it, host memory will common malloc() on CPU.|
 | GGML_SYCL_USE_LEVEL_ZERO_API | 1 (default) or 0 | Use Level Zero API for device memory allocation instead of SYCL. Reduces system RAM usage on Intel dGPUs by avoiding DMA-buf/TTM host memory staging. Requires GGML_SYCL_SUPPORT_LEVEL_ZERO_API=ON at build time. SYCL backend always runs on Level Zero running time even if it's set as OFF (The SYCL api will be usage for memory allocation).|
 | GGML_SYCL_ENABLE_DNN | 0 or 1 (default)| Enable running computations through oneDNN and always use oneMKL. |
 | GGML_SYCL_FA_ONEDNN | 1 (default) or 0 | Enable the oneDNN fused SDPA (flash-attention) path on supported GPUs. Set to 0 to always use the native SYCL flash-attention kernel. |
 | GGML_SYCL_FA_ONEDNN_MAX_KV | 0 (default, disabled) or positive integer | By default (0), all sequences are handled by the oneDNN fused SDPA path, regardless of KV length; a positive value caps that length, past which sequences fall back to the native kernel. If GPU driver watchdog resets (DEVICE_LOST) occur during long-context inference, set this near the context depth where they start, e.g. 24576. |
 | GGML_SYCL_ENABLE_VMM | 0 or 1 (default) | Enable the virtual-memory device pool. |
-| GGML_SYCL_ENABLE_MKL_FA | 1 (default) or 0 | Enable oneMKL GEMM flash attention for XMX-accelerated prompt processing with quantized KV cache. Automatically activates during prefill (prompt processing) when all conditions are met: (1) flash-attn enabled (`-fa` or `--flash-attn on`), (2) KV cache quantized (`--cache-type-k q8_0 --cache-type-v q8_0` or other `*_0/*_1` types), (3) batch size  1024 (`--batch-size 1024`), (4) prompt length  1024 tokens. Set to 0 to force the TILE kernel for A/B testing. Example minimum command: `llama-cli -m model.gguf -fa -ngl 99 --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 1024 -p "your prompt"` |
+| GGML_SYCL_ENABLE_MKL_FA | 1 (default) or 0 | Enable oneMKL GEMM flash attention for XMX-accelerated prompt processing with quantized KV cache. Automatically activates during prefill (prompt processing) when all conditions are met: (1) flash-attn enabled (`-fa` or `--flash-attn on`), (2) KV cache quantized (`--cache-type-k q8_0 --cache-type-v q8_0` or other `*_0/*_1` types), (3) batch size ≥ 1024 (`--batch-size 1024`), (4) prompt length ≥ 1024 tokens. Set to 0 to force the TILE kernel for A/B testing. Example minimum command: `llama-cli -m model.gguf -fa -ngl 99 --cache-type-k q8_0 --cache-type-v q8_0 --batch-size 1024 -p "your prompt"` |
 | GGML_SYCL_MKL_FA_DEBUG | 0 (default) or 1 | Enable per-call diagnostic logging for MKL flash attention: GEMM/softmax timings, interleaved-head detection, and buffer memory usage. |
-| GGML_SYCL_MKL_FA_DIAG | 0 (default) or 1 | Enable output fingerprinting for MKL flash attention. Dumps the first 64 float output values for the first 6 FA calls with n_kv  1024, labeled with kernel type (MKL/TILE/VEC) for cross-kernel comparison. |
-| GGML_SYCL_ENABLE_FUSION | 0 or 1 (default) | Enable fused-kernel dispatch in graph compute (currently top-k MoE gating). |
+| GGML_SYCL_MKL_FA_DIAG | 0 (default) or 1 | Enable output fingerprinting for MKL flash attention. Dumps the first 64 float output values for the first 6 FA calls with n_kv ≥ 1024, labeled with kernel type (MKL/TILE/VEC) for cross-kernel comparison. |
+| GGML_SYCL_ENABLE_FUSION | 0 or 1 (default) | Enable fused-kernel dispatch in graph compute. |
+| GGML_SYCL_ENABLE_ESIMD | 0 or 1 (default)| Enable ESIMD kernels when available. |
 | ZES_ENABLE_SYSMAN | 0 (default) or 1 | Support to get free memory of GPU by sycl::aspect::ext_intel_free_memory.<br>Recommended to use when --split-mode = layer |
 | UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS | 0 (default) or 1 | Allow SYCL/Unified Runtime Level Zero device allocations larger than 4 GiB. llama.cpp's direct Level Zero allocation path requests the relaxed maximum-size limit itself when GGML_SYCL_ENABLE_LEVEL_ZERO=1. |
 | GGML_SYCL_USM_SYSTEM | 0 (default) or 1 | Enable experimental support for [USM system allocations](https://github.khronos.org/SYCL_Reference/iface/usm_basic_concept.html#system-allocations) for large GPU buffers. This requires enough host memory for model weights and caches, an Intel Xe2+ GPU such as BMG or newer and supported on Linux only, with CONFIG_DRM_XE_GPUSVM enabled. |
@@ -894,6 +899,45 @@ Pass these via `CXXFLAGS` or add a one-off `#define` to enable a flag on the spo
     export UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1
     set UR_L0_ENABLE_RELAXED_ALLOCATION_LIMITS=1
   ```
+
+- When I set `SYCL_CACHE_PERSISTENT=1` in running time, I meet crash.
+
+  `SYCL_CACHE_PERSISTENT=1` is not recommended by llama.cpp SYCL backend.
+  When cache is enabled, SYCL runtime will try to cache and reuse JIT-compiled binaries.
+
+  We find some AI will tell user this cmd to speed up SYCL backend. It only speeds up the startup to skip the JIT process, instead of running speed.
+
+  It will bring negative impact when the SYCL binary file is changed frequently in your running environment. The new & old codes mix will lead to crash.
+
+  Compare to the benefit, it has brought more failed cases.
+  If you are not familiar with the SYCL compiler principle of JIT and AOT, please don't use it.
+
+  To restore, you need to remove the local cache: `~/.cache/libsycl_cache/` and execute `unset SYCL_CACHE_PERSISTENT` in running time.
+
+- How to use iGPU and dGPU in same time?
+
+  1. Detect the devices in your running time.
+  ```
+  source /opt/intel/oneapi/setvars.sh
+  ./build/bin/llama-server --list-devices
+
+  or
+  ./build/bin/llama-cli --list-devices
+  ./build/bin/llama-bench --list-devices
+  ./build/bin/llama-completion --list-devices
+
+  Available devices:
+    SYCL0: Intel(R) Arc(TM) A770 Graphics (15473 MiB, 15473 MiB free)
+    SYCL1: Intel(R) UHD Graphics 770 (59675 MiB, 44986 MiB free)
+  ```
+
+  The dGPU will be in the head of this list and iGPU will be the end.
+  If not all GPUs are listed, please check the env var: ONEAPI_DEVICE_SELECTOR and unset it.
+
+  2. Set the iGPU and dGPU
+
+  Set the iGPU and dGPU by `./build/bin/llama-server --device SYCL0,SYCL1,SYCLxxx`.
+
 
 ### **GitHub contribution**:
 Please add the `[SYCL]` prefix/tag in issues/PRs titles to help the SYCL contributors to check/address them without delay.

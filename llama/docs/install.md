@@ -2,11 +2,11 @@
 
 | Install via | Windows | Mac  | Linux |
 |-------------|---------|------|-------|
-| conda-forge |       |    |    |
-| Winget      |       |      |      |
-| Homebrew    |         |    |    |
-| MacPorts    |         |    |      |
-| Nix         |         |    |    |
+| conda-forge | ✅      | ✅   | ✅   |
+| Winget      | ✅      |      |      |
+| Homebrew    |         | ✅   | ✅   |
+| MacPorts    |         | ✅   |      |
+| Nix         |         | ✅   | ✅   |
 
 ## conda-forge (Windows, Mac and Linux)
 

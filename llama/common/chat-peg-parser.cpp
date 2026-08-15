@@ -594,9 +594,7 @@ common_peg_parser common_chat_peg_builder::python_style_tool_calls(
 
                 // Full argument: name="value" or name=value
                 auto arg_rule = tool_arg(
-                    tool_arg_open(eps()) +
-                    tool_arg_name(arg_name_parser) +
-                    literal("=") +
+                    tool_arg_open(tool_arg_name(arg_name_parser) + literal("=")) +
                     arg_value_parser +
                     tool_arg_close(eps())
                 );
@@ -628,7 +626,7 @@ static std::pair<std::string, std::string> parse_key_spec(const std::string & ke
     return {key.substr(0, dot_pos), key.substr(dot_pos + 1)};
 }
 
-// Mode 1: function_is_key -- parse {"function_name": {...}}
+// Mode 1: function_is_key — parse {"function_name": {...}}
 common_peg_parser common_chat_peg_builder::build_json_tools_function_is_key(
     const ordered_json & tools,
     const std::string &  args_key,
@@ -668,7 +666,7 @@ common_peg_parser common_chat_peg_builder::build_json_tools_function_is_key(
             inner_fields.push_back(optional(gen_id_parser + space() + optional(literal(",") + space())));
         }
 
-        // Arguments -- either wrapped in args_key or parsed directly
+        // Arguments — either wrapped in args_key or parsed directly
         common_peg_parser args_parser = eps();
         if (args_key.empty()) {
             args_parser = tool_args(schema(json(), "tool-" + name + "-schema", params));

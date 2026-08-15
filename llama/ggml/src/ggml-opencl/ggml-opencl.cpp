@@ -73,6 +73,7 @@ typedef const void * (*get_adreno_bin_kernel_func_t)(
 //------------------------------------------------------------------------------
 
 bool ggml_cl_compute_forward(ggml_backend_t backend, struct ggml_tensor * tensor);
+
 static bool ggml_cl_is_q4_0_soa(const ggml_tensor * tensor);
 static bool ggml_cl_is_q8_0_soa(const ggml_tensor * tensor);
 static void ggml_cl_mul_mat(ggml_backend_t backend, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst);
@@ -476,13 +477,13 @@ struct ggml_opencl_fa_kernels {
     std::map<std::pair<int, int>, cl_kernel> f32_f16_q1_vec_mq_split_g8_c8;
     // NSG_SPLIT=2 specializations (WG=128): the c8 kernel's register footprint
     // caps its per-kernel WG at 128 on X2, below the stock 256/192 requirement.
-    // 2 subgroups * FA_CL_NCL streams still gives 16 in-flight rows per WG.
+    // 2 subgroups × FA_CL_NCL streams still gives 16 in-flight rows per WG.
     std::map<std::pair<int, int>, cl_kernel> f32_f16_q1_vec_mq_split_c8_ns2;
     std::map<std::pair<int, int>, cl_kernel> f32_f16_q1_vec_mq_split_g8_c8_ns2;
     // FA_CL_C=32 / MQ_GQA=8 / NSG_SPLIT=2 specialization for the DK=DV=256
     // GQA=8 class (Qwen3.5/3.6-35B-A3B: 16 Q heads, 2 KV heads). o_acc =
-    // DV_VEC/32 * 8 = 128B/lane (in budget); the baseline fa1 path for this
-    // shape has NO MQ/FD at all and pays an 8* KV re-read per Q head.
+    // DV_VEC/32 × 8 = 128B/lane (in budget); the baseline fa1 path for this
+    // shape has NO MQ/FD at all and pays an 8× KV re-read per Q head.
     std::map<std::pair<int, int>, cl_kernel> f32_f16_q1_vec_mq_split_g8_c32;
     // alternative decode
     std::map<std::pair<int, int>, cl_kernel> f32_f16_q1_local_tile;
@@ -1177,7 +1178,7 @@ static cl_program build_program_from_source_ex(cl_context ctx, cl_device_id dev,
         const bool transient = (err == CL_OUT_OF_HOST_MEMORY || err == CL_OUT_OF_RESOURCES);
         if (retry_queue && transient && attempt + 1 < max_attempts) {
             clReleaseProgram(p);
-            GGML_LOG_WARN("ggml_opencl: transient compile failure (err=%d)%s%s -- clFinish + retry (%d/%d)\n",
+            GGML_LOG_WARN("ggml_opencl: transient compile failure (err=%d)%s%s — clFinish + retry (%d/%d)\n",
                 err, tag ? " building " : "", tag ? tag : "", attempt + 2, max_attempts);
             clFinish(retry_queue);  // drain in-flight ops holding driver host-heap
             continue;
@@ -4629,6 +4630,23 @@ static std::string ggml_opencl_fa_compile_opts(ggml_backend_opencl_context * bac
     if (backend_ctx->adreno_gen == ADRENO_GPU_GEN::X1E) {
         opts += " -D FA_C8_NO_SG_PIN";
     }
+    // Transposed K tile in local memory: the KV rows the QK loop walks together become
+    // adjacent, so a group of them is ONE 128-bit local read instead of several narrow
+    // ones. The QK loop is LDS-read-issue-bound (a wrong-math probe that kept every FMA/dp4a
+    // but removed the LDS reads ran the kernel ~40% faster), so this is worth up to +26% on
+    // fa=1 prefill. Output is bit-identical -- only the layout moves.
+    //
+    // DK <= 128 only. At DK=256 (gemma-3-4b) it measures 1-2% NEGATIVE and reproduces across
+    // rounds; padding the row stride does not recover it, so the cause is not a simple bank
+    // conflict and the wider tile does not want this layout.
+    //
+    // Default on within that gate; GGML_OPENCL_FA_K_LDS_T=0 restores the row-major tile.
+    {
+        const char * e = getenv("GGML_OPENCL_FA_K_LDS_T");
+        if ((e == nullptr || e[0] != '0') && cfg->dk <= 128) {
+            opts += " -D FA_K_LDS_T";
+        }
+    }
     return opts;
 }
 
@@ -4664,7 +4682,7 @@ static bool ggml_opencl_fa_kernel_fits_wg(ggml_backend_opencl_context * backend_
 // Log private memory for an FA kernel. Enable via `GGML_OPENCL_FA_LOG_SPILL=1`.
 // On Adreno non-zero private_mem means spilling to global memory due to resource
 // constraint and usually causes performance degradation.
-// (per-work-item, no cache locality) -- a strong signal to pick a config
+// (per-work-item, no cache locality) — a strong signal to pick a config
 // with smaller per-thread state (e.g. larger N_SPLIT).
 static void ggml_opencl_log_fa_kernel_spill(ggml_backend_opencl_context * backend_ctx,
                                             cl_kernel kernel, const char * name, int dk, int dv) {
@@ -4702,7 +4720,7 @@ static void ggml_opencl_ensure_fa_pre_kernels(ggml_backend_opencl_context * back
 
     // BM-tile metadata is consumed by the prefill dispatch (n_q_blocks / wg
     // sizing) regardless of whether the prepass kernels are needed for this
-    // n_kv -- set it unconditionally
+    // n_kv — set it unconditionally
     backend_ctx->fa.f32_f16_bm[{dk, dv}]      = cfg->bm;
     backend_ctx->fa.f32_f16_bn[{dk, dv}]      = cfg->bn;
     backend_ctx->fa.f32_f16_wg_size[{dk, dv}] = cfg->bm;
@@ -4911,8 +4929,13 @@ static bool ggml_opencl_ensure_fa_variant(ggml_backend_opencl_context * backend_
         const int x = (e && e[0]) ? atoi(e) : 0;
         return (x == 8 || x == 16 || x == 32) ? x : 0;   // 0 = per-gen default
     }();
+    // X2E needs 16 to keep per-lane o_acc at 128B (the compiler spills the
+    // kernel-default width); X1E does not spill, but C=16 is still a measured
+    // +28-30% DK128-GQA4 decode win there (X1-85, kv 4096/8192), neutral on
+    // DK64 / GQA1 / quant-KV.
     const int fa_cl_c_gqa4 = fa_cl_c_env ? fa_cl_c_env
-        : (backend_ctx->adreno_gen == ADRENO_GPU_GEN::X2E ? 16 : 0);
+        : (backend_ctx->adreno_gen == ADRENO_GPU_GEN::X2E ||
+           backend_ctx->adreno_gen == ADRENO_GPU_GEN::X1E ? 16 : 0);
     const std::string opts_cl_c_gqa4 = fa_cl_c_gqa4
         ? " -D FA_CL_C=" + std::to_string(fa_cl_c_gqa4) : std::string();
     const std::string fa_cl_c_g8_val = std::to_string(fa_cl_c_gqa4 ? fa_cl_c_gqa4 * 2 : 16);
@@ -5139,7 +5162,7 @@ static bool ggml_opencl_ensure_fa_variant(ggml_backend_opencl_context * backend_
                 if (prog_c8) {
                     cl_kernel k_c8 = clCreateKernel(prog_c8, "flash_attn_f32_f16_q1_vec_mq_split_c8", &err);
                     if (err == CL_SUCCESS) {
-                        // WG = MQ_NSG(2) * Q1_WG_SIZE(=FA_SG): 128 Adreno (64), 64 Intel (32).
+                        // WG = MQ_NSG(2) × Q1_WG_SIZE(=FA_SG): 128 Adreno (64), 64 Intel (32).
                         const size_t c8_ns2_wg = backend_ctx->gpu_family == INTEL ? 64 : 128;
                         if (ggml_opencl_fa_kernel_fits_wg(backend_ctx, k_c8, c8_ns2_wg,
                                                           "flash_attn_f32_f16_q1_vec_mq_split_c8 (ns2)", dk, dv)) {
@@ -5358,7 +5381,7 @@ static bool ggml_opencl_ensure_fa_variant(ggml_backend_opencl_context * backend_
 //   DK=96 : DK/32 = 3 blocks, not divisible by the default N_SPLIT=2 ->
 //           override N_SPLIT=3. BLOCK_M must be 16, not 32: the N_SPLIT=3
 //           QK-partial reduction uses sub_group_shuffle, so all 3 split
-//           threads of a query must land in one subgroup -- WG_SIZE =
+//           threads of a query must land in one subgroup — WG_SIZE =
 //           BLOCK_M*N_SPLIT must be <= the 64-lane Adreno subgroup (16*3=48).
 static bool ggml_opencl_ensure_fa_quant_split_override(
         ggml_backend_opencl_context * backend_ctx,
@@ -7058,6 +7081,19 @@ inline bool enable_adreno_trans_weight(const ggml_backend_opencl_context *backen
     return ((elem_num < 128 * 1024 * 1024) && adreno_kernel && shape_ok);  // max element num: 2**27
 }
 
+inline bool enable_adreno_trans_weight_q5_K(const ggml_backend_opencl_context *backend_ctx, const ggml_tensor *tensor) {
+    if (!use_adreno_kernels(backend_ctx, tensor)) {
+        return false;
+    }
+
+    const size_t elem_num = ggml_nelements(tensor);
+    const size_t q_img_width = elem_num / 8;
+    const size_t qh_img_width = elem_num / 16;
+
+    return q_img_width <= backend_ctx->image_max_buffer_size &&
+           qh_img_width <= backend_ctx->image_max_buffer_size;
+}
+
 static inline bool use_flat_gemv_for_large_m_q4_K(const ggml_tensor *tensor) {
     // gemv_noshuffle variant perf drops for large M, use flat variant for large M.
     // threshold is well above typical hidden/FFN dims, but below typical vocab sizes.
@@ -8059,7 +8095,7 @@ static void ggml_backend_opencl_buffer_set_tensor(ggml_backend_buffer_t buffer, 
     // buffers for quantized bits and scales, which are then populated by the
     // conversion kernel.
     if (tensor->type == GGML_TYPE_Q4_0) {
-        // Views can't SoA-ify here -- parent owns the layout (see q8_0 guard).
+        // Views can't SoA-ify here — parent owns the layout (see q8_0 guard).
         if (tensor->view_src != nullptr || !ggml_is_contiguous(tensor)) {
             return;
         }
@@ -9237,7 +9273,7 @@ static void ggml_backend_opencl_buffer_set_tensor(ggml_backend_buffer_t buffer, 
 
 #ifdef GGML_OPENCL_USE_ADRENO_KERNELS
         cl_kernel kernel = backend_ctx->kernel_convert_block_q5_K;
-        if (use_adreno_kernels(backend_ctx, tensor)) {
+        if (enable_adreno_trans_weight_q5_K(backend_ctx, tensor)) {
             kernel = backend_ctx->kernel_convert_block_q5_K_noshuffle;
         }
 #else
@@ -9272,7 +9308,7 @@ static void ggml_backend_opencl_buffer_set_tensor(ggml_backend_buffer_t buffer, 
 
         tensor->extra = extra;
 #ifdef GGML_OPENCL_USE_ADRENO_KERNELS
-        if (use_adreno_kernels(backend_ctx, tensor)) {
+        if (enable_adreno_trans_weight_q5_K(backend_ctx, tensor)) {
 
             int M = tensor->ne[1];
             int K = tensor->ne[0];
@@ -9590,7 +9626,7 @@ static void ggml_backend_opencl_buffer_get_tensor(ggml_backend_buffer_t buffer, 
     // To properly support this, we need to restore block_q4_0 struct arrays
     // from the flattened buffers.
     if (tensor->type == GGML_TYPE_Q4_0) {
-        // KV-cache q4_0 stays AoS -- direct readback, no SoA restore.
+        // KV-cache q4_0 stays AoS — direct readback, no SoA restore.
         if (!ggml_cl_is_q4_0_soa(tensor)) {
             ggml_tensor_extra_cl * extra_aos = (ggml_tensor_extra_cl *) tensor->extra;
             CL_CHECK(clEnqueueReadBuffer(
@@ -9599,7 +9635,7 @@ static void ggml_backend_opencl_buffer_get_tensor(ggml_backend_buffer_t buffer, 
                 size, data, 0, NULL, NULL));
             return;
         }
-        // SoA extra lives on the parent tensor -- follow view_src.
+        // SoA extra lives on the parent tensor — follow view_src.
         const ggml_tensor * extra_src = tensor->view_src != nullptr ? tensor->view_src : tensor;
         ggml_tensor_extra_cl_q4_0 * extra = (ggml_tensor_extra_cl_q4_0 *)extra_src->extra;
 
@@ -10081,7 +10117,7 @@ static void ggml_backend_opencl_buffer_get_tensor(ggml_backend_buffer_t buffer, 
                 size, data, 0, NULL, NULL));
             return;
         }
-        // SoA extra lives on the parent -- follow view_src.
+        // SoA extra lives on the parent — follow view_src.
         const ggml_tensor * extra_src = tensor->view_src != nullptr ? tensor->view_src : tensor;
         ggml_tensor_extra_cl_q8_0 * extra = (ggml_tensor_extra_cl_q8_0 *)extra_src->extra;
 
@@ -10370,7 +10406,7 @@ static void ggml_backend_opencl_buffer_get_tensor(ggml_backend_buffer_t buffer, 
             CL_CHECK(clReleaseMemObject(data_device));
             return;
         }
-        if (use_adreno_kernels(backend_ctx, tensor)) {
+        if (enable_adreno_trans_weight_q5_K(backend_ctx, tensor)) {
             int M = tensor->ne[1];
             int K = tensor->ne[0];
 
@@ -10777,6 +10813,7 @@ static void ggml_backend_opencl_device_get_props(ggml_backend_dev_t dev, struct 
         /* .host_buffer           = */ false,
         /* .buffer_from_host_ptr  = */ false,
         /* .events                = */ false,
+        /* .mmap_support          = */ false,
     };
 }
 
@@ -14533,7 +14570,7 @@ static void ggml_cl_flash_attn(ggml_backend_t backend, const ggml_tensor * q, co
     const std::pair<int, int> dk_dv = {d_head_q, d_head_v};
     const bool use_native_q8_0_q1 = is_q8_0 && n_q == 1 &&
                                     backend_ctx->fa.f32_q8_0_q1.count(dk_dv) > 0;
-    // Native q8_0 prefill -- reads q8_0 directly, wg_size = cfg->bm.
+    // Native q8_0 prefill — reads q8_0 directly, wg_size = cfg->bm.
     const bool use_native_q8_0 = is_q8_0 && n_q > 1 &&
                                  backend_ctx->fa.f32_q8_0.count(dk_dv) > 0;
     const bool use_native_q4_0_q1 = is_q4_0 && n_q == 1 &&
@@ -14980,7 +15017,7 @@ static void ggml_cl_flash_attn(ggml_backend_t backend, const ggml_tensor * q, co
 
     const int n_q_blocks = n_q > 1 ? (n_q + block_m - 1) / block_m : 0;
     const int n_kv_blocks = (n_kv > 0 && block_n > 0) ? (n_kv + block_n - 1) / block_n : 0;
-    // KV pad + blk prepass are pure overhead when FD will fire -- skip them.
+    // KV pad + blk prepass are pure overhead when FD will fire — skip them.
     const bool use_mixed_prepass = is_mixed && n_q > 1 && !use_fd;
     // make sure prepass kernels are compiled
     const bool have_kv_pad = backend_ctx->fa.kv_pad_f16.count(dk_dv) > 0;
@@ -15056,7 +15093,7 @@ static void ggml_cl_flash_attn(ggml_backend_t backend, const ggml_tensor * q, co
         const size_t blk_size = (size_t) n_kv_blocks * (size_t) n_q_blocks * (size_t) mask_ne2 * (size_t) mask_ne3;
         temp_blk.data = clCreateBuffer(backend_ctx->context, CL_MEM_READ_WRITE, blk_size, NULL, &err);
         if (err != CL_SUCCESS) {
-            // Flush before retry -- reclaim deferred driver deallocations.
+            // Flush before retry — reclaim deferred driver deallocations.
             CL_CHECK(clFinish(backend_ctx->queue));
             temp_blk.data = clCreateBuffer(backend_ctx->context, CL_MEM_READ_WRITE, blk_size, NULL, &err);
         }
@@ -18909,7 +18946,8 @@ static void ggml_cl_mul_mat(ggml_backend_t backend, const ggml_tensor * src0, co
         }
 
         // q5_K x fp32
-        if (src0t == GGML_TYPE_Q5_K && src1t == GGML_TYPE_F32) {
+        if (src0t == GGML_TYPE_Q5_K && src1t == GGML_TYPE_F32 &&
+            enable_adreno_trans_weight_q5_K(backend_ctx, src0)) {
             ggml_cl_mul_mat_q5_K_f32_adreno(backend, src0, src1, dst);
             return;
         }

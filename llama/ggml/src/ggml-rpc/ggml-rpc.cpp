@@ -1512,7 +1512,7 @@ static void rpc_serve_client(const std::vector<ggml_backend_t> & backends, const
     }
 
     if (hello_input_size != sizeof(rpc_msg_hello_req)) {
-        GGML_LOG_ERROR("HELLO request size mismatch (%zu vs %zu) -- client needs upgrade to protocol v%d.x\n",
+        GGML_LOG_ERROR("HELLO request size mismatch (%zu vs %zu) — client needs upgrade to protocol v%d.x\n",
                        (size_t)hello_input_size, sizeof(rpc_msg_hello_req), RPC_PROTO_MAJOR_VERSION);
         return;
     }
@@ -1881,6 +1881,7 @@ static void ggml_backend_rpc_device_get_props(ggml_backend_dev_t dev, struct ggm
         /* .host_buffer           = */ false,
         /* .buffer_from_host_ptr  = */ false,
         /* .events                = */ false,
+        /* .mmap_support          = */ true,
     };
 }
 

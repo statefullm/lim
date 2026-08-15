@@ -393,7 +393,7 @@ static void ggml_zendnn_compute_forward_mul_mat_id(
     const size_t row_size = ggml_row_size(vec_dot_type, ne10);
 
     // For Q8_0, src1 is always F32; the gather buffer must hold F32 rows (ne10*4 bytes),
-    // not Q8_0-encoded rows (row_size  ne10/32*34 bytes) -- they differ by ~4x.
+    // not Q8_0-encoded rows (row_size ≈ ne10/32*34 bytes) — they differ by ~4x.
     const size_t f32_row_size = (size_t)ne10 * sizeof(float);
     const size_t gather_row_size = (src0->type == GGML_TYPE_Q8_0) ? f32_row_size : row_size;
 
@@ -654,7 +654,8 @@ static void ggml_backend_zendnn_device_get_props(ggml_backend_dev_t dev, struct 
         /* .async                = */ false,
         /* .host_buffer          = */ false,
         /* .buffer_from_host_ptr = */ true,
-        /* .events               = */ false
+        /* .events               = */ false,
+        /* .mmap_support         = */ true,
     };
 }
 

@@ -41,13 +41,13 @@ static bool should_stop() {
 static constexpr size_t FILE_GLOB_MAX_RESULTS = 100;
 
 const char * LLAMA_ASCII_LOGO = R"(
- 
- 
-            
-                 
-          
-                                        
-                                        
+▄▄ ▄▄
+██ ██
+██ ██  ▀▀█▄ ███▄███▄  ▀▀█▄    ▄████ ████▄ ████▄
+██ ██ ▄█▀██ ██ ██ ██ ▄█▀██    ██    ██ ██ ██ ██
+██ ██ ▀█▄██ ██ ██ ██ ▀█▄██ ██ ▀████ ████▀ ████▀
+                                    ██    ██
+                                    ▀▀    ▀▀
 )";
 
 // number of values an arg consumes on the command line

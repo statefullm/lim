@@ -1105,7 +1105,7 @@ if (typeof module !== 'undefined' && nerdamer === undefined) {
             /* Var D = core.Utils.block('PARSE2NUMBER', function() {
              return _.parse(format("256*({0})^3*({4})^3-192*({0})^2*({1})*({3})*({4})^2-128*({0})^2*({2})^2*({4})^2+144*({0})^2*({2})*({3})^2*({4})"+
              "-27*({0})^2*({3})^4+144*({0})*({1})^2*({2})*({4})^2-6*({0})*({1})^2*({3})^2*({4})-80*({0})*({1})*({2})^2*({3})*({4})+18*({0})*({1})*({2})*({3})^3"+
-             "+16*({0})*({2})^4*({4})-4*({0})*({2})^3*({3})^2-27*({1})^4*({4})^2+18*({1})^3*({2})*({3})*({4})-4*({1})^3*({3})^3-4*({1})^2*({2})^3*({4})+({1})^2*({2})^2*({3})^2",
+             "+16*({0})*({2})^4*({4})-4*({0})*({2})^3*({3})^2-27*({1})^4*({4})^2+18*({1})^3*({2})*({3})*({4})-4*({1})^3*({3})^3-4*({1})^2*({2})^3*({4})+({1})^2*({2})^2*({3})^2", 
              aStr, bStr, cStr, dStr, eStr), scope);
              });*/
 
@@ -2029,10 +2029,10 @@ if (typeof module !== 'undefined' && nerdamer === undefined) {
                                 }
                             } else {
                                 /*
-                                 Var sym_roots = csolve(eq, solveFor);
+                                 Var sym_roots = csolve(eq, solveFor); 
                                  if(sym_roots.length === 0)
                                  sym_roots = divnconsolve(eq, solveFor);
-                                 if(sym_roots.length > 0)
+                                 if(sym_roots.length > 0) 
                                  addToResult(sym_roots);
                                  else
                                  */

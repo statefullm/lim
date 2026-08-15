@@ -281,7 +281,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
         GGML_ASSERT(vocab.get_type() == LLAMA_VOCAB_TYPE_BPE);
         switch (vocab.get_pre_type()) {
             case LLAMA_VOCAB_PRE_TYPE_LLAMA3:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     //"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
 
@@ -290,7 +290,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_JAIS2:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     //"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s{512}(?!\\S)|\\s{256}(?!\\S)|\\s{128}(?!\\S)|\\s{64}(?!\\S)|\\s{32}(?!\\S)|\\s{16}(?!\\S)|\\s{8}(?!\\S)|\\s{4}(?!\\S)|\\s{1,2}(?!\\S)|\\s{1}",
 
@@ -300,47 +300,47 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 break;
             case LLAMA_VOCAB_PRE_TYPE_DBRX:
             case LLAMA_VOCAB_PRE_TYPE_SMAUG:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // same as llama3
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_LLM:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[\r\n]",
-                    "\\s?[A-Za-zmA-OO-oo--DZ----AE-IOY-RS-eS--A-F-----A-ue--A-heE-Hee-hoO-Hoy-hyHHYUHYHY-oai-aia-AIiei-eie-EIi-ii-Iy-Rhoi-oio-OICEg-lNP-RZOZK-Ce-oip-PD-j-S-----d-t--ff-stmn-mxA-Za-z-------]+",
-                    "\\s?[!-/:-~!-/:-~'-\" -.]+",
+                    "\\s?[A-Za-zµÀ-ÖØ-öø-ƺƼ-ƿǄ-ʓʕ-ʯͰ-ͳͶͷͻ-ͽͿΆΈ-ΊΌΎ-ΡΣ-ϵϷ-ҁҊ-ԯԱ-ՖႠ-ჅᎠ-Ᏽᏸ-ᏽᲐ-ᲺᲽ-Ჿᴀ-ᴫᵫ-ᵷᵹ-ᶚḀ-ἕἘ-Ἕἠ-ὅὈ-Ὅὐ-ὗὙὛὝὟ-ώᾀ-ᾴᾶ-ᾼιῂ-ῄῆ-ῌῐ-ΐῖ-Ίῠ-Ῥῲ-ῴῶ-ῼℂℇℊ-ℓℕℙ-ℝℤΩℨK-ℭℯ-ℴℹℼ-ℿⅅ-ⅉⅎↃↄⰀ-ⱻⱾ-ⳤⳫ-ⳮⳲⳳꙀ-ꙭꚀ-ꚛꜢ-ꝯꝱ-ꞇꞋ-ꞎꭰ-ꮿﬀ-ﬆﬓ-ﬗＡ-Ｚａ-ｚ𐐀-𐑏𐒰-𐓓𐓘-𐓻𐲀-𐲲𐳀-𐳲𑢠-𑣟𞤀-𞥃]+",
+                    "\\s?[!-/:-~！-／：-～‘-‟　-。]+",
                     "\\s+$",
-                    "[yi-yu-yiga-]+",
+                    "[一-龥ࠀ-一가-퟿]+",
                     "\\p{N}+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK3_LLM:
             case LLAMA_VOCAB_PRE_TYPE_HUNYUAN_DENSE:
             case LLAMA_VOCAB_PRE_TYPE_JOYAI_LLM:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "\\p{N}{1,3}",
-                    "[yi-yu-yori-koto]+",
+                    "[一-龥぀-ゟ゠-ヿ]+",
                     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_YOUTU:
-                regex_exprs = std::vector<std::string>{
-                    "[ga-hihg-]+|[!...""''--:;,,-..-_]+|[b-]+|[yi-yu-yori-koto]+",
+                regex_exprs = {
+                    "[가-힣ㄱ-ㆎ]+|[！…“”‘’—：；，、-〿︰-﹏]+|[ㄅ-ㄯ]+|[一-龥぀-ゟ゠-ヿ]+",
                     "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_DEEPSEEK_CODER:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[\r\n]",
                     "\\s?\\p{L}+",
                     "\\s?\\p{P}+",
-                    "[yi-yu-yiga-]+",
+                    "[一-龥ࠀ-一가-퟿]+",
                     "\\p{N}",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_FALCON:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[\\p{P}\\$\\+<=>\\^~\\|`]+",
                     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
                     "[0-9][0-9][0-9]",
@@ -354,7 +354,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_EXAONE:
             case LLAMA_VOCAB_PRE_TYPE_MINERVA:
             case LLAMA_VOCAB_PRE_TYPE_MELLUM2:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "\\p{N}",
                     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
                 };
@@ -365,7 +365,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_JAIS:
             case LLAMA_VOCAB_PRE_TYPE_TRILLION:
             case LLAMA_VOCAB_PRE_TYPE_GRANITE_DOCLING:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
                 };
                 break;
@@ -373,14 +373,14 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_QWEN2:
             case LLAMA_VOCAB_PRE_TYPE_HUNYUAN:
             case LLAMA_VOCAB_PRE_TYPE_SOLAR_OPEN:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_QWEN35:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?[\\p{L}\\p{M}]+|\\p{N}| ?[^\\s\\p{L}\\p{M}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
@@ -389,25 +389,25 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_PORO:
             case LLAMA_VOCAB_PRE_TYPE_BLOOM:
             case LLAMA_VOCAB_PRE_TYPE_GPT3_FINNISH:
-                regex_exprs = std::vector<std::string>{
-                    " ?[^(\\s|.,!?....,,.,)]+",
+                regex_exprs = {
+                    " ?[^(\\s|.,!?…。，、।۔،)]+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_CHATGLM4:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_VIKING:
-                regex_exprs = std::vector<std::string>{
-                    " ?[^(\\s|.,!?....,,.,)]+",
+                regex_exprs = {
+                    " ?[^(\\s|.,!?…。，、।۔،)]+",
                     "\\p{N}",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_TEKKEN:
                 // original regex from tokenizer.json
                 // "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))*((?=[\\p{L}])([^A-Z]))+|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))+((?=[\\p{L}])([^A-Z]))*|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
@@ -416,7 +416,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 // are unnecessary, as they are split in `tokenizer_st_partition` anyway.
                 // However, since the upstream pre-tokenizer uses them, they are also
                 // included here (see https://huggingface.co/facebook/chameleon-7b).
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "<sentinel:[0-9]+>",  // Sentinel tokens
                     "(IMGIMG)((A|B|C|D|E|F|G|H|I){1,4})Z",  // Image tokens
                     "([\\t\\n]|    |  )",  // directly from tokenizer.json
@@ -427,7 +427,7 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 break;
             case LLAMA_VOCAB_PRE_TYPE_GPT4O:
             case LLAMA_VOCAB_PRE_TYPE_MINIMAX_M2:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                     "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))*((?=[\\p{L}])([^A-Z]))+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}])([^a-z]))+((?=[\\p{L}])([^A-Z]))*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
@@ -438,12 +438,12 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 // (diacritics) attach to their base letters. Avoids excessive
                 // backtracking on scripts that use them heavily (Bengali, Hindi,
                 // Telugu, Thai, ...). See PR #22716 for benchmarks.
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}\\p{M}])([^a-z]))*((?=[\\p{L}\\p{M}])([^A-Z]))+(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|[^\\r\\n\\p{L}\\p{N}]?((?=[\\p{L}\\p{M}])([^a-z]))+((?=[\\p{L}\\p{M}])([^A-Z]))*(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_TINY_AYA:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json: "\\d{1,3}(?=(?:\\d{3})*\\b)"
                     "\\d{1,3}(?=(?:\\d{3})*\\b)",
                     // original regex from tokenizer.json: "[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]*[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\\r\\n\\p{L}\\p{N}]?[\\p{Lu}\\p{Lt}\\p{Lm}\\p{Lo}\\p{M}]+[\\p{Ll}\\p{Lm}\\p{Lo}\\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
@@ -451,20 +451,20 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_KIMI_K2:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // K2 trigger pattern - this will activate the custom K2 handler in unicode.cpp
                     // The custom handler implements all K2 patterns with proper Han character exclusion
                     "\\p{Han}+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_SUPERBPE:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "\\p{N}+",
                     "(?=(\\d{3})+(?!\\d))",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_BAILINGMOE:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "'(?i:[sdmt]|ll|ve|re)|[^\\r\\n\\p{L}\\p{N}]?+\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]++[\\r\\n]*|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+"
                     // FIXME? Changed possessive quantifiers (?+ and ++) to greedy to avoid errors and imatrix hanging (tried atomic grouping but it's not supported?)
@@ -472,49 +472,49 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_SEED_CODER:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1}| ?[^\\s\\p{L}\\p{N}\r\n]+|\\s*[\r\n]+|\\s+(?!\\S)|\\s+"
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1}| ?[^\\s\\p{L}\\p{N}\\r\\n]+|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_GROK_2:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_AFMOE:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // Digit handling - uses custom implementation in unicode.cpp
                     // Groups digits with leading 1-2 based on total length modulo 3
                     "\\p{AFMoE_digits}",
                     // CJK and Asian scripts (using direct Unicode literals)
-                    "[yi-xing qiu- qi--yori-koto-yi-e---k---ga-g-]+",
+                    "[一-鿿㐀-䶿豈-﫿぀-ゟ゠-ヿ･-ﾟ⼀-⿟เ-๿຀-໿ក-៿က-႟ꩠ-ꩿꧠ-꧿가-힯ᄀ-ᇿ]+",
                     // Main BPE pattern
                     "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\\r\\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_LAGUNA:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[^\\n]+|[\\n]+",
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_EXAONE_MOE:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json
                     // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?(?:\\p{L}\\p{M}*(?: \\p{L}\\p{M}*)*)+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]?|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+"
                     "(?:'[sS]|'[tT]|'[rR][eE]|'[vV][eE]|'[mM]|'[lL][lL]|'[dD])|[^\\r\\n\\p{L}\\p{N}]?(?:\\p{L}\\p{M}*(?: \\p{L}\\p{M}*)*)+|\\p{N}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n/]?|\\s*[\\r\\n]|\\s+(?!\\S)|\\s+",
                 };
                 break;
             case LLAMA_VOCAB_PRE_TYPE_GEMMA4:
-                // Gemma4 uses SPM-style BPE: spaces are replaced with  by the
+                // Gemma4 uses SPM-style BPE: spaces are replaced with ▁ by the
                 // normalizer, then BPE merges run on the whole text without
                 // word-level pre-splitting. We only need to split on newlines
                 // since BPE merge lookup asserts no newlines in tokens.
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[^\\n]+|[\\n]+",
                 };
                 byte_encode = false; // uses raw UTF-8, not GPT-2 byte encoding
@@ -522,13 +522,13 @@ struct llm_tokenizer_bpe : llm_tokenizer {
             case LLAMA_VOCAB_PRE_TYPE_SARVAM_MOE:
                 // Sarvam uses SPM-style BPE (same shape as Gemma4): spaces replaced with U+2581
                 // by the normalizer, BPE merges over the whole text on raw UTF-8.
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[^\\n]+|[\\n]+",
                 };
                 byte_encode = false;
                 break;
             case LLAMA_VOCAB_PRE_TYPE_MINICPM5:
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     // original regex from tokenizer.json (openbmb/MiniCPM5-1B)
                     "\\p{N}{1,3}",
                     // "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}+| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
@@ -537,14 +537,14 @@ struct llm_tokenizer_bpe : llm_tokenizer {
                 break;
             case LLAMA_VOCAB_PRE_TYPE_WHITESPACE:
                 // whitespace pre-tokenizer (jinaai/jina-embeddings-v2-base-zh)
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "\\S+",
                 };
                 byte_encode = false;
                 break;
             default:
                 // default regex for BPE tokenization pre-processing
-                regex_exprs = std::vector<std::string>{
+                regex_exprs = {
                     "[\\p{P}\\$\\+<=>\\^~\\|]+",
                     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| ?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)",
                     "\\p{N}+",
@@ -1373,8 +1373,10 @@ struct llm_tokenizer_plamo2 : llm_tokenizer {
             if (vocab.is_byte(token_id)) {
                 if (entry.text.length() == 6 && entry.text.substr(0, 3) == "<0x" && entry.text.back() == '>') {
                     std::string hex_str = entry.text.substr(3, 2);
-                    int byte_val = std::stoi(hex_str, nullptr, 16);
-                    bytes_[byte_val] = static_cast<llama_token>(token_id);
+                    if (std::isxdigit(static_cast<unsigned char>(hex_str[0])) && std::isxdigit(static_cast<unsigned char>(hex_str[1]))) {
+                        int byte_val = std::stoi(hex_str, nullptr, 16);
+                        bytes_[byte_val] = static_cast<llama_token>(token_id);
+                    }
                 }
                 continue;
             }
@@ -2614,7 +2616,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<EOT>"
                         || t.first == "_<EOT>"
                         || t.first == "[EOT]" // Kimi-K2
-                        || t.first == "<|endofsentence|>" // DeepSeek
+                        || t.first == "<｜end▁of▁sentence｜>" // DeepSeek
                         || t.first == "<end_of_utterance>" // smoldocling
                    ) {
                     special_eot_id = t.second;
@@ -2646,9 +2648,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|fim_prefix|>"  // Qwen
                         || t.first == "<fim-prefix>"
                         || t.first == "<fim_prefix>"    // Granite
-                        || t.first == "<|fimbegin|>" // DeepSeek
+                        || t.first == "<｜fim▁begin｜>" // DeepSeek
                         || t.first == "<PRE>"
-                        || t.first == "<PRE>"          // CodeLlama
+                        || t.first == "▁<PRE>"          // CodeLlama
                         || t.first == "<|code_prefix|>" // GLM-4.5
                         || t.first == "<|prefix|>"      // Falcon-H1-Tiny-Coder
                         ) {
@@ -2667,9 +2669,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|fim_suffix|>" // Qwen
                         || t.first == "<fim-suffix>"
                         || t.first == "<fim_suffix>"   // Granite
-                        || t.first == "<|fimhole|>" // DeepSeek
+                        || t.first == "<｜fim▁hole｜>" // DeepSeek
                         || t.first == "<SUF>"
-                        || t.first == "<SUF>"         // CodeLlama
+                        || t.first == "▁<SUF>"         // CodeLlama
                         || t.first == "<|code_suffix|>" // GLM-4.5
                         || t.first == "<|suffix|>"      // Falcon-H1-Tiny-Coder
                         ) {
@@ -2688,9 +2690,9 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                         || t.first == "<|fim_middle|>" // Qwen
                         || t.first == "<fim-middle>"
                         || t.first == "<fim_middle>"   // Granite
-                        || t.first == "<|fimend|>"  // DeepSeek
+                        || t.first == "<｜fim▁end｜>"  // DeepSeek
                         || t.first == "<MID>"
-                        || t.first == "<MID>"         // CodeLlama
+                        || t.first == "▁<MID>"         // CodeLlama
                         || t.first == "<|code_middle|>" // GLM-4.5
                         || t.first == "<|middle|>"      // Falcon-H1-Tiny-Coder
                         ) {
@@ -2821,7 +2823,7 @@ void llama_vocab::impl::load(llama_model_loader & ml, const LLM_KV & kv) {
                     || t.first == "<eos>"            // gemma4
                     || t.first == "<turn|>"          // gemma4
                     || t.first == "<|tool_response>" // gemma4
-                    || t.first == "<|endofsentence|>" // deepseek-ocr
+                    || t.first == "<｜end▁of▁sentence｜>" // deepseek-ocr
                     || t.first == "[e~[" // minimax-m2/m3
                ) {
                 special_eog_ids.insert(t.second);
@@ -3595,7 +3597,7 @@ int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
                 }
                 if (attr & LLAMA_TOKEN_ATTR_NORMAL) {
                     if (escape_whitespaces) {
-                        // SPM-style BPE: tokens contain  for spaces
+                        // SPM-style BPE: tokens contain ▁ for spaces
                         std::string result = token_text;
                         llama_unescape_whitespace(result);
                         return _try_copy(result.data(), result.size());
@@ -3625,12 +3627,15 @@ int32_t llama_vocab::impl::token_to_piece(llama_token token, char * buf, int32_t
                 if (vocab.is_byte(token)) {
                     // Handle byte tokens like <0xXX>
                     if (token_text.length() == 6 && token_text.substr(0, 3) == "<0x" && token_text.back() == '>') {
-                        int hex_val = std::stoi(token_text.substr(3, 2), nullptr, 16);
-                        if (length < 1) {
-                            return -1;
+                        std::string hex_str = token_text.substr(3, 2);
+                        if (std::isxdigit(static_cast<unsigned char>(hex_str[0])) && std::isxdigit(static_cast<unsigned char>(hex_str[1]))) {
+                            int hex_val = std::stoi(hex_str, nullptr, 16);
+                            if (length < 1) {
+                                return -1;
+                            }
+                            buf[0] = static_cast<char>(hex_val);
+                            return 1;
                         }
-                        buf[0] = static_cast<char>(hex_val);
-                        return 1;
                     }
                 }
 

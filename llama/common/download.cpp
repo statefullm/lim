@@ -154,7 +154,7 @@ public:
             if ((filename[i] & 0xC0) != 0x80) {
                 if (len++ == 39) {
                     filename.resize(i);
-                    filename += "...";
+                    filename += "…";
                     break;
                 }
             }
@@ -189,7 +189,7 @@ public:
         std::cout << '\r' << "Downloading " << filename << " ";
 
         for (size_t i = 0; i < bar; i += 2) {
-            std::cout << (i + 1 < pos ? "" : (i < pos ? "" : " "));
+            std::cout << (i + 1 < pos ? "─" : (i < pos ? "╴" : " "));
         }
         std::cout << std::setw(4) << pct << "%\033[K";
 

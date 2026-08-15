@@ -37,7 +37,7 @@ struct mtmd_audio_cache {
 
     void fill_hann_window(uint32_t length, bool periodic);
 
-    // Build mel filterbank matrix [n_mel * n_fft_bins] at runtime.
+    // Build mel filterbank matrix [n_mel × n_fft_bins] at runtime.
     // n_fft_bins must be (N_fft / 2 + 1). Example: if N_fft=512 -> n_fft_bins=257.
     void fill_mel_filterbank_matrix(int64_t n_mel,
                                     int64_t n_fft,
@@ -118,6 +118,22 @@ struct mtmd_audio_preprocessor_mimo_audio : mtmd_audio_preprocessor {
 
   private:
     mtmd_audio_cache cache;
+};
+
+struct mtmd_audio_preprocessor_qwen3tts_spk : mtmd_audio_preprocessor {
+    mtmd_audio_preprocessor_qwen3tts_spk(const clip_ctx * ctx) : mtmd_audio_preprocessor(ctx) {}
+    void initialize() override;
+    bool preprocess(const float * samples, size_t n_samples, std::vector<mtmd_audio_mel> & output) override;
+
+  private:
+    mtmd_audio_cache cache;
+};
+
+// mimi convolves the waveform directly, so this only pads it to a whole number of frames
+struct mtmd_audio_preprocessor_pockettts : mtmd_audio_preprocessor {
+    mtmd_audio_preprocessor_pockettts(const clip_ctx * ctx) : mtmd_audio_preprocessor(ctx) {}
+    void initialize() override {}
+    bool preprocess(const float * samples, size_t n_samples, std::vector<mtmd_audio_mel> & output) override;
 };
 
 struct mtmd_audio_preprocessor_parakeet : mtmd_audio_preprocessor {

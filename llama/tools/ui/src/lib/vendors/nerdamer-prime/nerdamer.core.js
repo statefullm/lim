@@ -7250,7 +7250,7 @@ const Settings = {
     /** @type {(typeof Math | Record<string, Function>)[]} */
     FUNCTION_MODULES: [Math],
     // Allow certain characters
-    ALLOW_CHARS: ['p'],
+    ALLOW_CHARS: ['π'],
     // Allow nerdamer to convert multi-character variables
     USE_MULTICHARACTER_VARS: true,
     // Allow changing of power operator
@@ -7260,14 +7260,14 @@ const Settings = {
     // The variable validation regex
     // VALIDATION_REGEX: /^[a-z_][a-z\d\_]*$/i
     VALIDATION_REGEX:
-        /^[a-z_aAbBnGdDeEzZeHthThiIkKlLmMnNxXoOpPrP'sStTyUphPhchXpsPsoO][0-9a-z_aAbBnGdDeEzZeHthThiIkKlLmMnNxXoOpPrP'sStTyUphPhchXpsPsoO]*$/iu,
+        /^[a-z_αAβBγΓδΔϵEζZηHθΘιIκKλΛμMνNξΞoOπΠρPσΣτTυϒϕΦχXψΨωΩ∞][0-9a-z_αAβBγΓδΔϵEζZηHθΘιIκKλΛμMνNξΞoOπΠρPσΣτTυϒϕΦχXψΨωΩ]*$/iu,
     // The regex used to determine which characters should be included in implied multiplication
     IMPLIED_MULTIPLICATION_REGEX:
-        /(?<coeff>[+\-/*]*[0-9]+)(?<vars>[a-z_aAbBnGdDeEzZeHthThiIkKlLmMnNxXoOpPrP'sStTyUphPhchXpsPsoO]+[+\-/*]*)/giu,
+        /(?<coeff>[+\-/*]*[0-9]+)(?<vars>[a-z_αAβBγΓδΔϵEζZηHθΘιIκKλΛμMνNξΞoOπΠρPσΣτTυϒϕΦχXψΨωΩ]+[+\-/*]*)/giu,
     // Aliases
     ALIASES: {
-        p: 'pi',
-        '': 'Infinity',
+        π: 'pi',
+        '∞': 'Infinity',
     },
     POSITIVE_MULTIPLIERS: false,
     // Cached items
@@ -8062,7 +8062,7 @@ const Math2 = {
     // CosineIntegral
     Ci(x) {
         const n = 20;
-        /* Roughly Euler-Mascheroni*/
+        /* Roughly Euler–Mascheroni*/
         const g = 0.5772156649015329;
         let sum = 0;
         for (let i = 1; i < n; i++) {
@@ -8088,7 +8088,7 @@ const Math2 = {
             return -Infinity;
         }
         const n = 30;
-        const g = 0.5772156649015329; /* Roughly Euler-Mascheroni*/
+        const g = 0.5772156649015329; /* Roughly Euler–Mascheroni*/
         let sum = 0;
         for (let i = 1; i < n; i++) {
             sum += x ** i / (i * Math2.factorial(i));
@@ -9153,8 +9153,8 @@ function text(obj, option = undefined, useGroup = undefined, decp = undefined) {
     // finds the simplest fraction within epsilon (1e-30) of the decimal value.
     //
     // The precision matters:
-    //   - 16 threes (0.3333333333333333): exactly equals JS's 1/3 in IEEE 754 -> reconstructs to 1/3
-    //   - 15 threes (0.333333333333333): differs by ~3.3e-16 -> becomes 321685687669321/965057063007964
+    //   - 16 threes (0.3333333333333333): exactly equals JS's 1/3 in IEEE 754 → reconstructs to 1/3
+    //   - 15 threes (0.333333333333333): differs by ~3.3e-16 → becomes 321685687669321/965057063007964
     //
     // Setting decp here would trigger toDecimal(16) which can truncate precision.
     // By not setting decp for plain decimals mode, we preserve full valueOf() precision.
@@ -13197,7 +13197,7 @@ class Parser {
             if(e.charAt(i) === ' ')
             return i;
             }
-
+            
             return L; //assume the end of the string instead
             };
             */
@@ -14236,7 +14236,7 @@ class Parser {
         }
 
         function abs(symbol) {
-            // |-| = 
+            // |-∞| = ∞
             if (symbol.isInfinity) {
                 return NerdamerSymbol.infinity();
             }
@@ -16473,7 +16473,7 @@ class Parser {
                     // exact fraction arithmetic instead.
                     //
                     // The magnitude of a fraction num/den is approximately:
-                    //   log10(num) - log10(den)  numDigits - denDigits
+                    //   log10(num) - log10(den) ≈ numDigits - denDigits
                     //
                     // With PRECISION decimal places, we can only represent numbers in
                     // the range [10^(-PRECISION), 10^(+PRECISION)] accurately.
@@ -17224,7 +17224,7 @@ class Parser {
                             result = /** @type {NerdamerSymbolType} */ (_.multiply(result, r));
                         }
                     } else if (Settings.PARSE2NUMBER && symB.isImaginary()) {
-                        // 4^(i + 2) = e^(- (2 - 4 i) p n + (2 + i) log(4))
+                        // 4^(i + 2) = e^(- (2 - 4 i) π n + (2 + i) log(4))
 
                         const re = symB.realpart();
                         const im = symB.imagpart();
@@ -17247,7 +17247,7 @@ class Parser {
                         result = /** @type {NerdamerSymbolType} */ (_.multiply(a1, _.add(b1, c1)));
                         result = /** @type {NerdamerSymbolType} */ (_.expand(_.parse(result)));
                         /*
-                        }
+                        }   
                         */
                     } else {
                         // B is a symbol

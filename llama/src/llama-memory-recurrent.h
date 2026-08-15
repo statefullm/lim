@@ -66,15 +66,6 @@ public:
     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
 
-    // Recurrent state checkpointing (stack-based)
-    void rs_checkpoint_save (llama_seq_id seq_id) override;
-    // Overwrite an existing checkpoint at a specific stack index (avoids push/pop churn).
-    // No-op if checkpoint_idx >= stack size.
-    void rs_checkpoint_overwrite(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
-    void rs_checkpoint_restore(llama_seq_id seq_id, uint32_t checkpoint_idx) override;
-    void rs_checkpoint_prune  (llama_seq_id seq_id, uint32_t keep_idx) override;
-    void rs_checkpoint_pop    (llama_seq_id seq_id) override;
-
     uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
     uint32_t size = 0; // total number of cells, shared across all sequences
     uint32_t used = 0; // used cells (i.e. at least one seq_id)
@@ -86,17 +77,6 @@ public:
     std::vector<uint32_t> rs_idx;
 
     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
-
-    // Recurrent state checkpoint struct
-    struct rs_checkpoint {
-        std::vector<uint8_t> r_data; // R tensor row data for all layers
-        std::vector<uint8_t> s_data; // S tensor row data for all layers
-    };
-
-    // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
-    std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
-    // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
-    std::vector<bool> rs_restored;
 
     // computed before each graph build
     uint32_t n = 0;

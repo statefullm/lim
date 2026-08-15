@@ -127,7 +127,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
         // NextN-specific wiring (enorm/hnorm/eh_proj + optional shared head).
         // Multi-block MTP: every declared MTP block is required (the draft chain
         // runs all n_layer_nextn heads), so each block uses the captured
-        // `mtp_flags` directly -- already NOT_REQUIRED for a trunk-only GGUF,
+        // `mtp_flags` directly — already NOT_REQUIRED for a trunk-only GGUF,
         // which keeps that path correct.
 
         layer.attn_norm   = create_tensor(tn(LLM_TENSOR_ATTN_NORM, "weight", i), {n_embd}, mtp_flags);
@@ -148,7 +148,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
 
         layer.ffn_norm = create_tensor(tn(LLM_TENSOR_FFN_NORM, "weight", i), {n_embd}, mtp_flags);
 
-        // dense MLP (leading dense blocks) -- present if the MTP block isn't MoE
+        // dense MLP (leading dense blocks) — present if the MTP block isn't MoE
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", i), {n_embd,   n_ff}, TENSOR_NOT_REQUIRED);
         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", i), {  n_ff, n_embd}, TENSOR_NOT_REQUIRED);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", i), {n_embd,   n_ff}, TENSOR_NOT_REQUIRED);
@@ -177,7 +177,7 @@ void llama_model_step35::load_arch_tensors(llama_model_loader & ml) {
     for (int i = 0; i < n_layer; ++i) {
         load_block_trunk(i, trunk_flags);
     }
-    // All n_layer_nextn MTP blocks are required -- the multi-block draft chain
+    // All n_layer_nextn MTP blocks are required — the multi-block draft chain
     // runs every head (head k at offset k). The GGUF declares the count via
     // step35.nextn_predict_layers.
     for (int i = n_layer; i < n_layer_all; ++i) {

@@ -6,7 +6,7 @@
 [subrepo]
 	remote = https://github.com/ggerganov/llama.cpp.git
 	branch = master
-	commit = 0ef6e55edb306fcbcf73e6f1f41923cccb9cf7f8
-	parent = 87bd3d7fc895f4a089f2352aed77c8d2980133d7
+	commit = 9d57ce456c94d241dde672b2db9cf18879766568
+	parent = 8a545c01ce7279c8799790d6c11d55f77ba4f7e3
 	method = merge
 	cmdver = 0.4.9

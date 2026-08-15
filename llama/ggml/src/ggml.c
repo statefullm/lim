@@ -1114,14 +1114,14 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
     "x*y",
     "x/y",
     "x^2",
-    "x",
+    "√x",
     "log(x)",
     "sin(x)",
     "cos(x)",
-    "Sx",
-    "Sx_k",
+    "Σx",
+    "Σx_k",
     "cumsum(x)",
-    "Sx/n",
+    "Σx/n",
     "argmax(x)",
     "count_equal(x)",
     "repeat(x)",
@@ -4446,7 +4446,7 @@ static int64_t ggml_calc_conv_output_size(int64_t ins, int64_t ks, int s, int p,
 }
 
 // im2col: [N, IC, IH, IW] => [N, OH, OW, IC*KH*KW]
-// a: [OC,IC, KH, KW]
+// a: [OC，IC, KH, KW]
 // b: [N, IC, IH, IW]
 // result: [N, OH, OW, IC*KH*KW]
 struct ggml_tensor * ggml_im2col(
@@ -4530,7 +4530,7 @@ struct ggml_tensor * ggml_conv_1d(
     struct ggml_tensor * result =
         ggml_mul_mat(ctx,
                 ggml_reshape_2d(ctx, im2col, im2col->ne[0], (im2col->ne[2] * im2col->ne[1])), // [N, OL, IC * K] => [N*OL, IC * K]
-                ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1]), a->ne[2]));                    // [OC,IC, K] => [OC, IC * K]
+                ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1]), a->ne[2]));                    // [OC，IC, K] => [OC, IC * K]
 
     result = ggml_reshape_3d(ctx, result, im2col->ne[1], a->ne[2], im2col->ne[2]); // [N, OC, OL]
 
@@ -4652,7 +4652,7 @@ GGML_API struct ggml_tensor * ggml_conv_transpose_1d(
 
 // ggml_conv_2d
 
-// a: [OC,IC, KH, KW]
+// a: [OC，IC, KH, KW]
 // b: [N, IC, IH, IW]
 // result: [N, OC, OH, OW]
 struct ggml_tensor * ggml_conv_2d(
@@ -4670,7 +4670,7 @@ struct ggml_tensor * ggml_conv_2d(
     struct ggml_tensor * result =
         ggml_mul_mat(ctx,
                 ggml_reshape_2d(ctx, im2col, im2col->ne[0],  im2col->ne[3] * im2col->ne[2] * im2col->ne[1]), // [N, OH, OW, IC * KH * KW] => [N*OH*OW, IC * KH * KW]
-                ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1] * a->ne[2]),  a->ne[3]));                       // [OC,IC, KH, KW] => [OC, IC * KH * KW]
+                ggml_reshape_2d(ctx, a, (a->ne[0] * a->ne[1] * a->ne[2]),  a->ne[3]));                       // [OC，IC, KH, KW] => [OC, IC * KH * KW]
 
     result = ggml_reshape_4d(ctx, result, im2col->ne[1], im2col->ne[2], im2col->ne[3], a->ne[3]); // [OC, N, OH, OW]
     result = ggml_cont(ctx, ggml_permute(ctx, result, 0, 1, 3, 2)); // [N, OC, OH, OW]
@@ -4800,7 +4800,7 @@ struct ggml_tensor * ggml_conv_2d_dw(
                                         s0, s1, p0, p1, d0, d1, true, a->type == GGML_TYPE_BF16 ? GGML_TYPE_F32 : GGML_TYPE_F16); // [N * IC, OH, OW, KH * KW]
     struct ggml_tensor * new_b = ggml_reshape_4d(ctx, im2col, im2col->ne[0], im2col->ne[2] * im2col->ne[1], b->ne[2], b->ne[3]); // [N * IC, OH, OW, KH * KW] => [N, IC, OH * OW, KH * KW]
 
-    new_a = ggml_reshape_4d(ctx, new_a, (new_a->ne[0] * new_a->ne[1]), new_a->ne[2],  new_a->ne[3], 1);                       // [OC,1, KH, KW] => [1, OC, 1, KH * KW]
+    new_a = ggml_reshape_4d(ctx, new_a, (new_a->ne[0] * new_a->ne[1]), new_a->ne[2],  new_a->ne[3], 1);                       // [OC，1, KH, KW] => [1, OC, 1, KH * KW]
     struct ggml_tensor * result = ggml_mul_mat(ctx, new_a, new_b);
     result = ggml_reshape_4d(ctx, result, im2col->ne[1], im2col->ne[2], b->ne[2], b->ne[3]); // [N, OC, OH, OW]
 
@@ -5588,7 +5588,10 @@ struct ggml_tensor * ggml_ssm_scan(
         struct ggml_tensor  * A,
         struct ggml_tensor  * B,
         struct ggml_tensor  * C,
-        struct ggml_tensor  * ids) {
+        struct ggml_tensor  * ids,
+        int64_t               K) {
+    GGML_ASSERT(K >= 1);
+    GGML_ASSERT(K <= INT32_MAX);
     GGML_ASSERT(ggml_is_contiguous(s));
     GGML_ASSERT(ggml_is_contiguous(dt));
     GGML_ASSERT(ggml_is_contiguous(A));
@@ -5625,11 +5628,12 @@ struct ggml_tensor * ggml_ssm_scan(
         if (A->ne[0] != 1) {
             // Mamba-1 has more granular decay factors
             GGML_ASSERT(A->ne[0] == d_state);
+            GGML_ASSERT(K == 1);
         }
     }
 
     // concatenated y + ssm_states
-    struct ggml_tensor * result = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, ggml_nelements(x) + s->ne[0]*s->ne[1]*s->ne[2]*ids->ne[0]);
+    struct ggml_tensor * result = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, ggml_nelements(x) + K*s->ne[0]*s->ne[1]*s->ne[2]*ids->ne[0]);
 
     result->op   = GGML_OP_SSM_SCAN;
     result->src[0] = s;
@@ -5639,6 +5643,8 @@ struct ggml_tensor * ggml_ssm_scan(
     result->src[4] = B;
     result->src[5] = C;
     result->src[6] = ids;
+
+    ggml_set_op_params_i32(result, 0, (int32_t) K);
 
     return result;
 }
@@ -7198,6 +7204,10 @@ struct ggml_tensor * ggml_build_forward_select(
 
 void ggml_build_forward_expand(struct ggml_cgraph * cgraph, struct ggml_tensor * tensor) {
     ggml_build_forward_impl(cgraph, tensor, true, true);
+}
+
+void ggml_build_forward_order(struct ggml_cgraph * cgraph, struct ggml_tensor * tensor) {
+    ggml_build_forward_impl(cgraph, tensor, true, false);
 }
 
 void ggml_build_backward_expand(
