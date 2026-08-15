@@ -333,6 +333,15 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
         // Thinking block detection will simply never match.
       }
     }
+
+    // Fallback: if the autoparser didn't detect thinking tags (e.g., due to a
+    // template change that breaks autodetection), use the standard Qwen think
+    // tags as a default. This covers Qwen3.8 and other models that use
+    // <think> but whose Jinja template doesn't expose them to the parser.
+    if (g_model_tokens.think_start.empty()) {
+      g_model_tokens.think_start = "<think>";
+      g_model_tokens.think_end = "</think>";
+    }
   }
 
   // Log what we detected (useful for debugging)
