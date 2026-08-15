@@ -594,7 +594,8 @@ int main(int argc, char ** argv) {
   }
   llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
   llama_sampler * smpl = llama_sampler_chain_init(lparams);
-  llama_sampler_chain_add(smpl, llama_sampler_init_penalties(64, penalty_repeat, penalty_freq, penalty_present));
+  int32_t n_vocab = llama_vocab_n_tokens(vocab);
+  llama_sampler_chain_add(smpl, llama_sampler_init_penalties(n_vocab, 64, penalty_repeat, penalty_freq, penalty_present));
   llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
   llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
   llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));

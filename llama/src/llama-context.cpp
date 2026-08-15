@@ -3996,6 +3996,28 @@ bool llama_memory_can_shift(llama_memory_t mem) {
     return mem->get_can_shift();
 }
 
+// --- Recurrent state checkpointing ---
+
+void llama_memory_rs_checkpoint_save(llama_memory_t mem, llama_seq_id seq_id) {
+    if (mem) mem->rs_checkpoint_save(seq_id);
+}
+
+void llama_memory_rs_checkpoint_overwrite(llama_memory_t mem, llama_seq_id seq_id, uint32_t checkpoint_idx) {
+    if (mem) mem->rs_checkpoint_overwrite(seq_id, checkpoint_idx);
+}
+
+void llama_memory_rs_checkpoint_restore(llama_memory_t mem, llama_seq_id seq_id, uint32_t checkpoint_idx) {
+    if (mem) mem->rs_checkpoint_restore(seq_id, checkpoint_idx);
+}
+
+void llama_memory_rs_checkpoint_prune(llama_memory_t mem, llama_seq_id seq_id, uint32_t keep_idx) {
+    if (mem) mem->rs_checkpoint_prune(seq_id, keep_idx);
+}
+
+void llama_memory_rs_checkpoint_pop(llama_memory_t mem, llama_seq_id seq_id) {
+    if (mem) mem->rs_checkpoint_pop(seq_id);
+}
+
 // llama state API
 
 // deprecated
