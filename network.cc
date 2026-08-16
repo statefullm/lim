@@ -928,6 +928,7 @@ static string github_api_fetch(const string& url) {
 
   string readBuffer;
   struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, "User-Agent: LIM/1.0");
   headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
   headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2026-03-10");
   if (!auth_header.empty()) {
@@ -1009,6 +1010,7 @@ static string github_api_fetch(const string& url) {
       if (c2) {
         string comments_buf;
         struct curl_slist *h2 = NULL;
+        h2 = curl_slist_append(h2, "User-Agent: LIM/1.0");
         h2 = curl_slist_append(h2, "Accept: application/vnd.github+json");
         if (!auth_header.empty()) h2 = curl_slist_append(h2, auth_header.c_str());
         curl_easy_setopt(c2, CURLOPT_URL, comments_url.c_str());
