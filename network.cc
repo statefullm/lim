@@ -847,6 +847,260 @@ static string api_hint_for_url(const string& url) {
   return "";
 }
 
+// --- GitHub API auto-fetch ---
+// When a GitHub URL is detected, try to fetch content via the API before
+// attempting HTML scrape (which would fail on SPA pages).
+// Returns formatted text on success, or "" on failure (caller falls through to HTML).
+static string github_api_fetch(const string& url) {
+  // Parse: https://github.com/{owner}/{repo}/{section}/...
+  const string prefix = "github.com/";
+  size_t github_pos = url.find(prefix);
+  if (github_pos == string::npos) return "";
+
+  string path = url.substr(github_pos + prefix.length());
+
+  // Remove query params and fragments
+  size_t qmark = path.find('?');
+  if (qmark != string::npos) path = path.substr(0, qmark);
+  size_t frag = path.find('#');
+  if (frag != string::npos) path = path.substr(0, frag);
+
+  // Split path into segments
+  vector<string> segs;
+  size_t start = 0;
+  while (start < path.length()) {
+    size_t slash = path.find('/', start);
+    if (slash == string::npos) { segs.push_back(path.substr(start)); break; }
+    segs.push_back(path.substr(start, slash - start));
+    start = slash + 1;
+  }
+
+  if (segs.size() < 3) return ""; // Need at least owner/repo/section
+  string owner = segs[0];
+  string repo = segs[1];
+  string section = segs[2];
+
+  // Build API base
+  string api_base = "https://api.github.com/repos/" + owner + "/" + repo;
+
+  // Get optional token for higher rate limits (GH_TOKEN preferred, GITHUB_TOKEN as fallback)
+  const char* token = getenv("GH_TOKEN");
+  if (!token || !token[0]) token = getenv("GITHUB_TOKEN");
+  string auth_header = "";
+  if (token && token[0]) {
+    auth_header = string("Authorization: Bearer ") + token;
+  }
+
+  string api_url;
+  bool is_graphql = false;
+  string graphql_query;
+
+  if (section == "actions" && segs.size() >= 5 && segs[3] == "runs") {
+    // /actions/runs/{id}
+    api_url = api_base + "/actions/runs/" + segs[4];
+  } else if ((section == "pulls" || section == "issues") && segs.size() >= 4) {
+    // /pulls/{number} or /issues/{number} -> use issues API (PRs are issues)
+    api_url = api_base + "/issues/" + segs[3];
+  } else if (section == "discussions" && segs.size() >= 4) {
+    // /discussions/{number} -> GraphQL only
+    is_graphql = true;
+    graphql_query = "{\"query\":\"{ repository(owner: \\\"" + owner + "\\\", name: \\\"" + repo + "\\\") { discussion(number: " + segs[3] + ") { title bodyText comments(first: 10) { nodes { bodyText author { login } } } } } }\"}";
+    api_url = "https://api.github.com/graphql";
+  } else if (section == "blob" && segs.size() >= 5) {
+    // /blob/{branch}/{path...} -> contents API
+    string branch = segs[3];
+    string file_path;
+    for (size_t i = 4; i < segs.size(); i++) {
+      if (!file_path.empty()) file_path += "/";
+      file_path += segs[i];
+    }
+    api_url = api_base + "/contents/" + file_path + "?ref=" + branch;
+  } else {
+    return ""; // Unsupported GitHub URL pattern
+  }
+
+  cerr << "\033[0mGitHub API fetch: " << (is_graphql ? "GraphQL" : api_url) << endl;
+
+  NetworkTools::init_ssl_certificates();
+
+  CURL *curl = curl_easy_init();
+  if (!curl) return "";
+
+  string readBuffer;
+  struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, "Accept: application/vnd.github+json");
+  headers = curl_slist_append(headers, "X-GitHub-Api-Version: 2026-03-10");
+  if (!auth_header.empty()) {
+    headers = curl_slist_append(headers, auth_header.c_str());
+  }
+
+  curl_easy_setopt(curl, CURLOPT_URL, api_url.c_str());
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  configure_curl_ssl(curl, api_url);
+
+  if (is_graphql) {
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, graphql_query.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long)graphql_query.length());
+  }
+
+  CURLcode res = curl_easy_perform(curl);
+  long http_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+
+  if (stop_generation) return "";
+  if (res != CURLE_OK) {
+    cerr << "\033[0mGitHub API curl error: " << curl_easy_strerror(res) << endl;
+    return "";
+  }
+  if (http_code == 403 || http_code == 429) {
+    cerr << "\033[0mGitHub API rate limited (HTTP " << http_code << ")" << endl;
+    return "";
+  }
+  if (http_code != 200) {
+    cerr << "\033[0mGitHub API returned HTTP " << http_code << endl;
+    return "";
+  }
+
+  try {
+    auto j = json::parse(readBuffer);
+
+    // Check for GraphQL errors
+    if (is_graphql && j.contains("errors") && j["errors"].is_array() && !j["errors"].empty()) {
+      cerr << "\033[0mGitHub GraphQL error: " << j["errors"][0].value("message", "?") << endl;
+      return "";
+    }
+
+    string result = "";
+
+    if (section == "actions" && segs.size() >= 5 && segs[3] == "runs") {
+      // Actions run
+      result = "[GitHub Actions Run]\n";
+      if (j.contains("name")) result += "Workflow: " + j["name"].get<string>() + "\n";
+      if (j.contains("display_title")) result += "Title: " + j["display_title"].get<string>() + "\n";
+      if (j.contains("head_branch")) result += "Branch: " + j["head_branch"].get<string>() + "\n";
+      if (j.contains("head_sha")) result += "Commit: " + j["head_sha"].get<string>().substr(0, 7) + "\n";
+      if (j.contains("status")) result += "Status: " + j["status"].get<string>() + "\n";
+      if (j.contains("conclusion") && !j["conclusion"].is_null())
+        result += "Conclusion: " + j["conclusion"].get<string>() + "\n";
+      if (j.contains("created_at")) result += "Created: " + j["created_at"].get<string>() + "\n";
+      if (j.contains("updated_at")) result += "Updated: " + j["updated_at"].get<string>() + "\n";
+      if (j.contains("run_number")) result += "Run #" + to_string(j["run_number"].get<int>()) + "\n";
+
+    } else if ((section == "pulls" || section == "issues") && segs.size() >= 4) {
+      // Issue or PR
+      result = string("[GitHub ") + (section == "pulls" ? "Pull Request" : "Issue") + "]\n";
+      if (j.contains("title")) result += "Title: " + j["title"].get<string>() + "\n";
+      if (j.contains("state")) result += "State: " + j["state"].get<string>() + "\n";
+      if (j.contains("user") && j["user"].contains("login"))
+        result += "Author: " + j["user"]["login"].get<string>() + "\n";
+      if (j.contains("created_at")) result += "Created: " + j["created_at"].get<string>() + "\n";
+      if (j.contains("body") && !j["body"].is_null())
+        result += "\nBody:\n" + j["body"].get<string>() + "\n";
+
+      // Fetch first few comments
+      string comments_url = api_base + "/issues/" + segs[3] + "/comments?per_page=5";
+      CURL *c2 = curl_easy_init();
+      if (c2) {
+        string comments_buf;
+        struct curl_slist *h2 = NULL;
+        h2 = curl_slist_append(h2, "Accept: application/vnd.github+json");
+        if (!auth_header.empty()) h2 = curl_slist_append(h2, auth_header.c_str());
+        curl_easy_setopt(c2, CURLOPT_URL, comments_url.c_str());
+        curl_easy_setopt(c2, CURLOPT_HTTPHEADER, h2);
+        curl_easy_setopt(c2, CURLOPT_WRITEFUNCTION, StringWriteCallback);
+        curl_easy_setopt(c2, CURLOPT_WRITEDATA, &comments_buf);
+        curl_easy_setopt(c2, CURLOPT_TIMEOUT, 30L);
+        configure_curl_ssl(c2, comments_url);
+        curl_easy_perform(c2);
+        long c2_code = 0;
+        curl_easy_getinfo(c2, CURLINFO_RESPONSE_CODE, &c2_code);
+        curl_slist_free_all(h2);
+        curl_easy_cleanup(c2);
+
+        if (c2_code == 200) {
+          try {
+            auto comments = json::parse(comments_buf);
+            if (comments.is_array() && !comments.empty()) {
+              result += "\nComments (" + to_string(comments.size()) + " shown):\n";
+              for (size_t i = 0; i < comments.size() && i < 5; i++) {
+                string author = comments[i].value("user", json::object()).value("login", "?");
+                string body = comments[i].value("body", "");
+                result += "\n--- " + author + " ---\n" + body + "\n";
+              }
+            }
+          } catch (...) {}
+        }
+      }
+
+    } else if (section == "discussions" && segs.size() >= 4) {
+      // Discussion (GraphQL response)
+      auto data = j.value("data", json::object());
+      auto repo_j = data.value("repository", json::object());
+      auto disc = repo_j.value("discussion", json::object());
+
+      result = "[GitHub Discussion]\n";
+      if (!disc.value("title", "").empty()) result += "Title: " + disc["title"].get<string>() + "\n";
+      if (!disc.value("bodyText", "").empty()) result += "\nBody:\n" + disc["bodyText"].get<string>() + "\n";
+
+      auto comments = disc.value("comments", json::object());
+      auto nodes = comments.value("nodes", json::array());
+      if (!nodes.empty()) {
+        result += "\nComments (" + to_string(nodes.size()) + " shown):\n";
+        for (auto& node : nodes) {
+          string author = node.value("author", json::object()).value("login", "?");
+          string body = node.value("bodyText", "");
+          result += "\n--- " + author + " ---\n" + body + "\n";
+        }
+      }
+
+    } else if (section == "blob" && segs.size() >= 5) {
+      // File contents (base64 encoded)
+      if (j.contains("content") && !j["content"].is_null()) {
+        string b64 = j["content"].get<string>();
+        // Remove whitespace from base64
+        b64.erase(remove_if(b64.begin(), b64.end(), ::isspace), b64.end());
+        // Base64 decode
+        auto b64_val = [](unsigned char c) -> int {
+          if (c >= 'A' && c <= 'Z') return c - 'A';
+          if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+          if (c >= '0' && c <= '9') return c - '0' + 52;
+          if (c == '+') return 62;
+          if (c == '/') return 63;
+          return -1;
+        };
+        string decoded;
+        int val = 0, valb = -6;
+        for (unsigned char c : b64) {
+          if (c == '=') break;
+          int d = b64_val(c);
+          if (d < 0) continue;
+          val = (val << 6) + d;
+          valb += 6;
+          if (valb >= 0) {
+            decoded.push_back((val >> valb) & 0xFF);
+            valb -= 8;
+          }
+        }
+        result = "[File: " + owner + "/" + repo + "]\n" + decoded;
+      } else if (j.contains("message")) {
+        cerr << "\033[0mGitHub contents API: " << j["message"].get<string>() << endl;
+        return "";
+      }
+    }
+
+    return result;
+  } catch (const exception& e) {
+    cerr << "\033[0mGitHub API JSON parse error: " << e.what() << endl;
+    return "";
+  }
+}
+
 // --- HTML Fetcher ---
 string NetworkTools::fetch_and_clean_html(const string& url) {
   // Ensure SSL certificates are initialized before any HTTPS fetch
@@ -858,6 +1112,16 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
     if (ext == ".zip" || ext == ".exe" || ext == ".tar") {
       return "[Binary file skipped]";
     }
+  }
+
+  // --- GitHub URLs: try API first (avoids SPA problem entirely) ---
+  if (url.find("github.com/") != string::npos) {
+    string api_result = github_api_fetch(url);
+    if (!api_result.empty()) {
+      cerr << "\033[0mGitHub API fetch succeeded (" << api_result.length() << " chars)" << endl;
+      return NetworkTools::limit_context_size(api_result);
+    }
+    // API failed (rate limit, unsupported pattern, etc.) - fall through to HTML
   }
 
   CURL *curl = curl_easy_init();
