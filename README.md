@@ -317,6 +317,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
 | `LIM_WEB_TIMEOUT` | `600` | HTTP request timeout in seconds for fetches and searches |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
+| `LIM_BRAVE_API_KEY` | *(empty)* | Brave Search API key. When set, LIM falls back to the [Brave Search API](https://api.search.brave.com/app) if SearXNG fails or returns no results. Free tier: 2,000 queries/month. Get a key at [brave.com/search/api](https://brave.com/search/api/). |
 | `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |

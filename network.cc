@@ -122,6 +122,11 @@ static long g_web_timeout_seconds = []() -> long {
   return 600;
 }();
 
+static string g_brave_api_key = []() -> string {
+  const char* env = getenv("LIM_BRAVE_API_KEY");
+  return (env && env[0]) ? string(env) : "";
+}();
+
 // Stateful Context Budget for Agentic Sessions
 // Computed from LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4 (bytes/token).
 // Default: n_ctx=262144, fraction=0.75 => ~786K chars budget for fetched content.
@@ -1139,6 +1144,110 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
   return results;
 }
 
+// --- Brave Search API Fallback ---
+// Direct REST call to api.search.brave.com when SearXNG fails or returns empty.
+// Returns formatted results string (same shape as SearXNG output), or "" on failure.
+static string brave_api_search(const string& query) {
+  if (g_brave_api_key.empty()) return "";
+
+  cerr << "\033[0mFalling back to Brave Search API..." << endl;
+
+  NetworkTools::init_ssl_certificates();
+
+  CURL *curl = curl_easy_init();
+  if (!curl) return "";
+
+  char *encoded_query = curl_easy_escape(curl, query.c_str(), query.length());
+  string url = string("https://api.search.brave.com/res/v1/web/search?q=") + encoded_query + "&count=5";
+  curl_free(encoded_query);
+
+  struct curl_slist *headers = NULL;
+  headers = curl_slist_append(headers, "Accept: application/json");
+  headers = curl_slist_append(headers, "Accept-Encoding: gzip");
+  headers = curl_slist_append(headers, ("X-Subscription-Token: " + g_brave_api_key).c_str());
+
+  string readBuffer;
+  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
+  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+  configure_curl_ssl(curl, url);
+  curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
+  curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
+
+  CURLcode res = curl_easy_perform(curl);
+  long http_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+
+  if (stop_generation) return "";
+  if (res != CURLE_OK) {
+    cerr << "\033[0mBrave API curl error: " << curl_easy_strerror(res) << endl;
+    return "";
+  }
+  if (http_code == 429) {
+    cerr << "\033[0mBrave API rate limited (429)" << endl;
+    return "";
+  }
+  if (http_code != 200) {
+    cerr << "\033[0mBrave API returned HTTP " << http_code << ": " << readBuffer.substr(0, 200) << endl;
+    return "";
+  }
+
+  try {
+    auto j = json::parse(readBuffer);
+    string llm_result = "Search Results for: " + query + " [via Brave API]\n\n";
+
+    int count = 0;
+    if (j.contains("web") && j["web"].contains("results") && j["web"]["results"].is_array()) {
+      for (const auto& result : j["web"]["results"]) {
+        if (count++ >= 3) break;
+
+        string title, result_url, snippet;
+        if (result.contains("title") && !result["title"].is_null())
+          title = result["title"].get<string>();
+        if (result.contains("url") && !result["url"].is_null())
+          result_url = result["url"].get<string>();
+        if (result.contains("description") && !result["description"].is_null())
+          snippet = result["description"].get<string>();
+
+        llm_result += "Title: " + title + "\n";
+        llm_result += "URL: " + result_url + "\n";
+
+        if (!result_url.empty()) {
+          cerr << "\033[0mFetching text from: " + result_url << endl;
+          NetworkTools net;
+          string full_text = net.fetch_and_clean_html(result_url);
+
+          bool is_error_or_spa = (full_text.find("[Failed to fetch") != string::npos ||
+                                  full_text.find("[Skipped") != string::npos ||
+                                  full_text.find("[This page appears to be JavaScript-rendered") != string::npos ||
+                                  full_text.find("[No content extracted") != string::npos ||
+                                  full_text.find("[No body content extracted") != string::npos);
+
+          if (full_text.length() > 200 && !is_error_or_spa) {
+            llm_result += "Page Content: " + full_text + "\n\n";
+          } else if (!snippet.empty()) {
+            llm_result += "Snippet: " + snippet + "\n\n";
+          } else if (is_error_or_spa && !full_text.empty()) {
+            llm_result += full_text + "\n\n";
+          }
+        }
+      }
+    }
+
+    if (count == 0) return "";
+    return llm_result;
+  } catch (const exception& e) {
+    cerr << "\033[0mBrave API JSON parse error: " << e.what() << endl;
+    return "";
+  }
+}
+
 // --- Main Search Interface ---
 NetworkTools::NetworkTools(const string& searxng_url) : base_url(searxng_url) {}
 
@@ -1218,21 +1327,36 @@ string NetworkTools::web_search(const string& query) {
     g_last_network_request = chrono::steady_clock::now();
 
     if (res != CURLE_OK) {
+      cerr << "\033[0mSearxNG connection failed: " << curl_easy_strerror(res) << endl;
+      string brave_result = brave_api_search(query);
+      if (!brave_result.empty()) return brave_result;
       g_searxng_disabled = true;
       return "Error: SearxNG connection failed. (" + string(curl_easy_strerror(res)) + ")";
     }
   } else {
+    string brave_result = brave_api_search(query);
+    if (!brave_result.empty()) return brave_result;
     return "Error: Could not initialize libcurl.";
   }
 
   if (http_code == 429) {
+    cerr << "\033[0mSearxNG rate limited, trying Brave API..." << endl;
+    string brave_result = brave_api_search(query);
+    if (!brave_result.empty()) return brave_result;
     g_searxng_disabled = true;
     return "Error: SearxNG rate limit exceeded (HTTP 429).";
   } else if (http_code != 200) {
+    cerr << "\033[0mSearxNG returned HTTP " << http_code << ", trying Brave API..." << endl;
+    string brave_result = brave_api_search(query);
+    if (!brave_result.empty()) return brave_result;
     return "Error: SearxNG returned HTTP " + to_string(http_code) + ".\nRaw Response: " + readBuffer;
   }
 
-  if (readBuffer.empty()) return "Error: Received empty response from search engine.";
+  if (readBuffer.empty()) {
+    string brave_result = brave_api_search(query);
+    if (!brave_result.empty()) return brave_result;
+    return "Error: Received empty response from search engine.";
+  }
 
   try {
     auto j = json::parse(readBuffer);
@@ -1280,6 +1404,11 @@ string NetworkTools::web_search(const string& query) {
     }
 
     if (count == 0) {
+      // SearXNG returned no results - try Brave API as fallback
+      cerr << "\033[0mSearxNG returned no results, trying Brave API..." << endl;
+      string brave_result = brave_api_search(query);
+      if (!brave_result.empty()) return brave_result;
+
       g_consecutive_empty_searches++;
       if (g_consecutive_empty_searches >= 3) {
         g_searxng_disabled = true;
