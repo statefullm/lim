@@ -717,6 +717,131 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
   return "[Docling Error " + to_string(http_code) + "]";
 }
 
+// --- Recursive visible-text extraction from an XML node tree ---
+// Skips script, style, noscript, template, svg, canvas, and hidden elements.
+static void extract_visible_text(xmlNodePtr node, string& out) {
+  if (!node) return;
+
+  if (node->type == XML_ELEMENT_NODE && node->name) {
+    string tag((const char*)node->name);
+    if (tag == "script" || tag == "style" || tag == "noscript" ||
+        tag == "template" || tag == "svg" || tag == "canvas" ||
+        tag == "iframe" || tag == "object") {
+      return;
+    }
+
+    // Check for hidden attribute
+    xmlChar* hidden_attr = xmlGetProp(node, (const xmlChar*)"hidden");
+    if (hidden_attr) { xmlFree(hidden_attr); return; }
+
+    // Check for display:none / visibility:hidden in style attribute
+    xmlChar* style_attr = xmlGetProp(node, (const xmlChar*)"style");
+    if (style_attr) {
+      string s((const char*)style_attr);
+      transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return std::tolower(c); });
+      if (s.find("display:none") != string::npos ||
+          s.find("display: none") != string::npos ||
+          s.find("visibility:hidden") != string::npos ||
+          s.find("visibility: hidden") != string::npos) {
+        xmlFree(style_attr);
+        return;
+      }
+      xmlFree(style_attr);
+    }
+  }
+
+  if (node->type == XML_TEXT_NODE || node->type == XML_CDATA_SECTION_NODE) {
+    if (node->content) out += (const char*)node->content;
+  }
+
+  for (xmlNodePtr child = node->children; child; child = child->next) {
+    extract_visible_text(child, out);
+  }
+}
+
+// --- Extract <title> and meta description from document head ---
+static pair<string, string> extract_page_metadata(xmlDocPtr doc) {
+  string title, description;
+  if (!doc || !doc->children) return {title, description};
+
+  for (xmlNodePtr cur = doc->children; cur; cur = cur->next) {
+    if (cur->type != XML_ELEMENT_NODE || !cur->name) continue;
+    string tag((const char*)cur->name);
+    if (tag != "head" && tag != "title") {
+      // Also handle case where <title> is a direct child of root (malformed HTML)
+      if (tag == "title") {
+        xmlChar* content = xmlNodeGetContent(cur);
+        if (content) { title = (const char*)content; xmlFree(content); }
+        break;
+      }
+      continue;
+    }
+
+    // Walk head children (or just process title directly)
+    xmlNodePtr start = (tag == "title") ? cur : cur->children;
+    for (xmlNodePtr hchild = start; hchild; hchild = (tag == "title") ? nullptr : hchild->next) {
+      if (hchild->type != XML_ELEMENT_NODE || !hchild->name) continue;
+      string htag((const char*)hchild->name);
+
+      if (htag == "title") {
+        xmlChar* content = xmlNodeGetContent(hchild);
+        if (content) { title = (const char*)content; xmlFree(content); }
+      } else if (htag == "meta") {
+        xmlChar* name = xmlGetProp(hchild, (const xmlChar*)"name");
+        xmlChar* prop = xmlGetProp(hchild, (const xmlChar*)"property");
+        xmlChar* content = xmlGetProp(hchild, (const xmlChar*)"content");
+        if (content) {
+          string key = name ? (const char*)name : (prop ? (const char*)prop : "");
+          if (key == "description" || key == "og:description" || key == "twitter:description") {
+            description = (const char*)content;
+          }
+        }
+        if (name) xmlFree(name);
+        if (prop) xmlFree(prop);
+        if (content) xmlFree(content);
+      }
+    }
+    break; // Only process first <head> or <title> found
+  }
+  return {title, description};
+}
+
+// --- Find <body> element in document tree ---
+static xmlNodePtr find_body_element(xmlDocPtr doc) {
+  if (!doc || !doc->children) return nullptr;
+
+  function<xmlNodePtr(xmlNodePtr)> dfs = [&](xmlNodePtr node) -> xmlNodePtr {
+    if (!node) return nullptr;
+    if (node->type == XML_ELEMENT_NODE && node->name) {
+      string tag((const char*)node->name);
+      if (tag == "body") return node;
+    }
+    for (xmlNodePtr child = node->children; child; child = child->next) {
+      xmlNodePtr found = dfs(child);
+      if (found) return found;
+    }
+    return nullptr;
+  };
+
+  return dfs(doc->children);
+}
+
+// --- Return API endpoint hints for known SPA sites ---
+static string api_hint_for_url(const string& url) {
+  if (url.find("github.com/") != string::npos) {
+    if (url.find("/actions/") != string::npos)
+      return "Tip: Use the GitHub API via exec_shell: curl -s https://api.github.com/repos/<owner>/<repo>/actions/runs/<run_id>";
+    if (url.find("/pulls/") != string::npos || url.find("/issues/") != string::npos)
+      return "Tip: Use the GitHub API via exec_shell: curl -s https://api.github.com/repos/<owner>/<repo>/pulls/<num>";
+    return "Tip: Use the GitHub API via exec_shell: curl -s https://api.github.com/repos/<owner>/<repo>";
+  }
+  if (url.find("stackoverflow.com/questions/") != string::npos)
+    return "Tip: Stack Overflow has an API: curl -s 'https://api.stackexchange.com/2.3/questions/<id>?site=stackoverflow&filter=withbody'";
+  if (url.find("gitlab.com/") != string::npos)
+    return "Tip: Use the GitLab API via exec_shell: curl -s https://gitlab.com/api/v4/projects/<project_id>";
+  return "";
+}
+
 // --- HTML Fetcher ---
 string NetworkTools::fetch_and_clean_html(const string& url) {
   // Ensure SSL certificates are initialized before any HTTPS fetch
@@ -782,8 +907,10 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
 
   string& readBuffer = state.buffer;
 
-  // DECODE HTML ENTITIES using libxml2 FIRST (before stripping tags)
-  string decoded_html = "";
+  // --- Parse HTML with libxml2 and extract visible text from <body> ---
+  string final_text = "";
+  string page_title, page_desc;
+  bool parse_succeeded = false;
 
   try {
     xmlDocPtr doc = xmlReadMemory(
@@ -795,78 +922,130 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
       );
 
     if (doc && doc->children) {
-      xmlChar *content = xmlNodeGetContent(doc->children);
-      if (content) {
-        decoded_html = reinterpret_cast<char*>(content);
-        xmlFree(content);
+      parse_succeeded = true;
+
+      // Extract metadata (title, description) from <head>
+      auto metadata = extract_page_metadata(doc);
+      page_title = metadata.first;
+      page_desc = metadata.second;
+
+      // Find <body> and extract visible text recursively
+      xmlNodePtr body = find_body_element(doc);
+      if (body) {
+        extract_visible_text(body, final_text);
+      } else {
+        // No <body> found (fragment or malformed) - extract from root, skip <head>
+        for (xmlNodePtr child = doc->children->children; child; child = child->next) {
+          if (child->type == XML_ELEMENT_NODE && child->name &&
+              string((const char*)child->name) == "head") continue;
+          extract_visible_text(child, final_text);
+        }
       }
+
       xmlFreeDoc(doc);
     } else {
       if (doc) xmlFreeDoc(doc);
-      // If parsing failed or no children, fall back to raw buffer
-      decoded_html = readBuffer;
-      cerr << "\033[0mXML parsing fallback - using raw buffer" << endl;
     }
   } catch (...) {
-    // On any exception, use the raw buffer as fallback
-    decoded_html = readBuffer;
-    cerr << "\033[0mXML parsing exception - using raw buffer" << endl;
+    cerr << "\033[0mXML parsing exception - using raw buffer fallback" << endl;
   }
 
-  // Ensure we have content to process
-  if (decoded_html.empty()) {
+  // --- Fallback: if libxml2 failed, use naive tag stripping on raw HTML ---
+  if (!parse_succeeded) {
+    string decoded_html = readBuffer;
+
+    // Strip <script>...</script> and <style>...</style> blocks
+    string lower_buf = decoded_html;
+    transform(lower_buf.begin(), lower_buf.end(), lower_buf.begin(), [](unsigned char c){ return std::tolower(c); });
+
+    size_t pos = 0;
+    while (true) {
+      size_t script_start = lower_buf.find("<script", pos);
+      size_t style_start = lower_buf.find("<style", pos);
+      size_t next_tag = min(script_start, style_start);
+      if (next_tag == string::npos) break;
+
+      string end_tag = (next_tag == script_start) ? "</script>" : "</style>";
+      size_t tag_end = lower_buf.find(end_tag, next_tag);
+
+      if (tag_end != string::npos) {
+        tag_end += end_tag.length();
+        decoded_html.erase(next_tag, tag_end - next_tag);
+        lower_buf.erase(next_tag, tag_end - next_tag);
+      } else {
+        decoded_html.erase(next_tag);
+        lower_buf.erase(next_tag);
+        break;
+      }
+    }
+
+    // Strip all remaining tags
+    string clean_text = "";
+    clean_text.reserve(decoded_html.size());
+    bool in_tag = false;
+    for (char c : decoded_html) {
+      if (c == '<') in_tag = true;
+      else if (c == '>') { in_tag = false; clean_text += " "; }
+      else if (!in_tag) clean_text += c;
+    }
+
+    // Clean whitespace
+    final_text.reserve(clean_text.size());
+    bool last_was_space = false;
+    for (char c : clean_text) {
+      if (isspace((unsigned char)c)) {
+        if (!last_was_space) { final_text += ' '; last_was_space = true; }
+      } else {
+        final_text += c; last_was_space = false;
+      }
+    }
+  }
+
+  // Clean whitespace on the extracted text (collapses runs of spaces/newlines)
+  {
+    string cleaned = "";
+    cleaned.reserve(final_text.size());
+    bool last_was_space = false;
+    for (char c : final_text) {
+      if (isspace((unsigned char)c)) {
+        if (!last_was_space) { cleaned += ' '; last_was_space = true; }
+      } else {
+        cleaned += c; last_was_space = false;
+      }
+    }
+    final_text = strip_trailing_whitespace(cleaned);
+  }
+
+  // --- SPA / JS-rendered page detection ---
+  // If the raw HTML is large but we extracted very little visible text,
+  // the page is almost certainly client-side rendered.
+  if (final_text.length() < 200 && readBuffer.length() > 50000) {
+    cerr << "\033[0mSPA detected: " << final_text.length() << " chars text from "
+         << readBuffer.length() << " bytes HTML (" << url << ")" << endl;
+
+    string diag = "[This page appears to be JavaScript-rendered (SPA). The static HTML contains no useful body content.";
+    if (!page_title.empty()) diag += "\nPage title: " + page_title;
+    if (!page_desc.empty()) diag += "\nDescription: " + page_desc;
+
+    string hint = api_hint_for_url(url);
+    if (!hint.empty()) diag += "\n" + hint;
+    else diag += "\nTry: use exec_shell with curl to access an API endpoint, or use web_search for alternative sources.";
+    diag += "]";
+    return diag;
+  }
+
+  // --- Prepend page title as context header (if available and content is non-trivial) ---
+  if (!page_title.empty() && final_text.length() >= 200) {
+    final_text = "[Page: " + page_title + "]\n" + final_text;
+  }
+
+  // Ensure we have something to return
+  if (final_text.empty()) {
+    if (!page_title.empty()) {
+      return "[No body content extracted. Page title: " + page_title + "]";
+    }
     return "[No content extracted from page]";
   }
-
-  // SCRIPT & STYLE STRIPPING (on decoded content)
-  string lower_buf = decoded_html;
-  transform(lower_buf.begin(), lower_buf.end(), lower_buf.begin(), [](unsigned char c){ return std::tolower(c); });
-
-  size_t pos = 0;
-  while (true) {
-    size_t script_start = lower_buf.find("<script", pos);
-    size_t style_start = lower_buf.find("<style", pos);
-    size_t next_tag = min(script_start, style_start);
-    if (next_tag == string::npos) break;
-
-    string end_tag = (next_tag == script_start) ? "</script>" : "</style>";
-    size_t tag_end = lower_buf.find(end_tag, next_tag);
-
-    if (tag_end != string::npos) {
-      tag_end += end_tag.length();
-      decoded_html.erase(next_tag, tag_end - next_tag);
-      lower_buf.erase(next_tag, tag_end - next_tag);
-    } else {
-      decoded_html.erase(next_tag);
-      lower_buf.erase(next_tag);
-      break;
-    }
-  }
-
-  // STRIP TAGS (from decoded content)
-  string clean_text = "";
-  clean_text.reserve(decoded_html.size());
-  bool in_tag = false;
-  for (char c : decoded_html) {
-    if (c == '<') in_tag = true;
-    else if (c == '>') { in_tag = false; clean_text += " "; }
-    else if (!in_tag) clean_text += c;
-  }
-
-  // CLEAN WHITESPACE
-  string final_text = "";
-  final_text.reserve(clean_text.size());
-  bool last_was_space = false;
-  for (char c : clean_text) {
-    if (isspace((unsigned char)c)) {
-      if (!last_was_space) { final_text += ' '; last_was_space = true; }
-    } else {
-      final_text += c; last_was_space = false;
-    }
-  }
-
-  // Strip trailing whitespace before returning
-  final_text = strip_trailing_whitespace(final_text);
 
   return NetworkTools::limit_context_size(final_text);
 }
@@ -1076,17 +1255,25 @@ string NetworkTools::web_search(const string& query) {
           cerr << "\033[0mFetching text from: " + result_url << endl;
           string full_text = fetch_and_clean_html(result_url);
 
-          // Added check for "[Failed to process" to ensure Docling errors trigger snippet fallback
-          if (full_text.length() > 50 &&
-              full_text.find("[Failed to fetch") == string::npos &&
-              full_text.find("[Skipped") == string::npos &&
-              full_text.find("[Failed to process") == string::npos) {
+          // Quality gate: use full text only if it's substantial and not an error/diagnostic.
+          // SPA diagnostics and very short content fall back to the SearXNG snippet.
+          bool is_error_or_spa = (full_text.find("[Failed to fetch") != string::npos ||
+                                  full_text.find("[Skipped") != string::npos ||
+                                  full_text.find("[Failed to process") != string::npos ||
+                                  full_text.find("[This page appears to be JavaScript-rendered") != string::npos ||
+                                  full_text.find("[No content extracted") != string::npos ||
+                                  full_text.find("[No body content extracted") != string::npos);
 
+          if (full_text.length() > 200 && !is_error_or_spa) {
             cerr << "\033[0mSuccessfully fetched & parsed text from: " + result_url << endl;
             llm_result += "Page Content: " + full_text + "\n\n";
           } else if (result.contains("content") && !result["content"].is_null()) {
             cerr << "\033[0mSkipped full fetch, using SearXNG snippet for: " + result_url << endl;
             llm_result += "Snippet: " + result["content"].get<string>() + "\n\n";
+          } else if (is_error_or_spa && !full_text.empty()) {
+            // Include the diagnostic (e.g., SPA hint with API suggestion) so the LLM can act on it
+            cerr << "\033[0mUsing diagnostic message for: " + result_url << endl;
+            llm_result += full_text + "\n\n";
           }
         }
       }
