@@ -269,7 +269,14 @@ The `cd` override writes the current directory to `$HOME/.cwd`, which LIM reads 
 
 ### 6. The System Prompt
 
-The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.).
+The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.). An optional directory-specific file `localprompt` (with a fallback to `$LIM_CONFIG_DIR/localprompt`) will be prepended to the system prompt.
+
+**Reasoning effort:** For models that support reasoning-effort steering, you can add a reasoning effort instructions to `localprompt`, matching how Qwen's own template places its reasoning instructions. The suggested Qwen 3.8 instructions are:
+
+- `Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.`
+- `Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.`
+
+Omitting any such instruction leaves the model at its baseline behavior.
 
 ### 7. Message Shortcuts
 
@@ -349,6 +356,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
 | `LIM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
 | `LIM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
+| `LIM_DUMMY_THOUGHT` | *(built-in)* | Pre-filled stub used when `LIM_THINKING=0`. Leave unset to use the built-in default, set to an empty string to emit an empty thinking block (Qwen 3.8's "no thinking" signal), or set to any other string. |
 | `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |
 | `LIM_INLINE_LATEX` | `1` | Set to `0` to disable inline KaTeX rendering in the browser viewer. Block-level `$$...$$` math still renders via `katex.renderToString`. Useful when `$HOME`, `$PATH`, and other env vars appear as bare text and get mangled by LaTeX processing. |
 | `LIM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |

@@ -82,6 +82,11 @@ void diag(const string& msg, const char* color) {
 // Model path -- set in main(), read by session.cc for V1 cache writes.
 std::string g_model_path;
 
+// Built-in default phrasing for the dummy-thought stub (LIM_THINKING=0), used
+// when LIM_DUMMY_THOUGHT is unset.
+static const char* DEFAULT_DUMMY_THOUGHT = "The user wants a direct answer. I will output the requested data immediately without preamble.";
+std::string g_dummy_thought_text;
+
 int main(int argc, char ** argv) {
   setlocale(LC_ALL, "");
 
@@ -203,6 +208,12 @@ int main(int argc, char ** argv) {
     if ((env = getenv("LIM_THINKING")) != nullptr) {
       use_dummy_thought = (atoi(env) == 0);
     }
+
+    // LIM_DUMMY_THOUGHT: override the dummy-thought stub text (LIM_THINKING=0).
+    // Unset -> built-in default phrasing. Explicitly empty -> empty thinking block
+    // (Qwen 3.8's "no thinking" signal). Otherwise use the given string as-is.
+    env = getenv("LIM_DUMMY_THOUGHT");
+    g_dummy_thought_text = (env != nullptr) ? env : DEFAULT_DUMMY_THOUGHT;
   }
 
   const char* debug_env = getenv("LIM_DEBUG");
@@ -563,7 +574,10 @@ int main(int argc, char ** argv) {
       if (localprompt_file.is_open()) {
         stringstream buffer;
         buffer << localprompt_file.rdbuf();
-        system_prompt += "\n" + buffer.str();
+        // Prepend (not append) so site-specific text -- e.g., a Qwen 3.8
+        // reasoning-effort instruction placed in localprompt -- lands at the
+        // start of the system message, matching where Qwen's own template puts it.
+        system_prompt = buffer.str() + "\n" + system_prompt;
         localprompt_file.close();
       }
     }
