@@ -415,36 +415,49 @@ int main(int argc, char ** argv) {
   const size_t n_overrides = llama_max_tensor_buft_overrides();
   std::vector<llama_model_tensor_buft_override> tensor_buft_overrides(n_overrides, {nullptr, nullptr});
 
-  // Use common_fit_params for GPU layer offloading (matches llama-cli behavior).
-  // For MoE models this enables partial layer offloading when the full model
-  // doesn't fit in VRAM. Always go through the fitter rather than trying a
-  // raw load first, since a failed load can leave GPU state that reduces
-  // available memory for subsequent fitting attempts.
+  // GPU layer offloading strategy:
+  //   1. Try loading all layers on GPU directly (no margin, no fitter).
+  //   2. If that fails (OOM), fall back to common_fit_params with a 1 GiB
+  //      margin to find the maximum subset of layers that fits in VRAM.
+  llama_model * model = nullptr;
+  bool used_fitter = false;
+
   if (!gpu_layers_explicit && mparams.n_gpu_layers < 0) {
-    std::vector<size_t> margins(ndevs, 1024 * 1024 * 1024);
-    mparams.tensor_split = tensor_split.data();
-    mparams.tensor_buft_overrides = tensor_buft_overrides.data();
+    // Step 1: attempt full GPU offload with zero margin.
+    model = llama_model_load_from_file(argv[1], mparams);
 
-    uint32_t n_ctx_min = ctx_explicit ? cparams.n_ctx : 8192;
+    if (!model) {
+      used_fitter = true;
+      // Step 2: direct load failed -- use the fitter to find a workable split.
+      // 1 GiB margin: accounts for CUDA context overhead and allocator
+      // fragmentation not captured by the fitter's memory model.
+      std::vector<size_t> margins(ndevs, (size_t)(1.0 * 1024 * 1024 * 1024));
+      mparams.tensor_split = tensor_split.data();
+      mparams.tensor_buft_overrides = tensor_buft_overrides.data();
 
-    common_params_fit_status fit_status = common_fit_params(
-      argv[1], &mparams, &cparams,
-      tensor_split.data(),
-      tensor_buft_overrides.data(),
-      margins.data(),
-      n_ctx_min,
-      GGML_LOG_LEVEL_ERROR);
+      uint32_t n_ctx_min = cparams.n_ctx;
 
-    if (fit_status == COMMON_PARAMS_FIT_STATUS_SUCCESS) {
-      // Defer the success message until after model load, when we know total layers.
-    } else if (fit_status == COMMON_PARAMS_FIT_STATUS_FAILURE) {
-      diag("Warning: could not fully fit model to device memory, using fallback parameters", "\033[33m");
-    } else {
-      diag("Error during model fitting, proceeding with default parameters", "\033[31m");
+      common_params_fit_status fit_status = common_fit_params(
+        argv[1], &mparams, &cparams,
+        tensor_split.data(),
+        tensor_buft_overrides.data(),
+        margins.data(),
+        n_ctx_min,
+        GGML_LOG_LEVEL_ERROR);
+
+      if (fit_status == COMMON_PARAMS_FIT_STATUS_SUCCESS) {
+        // Defer the success message until after model load, when we know total layers.
+      } else if (fit_status == COMMON_PARAMS_FIT_STATUS_FAILURE) {
+        diag("Warning: could not fully fit model to device memory, using fallback parameters", "\033[33m");
+      } else {
+        diag("Error during model fitting, proceeding with default parameters", "\033[31m");
+      }
+
+      model = llama_model_load_from_file(argv[1], mparams);
     }
+  } else {
+    model = llama_model_load_from_file(argv[1], mparams);
   }
-
-  llama_model * model = llama_model_load_from_file(argv[1], mparams);
 
   if (!model) {
     // Model file exists but loading failed -- likely OOM on GPU or corrupt file.
@@ -494,11 +507,12 @@ int main(int argc, char ** argv) {
       partial_layers++;
     }
 
+    const char* verb = used_fitter ? "fitted" : "loaded";
     if (partial_layers > 0) {
-      diag("Model loaded: " + to_string(gpu_layers) + "/" + to_string(n_layers) +
+      diag(string("Model ") + verb + ": " + to_string(gpu_layers) + "/" + to_string(n_layers) +
            " layers on GPU, " + to_string(partial_layers) + " with MoE experts on CPU", "\033[32m");
     } else {
-      diag("Model loaded: " + to_string(gpu_layers) + "/" + to_string(n_layers) +
+      diag(string("Model ") + verb + ": " + to_string(gpu_layers) + "/" + to_string(n_layers) +
            " layers on GPU", "\033[32m");
     }
   }
