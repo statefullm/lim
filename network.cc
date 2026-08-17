@@ -2,6 +2,7 @@
 #include "filesystem.h"
 #include "output.h"
 #include "taskset.h"
+#include "session_utils.h"
 #include <curl/curl.h>
 #include <iostream>
 #include <fstream>
@@ -127,11 +128,9 @@ static string g_brave_api_key = []() -> string {
   return (env && env[0]) ? string(env) : "";
 }();
 
-// Stateful Context Budget for Agentic Sessions
-// Computed from LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4 (bytes/token).
-// Default: n_ctx=262144, fraction=0.75 => ~786K chars budget for fetched content.
+// Session web-content budget: LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4 bytes/token.
 static size_t compute_session_max_chars() {
-  int n_ctx = 262144;
+  int n_ctx = LIM_DEFAULT_CTX;
   const char* ctx_env = getenv("LIM_CTX");
   if (ctx_env && strlen(ctx_env) > 0) {
     int val = atoi(ctx_env);
@@ -883,9 +882,8 @@ static string github_api_fetch(const string& url) {
   // Build API base
   string api_base = "https://api.github.com/repos/" + owner + "/" + repo;
 
-  // Get optional token for higher rate limits (GH_TOKEN preferred, GITHUB_TOKEN as fallback)
+  // Get optional token for higher rate limits
   const char* token = getenv("GH_TOKEN");
-  if (!token || !token[0]) token = getenv("GITHUB_TOKEN");
   string auth_header = "";
   if (token && token[0]) {
     auth_header = string("Authorization: Bearer ") + token;

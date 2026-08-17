@@ -228,7 +228,7 @@ ToolExecutor::Result ToolExecutor::execute(
         if (!display_for_browser.empty()) {
             string safe_result = html_escape(display_for_browser);
 
-            string result_html = "\n\n<div class='tool-result'>Tool Result:<pre><code>" + safe_result + "</code></pre></div>\n\n";
+            string result_html = "\n\n<div class='tool-result'><pre><code>" + safe_result + "</code></pre></div>\n\n";
             stream_tool_result(result_html);
         }
         consoleFlush();

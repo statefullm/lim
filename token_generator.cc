@@ -227,6 +227,14 @@ TokenGenerator::Result TokenGenerator::generate() {
     bool was_interrupted = false;
     bool early_exit = false;
 
+    // Silent-loop threshold: max tokens allowed outside parameters while inside
+    // a tool call before aborting. Constant for the run -- read once per turn,
+    // not per token.
+    static constexpr int DEFAULT_OUTSIDE_PARAM_LIMIT = 256;
+    const char* outside_param_env = getenv("LIM_TOOL_IGNORE");
+    int outside_param_limit = (outside_param_env != nullptr && strlen(outside_param_env) > 0) ? atoi(outside_param_env) : DEFAULT_OUTSIDE_PARAM_LIMIT;
+    outside_param_limit = std::max(1, outside_param_limit);
+
     // Generation timing: matches llama-cli's "Generation: X t/s" (t_token_generation).
     // t_gen_start is set after sampling the first token (with synchronize), and
     // t_gen_end is updated after every subsequent sample+sync, including the last.
@@ -520,9 +528,9 @@ TokenGenerator::Result TokenGenerator::generate() {
         // Silent-loop detection: if we're inside what looks like a tool call
         // (FUNC_START found) but no complete tool call has been found yet,
         // and we're NOT inside a parameter, the model may be generating garbage.
-        // Outside parameters, tool call tags are just a few tokens.  If 100+ pass
-        // without PARAM_START or FUNC_END, something is broken.
-        if (tool_call_outside_param_count_ >= 100) {
+        // Outside parameters, tool call tags are just a few tokens.  If the
+        // threshold passes without PARAM_START or FUNC_END, something is broken.
+        if (tool_call_outside_param_count_ >= outside_param_limit) {
             diag("System: Stuck generating tool call after " + std::to_string(tool_call_outside_param_count_) + " tokens outside parameters. Aborting to prompt.", "\033[1;31m");
             stop_generation = 1;
             break;

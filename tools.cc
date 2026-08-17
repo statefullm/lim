@@ -383,7 +383,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           [&box_opened](const string& chunk) {
               // On first chunk, open the green tool-result box before streaming content.
               if (!box_opened) {
-                  stream_html("\n\n<div class='tool-result'>Tool Result:<pre><code>");
+                  stream_html("\n\n<div class='tool-result'><pre><code>");
                   box_opened = true;
               }
               // Stream raw command output inside the green box as HTML-escaped text.

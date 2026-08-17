@@ -360,7 +360,7 @@ int main(int argc, char ** argv) {
       cparams.n_ctx = atoi(env);
       ctx_explicit = true;
     } else {
-      cparams.n_ctx = 262144;
+      cparams.n_ctx = LIM_DEFAULT_CTX;
     }
     if ((env = getenv("LIM_BATCH")) != nullptr) {
       cparams.n_batch = atoi(env);

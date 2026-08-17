@@ -7,6 +7,10 @@
 #include <sstream>
 #include <iomanip>
 
+// Default context window size (KV-cache token capacity).
+// Override at runtime with LIM_CTX.
+static constexpr int LIM_DEFAULT_CTX = 262144;
+
 // HTML escape special characters
 std::string html_escape(const std::string& s);
 

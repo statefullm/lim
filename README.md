@@ -174,7 +174,7 @@ LIM must be run as user `$LIM_AI_USER`. The simplest approach is to SSH into the
 Add this to the `~/.bashrc` of `$LIM_AI_USER`:
 
 ```bash
-alias coder='lim ~/models/Qwen3.6-27B-UD-Q5_K_XL.gguf'
+alias coder='lim ~/models/Qwen3.8-27B-Q6_K.gguf'
 ```
 
 Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`:
@@ -184,11 +184,19 @@ ssh -a $LIM_AI_USER@$LIM_HOST
 coder
 ```
 
-If running locally (no SSH needed), switch to the user first:
+If running locally (no SSH needed), you have two options:
+
+**Option A: Switch users fully**
 
 ```bash
 su - $LIM_AI_USER
 coder
+```
+
+**Option B: Launch from your personal shell via `sudo`**
+
+```bash
+alias coder='sudo -u $LIM_AI_USER bash -c "source ~/.bashrc; lim ~/models/Qwen3.8-27B-Q6_K.gguf"'
 ```
 
 #### Core Pinning (taskset)
@@ -316,12 +324,14 @@ Set via `LIM_OUTPUT`:
 | `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
 | `LIM_WEB_TIMEOUT` | `600` | HTTP request timeout in seconds for fetches and searches |
+| `LIM_BRAVE_API_KEY` | *(empty)* | Brave Search API key. When set, LIM falls back to the [Brave Search API](https://api.search.brave.com/app) if SearXNG fails or returns no results. |
+| `GH_TOKEN` | *(empty)* | Optional GitHub personal access token for higher API rate limits when cloning repos or fetching from GitHub. |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
-| `LIM_BRAVE_API_KEY` | *(empty)* | Brave Search API key. When set, LIM falls back to the [Brave Search API](https://api.search.brave.com/app) if SearXNG fails or returns no results. Free tier: 2,000 queries/month. Get a key at [brave.com/search/api](https://brave.com/search/api/). |
 | `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
 | `LIM_EOG_RESAMPLE_MAX` | `256` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings with Qwen3.6 or similar models. |
+| `LIM_TOOL_IGNORE` | `256` | Maximum tokens allowed outside parameters while inside a tool call before the silent-loop detector aborts generation. If this many tokens pass without encountering PARAM_START or FUNC_END, the model is assumed to be generating garbage and the turn is aborted. Increase if you see false-positive aborts with verbose tool calls. |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
 | `LIM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic -- tokens / total generate() call time, including all CPU-side overhead (sampling, output rendering, tool-call detection). Default `0` reports generation time matching llama-cli's "Generation: X t/s" -- measured from first-token sample+sync to last-token sample+sync, covering N sampling operations and (N-1) decode cycles. |
 | `LIM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
@@ -348,7 +358,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (persistent KV-cache, same as llama-cli interactive), `1` = standard chatbot (re-decode full history each turn), `2` = cache-aware prefix match (emulates llama-server). Modes 1 and 2 force honest speed measurement. |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
-| `LIM_TURN_TIMEOUT` | `300` | Maximum seconds per generation turn before auto-abort |
+| `LIM_TURN_TIMEOUT` | `600` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
 | `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
