@@ -727,12 +727,10 @@
                 return convertTextToHtml(seg.content);
             } else if (seg.type === SEG_THINK) {
                 var html = convertTextToHtml(seg.content);
-                return '<div class="think-block">' +
-                    '<div class="think-header" onclick="toggleThinkBlock(this)">' +
+                return '<div class="think-header" onclick="toggleThinkBlock(this)">' +
                     '<span class="arrow">&#9660;</span> Thinking' +
                     '</div>' +
-                    '<div class="think-body">' + html + '</div>' +
-                    '</div>';
+                    '<div class="think-body">' + html + '</div>';
             } else {
                 return seg.content;
             }
