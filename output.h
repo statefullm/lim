@@ -34,7 +34,6 @@ void pipe_write(const char* data, size_t len);
 
 // --- Streaming Functions ---
 void stream(const std::string& raw_token);
-void stream_tool_result(const std::string& html);
 void stream_html(const std::string& html);
 void stream_speed(const std::string& speed_text);
 void stream_think(const std::string& text);

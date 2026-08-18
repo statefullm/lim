@@ -178,6 +178,12 @@ static void diag_speed_impl(const string& msg) {
     }
 }
 
+// Forward declarations for save helpers defined after the class.
+static string save_diag(size_t n_checkpoints, size_t n_tokens);
+static bool save_session_with_header(const vector<llama_token>& tokens, const string& path,
+                                     bool write_v1, llama_context* ctx,
+                                     const vector<PromptCheckpoint>* checkpoints, int session_num);
+
 // ============================================================================
 // ChatSession class: orchestrates the main chat turn loop
 // ============================================================================
@@ -264,7 +270,6 @@ private:
         for (auto it = c.rbegin(); it != c.rend(); ++it) add_history(it->c_str());
         c_count_since_restore_ = 0;
     }
-
     // Flush .lim_history to disk: truncate back to the persistent baseline (A),
     // then append only the surviving C entries.  Updates the tracked file size
     // so subsequent calls treat these entries as the new A.
@@ -274,9 +279,8 @@ private:
             ftruncate(fileno(f), history_file_size_at_startup_);
             fclose(f);
         }
-        for (int i = c_count_since_restore_ - 1; i >= 0; i--) {
-            HIST_ENTRY* he = history_get(history_length - i);
-            if (he) save_history_safe(history_file, he->line);
+        for (const auto& s : collect_recent_user_inputs()) {
+            save_history_safe(history_file, s);
         }
         struct stat st;
         if (stat(history_file, &st) == 0) {
@@ -326,11 +330,81 @@ private:
             if (!g_model_tokens.assistant_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.assistant_turn_start.text);
             if (!g_model_tokens.system_turn_start.text.empty()) tags_to_remove.push_back(g_model_tokens.system_turn_start.text);
             if (!g_model_tokens.turn_end.text.empty()) tags_to_remove.push_back(g_model_tokens.turn_end.text);
-            strip_tags(clean_text, tags_to_remove);
-            while (!clean_text.empty() && isspace(clean_text.back())) clean_text.pop_back();
+            strip_tags(clean_text, tags_to_remove);            while (!clean_text.empty() && isspace(clean_text.back())) clean_text.pop_back();
             chat_log << "=== " << role << " ===\n" << clean_text << "\n\n";
             chat_log.flush();
         }
+    }
+
+    // Auto-save the current state to log/<N>-clear.save before clearing,
+    // undoing, or reincarnating so nothing is truly lost.
+    void autosave_before_clear() {
+        string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
+        bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
+        if (!ok) {
+            diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
+        } else {
+            diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
+        }
+    }
+
+    // Collect the C entries (user inputs since last restore/clear), oldest first.
+    vector<string> collect_recent_user_inputs() {
+        vector<string> saved_c;
+        for (int i = c_count_since_restore_ - 1; i >= 0; i--) {
+            HIST_ENTRY* he = history_get(history_length - i);
+            if (he) saved_c.push_back(he->line);
+        }
+        return saved_c;
+    }
+
+    // Stream the user's input to the browser as a blue code block.
+    void stream_user_input_html(const string& input) {
+        if (should_output_to_browser() && pipe_fd >= 0) {
+            string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(input) + "</code></pre></div>\n\n";
+            stream_html(user_html);
+        }
+    }
+
+    // Build tokens for a new user turn: optional turn-end close (if the
+    // previous turn was interrupted) + user turn + assistant prefill.
+    vector<llama_token> build_new_user_turn_tokens(const string& input) {
+        string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
+        state_.prev_was_interrupted = false;
+        vector<llama_token> tokens;
+        if (!turn_close_str.empty()) {
+            auto close_tok = common_tokenize(ctx_, turn_close_str, false, true);
+            tokens.insert(tokens.end(), close_tok.begin(), close_tok.end());
+        }
+        auto user_ass = build_user_assistant_turn(ctx_, input);
+        tokens.insert(tokens.end(), user_ass.begin(), user_ass.end());
+        return tokens;
+    }
+
+    // Roll back to the tool-correction checkpoint (removes bad call + any
+    // correction tokens). Returns 0 if seq_rm succeeded, 1 if the KV cache was
+    // cleared and re-decoded, -1 on failure (caller should eject to prompt).
+    int rollback_to_tool_checkpoint(bool eject_on_failure) {
+        llama_memory_t mem = llama_get_memory(ctx_);
+        llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+        llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+        bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
+        if (rm_ok) {
+            n_past_ = state_.tool_correction_n_past;
+            state_.all_context_tokens.resize(state_.tool_correction_n_past);
+            return 0;
+        }
+        diag("System: Correction rollback failed, re-decoding...", "\033[33m");
+        llama_memory_clear(mem, true);
+        n_past_ = 0;
+        if (!feed_tokens_impl(state_.all_context_tokens)) {
+            diag("Correction restore failed. Type /clear to reset.", "\033[31m");
+            if (eject_on_failure) state_.auto_continue = false;
+            return -1;
+        }
+        n_past_ = state_.tool_correction_n_past;
+        state_.all_context_tokens.resize(n_past_);
+        return 1;
     }
 
     bool feed_tokens_impl(const vector<llama_token>& toks) {
@@ -664,26 +738,13 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 bool ChatSession::feed_user_message(const string& input) {
     // If user provides regular input (not "continue"), clear any pending tool interrupt state.
     if (!state_.auto_continue) state_.tool_interrupt_pending = false;
-
     if (!state_.auto_continue) {
         log_entry("USER", input);
-        if (should_output_to_browser() && pipe_fd >= 0) {
-            string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(input) + "</code></pre></div>\n\n";
-            stream_html(user_html);
-        }
+        stream_user_input_html(input);
     }
 
     // Build user turn + assistant prefill using model-type-aware token vectors.
-    string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
-    state_.prev_was_interrupted = false;
-
-    vector<llama_token> tokens;
-    if (!turn_close_str.empty()) {
-        auto close_tok = common_tokenize(ctx_, turn_close_str, false, true);
-        tokens.insert(tokens.end(), close_tok.begin(), close_tok.end());
-    }
-    auto user_ass = build_user_assistant_turn(ctx_, input);
-    tokens.insert(tokens.end(), user_ass.begin(), user_ass.end());
+    vector<llama_token> tokens = build_new_user_turn_tokens(input);
 
     // If using dummy thought, append the thinking block as content tokens.
     if (use_dummy_thought_) {
@@ -942,12 +1003,10 @@ bool ChatSession::handle_reincarnate_completion() {
 
     diag("Clearing context and starting reincarnated session...", "\033[35m");
     clear_context();
-
     const char* history_file = ".lim_history";
     flush_history(history_file);
     int new_log_index = bump_session();
-    diag("Session #" + to_string(new_log_index) + " started: type /help to see a list of commands", "\033[35m");
-    log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(new_log_index) + ")");
+    announce_new_session(new_log_index);
 
     if (should_output_to_browser()) {
         string divider =
@@ -992,25 +1051,6 @@ bool ChatSession::handle_reincarnate_completion() {
     reset_session_state();
     log_entry("SYSTEM", "Context Cleared and Reincarnated with New Prompt");
     return true; // continue outer loop
-}
-
-// Helper: build a save path from an optional user-supplied prefix.
-// If prefix is empty, returns the default autosave path.
-// Appends .save if not already present.
-static string make_save_path(const string& prefix, const string& default_path) {
-    if (prefix.empty()) return default_path;
-    string path = prefix;
-    if (path.size() < std::strlen(SAVE_EXT) || path.compare(path.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
-        path += SAVE_EXT;
-    }
-    return path;
-}
-
-// Prepend LIM_SAVE_DIR to relative paths (those not starting with /).
-// Absolute paths are returned unchanged.
-static string apply_save_dir(const string& path) {
-    if (!path.empty() && path[0] == '/') return path;
-    return LIM_SAVE_DIR + "/" + path;
 }
 
 // Helper: format a save diagnostic with proper pluralization.
@@ -1104,13 +1144,12 @@ bool ChatSession::run() {
             // Skip if the user just manually saved -- nothing has changed since then.
             if (!state_.prompt_checkpoints.empty() && !prev_was_save_) {
                 string save_path;
-                bool write_v1 = false;
-                if (!save_prefix_.empty()) {
+                bool write_v1 = false;                if (!save_prefix_.empty()) {
                     // Named save: use fast cache for instant future restores.
-                    save_path = apply_save_dir(make_save_path(save_prefix_, ""));
+                    save_path = apply_save_dir(append_save_ext(save_prefix_));
                     write_v1 = true;
                 } else {
-                    save_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save";
+                    save_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + SAVE_EXT;
                 }
                 bool ok = save_session_with_header(state_.all_context_tokens, save_path, write_v1, ctx_, &state_.prompt_checkpoints, state_.log_index);
                 if (!ok) {
@@ -1122,20 +1161,11 @@ bool ChatSession::run() {
 
             return false;
         }
-
         if (last_cmd_ == Command::CLEAR) {
             // Auto-save before clearing so nothing is truly lost.
             // Uses a distinct name (e.g., log/5-clear.save) so it doesn't conflict
             // with the regular save file that /quit or /exit will overwrite.
-            {
-                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
-                if (!ok) {
-                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
-                } else {
-                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
-                }
-            }
+            autosave_before_clear();
 
             clear_context();
             state_.auto_continue = false;
@@ -1148,11 +1178,8 @@ bool ChatSession::run() {
             state_.last_elapsed = 0.0;
             state_.last_n_past = n_past_;
             state_.first_turn_done = true;
-
             flush_history(history_file);
             int new_log_index = bump_session();
-            diag("Session #" + to_string(new_log_index) + " started: type /help to see a list of commands", "\033[35m");
-            log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(new_log_index) + ")");
 
             // Update browser: clear the viewer and immediately set the new
             // context diagnostic in a single pipe write so they arrive together.
@@ -1167,22 +1194,15 @@ bool ChatSession::run() {
             }
 
             diag("Context Cleared Successfully", "\033[32m");
-            diag("Session #" + to_string(new_log_index) + " started: type /help to see a list of commands", "\033[35m");
-            log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(new_log_index) + ")");
-
+            announce_new_session(new_log_index);
             // Remove B (checkpoint prompts) while preserving A (persistent)
             // and C (user inputs since last restore).  After flush_history above,
             // the surviving C entries are now on disk, so promote them into A.
-            // NOTE: history_get() uses 1-based indexing (last entry at history_length).
             {
-                vector<string> saved_c;
-                for (int i = 0; i < c_count_since_restore_; i++) {
-                    HIST_ENTRY* he = history_get(history_length - i);
-                    if (he) saved_c.push_back(he->line);
-                }
+                vector<string> saved_c = collect_recent_user_inputs();  // oldest first
                 pop_history(history_length - persistent_history_len_);
-                for (auto it = saved_c.rbegin(); it != saved_c.rend(); ++it) {
-                    add_history(it->c_str());
+                for (const auto& s : saved_c) {
+                    add_history(s.c_str());
                 }
                 // Promote C into A: these entries are now persisted on disk.
                 persistent_history_len_ = history_length;
@@ -1198,23 +1218,13 @@ bool ChatSession::run() {
                 diag("No checkpoints available to undo to.", "\033[33m");
                 continue;
             }
-
             // Auto-save before undoing so nothing is truly lost.
-            {
-                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
-                if (!ok) {
-                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
-                } else {
-                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
-                }
-            }
+            autosave_before_clear();
 
             // Interactive checkpoint selection, modeled on the Restore> prompt.
             size_t num_cps = state_.prompt_checkpoints.size();
             diag("Save contains " + to_string(num_cps) + " checkpoint" + (num_cps != 1 ? "s" : "") + ".", "\033[35m");
             diag("Up/down arrows to navigate, Enter to confirm, Ctrl+C to cancel.", "\033[37m");
-
             // Save B (checkpoint prompts) and C (user inputs) separately
             // using the known boundary between them.
             // NOTE: history_get() uses 1-based indexing.
@@ -1224,11 +1234,7 @@ bool ChatSession::run() {
                 HIST_ENTRY* he = history_get(persistent_history_len_ + 1 + i);
                 if (he) saved_b.push_back(he->line);
             }
-            vector<string> saved_c;
-            for (int i = 0; i < c_count_since_restore_; i++) {
-                HIST_ENTRY* he = history_get(history_length - i);
-                if (he) saved_c.push_back(he->line);
-            }
+            vector<string> saved_c = collect_recent_user_inputs();  // oldest first
 
             // Pop B+C from history, leaving A (persistent) intact.
             pop_history(b_count + c_count_since_restore_);
@@ -1314,14 +1320,12 @@ bool ChatSession::run() {
             // (capped at original b_count).
             int b_to_restore = std::min(selected_idx + 1, b_count);
             for (int i = 0; i < b_to_restore; i++) add_history(saved_b[i].c_str());
-
             // Restore C entries that were not undone away.
-            // saved_c is stored newest-first.  The number of C entries to keep
+            // saved_c is stored oldest-first.  The number of C entries to keep
             // equals the checkpoints within C range that are <= selected_idx.
             int c_to_restore = std::max(0, selected_idx + 1 - b_count);
-            // These are the oldest C entries, at the end of saved_c.
-            // Add them in chronological order (oldest first).
-            for (int i = (int)saved_c.size() - 1; i >= (int)saved_c.size() - c_to_restore; i--) {
+            // These are the oldest C entries, at the start of saved_c.
+            for (int i = 0; i < c_to_restore; i++) {
                 add_history(saved_c[i].c_str());
             }
             c_count_since_restore_ = c_to_restore;
@@ -1430,19 +1434,10 @@ bool ChatSession::run() {
             diag("Terminal Reset Successfully", "\033[32m");
             continue;
         }
-
         if (last_cmd_ == Command::REINCARNATE) {
             // Auto-save before reincarnating so nothing is truly lost.
             // Uses the same -clear.save name since reincarnate calls clear_context internally.
-            {
-                string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
-                bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
-                if (!ok) {
-                    diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
-                } else {
-                    diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
-                }
-            }
+            autosave_before_clear();
 
             string reincarnate_path = LIM_CONFIG_DIR + "/reincarnate";
             ifstream reincarnate_file(reincarnate_path);
@@ -1467,16 +1462,7 @@ bool ChatSession::run() {
 
             diag("Sending reincarnate request to LLM...", "\033[35m");
             log_entry("USER", "[reincarnate] " + reincarnate_text);
-
-            vector<llama_token> reincarnate_tokens;
-            if (state_.prev_was_interrupted) {
-                // Close the interrupted assistant turn first
-                auto close_tok = common_tokenize(ctx_, g_model_tokens.turn_end.text, false, true);
-                reincarnate_tokens.insert(reincarnate_tokens.end(), close_tok.begin(), close_tok.end());
-            }
-            auto user_ass_reinc = build_user_assistant_turn(ctx_, reincarnate_text);
-            reincarnate_tokens.insert(reincarnate_tokens.end(), user_ass_reinc.begin(), user_ass_reinc.end());
-            state_.prev_was_interrupted = false;
+            vector<llama_token> reincarnate_tokens = build_new_user_turn_tokens(reincarnate_text);
 
             if (n_past_ + (int)reincarnate_tokens.size() >= (int)cparams_.n_ctx) {
                 string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, (size_t)reincarnate_tokens.size(), (int)cparams_.n_ctx);
@@ -1497,9 +1483,9 @@ bool ChatSession::run() {
             reset_session_state();
             continue;
         }
-
         if (last_cmd_ == Command::SAVE) {
-            string save_path = apply_save_dir(make_save_path(save_prefix_, LIM_LOG_DIR + "/" + to_string(state_.log_index) + ".save"));
+            string default_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + SAVE_EXT;
+            string save_path = apply_save_dir(save_prefix_.empty() ? default_path : append_save_ext(save_prefix_));
 
             // Named saves (with a meaningful argument) are cached in fast format
             // for instant restore. Unnamed saves are compact-only since they're
@@ -1526,14 +1512,9 @@ bool ChatSession::run() {
                 diag("/load requires a path argument. Usage: /load <save_file>", "\033[31m");
                 continue;
             }
-
-            // Append .save if not already present (matches /save and CLI behavior).
-            if (rpath.size() < std::strlen(SAVE_EXT) || rpath.compare(rpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
-                rpath += SAVE_EXT;
-            }
-
-            // Prepend LIM_SAVE_DIR to relative paths.
-            rpath = apply_save_dir(rpath);
+            // Append .save if not already present (matches /save and CLI behavior),
+            // then prepend LIM_SAVE_DIR to relative paths.
+            rpath = apply_save_dir(append_save_ext(rpath));
 
             // Validate the save file exists.
             struct stat st_restore;
@@ -1661,21 +1642,17 @@ bool ChatSession::run() {
 
             // Reset sampler state for a clean generation start.
             llama_sampler_reset(smpl_);
-
             // Save C (user inputs since last restore/clear) before repopulating,
             // so they survive the restore and appear after the restored prompts.
             {
-                vector<string> saved_c;
-                for (int i = 0; i < c_count_since_restore_; i++) {
-                    HIST_ENTRY* he = history_get(history_length - i);
-                    if (he) saved_c.push_back(he->line);
-                }
+                vector<string> saved_c = collect_recent_user_inputs();  // oldest first
 
                 // Repopulate readline history from restored checkpoints so up-arrow
                 // navigates through the restored session's prompts.
                 repopulate_history();
 
-                // Re-push C entries on top of the restored checkpoint prompts.
+                // Re-push C entries on top of the restored checkpoint prompts,
+                // in chronological order.
                 for (const auto& s : saved_c) {
                     add_history(s.c_str());
                 }
@@ -1700,14 +1677,9 @@ bool ChatSession::run() {
                 diag("/delete requires a path argument. Usage: /delete <save_file>", "\033[31m");
                 continue;
             }
-
-            // Append .save if not already present (matches /save and /load behavior).
-            if (dpath.size() < std::strlen(SAVE_EXT) || dpath.compare(dpath.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
-                dpath += SAVE_EXT;
-            }
-
-            // Prepend LIM_SAVE_DIR to relative paths.
-            dpath = apply_save_dir(dpath);
+            // Append .save if not already present (matches /save and /load behavior),
+            // then prepend LIM_SAVE_DIR to relative paths.
+            dpath = apply_save_dir(append_save_ext(dpath));
 
             // Validate the save file exists.
             struct stat st_del;
@@ -1863,18 +1835,8 @@ bool ChatSession::run() {
                 state_.checkpoint_stack_offset = 0;
                 state_.tool_correction_checkpoint_idx = -1;
                 llama_sampler_reset(smpl_);
-
                 // Build the new user turn tokens the same way feed_user_message does.
-                string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
-                state_.prev_was_interrupted = false;
-
-                vector<llama_token> new_turn_tokens;
-                if (!turn_close_str.empty()) {
-                    auto close_tok = common_tokenize(ctx_, turn_close_str, false, true);
-                    new_turn_tokens.insert(new_turn_tokens.end(), close_tok.begin(), close_tok.end());
-                }
-                auto user_ass = build_user_assistant_turn(ctx_, user_input);
-                new_turn_tokens.insert(new_turn_tokens.end(), user_ass.begin(), user_ass.end());
+                vector<llama_token> new_turn_tokens = build_new_user_turn_tokens(user_input);
 
                 // Timing starts here: tokenize (new turn only) + re-decode everything.
                 auto feed_start = chrono::high_resolution_clock::now();
@@ -1892,37 +1854,22 @@ bool ChatSession::run() {
                 if (!feed_tokens_impl(full_tokens)) continue;
                 auto feed_end = chrono::high_resolution_clock::now();
                 state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
-
                 // Perform the logging/browser output that feed_user_message would do,
                 // but skip its token feeding since we already included the input above.
                 if (!state_.auto_continue) {
                     log_entry("USER", user_input);
-                    if (should_output_to_browser() && pipe_fd >= 0) {
-                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(user_input) + "</code></pre></div>\n\n";
-                        stream_html(user_html);
-                    }
+                    stream_user_input_html(user_input);
                 }
                 // Skip feed_user_message -- tokens already fed. Fall through to generate_response().
-            } else if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {
-                // Mode 2: cache-aware prefix matching (emulates llama-server behavior).
+            } else if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {                // Mode 2: cache-aware prefix matching (emulates llama-server behavior).
                 // Build new tokens the same way mode 0 does, prepend cached tokens to
                 // simulate a full request, then find the prefix match and decode only delta.
                 vector<llama_token> saved_history = state_.all_context_tokens;
 
-                string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
-                state_.prev_was_interrupted = false;
-
                 // Timing: build new tokens + prefix match + decode delta.
                 auto feed_start = chrono::high_resolution_clock::now();
-
                 // Build just the new user turn tokens (same as feed_user_message).
-                vector<llama_token> new_turn_tokens;
-                if (!turn_close_str.empty()) {
-                    auto close_tok = common_tokenize(ctx_, turn_close_str, false, true);
-                    new_turn_tokens.insert(new_turn_tokens.end(), close_tok.begin(), close_tok.end());
-                }
-                auto user_ass = build_user_assistant_turn(ctx_, user_input);
-                new_turn_tokens.insert(new_turn_tokens.end(), user_ass.begin(), user_ass.end());
+                vector<llama_token> new_turn_tokens = build_new_user_turn_tokens(user_input);
 
                 // Simulate full request: cached tokens + new turn tokens.
                 // The prefix match is trivially the full cache since we built new tokens
@@ -1962,14 +1909,10 @@ bool ChatSession::run() {
 
                 auto feed_end = chrono::high_resolution_clock::now();
                 state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
-
                 // Logging
                 if (!state_.auto_continue) {
                     log_entry("USER", user_input);
-                    if (should_output_to_browser() && pipe_fd >= 0) {
-                        string user_html = "\n\n<div style=\"color: #79c0ff;\"><pre><code>" + html_escape_for_browser(user_input) + "</code></pre></div>\n\n";
-                        stream_html(user_html);
-                    }
+                    stream_user_input_html(user_input);
                 }
 
             } else {
@@ -2041,34 +1984,12 @@ bool ChatSession::run() {
                     size_t cs = gen_result_.tool_start;
                     size_t ce = gen_result_.tool_end;
                     string corr_tool_call_raw = corr_text.substr(cs, ce - cs + string(FUNC_END).length());
-
                     if (!validate_tool_call(corr_tool_call_raw)) {
                         diag("System: Correction produced another invalid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
 
                         // Roll back the failed correction tokens so the KV cache is left clean.
                         // Restore to the checkpoint position (before the original bad tool call).
-                        {
-                            llama_memory_t mem = llama_get_memory(ctx_);
-                            llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-                            llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-                            bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
-                            if (rm_ok) {
-                                n_past_ = state_.tool_correction_n_past;
-                                state_.all_context_tokens.resize(state_.tool_correction_n_past);
-                            } else {
-                                diag("System: Correction rollback failed, re-decoding...", "\033[33m");
-                                llama_memory_clear(mem, true);
-                                n_past_ = 0;
-                                if (!feed_tokens_impl(state_.all_context_tokens)) {
-                                    diag("Correction restore failed. Type /clear to reset.", "\033[31m");
-                                    state_.auto_continue = false;
-                                    continue;
-                                }
-                                // Find the checkpoint position in the re-decoded tokens.
-                                n_past_ = state_.tool_correction_n_past;
-                                state_.all_context_tokens.resize(n_past_);
-                            }
-                        }
+                        if (rollback_to_tool_checkpoint(true) < 0) continue;
 
                         // Re-enable the checkpoint for a future correction attempt (e.g., after /continue).
                         state_.has_tool_correction_checkpoint = true;
@@ -2078,29 +1999,12 @@ bool ChatSession::run() {
                         state_.auto_continue = false;
                         continue;
                     }
-
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
 
                     // Roll back to the tool-correction checkpoint (removes bad call + system prompt + correction).
-                    llama_memory_t mem = llama_get_memory(ctx_);
-                    llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-                    llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-                    bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
-                    if (rm_ok) {
-                        n_past_ = state_.tool_correction_n_past;
-                        // Remove the stale correction tokens from the token tracker
-                        // so all_context_tokens matches the actual KV cache.
-                        state_.all_context_tokens.resize(state_.tool_correction_n_past);
-                    } else {
-                        diag("System: Correction rollback failed, re-decoding...", "\033[33m");
-                        llama_memory_clear(mem, true);
-                        n_past_ = 0;
-                        if (!feed_tokens_impl(state_.all_context_tokens)) {
-                            diag("Correction restore failed. Type /clear to reset.", "\033[31m");
-                            continue;
-                        }
-                        state_.all_context_tokens.resize(state_.tool_correction_n_past);
-                        n_past_ = state_.tool_correction_n_past;
+                    int rollback_rc = rollback_to_tool_checkpoint(false);
+                    if (rollback_rc < 0) continue;
+                    if (rollback_rc == 1) {
                         // Recurrent checkpoints lost with clear; reset tracking.
                         state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
                         state_.tool_correction_checkpoint_idx = -1;
@@ -2147,32 +2051,11 @@ bool ChatSession::run() {
                     // Hand off to process_tool_call -- it executes normally from here.
                     if (process_tool_call()) {
                         continue;
-                    }
-                } else {
+                    }                } else {
                     diag("System: Correction failed to produce valid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
 
                     // Roll back the failed correction tokens so the KV cache is left clean.
-                    {
-                        llama_memory_t mem = llama_get_memory(ctx_);
-                        llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-                        llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-                        bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
-                        if (rm_ok) {
-                            n_past_ = state_.tool_correction_n_past;
-                            state_.all_context_tokens.resize(state_.tool_correction_n_past);
-                        } else {
-                            diag("System: Correction rollback failed, re-decoding...", "\033[33m");
-                            llama_memory_clear(mem, true);
-                            n_past_ = 0;
-                            if (!feed_tokens_impl(state_.all_context_tokens)) {
-                                diag("Correction restore failed. Type /clear to reset.", "\033[31m");
-                                state_.auto_continue = false;
-                                continue;
-                            }
-                            n_past_ = state_.tool_correction_n_past;
-                            state_.all_context_tokens.resize(n_past_);
-                        }
-                    }
+                    if (rollback_to_tool_checkpoint(true) < 0) continue;
 
                     state_.has_tool_correction_checkpoint = true;
                     state_.tool_correction_checkpoint_idx =

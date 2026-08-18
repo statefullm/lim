@@ -20,6 +20,10 @@ std::string html_escape_for_browser(const std::string& s);
 // Log a batch of tokens with a label (no-op if debug disabled or token_log not open)
 void log_tokens(const std::string& label, const std::vector<llama_token>& toks, llama_context* ctx);
 
+// Open the chat/token/TPS log files for the given session index.
+// Returns false if the chat log could not be opened.
+bool open_session_logs(int idx);
+
 // Strip all occurrences of given tags from a string
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
 
@@ -30,6 +34,13 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
 
 // Print a restore diagnostic message
 void diag_restore(const std::string& path, int token_count);
+
+// Announce a new session number to the terminal and chat log
+// (used at startup, /clear, and /reincarnate).
+void announce_new_session(int session_num);
+
+// Get the current git HEAD SHA (40 hex chars), or "" if not in a repo / git missing.
+std::string get_git_head_sha();
 
 // Check git HEAD against saved SHA; inject warning if mismatched.
 // Returns true if there was a mismatch.

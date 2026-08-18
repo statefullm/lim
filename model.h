@@ -60,10 +60,6 @@ struct ModelTokens {
 // Global model tokens, initialized after model load.
 extern ModelTokens g_model_tokens;
 
-// Detect model type from GGUF metadata by asking llama.cpp for its Jinja
-// chat template, then running llama.cpp's own llm_chat_detect_template().
-ModelType detect_model_type(const llama_model *model);
-
 // Populate g_model_tokens by:
 //   1. Getting the built-in template name via llama.cpp detection
 //   2. Applying it to minimal test messages via llama_chat_apply_template()
@@ -91,24 +87,15 @@ std::vector<llama_token> build_user_assistant_turn(llama_context *ctx, const std
 // Internal helper for build_user_assistant_turn.
 std::string build_user_assistant_turn_text(const std::string &user_content);
 
-// Build user turn only (no assistant prefill):
-//   user_turn_start + content + turn_end + "\n"
-std::vector<llama_token> build_user_turn_only(llama_context *ctx, const std::string &user_content);
-
 // Build a tool result injection:
 //   user_turn_start + "[Tool Result]\n" + content + turn_end + "\n" + assistant_turn_start
 std::vector<llama_token> build_tool_result_turn(llama_context *ctx, const std::string &tool_output);
-
-// Build forced-close tokens for EOG recovery / loop detection:
-//   "\n" + turn_end + "\n"  (FUNC_END is added separately since it's lim protocol)
-std::vector<llama_token> build_forced_close_tokens(llama_context *ctx);
 
 // --- Decode Error Handling ---
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true);
 void sync_n_past(llama_context *ctx, int &n_past);
 
 // --- Log Callbacks ---
-extern bool first_prompt_displayed;
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data);
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data);
 

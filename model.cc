@@ -135,42 +135,6 @@ string get_chat_template_name(ModelType model_type) {
   }
 }
 
-// Detect model type from GGUF metadata.
-// Strategy: read the Jinja chat template stored in the GGUF file, then pass it
-// to llama.cpp's own llm_chat_detect_template() which pattern-matches against
-// all known families. This is exactly what llama-cli does internally.
-ModelType detect_model_type(const llama_model *model) {
-  const char *tmpl_str = llama_model_chat_template(model, nullptr);
-  if (!tmpl_str || tmpl_str[0] == '\0') {
-    // No template metadata -- fall back to ChatML (most common default)
-    return ModelType::CHATML;
-  }
-
-  string tmpl(tmpl_str);
-  llm_chat_template detected = llm_chat_detect_template(tmpl);
-  ModelType mt = map_llm_template(detected);
-
-  if (mt == ModelType::UNKNOWN) {
-    // Detection failed -- try to use the template string directly with
-    // llama_chat_apply_template. If it's already a built-in name, that works.
-    // Otherwise fall back to ChatML.
-    const char *builtin_names[64];
-    int n_builtins = llama_chat_builtin_templates(builtin_names, 64);
-    for (int i = 0; i < n_builtins; i++) {
-      if (tmpl == builtin_names[i]) {
-        mt = map_llm_template(llm_chat_detect_template(tmpl));
-        break;
-      }
-    }
-    if (mt == ModelType::UNKNOWN) {
-      mt = ModelType::CHATML;  // safe fallback
-    }
-  }
-
-  return mt;
-}
-
-
 // --- Tokenization helpers ---
 
 static vector<llama_token> tok(llama_context *ctx, const string &s) {
@@ -481,13 +445,6 @@ string build_user_assistant_turn_text(const string &user_content) {
   return msg;
 }
 
-vector<llama_token> build_user_turn_only(llama_context *ctx, const string &user_content) {
-  string msg = g_model_tokens.user_turn_start.text + user_content;
-  if (g_model_tokens.has_explicit_turn_end())
-    msg += g_model_tokens.turn_end.text;
-  return common_tokenize(ctx, msg, false, true);
-}
-
 vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output) {
   // Escape model turn tokens in the tool output so they don't get
   // misinterpreted as structural boundaries during tokenization.
@@ -500,27 +457,6 @@ vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &too
   msg += g_model_tokens.assistant_turn_start.text;
   return common_tokenize(ctx, msg, false, true);
 }
-
-vector<llama_token> build_forced_close_tokens(llama_context *ctx) {
-  vector<llama_token> result;
-
-  // Leading newline
-  auto nl = tok(ctx, "\n");
-  result.insert(result.end(), nl.begin(), nl.end());
-
-  // turn_end
-  if (g_model_tokens.has_explicit_turn_end()) {
-    result.insert(result.end(), g_model_tokens.turn_end.tokens.begin(),
-                  g_model_tokens.turn_end.tokens.end());
-  }
-
-  // Trailing newline
-  nl = tok(ctx, "\n");
-  result.insert(result.end(), nl.begin(), nl.end());
-
-  return result;
-}
-
 
 // --- Decode Error Handling ---
 

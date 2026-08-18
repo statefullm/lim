@@ -15,13 +15,9 @@ using namespace Tokens;
 extern volatile sig_atomic_t stop_generation;
 extern bool is_debug;
 
-static bool param_has_newline_impl(const string& s) {
-    return s.find('\n') != string::npos || s.find('\r') != string::npos;
-}
-
 const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter contains newlines, likely because a " + string(PARAM_END) + " closing tag is missing.";
 bool param_has_newline(const string& s) {
-    return param_has_newline_impl(s);
+    return s.find('\n') != string::npos || s.find('\r') != string::npos;
 }
 
 // Tool metadata: required parameters per tool.

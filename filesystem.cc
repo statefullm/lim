@@ -291,8 +291,20 @@ static std::string get_cache_dir_internal() {
   mkdir(dir.c_str(), 0755);
   return dir;
 }
-
 std::string get_cache_dir() { return get_cache_dir_internal(); }
+
+std::string append_save_ext(std::string path) {
+  if (path.size() < std::strlen(SAVE_EXT) ||
+      path.compare(path.size() - std::strlen(SAVE_EXT), std::strlen(SAVE_EXT), SAVE_EXT) != 0) {
+    path += SAVE_EXT;
+  }
+  return path;
+}
+
+std::string apply_save_dir(const std::string& path) {
+  if (!path.empty() && path[0] == '/') return path;
+  return LIM_SAVE_DIR + "/" + path;
+}
 
 static std::string model_identifier(const std::string& model_path) {
   // Use just the filename. Qwen3.6-27B-UD-Q5_K_XL.gguf is already a unique

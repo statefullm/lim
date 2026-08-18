@@ -56,6 +56,12 @@ bool delete_save_and_cache(const std::string& save_path,
                            int* cache_deleted = nullptr);
 std::string get_cache_dir();
 
+// Append the .save extension if not already present.
+std::string append_save_ext(std::string path);
+// Prepend LIM_SAVE_DIR to relative paths (those not starting with '/').
+// Absolute paths are returned unchanged.
+std::string apply_save_dir(const std::string& path);
+
 class FileSystemTools {
 public:
   FileSystemTools();

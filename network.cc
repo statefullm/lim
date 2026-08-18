@@ -161,10 +161,6 @@ void NetworkTools::reset_context_usage() {
   g_cumulative_context_chars = 0;
 }
 
-size_t NetworkTools::get_context_usage() {
-  return g_cumulative_context_chars;
-}
-
 // --- Interrupt-aware curl callback to check for SIGINT during long operations ---
 static int interrupt_check_callback(void *clientp, double dltotal, double dlnow, double ultotal, double ulnow) {
   // Return non-zero to abort the transfer if stop_generation is set
@@ -1339,7 +1335,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
       transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c){ return std::tolower(c); });
     }
 
-    bool is_pdf = (ext == ".pdf" || ext == ".PDF");
+    bool is_pdf = (ext == ".pdf");
 
     if (is_pdf) {
       // Fetch PDF binary and process with Docling

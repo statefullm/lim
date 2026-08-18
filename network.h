@@ -38,7 +38,6 @@ public:
 
   // Track context usage across an agentic session
   static void reset_context_usage();
-  static size_t get_context_usage();
 
 private:
   std::string base_url;

@@ -21,39 +21,6 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
-
-// Truncate large parameter values inside a tool call XML string so the raw
-// output fits on one console line.  Uses constants from tokens.h to match
-// the actual token forms emitted by the model.
-static string truncate_tool_call_params(const string& tool_call) {
-    static const char* long_params[] = {"content", "old", "new", "text"};
-    string result = tool_call;
-    for (const char* param : long_params) {
-        string open_tag = string(PARAM_START) + param + ">";
-        size_t pos = 0;
-        while ((pos = result.find(open_tag, pos)) != string::npos) {
-            size_t content_start = pos + open_tag.length();
-            size_t end = result.find(PARAM_END, content_start);
-            if (end != string::npos) {
-                result.replace(content_start, end - content_start, "...");
-                pos = content_start + 3;
-            } else {
-                // Unclosed param -- truncate rest of string after a budget.
-                if (content_start + 40 < result.length()) {
-                    result = result.substr(0, content_start + 40) + "...";
-                    break;
-                }
-            }
-        }
-    }
-    // Hard cap: if still too long for one line, truncate the whole thing.
-    static constexpr size_t MAX_DISPLAY_LEN = 200;
-    if (result.length() > MAX_DISPLAY_LEN) {
-        result = result.substr(0, MAX_DISPLAY_LEN) + "...";
-    }
-    return result;
-}
-
 ToolExecutor::Result ToolExecutor::execute(
     SessionState& state,
     string& generated_text,
@@ -143,17 +110,11 @@ ToolExecutor::Result ToolExecutor::execute(
             state.invalid_tool_strikes = 0;
         } else {
             state.invalid_tool_strikes++;
-
-            string label;
-            if (!tool_out.recognized) label = "Invalid Tool Call";
-            else if (tool_out.malformed_xml) label = "Malformed Tool Call";
-            else label = "Malformed Tool Call";
+            string label = tool_out.recognized ? "Malformed Tool Call" : "Invalid Tool Call";
             if (state.invalid_tool_strikes > 1)
                 diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
-
             if (is_debug) {
-                // Show the truncated tool call params for diagnosis.
-                diag("  " + truncate_tool_call_params(tool_call), "\033[2;90m");
+                // Show the raw tool call for diagnosis.
                 diag("  Raw tool_call: " + tool_call, "\033[2;90m");
                 diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[2;90m");
                 if (!tool_out.recognized) {
@@ -217,7 +178,7 @@ ToolExecutor::Result ToolExecutor::execute(
             }
             size_t p = 0;
             while ((p = result_to_print.find('\n')) != string::npos) {
-                console("  ", (int)p, result_to_print.c_str(),"\n");
+                console("  ", result_to_print.c_str(), "\n");
                 result_to_print.erase(0, p + 1);
             }
             if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
@@ -227,9 +188,8 @@ ToolExecutor::Result ToolExecutor::execute(
 
         if (!display_for_browser.empty()) {
             string safe_result = html_escape(display_for_browser);
-
             string result_html = "\n\n<div class='tool-result'><pre><code>" + safe_result + "</code></pre></div>\n\n";
-            stream_tool_result(result_html);
+            stream_html(result_html);
         }
         consoleFlush();
 

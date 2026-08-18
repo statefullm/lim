@@ -179,10 +179,6 @@ static int total_poll_iters = 0;
 static int max_poll_iters = 0;
 static int last_printed_eog = 0;
 
-// File-scope statics for stall detection
-static int recent_token_count_tg = 0;
-static auto last_rate_check_tg = chrono::high_resolution_clock::now();
-
 TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                llama_sampler* smpl, llama_batch& batch,
                                int& n_past, const llama_context_params& cparams,
@@ -329,21 +325,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             size_t active_te = find_tool_end_robust(generated_text_, active_ts != string::npos ? active_ts : 0);
             bool inside_unclosed_tool = (active_ts != string::npos && (active_te == string::npos || active_ts > active_te));
 
-            // Degeneration check: if the text contains PARAM_START or FUNC_END but no
-            // FUNC_START, the model is emitting broken XML fragments without a proper
-            // function call wrapper. This is always degeneration, never valid output.
-            // Also catches cases where FUNC_START exists but the tool call is structurally
-            // broken (no matching end tag found).
-            string ps_str(PARAM_START);
-            string fe_str(FUNC_END);
-            size_t ps_pos = generated_text_.find(ps_str);
-            size_t fe_pos = generated_text_.find(fe_str);
-            bool has_broken_xml = (ps_pos != string::npos || fe_pos != string::npos) && active_ts == string::npos;
-
-            // Also detect: FUNC_START found but no valid tool call end -- model started
-            // a tool call but never completed it properly.
-            bool incomplete_tool = (active_ts != string::npos && active_te == string::npos);
-
             int poll_iter_used = 0;
             static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 256;
             const char* eog_env = getenv("LIM_EOG_RESAMPLE_MAX");
@@ -423,11 +404,10 @@ TokenGenerator::Result TokenGenerator::generate() {
                     trigger_tool_execution_ = true;
                 }
 
-                // Note: has_broken_xml and incomplete_tool checks removed.
-                // Bare PARAM_START/FUNC_END in prose is not degeneration -- the model
-                // may be discussing tool calls.  The inside_unclosed_tool repair above
-                // handles genuine unclosed tool calls.  The tool executor validates
-                // structure on its own for anything that does look like a call.
+                // Note: bare PARAM_START/FUNC_END in prose is not degeneration -- the
+                // model may be discussing tool calls.  The inside_unclosed_tool repair
+                // above handles genuine unclosed tool calls.  The tool executor
+                // validates structure on its own for anything that does look like a call.
 
                 break;
             }
@@ -737,18 +717,6 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
 
         {
-            recent_token_count_tg++;
-
-            // Stall detection: only query clock when we might be near the 10s threshold.
-            if (recent_token_count_tg % 50 == 0) {
-                auto now = chrono::high_resolution_clock::now();
-                double elapsed_window = chrono::duration<double>(now - last_rate_check_tg).count();
-                if (elapsed_window >= 10.0) {
-                    recent_token_count_tg = 0;
-                    last_rate_check_tg = now;
-                }
-            }
-
             // Speed/context diagnostic for the browser status bar.
             // Update every N tokens so progress stays visible at any generation rate.
             // For stdout output (LIM_OUTPUT=1 or 3), skip mid-generation diagnostics;

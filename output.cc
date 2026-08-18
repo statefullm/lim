@@ -164,14 +164,6 @@ void stream(const string& raw_token) {
   payload += escaped;
   pipe_write(payload.c_str(), payload.length());
 }
-
-void stream_tool_result(const string& html) {
-  if (!should_output_to_browser()) return;
-  string payload(1, SEG_HTML);
-  payload += html;
-  pipe_write(payload.c_str(), payload.length());
-}
-
 void stream_html(const string& html) {
   if (!should_output_to_browser()) return;
   string payload(1, SEG_HTML);
