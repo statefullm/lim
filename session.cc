@@ -381,17 +381,58 @@ private:
         return tokens;
     }
 
+    // --- Rollback instrumentation (correction.md 4) -----------------------
+    // Written to BOTH stderr and chat_log so the record survives a context
+    // clobber. Gated on is_debug (LIM_DEBUG=1). `path` is "correction" or "undo".
+    void log_rollback(const char* path, int n_past_before, long target_pos,
+                      bool seq_rm_ok, int n_past_after) {
+        if (!is_debug) return;
+        long delta = (long)n_past_before - target_pos;
+        ostringstream oss;
+        oss << "[ROLLBACK path=" << path << "]\n"
+            << "  n_past_before = " << n_past_before << "\n"
+            << "  target_pos    = " << target_pos << "\n"
+            << "  delta         = " << delta << "\n"
+            << "  idx           = " << state_.tool_correction_checkpoint_idx << "\n"
+            << "  stack_offset  = " << state_.checkpoint_stack_offset << "\n"
+            << "  n_checkpoints = " << state_.prompt_checkpoints.size() << "\n"
+            << "  all_ctx_size  = " << state_.all_context_tokens.size() << "\n"
+            << "  --- after ---\n"
+            << "  n_past_after  = " << n_past_after << "\n"
+            << "  seq_rm_ok     = " << (seq_rm_ok ? "true" : "false") << "\n";
+        string s = oss.str();
+        cerr << s;
+        if (chat_log.is_open()) { chat_log << s; chat_log.flush(); }
+    }
+
+    // Log a tool_correction_n_past assignment so we can see when it was last
+    // set and to what value (correction.md 4). idx_was is the checkpoint index
+    // at the moment of assignment.
+    void log_tc_npast_set() {
+        if (!is_debug) return;
+        ostringstream oss;
+        oss << "[TC_NPAST_SET] n_past=" << n_past_
+            << " idx_was=" << state_.tool_correction_checkpoint_idx << "\n";
+        string s = oss.str();
+        cerr << s;
+        if (chat_log.is_open()) { chat_log << s; chat_log.flush(); }
+    }
+
     // Roll back to the tool-correction checkpoint (removes bad call + any
     // correction tokens). Returns 0 if seq_rm succeeded, 1 if the KV cache was
     // cleared and re-decoded, -1 on failure (caller should eject to prompt).
     int rollback_to_tool_checkpoint(bool eject_on_failure) {
         llama_memory_t mem = llama_get_memory(ctx_);
+        int n_past_before = n_past_;
+        long target_pos = state_.tool_correction_n_past;
+
         llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
         llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
         bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
         if (rm_ok) {
             n_past_ = state_.tool_correction_n_past;
             state_.all_context_tokens.resize(state_.tool_correction_n_past);
+            log_rollback("correction", n_past_before, target_pos, true, n_past_);
             return 0;
         }
         diag("System: Correction rollback failed, re-decoding...", "\033[33m");
@@ -399,11 +440,13 @@ private:
         n_past_ = 0;
         if (!feed_tokens_impl(state_.all_context_tokens)) {
             diag("Correction restore failed. Type /clear to reset.", "\033[31m");
+            log_rollback("correction", n_past_before, target_pos, false, n_past_);
             if (eject_on_failure) state_.auto_continue = false;
             return -1;
         }
         n_past_ = state_.tool_correction_n_past;
         state_.all_context_tokens.resize(n_past_);
+        log_rollback("correction", n_past_before, target_pos, false, n_past_);
         return 1;
     }
 
@@ -469,7 +512,7 @@ private:
     string get_user_input();
     Command handle_command(const string& input);
     bool feed_user_message(const string& input);
-    TokenGenerator::Result generate_response();
+    TokenGenerator::Result generate_response(bool is_correction_gen = false);
     bool process_tool_call();
     bool handle_reincarnate_completion();
 
@@ -773,7 +816,7 @@ bool ChatSession::feed_user_message(const string& input) {
 }
 
 // --- generate_response: invoke TokenGenerator and update state ---
-TokenGenerator::Result ChatSession::generate_response() {
+TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     // Reset terminal color to default before LLM text starts printing.
     // Readline draws the >>> prompt in cyan; without this reset, all LLM output
     // would appear in cyan.
@@ -816,25 +859,54 @@ TokenGenerator::Result ChatSession::generate_response() {
     was_mid_tool_call_ = state_.tool_interrupt_pending;
     state_.tool_interrupt_pending = false;
 
-    // Don't save a checkpoint here -- we don't have useful state yet.
-    // The checkpoint is saved lazily: either when a tool call is detected
-    // (push for rollback), or at end-of-turn if no tools occurred.
-    // Only reset tracking on the first generate_response() of a turn;
-    // subsequent calls (auto-continue, correction cycle) preserve the
-    // existing checkpoint index and n_past so rollback still works.
-    if (state_.tool_correction_checkpoint_idx < 0) {
-        state_.tool_correction_n_past = n_past_;
+    // The turn's recurrent checkpoint slot is saved lazily by the on_tool_start
+    // hook (passed to TokenGenerator below), right after the FUNC_START token is
+    // fed -- the only point where "right before the tool-call body" is reachable.
+    // If a generation produces no tool call, no slot activity happens; the
+    // end-of-turn block pushes one if the whole turn used none.
+    // Per-turn flags reset only on the first generate_response() of a turn;
+    // subsequent calls (auto-continue, correction cycle) preserve the existing
+    // checkpoint index so rollback still works.
+    if (!is_correction_gen && state_.tool_correction_checkpoint_idx < 0) {
         state_.has_tool_correction_checkpoint = false;
         state_.correction_attempted_this_turn = false;
     }
 
     auto start = chrono::high_resolution_clock::now();
 
+
     // --- TOKEN GENERATION via TokenGenerator class ---
+    // The on_tool_start hook fires right after the FUNC_START token is fed+decoded:
+    // it (re)saves the turn's recurrent checkpoint slot at that exact position and
+    // sets tool_correction_n_past to match, so a later correction rollback restores
+    // recurrent state from exactly where seq_rm truncates the attention cache.
+    // The correction's own regeneration (is_correction_gen) gets no hook: it must
+    // not touch the slot or the target, or a second correction attempt on the same
+    // call would roll back incorrectly.
+    std::function<void()> on_tool_start;
+    if (!is_correction_gen) {
+        on_tool_start = [this]() {
+            llama_memory_t mem = llama_get_memory(ctx_);
+            if (state_.tool_correction_checkpoint_idx < 0) {
+                // First FUNC_START of this turn: create the slot.
+                state_.tool_correction_checkpoint_idx =
+                    (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
+                llama_memory_rs_checkpoint_save(mem, 0);
+            } else {
+                // Later FUNC_START in the same turn (auto-continue): reuse it.
+                llama_memory_rs_checkpoint_overwrite(mem, 0,
+                    (uint32_t)state_.tool_correction_checkpoint_idx);
+            }
+            state_.has_tool_correction_checkpoint = true;
+            state_.tool_correction_n_past = n_past_;
+            log_tc_npast_set();
+        };
+    }
     TokenGenerator tg(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
                       &state_.all_context_tokens, state_.last_feed_time,
-                      state_.reincarnate_mode, state_.auto_continue);
+                      state_.reincarnate_mode, state_.auto_continue,
+                      on_tool_start);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
@@ -906,19 +978,10 @@ bool ChatSession::process_tool_call() {
     size_t tool_end = gen_result_.tool_end;
 
     if (trigger_tool_execution && tool_start != string::npos && tool_end != string::npos) {
-        // Save recurrent-state checkpoint lazily: push on first tool call,
-        // overwrite on subsequent ones within the same turn.
-        {
-            llama_memory_t mem = llama_get_memory(ctx_);
-            if (state_.tool_correction_checkpoint_idx < 0) {
-                state_.tool_correction_checkpoint_idx =
-                    (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
-                llama_memory_rs_checkpoint_save(mem, 0);
-            } else {
-                llama_memory_rs_checkpoint_overwrite(mem, 0,
-                    (uint32_t)state_.tool_correction_checkpoint_idx);
-            }
-        }
+        // The turn's recurrent checkpoint was already saved by the on_tool_start
+        // hook right after FUNC_START was fed -- do NOT touch it here: by the time
+        // process_tool_call runs, n_past is already past the call, so saving now
+        // would desync the rollback (checkpoint position != tool_correction_n_past).
         state_.has_tool_correction_checkpoint = true;
 
         // Log the assistant's preamble text (text before the tool call) so it
@@ -1345,6 +1408,8 @@ bool ChatSession::run() {
 
                 // Translate the prompt_checkpoints index into a live stack index.
                 int stack_idx = selected_idx - state_.checkpoint_stack_offset;
+                int n_past_before = n_past_;
+                long target_pos = target.n_past;
 
                 if (stack_idx >= 0) {
                     // Restore recurrent state from the target checkpoint.
@@ -1363,6 +1428,7 @@ bool ChatSession::run() {
                         llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)stack_idx);
                     }
                     // If stack_idx < 0: nothing to prune (no live entries for pre-restore).
+                    log_rollback("undo", n_past_before, target_pos, true, n_past_);
                 } else {
                     diag("Regenerating KV cache for " + to_string(target.n_past) + " tokens...", "\033[35m");
                     llama_memory_clear(mem, true);
@@ -1374,6 +1440,7 @@ bool ChatSession::run() {
                     auto start = chrono::high_resolution_clock::now();
                     if (!feed_tokens_impl(state_.all_context_tokens)) {
                         diag("Failed to re-feed tokens after undo. Type '/clear' to reset.", "\033[31m");
+                        log_rollback("undo", n_past_before, target_pos, false, n_past_);
                         continue;
                     }
                     state_.all_context_tokens.resize(target.n_past);
@@ -1383,6 +1450,7 @@ bool ChatSession::run() {
                     int secs = (int)elapsed;
                     double speed = target.n_past / (elapsed > 0 ? elapsed : 1.0);
                     diag("KV cache regenerated: " + to_string(target.n_past) + " tokens at " + to_string(round_int(speed)) + " t/s (" + to_string(secs) + "s)", "\033[35m");
+                    log_rollback("undo", n_past_before, target_pos, false, n_past_);
                 }
             }
 
@@ -1970,7 +2038,7 @@ bool ChatSession::run() {
                 log_tokens("FEED TOOL_CORRECTION", correction_tokens, ctx_);
 
                 // Generate once -- LLM produces corrected tool call.
-                gen_result_ = generate_response();
+                gen_result_ = generate_response(/*is_correction_gen=*/true);
                 generated_text_ = gen_result_.text;
                 t_count_ = gen_result_.token_count;
                 elapsed_ = gen_result_.decode_time;
@@ -1987,8 +2055,9 @@ bool ChatSession::run() {
                     if (!validate_tool_call(corr_tool_call_raw)) {
                         diag("System: Correction produced another invalid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
 
+
                         // Roll back the failed correction tokens so the KV cache is left clean.
-                        // Restore to the checkpoint position (before the original bad tool call).
+                        // Context ends right after FUNC_START of the original bad call.
                         if (rollback_to_tool_checkpoint(true) < 0) continue;
 
                         // Re-enable the checkpoint for a future correction attempt (e.g., after /continue).
@@ -2011,18 +2080,17 @@ bool ChatSession::run() {
                     }
 
                     // Inject the corrected tool call into the Assistant field.
+                    // The rollback above left context ending in [preamble][FUNC_START],
+                    // so feed ONLY the call body (drop the leading FUNC_START -- it is
+                    // already in context).  Keep the full string (with FUNC_START) for
+                    // ToolExecutor parsing below.
                     string corr_preamble = (cs > 0) ? corr_text.substr(0, cs) : "";
-                    string injected_text = corr_preamble + corr_tool_call_raw;
-                    vector<llama_token> inj_tokens = tokenize(injected_text);
+                    vector<llama_token> inj_tokens = tokenize(corr_tool_call_raw.substr(string(FUNC_START).length()));
                     feed_tokens_impl(inj_tokens);
                     log_tokens("FEED TOOL_CORRECTION_INJECT", inj_tokens, ctx_);
 
-                    // Update n_past for a potential second correction: the rollback
-                    // target must match what the next checkpoint will capture.
-                    state_.tool_correction_n_past = n_past_;
-
                     // Set up gen_result_ to reflect the injected call.
-                    generated_text_ = injected_text;
+                    generated_text_ = corr_preamble + corr_tool_call_raw;
                     gen_result_.tool_start = corr_preamble.length();
                     size_t fe_pos = corr_tool_call_raw.find(string(FUNC_END));
                     gen_result_.tool_end = corr_preamble.length() + (fe_pos != string::npos ? fe_pos : corr_tool_call_raw.length());
@@ -2033,12 +2101,13 @@ bool ChatSession::run() {
                     llama_sampler_reset(smpl_);
 
                     // Reset correction flags so that if this injected call also fails,
-                    // another correction cycle can run.  Overwrite the existing checkpoint
-                    // slot with the post-injection state and update n_past so the next
-                    // rollback target is correct -- no extra stack memory used.
-                    llama_memory_rs_checkpoint_overwrite(llama_get_memory(ctx_), 0,
-                        (uint32_t)state_.tool_correction_checkpoint_idx);
-                    state_.tool_correction_n_past = n_past_;
+                    // another correction cycle can run.  Do NOT touch the checkpoint
+                    // slot or tool_correction_n_past here: both still point at "right
+                    // after FUNC_START" (where the rollback left context), so a second
+                    // correction attempt on the same call rolls back to exactly the
+                    // same position with a matching recurrent state.  The turn-end
+                    // block overwrites the slot with the final state when this turn
+                    // completes.
                     state_.has_tool_correction_checkpoint = true;
                     // Allow one more correction only if we haven't already used both.
                     // After injection, invalid_tool_strikes is still at its pre-injection

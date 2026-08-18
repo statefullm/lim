@@ -8,6 +8,7 @@
 #include <iostream>
 #include <string>
 #include <cstring>
+#include <cstdlib>
 
 using namespace std;
 
@@ -491,6 +492,20 @@ void sync_n_past(llama_context *ctx, int &n_past) {
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {}
 
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+  // Suppress DEBUG-level llama/ggml spam (e.g. "CUDA Graph id N reused" on every
+  // decode) while keeping INFO and above. Set LIM_LLAMA_DEBUG_LOG=1 to show all.
+  static const bool show_all = [](){
+    const char* e = getenv("LIM_LLAMA_DEBUG_LOG");
+    return e != nullptr && strlen(e) > 0 && strcmp(e, "0") != 0;
+  }();
+  // CONT lines continue the previous message: suppress them too if that
+  // message was a suppressed DEBUG line.
+  static bool in_suppressed_debug = false;
+  if (!show_all) {
+    if (level == GGML_LOG_LEVEL_DEBUG) { in_suppressed_debug = true; return; }
+    if (level == GGML_LOG_LEVEL_CONT && in_suppressed_debug) return;
+  }
+  in_suppressed_debug = false;
   cerr << text;
 }
 

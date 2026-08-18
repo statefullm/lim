@@ -3,6 +3,7 @@
 
 #include "llama.h"
 #include "common.h"
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -35,7 +36,8 @@ public:
                  std::vector<llama_token>* out_tokens = nullptr,
                  double feed_time = 0.0,
                  bool is_reincarnating = false,
-                 bool is_auto_continue = false);
+                 bool is_auto_continue = false,
+                 std::function<void()> on_tool_start = nullptr);
 
   Result generate();
 
@@ -70,6 +72,10 @@ private:
   std::string think_buffer_;
   bool think_buffering_;
   int t_count_;
+  // Fired once per generation, after the token that completes FUNC_START has
+  // been fed+decoded (n_past is exactly right after FUNC_START). Null when no
+  // hook is set (e.g. the correction's own regeneration).
+  std::function<void()> on_tool_start_;
   int last_n_past_;
   bool was_mid_tool_call_;
   bool is_reincarnating_;

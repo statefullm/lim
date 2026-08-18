@@ -187,7 +187,8 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                std::vector<llama_token>* out_tokens,
                                double feed_time,
                                bool is_reincarnating,
-                               bool is_auto_continue)
+                               bool is_auto_continue,
+                               std::function<void()> on_tool_start)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
@@ -206,6 +207,7 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       think_scan_pos_(0),
       think_buffering_(true),
       t_count_(0),
+      on_tool_start_(std::move(on_tool_start)),
       last_n_past_(last_n_past),
       was_mid_tool_call_(was_mid_tool_call),
       is_reincarnating_(is_reincarnating),
@@ -224,6 +226,13 @@ TokenGenerator::Result TokenGenerator::generate() {
 
     bool was_interrupted = false;
     bool early_exit = false;
+
+    // Set when FUNC_START just became fully present in generated_text_ this
+    // iteration; the on_tool_start_ hook is then fired after the end-of-iteration
+    // feed so n_past lands exactly right after FUNC_START.  Fires at most once
+    // per generation (tool_start_ never transitions back to npos, and a resume
+    // mid-tool-call starts with tool_start_ == 0 so no transition occurs).
+    bool tool_start_hook_pending = false;
 
     // Silent-loop threshold: max tokens allowed outside parameters while inside
     // a tool call before aborting. Constant for the run -- read once per turn,
@@ -489,6 +498,10 @@ TokenGenerator::Result TokenGenerator::generate() {
             tool_start_ = generated_text_.find(FUNC_START, search_from);
             if (tool_start_ == string::npos) {
                 func_search_pos_ = generated_text_.length() > 20 ? generated_text_.length() - 20 : 0;
+            } else {
+                // FUNC_START just became fully present: schedule the hook for
+                // after this token is fed (see end of iteration).
+                tool_start_hook_pending = true;
             }
         }
         if (tool_start_ != string::npos && tool_end_ == string::npos) {
@@ -757,6 +770,14 @@ TokenGenerator::Result TokenGenerator::generate() {
             sync_n_past(ctx_, n_past_);
             early_exit = true;
             break;
+        }
+
+        // Fire the FUNC_START hook after the feed+decode: n_past is exactly
+        // right after FUNC_START and the recurrent (R/S) state is up to date,
+        // so a checkpoint saved by the hook matches this position.
+        if (tool_start_hook_pending) {
+            tool_start_hook_pending = false;
+            if (on_tool_start_) on_tool_start_();
         }
     } // END INNER TOKEN LOOP
 
