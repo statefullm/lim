@@ -67,8 +67,6 @@ private:
   bool in_thinking_block_;
   size_t think_start_;
   size_t think_end_;
-  int think_depth_;        // open think tags in current block (1 = outer)
-  size_t think_scan_pos_;  // incremental scan position for nested think-tag matching
   std::string think_buffer_;
   bool think_buffering_;
   int t_count_;

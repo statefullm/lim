@@ -203,8 +203,6 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       in_thinking_block_(false),
       think_start_(string::npos),
       think_end_(string::npos),
-      think_depth_(1),
-      think_scan_pos_(0),
       think_buffering_(true),
       t_count_(0),
       on_tool_start_(std::move(on_tool_start)),
@@ -458,38 +456,9 @@ TokenGenerator::Result TokenGenerator::generate() {
         // think blocks and tool calls are sequential, never nested.
         if (!g_model_tokens.think_start.empty() && think_start_ == string::npos) {
             think_start_ = generated_text_.find(g_model_tokens.think_start);
-            if (think_start_ != string::npos) {
-                // Depth 1 = the outer opening tag; scanning resumes just past it.
-                think_depth_ = 1;
-                think_scan_pos_ = think_start_ + g_model_tokens.think_start.length();
-            }
         }
         if (think_start_ != string::npos && think_end_ == string::npos) {
-            // Find the closing tag that matches the OUTER opening tag.  The model
-            // sometimes emits literal think tags inside its reasoning; nested
-            // pairs are ignored so they can't terminate the block early (which
-            // would leak the rest of the reasoning into the visible response).
-            size_t scan = think_scan_pos_;
-            if (scan > generated_text_.length()) scan = generated_text_.length();
-            while (true) {
-                size_t p_open = generated_text_.find(g_model_tokens.think_start, scan);
-                size_t p_close = generated_text_.find(g_model_tokens.think_end, scan);
-                if (p_open == string::npos && p_close == string::npos) break;
-                bool is_open = (p_open != string::npos && (p_close == string::npos || p_open < p_close));
-                size_t p = is_open ? p_open : p_close;
-                think_depth_ += is_open ? 1 : -1;
-                if (!is_open && think_depth_ <= 0) {
-                    think_end_ = p;
-                    break;
-                }
-                scan = p + 1;
-            }
-            // Resume next token from the further of: where this scan stopped
-            // (so already-counted tags are never re-counted) and the tail window
-            // (so partial tags split across token boundaries are still found).
-            size_t max_tag_len = std::max(g_model_tokens.think_start.length(), g_model_tokens.think_end.length());
-            size_t tail = generated_text_.length() > (max_tag_len - 1) ? generated_text_.length() - (max_tag_len - 1) : 0;
-            think_scan_pos_ = std::max(scan, tail);
+            think_end_ = generated_text_.find(g_model_tokens.think_end, think_start_);
         }
         in_thinking_block_ = (think_start_ != string::npos && think_end_ == string::npos);
 
