@@ -195,8 +195,16 @@ coder
 
 **Option B: Launch from your personal shell via `sudo`**
 
+Add this function to *your* `~/.bashrc`:
+
 ```bash
-alias coder='sudo -u $LIM_AI_USER bash -c "source ~/.bashrc; lim ~/models/Qwen3.8-27B-Q6_K.gguf"'
+coder() { sudo -iu $LIM_AI_USER sh -c "cd \"$PWD\"; lim ~/models/Qwen3.8-27B-Q6_K.gguf $*"; }
+```
+
+You can then start lim as user `$LIM_AI_USER` in your current directory:
+
+```bash
+coder
 ```
 
 #### Core Pinning (taskset)
