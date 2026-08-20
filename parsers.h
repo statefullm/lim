@@ -15,6 +15,14 @@ void unescape_parameter_tags(std::string& str);
 void escape_turn_tags(std::string& str);
 void unescape_turn_tags(std::string& str);
 
+// Strip quote characters from a string (used for forgiving tag-name matching).
+std::string strip_quotes_from_name(const std::string& s);
+
+// Generic escape: insert one copy of 'esc_char' after the first char of every
+// occurrence of 'token'.  Handles recursive escaping: if already escaped, adds
+// another esc_char.  (Shared by parsers.cc and output.cc.)
+void escape_tag(std::string& str, const std::string& token, char esc_char);
+
 // Linear-time parsers - O(n) time complexity with general data robustness
 // No artificial limits on string length or array size
 // Handles arbitrary-length tool calls safely

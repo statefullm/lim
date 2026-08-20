@@ -72,25 +72,41 @@ static bool wait_for_file(const char* dir, const char* filename, bool check_exis
     }
 }
 
-static void kill_stale_server() {
+// Read the server PID from the PID file. Returns 0 if unreadable or invalid.
+static pid_t read_server_pid() {
     FILE* fp = fopen(SERVER_PID_PATH, "r");
-    if (!fp) return;
+    if (!fp) return 0;
     char buf[32];
+    pid_t pid = 0;
     if (fgets(buf, sizeof(buf), fp)) {
-        pid_t pid = strtol(buf, nullptr, 10);
-        if (pid > 1 && kill(pid, 0) == 0) {
-            kill(pid, SIGKILL);
-            struct timespec ts{};
-            ts.tv_sec = 3;
-            while (true) {
-                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, &ts);
-                int status = 0;
-                pid_t result = waitpid(pid, &status, WNOHANG);
-                if (result == pid || result == -1) break;
-            }
-        }
+        pid = strtol(buf, nullptr, 10);
+        if (pid <= 1) pid = 0;
     }
     fclose(fp);
+    return pid;
+}
+
+// Send SIGKILL to a process and poll waitpid(WNOHANG) until it is reaped or
+// gone.  For non-child PIDs (stale servers from previous sessions) waitpid
+// fails immediately after the first ~3-second sleep, so this always terminates.
+static void kill_and_reap(pid_t pid) {
+    if (pid <= 1) return;
+    kill(pid, SIGKILL);
+    struct timespec ts{};
+    ts.tv_sec = 3;
+    while (true) {
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, &ts);
+        int status = 0;
+        pid_t result = waitpid(pid, &status, WNOHANG);
+        if (result == pid || result == -1) break;
+    }
+}
+
+static void kill_stale_server() {
+    pid_t pid = read_server_pid();
+    if (pid > 1 && kill(pid, 0) == 0) {
+        kill_and_reap(pid);
+    }
 }
 
 bool is_lim_server_running() {
@@ -131,17 +147,10 @@ void start_lim_server_if_needed() {
         vector<pid_t> pids_to_kill;
 
         // Attempt 1: read the PID file (may have been cleaned up by previous session).
-        FILE* fp = fopen(SERVER_PID_PATH, "r");
-        if (fp) {
-            char buf[32];
-            if (fgets(buf, sizeof(buf), fp)) {
-                pid_t pid = strtol(buf, nullptr, 10);
-                if (pid > 1 && kill(pid, 0) == 0) {
-                    log_diagnostic("Killing stale server from PID file (pid " + std::to_string(pid) + ")");
-                    pids_to_kill.push_back(pid);
-                }
-            }
-            fclose(fp);
+        pid_t pid = read_server_pid();
+        if (pid > 1 && kill(pid, 0) == 0) {
+            log_diagnostic("Killing stale server from PID file (pid " + std::to_string(pid) + ")");
+            pids_to_kill.push_back(pid);
         }
 
         // Attempt 2: use fuser to find any process on the port.
@@ -165,21 +174,9 @@ void start_lim_server_if_needed() {
             }
         }
 
-        // Send SIGKILL to all found processes.
+        // Send SIGKILL to all found processes and block until each exits.
         for (pid_t pid : pids_to_kill) {
-            kill(pid, SIGKILL);
-        }
-
-        // Block until each process exits, with a 3-second timeout per PID.
-        for (pid_t pid : pids_to_kill) {
-            struct timespec ts{};
-            ts.tv_sec = 3;
-            while (true) {
-                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, &ts);
-                int status = 0;
-                pid_t result = waitpid(pid, &status, WNOHANG);
-                if (result == pid || result == -1) break;
-            }
+            kill_and_reap(pid);
         }
 
         // Single final check: if the port is still occupied, something else

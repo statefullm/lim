@@ -15,7 +15,7 @@ extern bool is_debug;
 
 // Generic escape: insert one copy of 'esc_char' after first char of every occurrence
 // of 'token'.  Handles recursive escaping: if already escaped, adds another esc_char.
-static void escape_one_token(string& str, const string& token, char esc_char) {
+void escape_tag(string& str, const string& token, char esc_char) {
     if (token.size() < 2) return;
     char first = token[0];
     const string suffix = token.substr(1);
@@ -85,7 +85,7 @@ static void unescape_one_token(string& str, const string& token, char esc_char) 
     }
 }
 
-void escape_parameter_tags(string& str)     { escape_one_token(str, PARAM_END, ESCAPE_CHAR); }
+void escape_parameter_tags(string& str)     { escape_tag(str, PARAM_END, ESCAPE_CHAR); }
 void unescape_parameter_tags(string& str)   { unescape_one_token(str, PARAM_END, ESCAPE_CHAR); }
 
 // Extract base turn tokens from model turn markers.
@@ -118,7 +118,7 @@ static void _escape_turn_tokens_impl(string& str, bool do_escape) {
     vector<string> tokens;
     collect_base_turn_tokens(tokens);
     for (auto &t : tokens) {
-        if (do_escape) escape_one_token(str, t, ESCAPE_CHAR);
+        if (do_escape) escape_tag(str, t, ESCAPE_CHAR);
         else unescape_one_token(str, t, ESCAPE_CHAR);
     }
 }
@@ -167,7 +167,7 @@ static string strip_quotes(const string& s) {
 }
 
 // Strip quote characters from a string (used for forgiving tag-name matching).
-static string strip_quotes_from_name(const string& s) {
+string strip_quotes_from_name(const string& s) {
     string out;
     out.reserve(s.size());
     for (char c : s) {

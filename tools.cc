@@ -47,11 +47,7 @@ static vector<string> find_missing_params(const string& tool_name, const string&
                     if (gt == string::npos) break;
 
                     string raw = tool_call.substr(after_prefix, gt - after_prefix);
-                    string clean;
-                    for (char c : raw) {
-                        if (c != '"' && c != '\'') clean += c;
-                    }
-                    if (clean == param) { found = true; break; }
+                    if (strip_quotes_from_name(raw) == param) { found = true; break; }
                     pos++;
                 }
                 if (!found) {
@@ -87,6 +83,16 @@ static bool is_known_tool(const string& name) {
     return false;
 }
 
+// Build the standard error message for an unrecognized tool name.
+static string unknown_tool_error(const string& name) {
+    string avail;
+    for (const auto& spec : tool_specs) {
+        if (!avail.empty()) avail += ", ";
+        avail += spec.name;
+    }
+    return "Error: Unknown tool '" + name + "'. Available tools: " + avail + ".";
+}
+
 bool validate_tool_call(const string& tool_call) {
     size_t ns = tool_call.find(FUNC_START);
     if (ns == string::npos) return false;
@@ -96,10 +102,7 @@ bool validate_tool_call(const string& tool_call) {
 
     string raw_name = tool_call.substr(ns, ne - ns);
     // Strip stray quotes from the name.
-    string clean_name;
-    for (char c : raw_name) {
-        if (c != '"' && c != '\'') clean_name += c;
-    }
+    string clean_name = strip_quotes_from_name(raw_name);
 
     if (!is_known_tool(clean_name)) return false;
     if (!check_params(clean_name, tool_call)) return false;
@@ -123,11 +126,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   }
 
   // Strip stray quotes from the tool name (e.g., "exec_shell" -> exec_shell).
-  string clean_name;
-  for (char c : tool_name) {
-      if (c != '"' && c != '\'') clean_name += c;
-  }
-  tool_name = clean_name;
+  tool_name = strip_quotes_from_name(tool_name);
 
   // Check for interrupt before starting tool execution
   if (stop_generation) { out.content = "[Tool interrupted by user]"; return out; }
@@ -153,12 +152,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   out.parsed_tool_name = tool_name;
 
   if (!out.recognized) {
-      string avail;
-      for (const auto& spec : tool_specs) {
-        if (!avail.empty()) avail += ", ";
-        avail += spec.name;
-      }
-      out.content = "Error: Unknown tool '" + tool_name + "'. Available tools: " + avail + ".";
+      out.content = unknown_tool_error(tool_name);
       out.is_error = true;
       return out;
   }
@@ -418,12 +412,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       result = "Error: No query provided to web_search";
     }
   } else {
-    string avail;
-    for (const auto& spec : tool_specs) {
-      if (!avail.empty()) avail += ", ";
-      avail += spec.name;
-    }
-    result = "Error: Unknown tool '" + tool_name + "'. Available tools: " + avail + ".";
+    result = unknown_tool_error(tool_name);
   }
 
   out.content = result;

@@ -3,6 +3,7 @@
 #include "chat.h"
 #include "filesystem.h"
 #include "parsers.h"
+#include "token_generator.h"
 #include "tokens.h"
 #include <algorithm>
 #include <iostream>
@@ -165,20 +166,6 @@ static string strip_suffix(string &s, const string &suffix) {
 }
 
 
-// Helper to escape control characters for debug logging
-static string escape_for_log(const string &s) {
-  string out;
-  out.reserve(s.size() * 2);
-  for (char c : s) {
-    if (c == '\n') out += "\\n";
-    else if (c == '\r') out += "\\r";
-    else if (c == '\t') out += "\\t";
-    else out += c;
-  }
-  return out;
-}
-
-
 // --- init_model_tokens: ask llama.cpp for the correct tokens ---
 
 void init_model_tokens(llama_context *ctx, const llama_model *model) {
@@ -312,12 +299,12 @@ void init_model_tokens(llama_context *ctx, const llama_model *model) {
   // Log what we detected (useful for debugging)
   if (is_debug) {
     cerr << "[model] Detected template: " << get_chat_template_name(g_model_tokens.type) << "\n";
-    cerr << "[model] system_turn_start  = \"" << escape_for_log(system_turn_start_str) << "\"\n";
-    cerr << "[model] user_turn_start    = \"" << escape_for_log(user_turn_start_str) << "\"\n";
-    cerr << "[model] assistant_turn_start = \"" << escape_for_log(assistant_turn_start_str) << "\"\n";
-    cerr << "[model] turn_end           = \"" << escape_for_log(turn_end_str) << "\"\n";
-    cerr << "[model] think_start      = \"" << escape_for_log(g_model_tokens.think_start) << "\"\n";
-    cerr << "[model] think_end        = \"" << escape_for_log(g_model_tokens.think_end) << "\"\n";
+    cerr << "[model] system_turn_start  = \"" << escape_token_piece(system_turn_start_str) << "\"\n";
+    cerr << "[model] user_turn_start    = \"" << escape_token_piece(user_turn_start_str) << "\"\n";
+    cerr << "[model] assistant_turn_start = \"" << escape_token_piece(assistant_turn_start_str) << "\"\n";
+    cerr << "[model] turn_end           = \"" << escape_token_piece(turn_end_str) << "\"\n";
+    cerr << "[model] think_start      = \"" << escape_token_piece(g_model_tokens.think_start) << "\"\n";
+    cerr << "[model] think_end        = \"" << escape_token_piece(g_model_tokens.think_end) << "\"\n";
   }
 }
 
@@ -371,26 +358,18 @@ string generate_turn_escape_contract() {
   tokens.push_back(TokenDesc{"parameter closing tag", Tokens::PARAM_END});
 
   // Extract base turn tokens from model markers (strip role labels and newlines).
-  auto add_base_tokens = [&](const string &marker) {
-    size_t pos = 0;
-    while ((pos = marker.find("<|", pos)) != string::npos) {
-      size_t end = marker.find("|>", pos + 2);
-      if (end != string::npos) {
-        string token = marker.substr(pos, end - pos + 2);
-        bool seen = false;
-        for (auto &td : tokens) { if (td.text == token) { seen = true; break; } }
-        if (!seen) {
-          tokens.push_back(TokenDesc{"turn token", token});
-        }
-        pos = end + 2;
-      } else break;
+  // Reuse the shared <|...|> scanner; the contract only lists special tokens,
+  // so plain-text markers (added by collect_base_turn_tokens for escaping) are skipped.
+  vector<string> base_tokens;
+  collect_base_turn_tokens(base_tokens);
+  for (const auto &token : base_tokens) {
+    if (token.find("<|") != 0) continue;
+    bool seen = false;
+    for (auto &td : tokens) { if (td.text == token) { seen = true; break; } }
+    if (!seen) {
+      tokens.push_back(TokenDesc{"turn token", token});
     }
-  };
-
-  if (!g_model_tokens.user_turn_start.text.empty()) add_base_tokens(g_model_tokens.user_turn_start.text);
-  if (!g_model_tokens.assistant_turn_start.text.empty()) add_base_tokens(g_model_tokens.assistant_turn_start.text);
-  if (!g_model_tokens.system_turn_start.text.empty()) add_base_tokens(g_model_tokens.system_turn_start.text);
-  if (!g_model_tokens.turn_end.text.empty()) add_base_tokens(g_model_tokens.turn_end.text);
+  }
 
   string contract = "RESERVED TOKEN ESCAPING CONTRACT:\n";
   contract += "The following strings are reserved structural markers and can never\n";
@@ -446,17 +425,21 @@ string build_user_assistant_turn_text(const string &user_content) {
   return msg;
 }
 
+string build_tool_result_turn_text(const string &tool_output) {
+  string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + tool_output;
+  if (g_model_tokens.has_explicit_turn_end())
+    msg += g_model_tokens.turn_end.text;
+  msg += g_model_tokens.assistant_turn_start.text;
+  return msg;
+}
+
 vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output) {
   // Escape model turn tokens in the tool output so they don't get
   // misinterpreted as structural boundaries during tokenization.
   string escaped_output = tool_output;
   escape_turn_tags(escaped_output);
 
-  string msg = g_model_tokens.user_turn_start.text + "[Tool Result]\n" + escaped_output;
-  if (g_model_tokens.has_explicit_turn_end())
-    msg += g_model_tokens.turn_end.text;
-  msg += g_model_tokens.assistant_turn_start.text;
-  return common_tokenize(ctx, msg, false, true);
+  return common_tokenize(ctx, build_tool_result_turn_text(escaped_output), false, true);
 }
 
 // --- Decode Error Handling ---

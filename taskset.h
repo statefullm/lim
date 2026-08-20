@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <set>
+#include <utility>
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
@@ -103,6 +104,52 @@ static std::string pinning_cmd() {
 }
 
 // ---------------------------------------------------------------------------
+// Read /sys/devices/system/cpu/cpu*/topology/thread_siblings_list once and
+// return the parsed (cpu_id, siblings) pairs.  Shared by get_core_split(),
+// physical_core_count() and p_core_thread_count().  Returns empty on
+// non-Linux systems or if the shell command fails.
+// ---------------------------------------------------------------------------
+static std::vector<std::pair<int, std::string>> read_topology() {
+  // "shopt -s nullglob" ensures the loop body never runs if the glob doesn't match
+  // (e.g., on macOS where /sys/devices/system/cpu/ doesn't exist).
+  FILE* fp = popen(
+    "bash -c '"
+    "shopt -s nullglob; "
+    "for d in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do "
+    "  n=$(basename $(dirname $(dirname $d)) | sed \"s/cpu//\"); "
+    "  s=$(cat $d 2>/dev/null); "
+    "  echo \"$n:$s\"; "
+    "done'",
+    "r"
+    );
+  if (!fp) return {};
+
+  std::vector<std::pair<int, std::string>> topo;
+  char line[128];
+  while (fgets(line, sizeof(line), fp)) {
+    // Format: "cpu_num:sibling_list"  e.g. "0:0-1" or "16:16"
+    std::string raw(line);
+    size_t cp = raw.find(':');
+    if (cp == std::string::npos) continue;
+
+    std::string cpu_str = raw.substr(0, cp);
+    // Reject malformed lines (e.g., from a glob that didn't match: "[0-9]*:")
+    if (cpu_str.find_first_not_of("0123456789") != std::string::npos) continue;
+
+    int id = std::atoi(cpu_str.c_str());
+    if (id < 0) continue;
+
+    std::string sib = raw.substr(cp + 1);
+    // Trim trailing newline
+    while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
+
+    topo.push_back({id, sib});
+  }
+  pclose(fp);
+  return topo;
+}
+
+// ---------------------------------------------------------------------------
 // Parse "P:E" env var or detect from topology.  Returns true if we have
 // a usable core split (either user-specified or auto-detected hybrid).
 // ---------------------------------------------------------------------------
@@ -139,38 +186,10 @@ static bool get_core_split(std::string& p_mask, std::string& e_mask) {
 
   // --- Auto-detect: read thread_siblings_list from sysfs ---
   // SMT cores have multiple siblings (Intel: "0-1", AMD: "0,6"), E-cores are single ("16").
-  // "shopt -s nullglob" ensures the loop body never runs if the glob doesn't match
-  // (e.g., on macOS where /sys/devices/system/cpu/ doesn't exist).
-  FILE* fp = popen(
-    "bash -c '"
-    "shopt -s nullglob; "
-    "for d in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do "
-    "  n=$(basename $(dirname $(dirname $d)) | sed \"s/cpu//\"); "
-    "  s=$(cat $d 2>/dev/null); "
-    "  echo \"$n:$s\"; "
-    "done'",
-    "r"
-    );
-  if (!fp) return false;
-
   std::vector<int> p_cores, e_cores;
-  char line[128];
-  while (fgets(line, sizeof(line), fp)) {
-    // Format: "cpu_num:sibling_list"  e.g. "0:0-1" or "16:16"
-    int id = -1;
-    std::string siblings(line);
-    size_t cp = siblings.find(':');
-    if (cp == std::string::npos) continue;
-
-    id = std::atoi(siblings.substr(0, cp).c_str());
-    std::string sib = siblings.substr(cp + 1);
-    // Trim trailing newline
-    while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
-
-    // Reject malformed lines (e.g., from a glob that didn't match: "[0-9]*:")
-    std::string cpu_str = siblings.substr(0, cp);
-    if (cpu_str.find_first_not_of("0123456789") != std::string::npos) continue;
-    if (id < 0) continue;
+  for (const auto& entry : read_topology()) {
+    int id = entry.first;
+    const std::string& sib = entry.second;
 
     // If siblings contain a range or comma, this CPU has SMT -> P-core (on hybrid)
     if (has_smt(sib)) {
@@ -179,7 +198,6 @@ static bool get_core_split(std::string& p_mask, std::string& e_mask) {
       e_cores.push_back(id);
     }
   }
-  pclose(fp);
 
   // Only report hybrid if we found both types
   if (!p_cores.empty() && !e_cores.empty()) {
@@ -249,39 +267,17 @@ static std::string e_core_taskset() {
 // Falls back to sysconf(_SC_NPROCESSORS_ONLN) if detection fails.
 // ---------------------------------------------------------------------------
 static int physical_core_count() {
-  FILE* fp = popen(
-    "bash -c '"
-    "shopt -s nullglob; "
-    "for d in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do "
-    "  n=$(basename $(dirname $(dirname $d)) | sed \"s/cpu//\"); "
-    "  s=$(cat $d 2>/dev/null); "
-    "  echo \"$n:$s\"; "
-    "done'",
-    "r"
-    );
-  if (!fp) return static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
-
   std::vector<int> ht_logical, non_ht;
-  char line[128];
-  while (fgets(line, sizeof(line), fp)) {
-    std::string siblings(line);
-    size_t cp = siblings.find(':');
-    if (cp == std::string::npos) continue;
-
-    std::string cpu_str = siblings.substr(0, cp);
-    if (cpu_str.find_first_not_of("0123456789") != std::string::npos) continue;
-
-    std::string sib = siblings.substr(cp + 1);
-    while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
+  for (const auto& entry : read_topology()) {
+    const std::string& sib = entry.second;
 
     if (has_smt(sib)) {
       // HT core: count the logical CPUs in the range
       ht_logical.push_back(sibling_count(sib)); // number of threads per physical core
     } else {
-      non_ht.push_back(std::atoi(cpu_str.c_str()));
+      non_ht.push_back(entry.first);
     }
   }
-  pclose(fp);
 
   if (ht_logical.empty() && non_ht.empty()) {
     return static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
@@ -313,28 +309,14 @@ static int p_core_thread_count() {
   // Hybrid: count unique physical P-cores by deduplicating sibling lists.
   // Each unique thread_siblings_list value represents one physical core.
   // SMT cores have multiple siblings (Intel: "0-1", AMD: "0,6"), E-cores are single ("16").
-  FILE* fp = popen(
-    "bash -c '"
-    "shopt -s nullglob; "
-    "for d in /sys/devices/system/cpu/cpu[0-9]*/topology/thread_siblings_list; do "
-    "  s=$(cat $d 2>/dev/null); "
-    "  echo \"$s\"; "
-    "done'",
-    "r"
-    );
-  if (!fp) return physical_core_count();
-
   std::set<std::string> unique_siblings;
-  char line[128];
-  while (fgets(line, sizeof(line), fp)) {
-    std::string sib(line);
-    while (!sib.empty() && (sib.back() == '\n' || sib.back() == '\r')) sib.pop_back();
+  for (const auto& entry : read_topology()) {
+    const std::string& sib = entry.second;
     // If siblings contain a range or comma, this CPU has SMT -> P-core (on hybrid)
     if (has_smt(sib)) {
       unique_siblings.insert(sib);
     }
   }
-  pclose(fp);
 
   return !unique_siblings.empty() ? static_cast<int>(unique_siblings.size()) : physical_core_count();
 }

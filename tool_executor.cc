@@ -247,11 +247,7 @@ ToolExecutor::Result ToolExecutor::execute(
             escape_parameter_tags(tool_content);
             escape_turn_tags(tool_content);
 
-            string msg = g_model_tokens.user_turn_start.text + tool_content;
-            if (g_model_tokens.has_explicit_turn_end())
-                msg += g_model_tokens.turn_end.text;
-            msg += g_model_tokens.assistant_turn_start.text;
-            t_tokens = tokenize(msg);
+            t_tokens = tokenize(build_tool_result_turn_text(tool_content));
         }
         if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
             double pct = (double)n_past / cparams.n_ctx * 100.0;

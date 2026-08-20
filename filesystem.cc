@@ -2,6 +2,7 @@
 #include "session.h"
 #include "output.h"
 #include "parsers.h"
+#include "session_utils.h"  // For html_escape
 #include "tokens.h"
 #include "network.h"  // For process_pdf_with_docling and base64_encode
 #include "signals.h"
@@ -104,24 +105,35 @@ static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
   return true;
 }
 
-bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
+// Read the newline-terminated header line of a save file into 'header'.
+// Returns false if the file can't be opened or has no complete header line.
+static bool read_save_header(const string& save_path, string& header) {
   FILE* fp = fopen(save_path.c_str(), "rb");
   if (!fp) return false;
 
-  static constexpr size_t MAX_HEAD = 128;
+  static constexpr size_t MAX_HEAD = 256;
   char head[MAX_HEAD];
   size_t n = fread(head, 1, MAX_HEAD, fp);
-  if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return false; }
+  fclose(fp);
 
   string first_chunk(head, n);
   size_t nl = first_chunk.find('\n');
-  if (nl == string::npos) { fclose(fp); return false; }
-  string header_str(first_chunk.begin(), first_chunk.begin() + nl);
+  if (nl == string::npos) return false;
+  header.assign(first_chunk.begin(), first_chunk.begin() + nl);
+  return true;
+}
+
+bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
+  string header_str;
+  if (!read_save_header(save_path, header_str)) return false;
 
   size_t num_tokens = 0;
-  if (!parse_v3_header(header_str, &num_tokens)) { fclose(fp); return false; }
+  if (!parse_v3_header(header_str, &num_tokens)) return false;
 
-  long header_end = (long)(nl + 1);
+  FILE* fp = fopen(save_path.c_str(), "rb");
+  if (!fp) return false;
+
+  long header_end = (long)(header_str.size() + 1);
   if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }
 
   tokens.resize(num_tokens);
@@ -190,26 +202,19 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
 }
 
 vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
+  string header_str;
+  if (!read_save_header(save_path, header_str)) return {};
+
+  size_t num_tokens = 0, num_checkpoints = 0;
+  if (!parse_v3_header(header_str, &num_tokens, &num_checkpoints)) return {};
+
+  if (num_checkpoints == 0) return {};
+
   FILE* fp = fopen(save_path.c_str(), "rb");
   if (!fp) return {};
 
-  static constexpr size_t MAX_HEAD = 128;
-  char head[MAX_HEAD];
-  size_t n = fread(head, 1, MAX_HEAD, fp);
-  if (n < header_keys[HDR_MAGIC].len + 1) { fclose(fp); return {}; }
-
-  string first_chunk(head, n);
-  size_t nl = first_chunk.find('\n');
-  if (nl == string::npos) { fclose(fp); return {}; }
-  string header_str(first_chunk.begin(), first_chunk.begin() + nl);
-
-  size_t num_tokens = 0, num_checkpoints = 0;
-  if (!parse_v3_header(header_str, &num_tokens, &num_checkpoints)) { fclose(fp); return {}; }
-
-  if (num_checkpoints == 0) { fclose(fp); return {}; }
-
   // Skip header + tokens to reach checkpoint data
-  long header_end = (long)(nl + 1);
+  long header_end = (long)(header_str.size() + 1);
   long token_data_size = (long)(num_tokens * sizeof(llama_token));
   long cp_offset = header_end + token_data_size;
   if (fseek(fp, cp_offset, SEEK_SET) != 0) { fclose(fp); return {}; }
@@ -233,26 +238,16 @@ vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
 }
 
 int read_save_session(const string& save_path) {
-  FILE* fp = fopen(save_path.c_str(), "rb");
-  if (!fp) return -1;
+  string header_line;
+  if (!read_save_header(save_path, header_line)) return -1;
 
-  static constexpr size_t MAX_HEAD = 256;
-  char head[MAX_HEAD];
-  size_t n = fread(head, 1, MAX_HEAD, fp);
-  fclose(fp);
-
-  string header_line(head, n);
-  size_t nl = header_line.find('\n');
-  if (nl != string::npos) header_line.resize(nl);
-
-  size_t pos = header_line.find(header_keys[HDR_SESSION].name);
-  if (pos == string::npos) return -1;
-
-  string val = header_line.substr(pos + header_keys[HDR_SESSION].len);
-  size_t sp = val.find(' ');
-  if (sp != string::npos) val.resize(sp);
-
-  try { return std::stoi(val); } catch (...) { return -1; }
+  // Route through the shared V3 header parser (keeps session= parsing in one place).
+  size_t num_tokens = 0;
+  int session = -1;
+  try {
+    if (!parse_v3_header(header_line, &num_tokens, nullptr, &session)) return -1;
+  } catch (...) { return -1; }  // Malformed numeric field -- treat as no session.
+  return session;
 }
 
 // --- V1 Cache: auto-cached KV cache for instant restores ---
@@ -350,6 +345,27 @@ static std::string cache_filename(const std::string& save_path,
   return save_file_name(save_path) + "-" + cache_hash(tokens, model_path);
 }
 
+// Scan $LIM_CACHE_DIR/ and return the full paths of all entries whose names
+// end with 'suffix' (e.g., "-<hash>").  Empty if the directory can't be opened.
+static std::vector<std::string> find_cache_files(const std::string& suffix) {
+  std::vector<std::string> matches;
+  std::string dir = get_cache_dir_internal();
+
+  DIR* d = opendir(dir.c_str());
+  if (!d) return matches;
+
+  struct dirent* entry;
+  while ((entry = readdir(d)) != nullptr) {
+    std::string fname = entry->d_name;
+    if (fname.size() > suffix.size() &&
+        fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
+      matches.push_back(dir + "/" + fname);
+    }
+  }
+  closedir(d);
+  return matches;
+}
+
 // Load a raw KV-cache blob from a file (no header).
 static bool load_raw_cache(const std::string& cache_path, struct llama_context* ctx) {
   FILE* fp = fopen(cache_path.c_str(), "rb");
@@ -376,29 +392,13 @@ static bool load_raw_cache(const std::string& cache_path, struct llama_context* 
 
 bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                        const std::string& model_path, struct llama_context* ctx) {
-  std::string dir = get_cache_dir_internal();
   std::string hash = cache_hash(tokens, model_path);
-  std::string suffix = "-" + hash;
 
-  // Look for any file ending with -<hash> (glob-style via readdir).
-  DIR* d = opendir(dir.c_str());
-  if (!d) return false;
-
-  struct dirent* entry;
-  while ((entry = readdir(d)) != nullptr) {
-    std::string fname = entry->d_name;
-    if (fname.size() > suffix.size() &&
-        fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-      // Found a match. All matches share the same content+model hash,
-      // so any one of them is valid.
-      std::string cache_path = dir + "/" + fname;
-      if (load_raw_cache(cache_path, ctx)) {
-        closedir(d);
-        return true;
-      }
-    }
+  // Look for any file ending with -<hash>. All matches share the same
+  // content+model hash, so the first one that loads is valid.
+  for (const auto& cache_path : find_cache_files("-" + hash)) {
+    if (load_raw_cache(cache_path, ctx)) return true;
   }
-  closedir(d);
   return false;
 }
 
@@ -407,38 +407,14 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
                     const std::string& old_hash) {
   std::string dir = get_cache_dir_internal();
   std::string hash = cache_hash(tokens, model_path);
-  std::string suffix = "-" + hash;
 
   // Check if an equivalent cache entry already exists (same content+model).
-  DIR* d = opendir(dir.c_str());
-  if (d) {
-    struct dirent* entry;
-    while ((entry = readdir(d)) != nullptr) {
-      std::string fname = entry->d_name;
-      if (fname.size() > suffix.size() &&
-          fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-        // Cache already present for this content+model combination.
-        closedir(d);
-        return true;
-      }
-    }
-    closedir(d);
-  }
+  if (!find_cache_files("-" + hash).empty()) return true;
 
   // Delete the stale cache entry from the previous save (if we know its hash).
   if (!old_hash.empty()) {
-    std::string old_suffix = "-" + old_hash;
-    d = opendir(dir.c_str());
-    if (d) {
-      struct dirent* entry;
-      while ((entry = readdir(d)) != nullptr) {
-        std::string fname = entry->d_name;
-        if (fname.size() > old_suffix.size() &&
-            fname.compare(fname.size() - old_suffix.size(), old_suffix.size(), old_suffix) == 0) {
-          unlink((dir + "/" + fname).c_str());
-        }
-      }
-      closedir(d);
+    for (const auto& cache_path : find_cache_files("-" + old_hash)) {
+      unlink(cache_path.c_str());
     }
   }
 
@@ -479,21 +455,9 @@ bool delete_save_and_cache(const std::string& save_path,
 
   // If we have a hash, scan $LIM_CACHE_DIR/ for matching entries and delete them.
   if (!hash.empty()) {
-    std::string dir = get_cache_dir_internal();
-    std::string suffix = "-" + hash;
-
-    DIR* d = opendir(dir.c_str());
-    if (d) {
-      struct dirent* entry;
-      while ((entry = readdir(d)) != nullptr) {
-        std::string fname = entry->d_name;
-        if (fname.size() > suffix.size() &&
-            fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-          unlink((dir + "/" + fname).c_str());
-          if (cache_deleted) (*cache_deleted)++;
-        }
-      }
-      closedir(d);
+    for (const auto& cache_path : find_cache_files("-" + hash)) {
+      unlink(cache_path.c_str());
+      if (cache_deleted) (*cache_deleted)++;
     }
   }
 
@@ -519,14 +483,7 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
         pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
       }
       if (pipe_fd >= 0) {
-        string safe;
-        for (char c : final_message) {
-          if (c == '&') safe += "&amp;";
-          else if (c == '<') safe += "&lt;";
-          else if (c == '>') safe += "&gt;";
-          else safe += c;
-        }
-        string html = "<div class='tool-label'>" + safe + "</div>";
+        string html = "<div class='tool-label'>" + html_escape(final_message) + "</div>";
         pipe_write(&SEG_HTML, 1);
         pipe_write(html.c_str(), html.length());
       }
@@ -1070,6 +1027,28 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
     net.start_docling_if_needed();
   }
 
+  // Fetch a remote URL via NetworkTools, copy content/error into 'result',
+  // and log the outcome to cerr with branch-specific success/failure messages.
+  auto fetch_url = [](map<string, string>& result, const string& path,
+                      const string& ok_msg, const string& fail_msg) {
+    NetworkTools url_net;
+    vector<map<string, string>> network_results = url_net.fetch_urls({path});
+
+    if (!network_results.empty()) {
+      result["content"] = network_results[0]["content"];
+      result["error"] = network_results[0]["error"];
+
+      if (result["error"].empty() && !result["content"].empty()) {
+        cerr << ok_msg + " (" + to_string(result["content"].length()) + " bytes)" << endl;
+      } else {
+        cerr << fail_msg << endl;
+      }
+    } else {
+      result["error"] = "[No results from network fetch]";
+      cerr << "Network fetch returned empty results" << endl;
+    }
+  };
+
   for (const auto& path : paths) {
     map<string, string> result;
     result["path"] = path;
@@ -1088,23 +1067,9 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
 
       if (is_url) {
         // Remote URL - use NetworkTools fetch mechanism
-        NetworkTools net;
-        vector<string> url_list = {path};
-        vector<map<string, string>> network_results = net.fetch_urls(url_list);
-
-        if (!network_results.empty()) {
-          result["content"] = network_results[0]["content"];
-          result["error"] = network_results[0]["error"];
-
-          if (result["error"].empty() && !result["content"].empty()) {
-            cerr << "Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
-          } else {
-            cerr << "PDF processing failed: " + path << endl;
-          }
-        } else {
-          result["error"] = "[No results from network fetch]";
-          cerr << "Network fetch returned empty results" << endl;
-        }
+        fetch_url(result, path,
+                  "Successfully processed PDF: " + path,
+                  "PDF processing failed: " + path);
       } else {
         // Local PDF file - read directly and process with Docling
         ifstream in_file(_get_fullpath(path));
@@ -1137,23 +1102,9 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
       // Remote non-PDF URL - use NetworkTools fetch_urls mechanism
       log_diagnostic("Fetching remote URL: " + path, true /* logOnly */);
 
-      NetworkTools net;
-      vector<string> url_list = {path};
-      vector<map<string, string>> network_results = net.fetch_urls(url_list);
-
-      if (!network_results.empty()) {
-        result["content"] = network_results[0]["content"];
-        result["error"] = network_results[0]["error"];
-
-        if (result["error"].empty() && !result["content"].empty()) {
-          cerr <<  "Successfully fetched remote URL: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
-        } else {
-          cerr << "Remote URL fetch failed: " + path << endl;
-        }
-      } else {
-        result["error"] = "[No results from network fetch]";
-        cerr << "Network fetch returned empty results" << endl;
-      }
+      fetch_url(result, path,
+                "Successfully fetched remote URL: " + path,
+                "Remote URL fetch failed: " + path);
     } else {
       // Regular local text file handling
       ifstream in_file(_get_fullpath(path));

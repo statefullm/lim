@@ -1,4 +1,5 @@
 #include "output.h"
+#include "parsers.h"
 #include "tokens.h"
 #include <cstdio>
 #include <cstdlib>
@@ -107,35 +108,12 @@ void pipe_write(const char* data, size_t len) {
   }
 }
 
-// --- HTML Escape Contract (mirrors parsers.cc escape_one_token) ---
-static void escape_one_token_out(string& str, const string& token, char esc_char) {
-  if (token.size() < 2) return;
-  char first = token[0];
-  const string suffix = token.substr(1);
-  size_t start_pos = 0;
-  while (start_pos < str.length()) {
-    size_t pos = str.find(first, start_pos);
-    if (pos == string::npos) break;
-    size_t scan = pos + 1;
-    while (scan < str.length() && str[scan] == esc_char) scan++;
-    bool match = true;
-    for (size_t k = 0; k < suffix.length(); k++) {
-      if (scan + k >= str.length() || str[scan + k] != suffix[k]) { match = false; break; }
-    }
-    if (match) {
-      str.insert(pos + 1, 1, esc_char);
-      start_pos = pos + 2 + suffix.length();
-    } else {
-      start_pos = pos + 1;
-    }
-  }
-}
-
+// --- HTML Escape Contract (uses the shared escape_tag from parsers.cc) ---
 static string html_escape(const string& input) {
   string result = input;
   // Step 1: Recursively escape pre-existing sentinel tokens.
-  { string sentinel_lt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_lt += "lt"; sentinel_lt += Tokens::HTML_SENTINEL_CHAR; escape_one_token_out(result, sentinel_lt, Tokens::HTML_ESCAPE_CHAR); }
-  { string sentinel_gt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_gt += "gt"; sentinel_gt += Tokens::HTML_SENTINEL_CHAR; escape_one_token_out(result, sentinel_gt, Tokens::HTML_ESCAPE_CHAR); }
+  { string sentinel_lt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_lt += "lt"; sentinel_lt += Tokens::HTML_SENTINEL_CHAR; escape_tag(result, sentinel_lt, Tokens::HTML_ESCAPE_CHAR); }
+  { string sentinel_gt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_gt += "gt"; sentinel_gt += Tokens::HTML_SENTINEL_CHAR; escape_tag(result, sentinel_gt, Tokens::HTML_ESCAPE_CHAR); }
   // Step 2: Replace raw characters with sentinel tokens.
   // Note: backtick is NOT escaped -- only special in markdown (handled by marked), not HTML.
   { size_t pos = 0; while ((pos = result.find('&', pos)) != string::npos) { result.replace(pos, 1, "&amp;"); pos += 5; } }

@@ -91,6 +91,11 @@ std::string build_user_assistant_turn_text(const std::string &user_content);
 //   user_turn_start + "[Tool Result]\n" + content + turn_end + "\n" + assistant_turn_start
 std::vector<llama_token> build_tool_result_turn(llama_context *ctx, const std::string &tool_output);
 
+// Text-only variant of build_tool_result_turn (no tokenization, no escaping):
+// assembles the turn-delimiter-wrapped message so callers can apply their own
+// escaping before tokenizing.
+std::string build_tool_result_turn_text(const std::string &tool_output);
+
 // --- Decode Error Handling ---
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg = "KV Cache Exhausted. Type 'clear' to reset.", bool should_break = true);
 void sync_n_past(llama_context *ctx, int &n_past);

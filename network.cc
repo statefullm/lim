@@ -275,53 +275,56 @@ void NetworkTools::cleanup_services() {
   }
 }
 
-void NetworkTools::start_searxng_if_needed(const string& base_url) {
-  if (g_searxng_pid != -1) return;
-
+// --- Shared startup logic for local background services (SearxNG, Docling) ---
+//   1. Probe probe_url; if something is already responding, mark *pid = -2 and return.
+//   2. Otherwise fork, redirect logs to log_path, and exec cmd in a new process group.
+//   3. Wait up to 40x500ms for probe_url to respond; on timeout kill the child
+//      and reset *pid = -1 so the next request can retry.
+static void start_service(const string& name, const string& probe_url,
+                          const string& log_path, const string& cmd, pid_t& pid) {
   // Check if it's already running externally
   CURL *curl = curl_easy_init();
   if (curl) {
-    curl_easy_setopt(curl, CURLOPT_URL, base_url.c_str());
+    curl_easy_setopt(curl, CURLOPT_URL, probe_url.c_str());
     curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 500L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
     if (curl_easy_perform(curl) == CURLE_OK) {
-      g_searxng_pid = -2;
+      pid = -2;
       curl_easy_cleanup(curl);
       return;
     }
     curl_easy_cleanup(curl);
   }
 
-  std::cerr << "\033[0mSpinning up local SearxNG instance..." << std::endl;
+  std::cerr << "\033[0mSpinning up local " + name + " instance..." << std::endl;
 
-  pid_t pid = fork();
-  if (pid == 0) {
+  pid_t child = fork();
+  if (child == 0) {
     setpgid(0, 0);
-    freopen(SEARXNG_LOG_PATH.c_str(), "w", stdout);
-    freopen(SEARXNG_LOG_PATH.c_str(), "w", stderr);
+    freopen(log_path.c_str(), "w", stdout);
+    freopen(log_path.c_str(), "w", stderr);
 
-    string cmd = Taskset::e_core_taskset()+"cd "+HOME+"/searxng && exec python -m searx.webapp";
     execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
     exit(1);
-  } else if (pid > 0) {
-    g_searxng_pid = pid;
+  } else if (child > 0) {
+    pid = child;
 
-    // --- Wait for SearxNG to actually wake up! ---
-    std::cerr << "\033[0mWaiting for SearxNG to become ready..." << std::endl;
+    // --- Wait for the service to actually wake up! ---
+    std::cerr << "\033[0mWaiting for " + name + " to become ready..." << std::endl;
     CURL *wait_curl = curl_easy_init();
     if (wait_curl) {
-      curl_easy_setopt(wait_curl, CURLOPT_URL, base_url.c_str());
+      curl_easy_setopt(wait_curl, CURLOPT_URL, probe_url.c_str());
       curl_easy_setopt(wait_curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
       curl_easy_setopt(wait_curl, CURLOPT_TIMEOUT_MS, 500L);
 
       int retries = 0;
       while (retries < 40) {
         if (stop_generation) {
-          std::cerr << "\033[0mSearxNG startup interrupted by user" << std::endl;
+          std::cerr << "\033[0m" + name + " startup interrupted by user" << std::endl;
           break;
         }
         if (curl_easy_perform(wait_curl) == CURLE_OK) {
-          std::cerr << "\033[0mSearxNG is ready and responding!" << std::endl;
+          std::cerr << "\033[0m" + name + " is ready and responding!" << std::endl;
           break;
         }
         this_thread::sleep_for(chrono::milliseconds(500));
@@ -329,82 +332,29 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
       }
       curl_easy_cleanup(wait_curl);
 
-      // If SearXNG never became ready after max retries, reset PID so it can
-      // be retried on the next request.
+      // If the service never became ready after max retries, reset PID so it
+      // can be retried on the next request (e.g., after a dependency is fixed).
       if (retries >= 40) {
-        std::cerr << "\033[0mSearxNG failed to start after waiting. Will retry on next request." << std::endl;
-        kill(-pid, SIGKILL);
-        waitpid(pid, NULL, 0);
-        g_searxng_pid = -1;
+        std::cerr << "\033[0m" + name + " failed to start after waiting. Will retry on next request." << std::endl;
+        kill(-child, SIGKILL);
+        waitpid(child, NULL, 0);
+        pid = -1;
       }
     }
   }
 }
 
+void NetworkTools::start_searxng_if_needed(const string& base_url) {
+  if (g_searxng_pid != -1) return;
+  string cmd = Taskset::e_core_taskset()+"cd "+HOME+"/searxng && exec python -m searx.webapp";
+  start_service("SearxNG", base_url, SEARXNG_LOG_PATH, cmd, g_searxng_pid);
+}
+
 void NetworkTools::start_docling_if_needed() {
   if (g_docling_pid != -1) return;
-
-  // Check if Docling is already running on port 5001
-  CURL *curl = curl_easy_init();
-  if (curl) {
-    curl_easy_setopt(curl, CURLOPT_URL, "http://127.0.0.1:5001/docs");
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 500L);
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
-    if (curl_easy_perform(curl) == CURLE_OK) {
-      g_docling_pid = -2;
-      curl_easy_cleanup(curl);
-      return;
-    }
-    curl_easy_cleanup(curl);
-  }
-
-  std::cerr << "\033[0mSpinning up local Docling instance..." << std::endl;
-
-  pid_t pid = fork();
-  if (pid == 0) {
-    setpgid(0, 0);
-    freopen(DOCLING_LOG_PATH.c_str(), "w", stdout);
-    freopen(DOCLING_LOG_PATH.c_str(), "w", stderr);
-
-    string docling_cmd = getenvOrDefault("LIM_DOCLING_CMD", HOME+"/venv/bin/docling-serve run --enable-ui");
-    string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+docling_cmd;
-    execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
-    exit(1);
-  } else if (pid > 0) {
-    g_docling_pid = pid;
-
-    // --- Wait for Docling to actually wake up! ---
-    std::cerr << "\033[0mWaiting for Docling ML models to load into RAM..." << std::endl;
-    CURL *wait_curl = curl_easy_init();
-    if (wait_curl) {
-      curl_easy_setopt(wait_curl, CURLOPT_URL, "http://127.0.0.1:5001/docs");
-      curl_easy_setopt(wait_curl, CURLOPT_WRITEFUNCTION, DummyWriteCallback);
-      curl_easy_setopt(wait_curl, CURLOPT_TIMEOUT_MS,  500L);
-
-      int retries = 0;
-      while (retries < 40) {
-        if (stop_generation) {
-          std::cerr << "\033[0mDocling startup interrupted by user" << std::endl;
-          break;
-        }
-        if (curl_easy_perform(wait_curl) == CURLE_OK) {
-          break;
-        }
-        this_thread::sleep_for(chrono::milliseconds(500));
-        retries++;
-      }
-      curl_easy_cleanup(wait_curl);
-
-      // If Docling never became ready after max retries, reset PID so it can
-      // be retried on the next request (e.g., after a dependency is fixed).
-      if (retries >= 40) {
-        std::cerr << "\033[0mDocling failed to start after waiting. Will retry on next request." << std::endl;
-        kill(-pid, SIGKILL);
-        waitpid(pid, NULL, 0);
-        g_docling_pid = -1;
-      }
-    }
-  }
+  string docling_cmd = getenvOrDefault("LIM_DOCLING_CMD", HOME+"/venv/bin/docling-serve run --enable-ui");
+  string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+docling_cmd;
+  start_service("Docling", "http://127.0.0.1:5001/docs", DOCLING_LOG_PATH, cmd, g_docling_pid);
 }
 
 // --- Strict Base64 Helper (No Newlines) ---
@@ -620,6 +570,28 @@ static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
   curl_easy_setopt(curl, CURLOPT_XFERINFODATA, nullptr);
 
   return headers;  // Caller must free with curl_slist_free_all()
+}
+
+// --- Buffered fetch shared by fetch_and_clean_html() and the PDF branch of
+//     fetch_urls() ---
+// Runs a size-limited, content-type-aware curl transfer into 'state'.
+// Returns {curl_res, http_code}.  On curl_easy_init failure returns
+// {CURLE_FAILED_INIT, 0} with state untouched.
+static pair<CURLcode, long> curl_fetch_buffer(const string& url, FetchState& state) {
+  CURL *curl = curl_easy_init();
+  if (!curl) return {CURLE_FAILED_INIT, 0};
+
+  struct curl_slist* headers = configure_curl_fetch(curl, url);
+  curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
+  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+
+  CURLcode res = curl_easy_perform(curl);
+  long http_code = 0;
+  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+
+  curl_slist_free_all(headers);
+  curl_easy_cleanup(curl);
+  return {res, http_code};
 }
 
 // --- Strip Base64 Images from Text ---
@@ -1120,49 +1092,38 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
     // API failed (rate limit, unsupported pattern, etc.) - fall through to HTML
   }
 
-  CURL *curl = curl_easy_init();
   FetchState state;
+  CURLcode res = CURLE_OK;
+  long http_code = 0;
+  {
+    auto fetched = curl_fetch_buffer(url, state);
+    res = fetched.first;
+    http_code = fetched.second;
+  }
 
-  if (curl) {
-    struct curl_slist* headers = configure_curl_fetch(curl, url);
-    curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
+  // Check for interrupt after completion
+  if (stop_generation) {
+    return "[Fetch interrupted by user]";
+  }
 
-    CURLcode res = curl_easy_perform(curl);
+  // Check for network errors first
+  if (res != CURLE_OK) {
+    return "[Failed to fetch page content: " + string(curl_easy_strerror(res)) + "]";
+  }
 
-    // Check for interrupt after completion
-    if (stop_generation) {
-      curl_slist_free_all(headers);
-      curl_easy_cleanup(curl);
-      return "[Fetch interrupted by user]";
-    }
+  // Check for HTTP error codes (4xx, 5xx)
+  if (http_code >= 400) {
+    return "[Failed to fetch page content: HTTP " + to_string(http_code) + "]";
+  }
 
-    // Check HTTP status code BEFORE cleanup
-    long http_code = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
+  // Skip non-text, non-PDF content
+  if (!state.is_text && !state.is_pdf) {
+    return "[Skipped non-text content early to save bandwidth.]";
+  }
 
-    curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
-
-    // Check for network errors first
-    if (res != CURLE_OK) {
-      return "[Failed to fetch page content: " + string(curl_easy_strerror(res)) + "]";
-    }
-
-    // Check for HTTP error codes (4xx, 5xx)
-    if (http_code >= 400) {
-      return "[Failed to fetch page content: HTTP " + to_string(http_code) + "]";
-    }
-
-    // Skip non-text, non-PDF content
-    if (!state.is_text && !state.is_pdf) {
-      return "[Skipped non-text content early to save bandwidth.]";
-    }
-
-    // Check if we got any content at all (buffer is empty)
-    if (state.buffer.empty()) {
-      return "[Failed to fetch page content - empty response]";
-    }
+  // Check if we got any content at all (buffer is empty)
+  if (state.buffer.empty()) {
+    return "[Failed to fetch page content - empty response]";
   }
 
   // INTERCEPT PDFS
@@ -1339,51 +1300,40 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
 
     if (is_pdf) {
       // Fetch PDF binary and process with Docling
-      CURL *curl = curl_easy_init();
       FetchState state;
+      CURLcode res = CURLE_OK;
+      long http_code = 0;
+      {
+        auto fetched = curl_fetch_buffer(url, state);
+        res = fetched.first;
+        http_code = fetched.second;
+      }
 
-      if (curl) {
-        struct curl_slist* headers = configure_curl_fetch(curl, url);
-        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &state);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &state);
-
-        CURLcode res = curl_easy_perform(curl);
-
-        // Check HTTP response code
-        long http_code = 0;
-        curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &http_code);
-
-        // Check for interrupt after completion
-        if (stop_generation) {
-          result["error"] = "[PDF fetch interrupted by user]";
-          curl_easy_cleanup(curl);
-        } else if (res != CURLE_OK || http_code >= 400 || (!state.is_pdf && !is_pdf_by_magic(state.buffer)) || state.exceeded_limit) {
-          cerr << "\033[0mPDF fetch failed for: " + url + " - HTTP " << http_code << endl;
-
-          if (state.exceeded_limit) {
-            result["error"] = "[Failed to fetch PDF: file too large (exceeds 50MB)]";
-          } else if (res != CURLE_OK) {
-            result["error"] = "[Failed to fetch PDF: curl error " + to_string(res) + "]";
-          } else if (http_code >= 400) {
-            result["error"] = "[Failed to fetch PDF: HTTP " + to_string(http_code) + "]";
-          } else {
-            result["error"] = "[Failed to fetch PDF: content not recognized as PDF]";
-          }
-          curl_easy_cleanup(curl);
-        } else {
-          string pdf_content = process_pdf_with_docling(state.buffer);
-          if (pdf_content.find("[Docling Error") != string::npos ||
-              pdf_content.find("[Failed to") != string::npos) {
-            result["error"] = pdf_content;
-          } else {
-            result["content"] = NetworkTools::limit_context_size(pdf_content);
-          }
-        }
-
-        curl_slist_free_all(headers);  // Clean up header list (local to this block)
-        curl_easy_cleanup(curl);
-      } else {
+      // Check for interrupt after completion
+      if (stop_generation) {
+        result["error"] = "[PDF fetch interrupted by user]";
+      } else if (res == CURLE_FAILED_INIT) {
         result["error"] = "[Curl Init Failed]";
+      } else if (res != CURLE_OK || http_code >= 400 || (!state.is_pdf && !is_pdf_by_magic(state.buffer)) || state.exceeded_limit) {
+        cerr << "\033[0mPDF fetch failed for: " + url + " - HTTP " << http_code << endl;
+
+        if (state.exceeded_limit) {
+          result["error"] = "[Failed to fetch PDF: file too large (exceeds 50MB)]";
+        } else if (res != CURLE_OK) {
+          result["error"] = "[Failed to fetch PDF: curl error " + to_string(res) + "]";
+        } else if (http_code >= 400) {
+          result["error"] = "[Failed to fetch PDF: HTTP " + to_string(http_code) + "]";
+        } else {
+          result["error"] = "[Failed to fetch PDF: content not recognized as PDF]";
+        }
+      } else {
+        string pdf_content = process_pdf_with_docling(state.buffer);
+        if (pdf_content.find("[Docling Error") != string::npos ||
+            pdf_content.find("[Failed to") != string::npos) {
+          result["error"] = pdf_content;
+        } else {
+          result["content"] = NetworkTools::limit_context_size(pdf_content);
+        }
       }
     } else {
       // Fetch HTML/text content
@@ -1402,6 +1352,69 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
   }
 
   return results;
+}
+
+// --- Search result quality gate & formatting (shared by SearXNG and Brave) ---
+
+// Returns true if a fetched page's text is an error/diagnostic message rather
+// than real content (fetch failure, SPA detection, empty extraction, etc.).
+static bool is_fetch_diagnostic(const string& text) {
+  return text.find("[Failed to fetch") != string::npos ||
+         text.find("[Skipped") != string::npos ||
+         text.find("[Failed to process") != string::npos ||
+         text.find("[This page appears to be JavaScript-rendered") != string::npos ||
+         text.find("[No content extracted") != string::npos ||
+         text.find("[No body content extracted") != string::npos;
+}
+
+// Append up to 3 results from a search engine's JSON array to llm_result.
+// Each result is expected to have "title" and "url" plus an optional snippet
+// field (SearXNG: "content", Brave: "description").  For each result with a
+// URL, fetches the full page text and applies the quality gate: substantial
+// non-diagnostic text becomes "Page Content:", otherwise the snippet is used,
+// or the diagnostic message itself when there is no snippet.
+// Returns the number of results processed (capped at 3).
+static int format_top_results(const json& results_array, const string& snippet_key, string& llm_result) {
+  int count = 0;
+  for (const auto& result : results_array) {
+    if (count++ >= 3) break;
+
+    string title, result_url, snippet;
+    bool has_snippet = false;
+    if (result.contains("title") && !result["title"].is_null())
+      title = result["title"].get<string>();
+    if (result.contains("url") && !result["url"].is_null())
+      result_url = result["url"].get<string>();
+    if (result.contains(snippet_key) && !result[snippet_key].is_null()) {
+      snippet = result[snippet_key].get<string>();
+      has_snippet = true;
+    }
+
+    if (!title.empty()) llm_result += "Title: " + title + "\n";
+    if (!result_url.empty()) llm_result += "URL: " + result_url + "\n";
+
+    if (!result_url.empty()) {
+      cerr << "\033[0mFetching text from: " + result_url << endl;
+      NetworkTools net;
+      string full_text = net.fetch_and_clean_html(result_url);
+
+      // Quality gate: use full text only if it's substantial and not an error/diagnostic.
+      bool is_error_or_spa = is_fetch_diagnostic(full_text);
+
+      if (full_text.length() > 200 && !is_error_or_spa) {
+        cerr << "\033[0mSuccessfully fetched & parsed text from: " + result_url << endl;
+        llm_result += "Page Content: " + full_text + "\n\n";
+      } else if (has_snippet) {
+        cerr << "\033[0mSkipped full fetch, using snippet for: " + result_url << endl;
+        llm_result += "Snippet: " + snippet + "\n\n";
+      } else if (is_error_or_spa && !full_text.empty()) {
+        // Include the diagnostic (e.g., SPA hint with API suggestion) so the LLM can act on it
+        cerr << "\033[0mUsing diagnostic message for: " + result_url << endl;
+        llm_result += full_text + "\n\n";
+      }
+    }
+  }
+  return count;
 }
 
 // --- Brave Search API Fallback ---
@@ -1464,40 +1477,7 @@ static string brave_api_search(const string& query) {
 
     int count = 0;
     if (j.contains("web") && j["web"].contains("results") && j["web"]["results"].is_array()) {
-      for (const auto& result : j["web"]["results"]) {
-        if (count++ >= 3) break;
-
-        string title, result_url, snippet;
-        if (result.contains("title") && !result["title"].is_null())
-          title = result["title"].get<string>();
-        if (result.contains("url") && !result["url"].is_null())
-          result_url = result["url"].get<string>();
-        if (result.contains("description") && !result["description"].is_null())
-          snippet = result["description"].get<string>();
-
-        llm_result += "Title: " + title + "\n";
-        llm_result += "URL: " + result_url + "\n";
-
-        if (!result_url.empty()) {
-          cerr << "\033[0mFetching text from: " + result_url << endl;
-          NetworkTools net;
-          string full_text = net.fetch_and_clean_html(result_url);
-
-          bool is_error_or_spa = (full_text.find("[Failed to fetch") != string::npos ||
-                                  full_text.find("[Skipped") != string::npos ||
-                                  full_text.find("[This page appears to be JavaScript-rendered") != string::npos ||
-                                  full_text.find("[No content extracted") != string::npos ||
-                                  full_text.find("[No body content extracted") != string::npos);
-
-          if (full_text.length() > 200 && !is_error_or_spa) {
-            llm_result += "Page Content: " + full_text + "\n\n";
-          } else if (!snippet.empty()) {
-            llm_result += "Snippet: " + snippet + "\n\n";
-          } else if (is_error_or_spa && !full_text.empty()) {
-            llm_result += full_text + "\n\n";
-          }
-        }
-      }
+      count = format_top_results(j["web"]["results"], "description", llm_result);
     }
 
     if (count == 0) return "";
@@ -1624,43 +1604,7 @@ string NetworkTools::web_search(const string& query) {
 
     int count = 0;
     if (j.contains("results") && j["results"].is_array()) {
-      for (const auto& result : j["results"]) {
-        if (count++ >= 3) break;
-
-        string result_url = "";
-        if (result.contains("title") && !result["title"].is_null())
-          llm_result += "Title: " + result["title"].get<string>() + "\n";
-        if (result.contains("url") && !result["url"].is_null()) {
-          result_url = result["url"].get<string>();
-          llm_result += "URL: " + result_url + "\n";
-        }
-
-        if (!result_url.empty()) {
-          cerr << "\033[0mFetching text from: " + result_url << endl;
-          string full_text = fetch_and_clean_html(result_url);
-
-          // Quality gate: use full text only if it's substantial and not an error/diagnostic.
-          // SPA diagnostics and very short content fall back to the SearXNG snippet.
-          bool is_error_or_spa = (full_text.find("[Failed to fetch") != string::npos ||
-                                  full_text.find("[Skipped") != string::npos ||
-                                  full_text.find("[Failed to process") != string::npos ||
-                                  full_text.find("[This page appears to be JavaScript-rendered") != string::npos ||
-                                  full_text.find("[No content extracted") != string::npos ||
-                                  full_text.find("[No body content extracted") != string::npos);
-
-          if (full_text.length() > 200 && !is_error_or_spa) {
-            cerr << "\033[0mSuccessfully fetched & parsed text from: " + result_url << endl;
-            llm_result += "Page Content: " + full_text + "\n\n";
-          } else if (result.contains("content") && !result["content"].is_null()) {
-            cerr << "\033[0mSkipped full fetch, using SearXNG snippet for: " + result_url << endl;
-            llm_result += "Snippet: " + result["content"].get<string>() + "\n\n";
-          } else if (is_error_or_spa && !full_text.empty()) {
-            // Include the diagnostic (e.g., SPA hint with API suggestion) so the LLM can act on it
-            cerr << "\033[0mUsing diagnostic message for: " + result_url << endl;
-            llm_result += full_text + "\n\n";
-          }
-        }
-      }
+      count = format_top_results(j["results"], "content", llm_result);
     }
 
     if (count == 0) {
