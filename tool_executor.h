@@ -14,7 +14,6 @@ public:
   struct Result {
     bool should_auto_continue = false;
     bool was_interrupted = false;
-    bool context_exhausted = false;
     // When true, the caller should feed a correction prompt and generate once.
     // The error message to include is in correction_error_msg.
     bool needs_correction = false;

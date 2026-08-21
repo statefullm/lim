@@ -249,14 +249,23 @@ ToolExecutor::Result ToolExecutor::execute(
 
             t_tokens = tokenize(build_tool_result_turn_text(tool_content));
         }
+        // If the result doesn't fit in the remaining context, replace it with a
+        // compact error so the LLM can adapt (narrow the request, paginate, or
+        // proceed without it) instead of ejecting to prompt.  Nothing has been fed
+        // yet, so the KV cache is clean and no rollback is needed.  The full output
+        // was already shown to the user in the browser/chat log above.
         if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
             double pct = (double)n_past / cparams.n_ctx * 100.0;
             char buf[32];
             snprintf(buf, sizeof(buf), "%.1f%%", pct);
-            diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ".", "\033[1;33m");
-            state.auto_continue = false;
-            result.context_exhausted = true;
-        } else if (!feed_tokens(t_tokens)) {
+            diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ". Reporting error to LLM.", "\033[1;33m");
+
+            string too_large_content = "[Tool Result]\nSystem Error: Tool output too large to fit in remaining context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). It was discarded. Request a smaller output (e.g., a line range, head/tail, or a narrower query) or proceed without it.";
+            escape_parameter_tags(too_large_content);
+            escape_turn_tags(too_large_content);
+            t_tokens = tokenize(build_tool_result_turn_text(too_large_content));
+        }
+        if (!feed_tokens(t_tokens)) {
             abort_auto = true;
         } else {
             // Log tool result tokens to token_log when debug is enabled
