@@ -916,8 +916,14 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     generated_text_ = gen_result_.text;
     t_count_ = gen_result_.token_count;
 
-    // Handle mid-tool-call state saving (regardless of exit reason)
-    if (gen_result_.tool_start != string::npos && gen_result_.tool_end == string::npos) {
+    // Handle mid-tool-call state saving (regardless of exit reason).
+    // A silent-loop abort (stuck_in_tool_call) is excluded: the correction cycle
+    // rolls back to right after FUNC_START, so no resume state is needed -- and
+    // any stale partial text from a previous interrupted generation would corrupt
+    // ToolExecutor's extraction of the injected call.
+    if (gen_result_.stuck_in_tool_call) {
+        state_.partial_tool_text.clear();
+    } else if (gen_result_.tool_start != string::npos && gen_result_.tool_end == string::npos) {
         state_.tool_interrupt_pending = true;
         if (was_mid_tool_call_) {
             state_.partial_tool_text = state_.partial_tool_text + generated_text_;
@@ -2006,6 +2012,28 @@ bool ChatSession::run() {
         // 8. Process tool call
         if (process_tool_call()) {
             continue;
+        }
+
+        // 8a. Stuck tool call (silent-loop abort): handle identically to an invalid
+        // tool call -- consume a strike and this turn's correction attempt, then run
+        // the same correction cycle in step 8b (feed system prompt, regenerate once,
+        // roll back to right after FUNC_START, inject the clean call). The garbage
+        // tokens are simply part of what the rollback removes.
+        // The checkpoint is guaranteed available: the detector can only fire after
+        // FUNC_START, which is exactly when on_tool_start saves it (or it carries over
+        // from the original generation on a mid-tool-call resume).  The
+        // has_tool_correction_checkpoint check is defensive -- if the invariant ever
+        // breaks, ejecting to prompt is safer than rolling back to a stale position.
+        // Ejects as well when this turn's correction attempts are exhausted.
+        if (gen_result.stuck_in_tool_call) {
+            if (state_.has_tool_correction_checkpoint && !state_.correction_attempted_this_turn) {
+                state_.invalid_tool_strikes++;
+                diag("System: " + std::to_string(state_.invalid_tool_strikes) + " invalid tool call" + (state_.invalid_tool_strikes != 1 ? "s" : "") + ". Attempting correction.", "\033[1;33m");
+                state_.correction_attempted_this_turn = true;
+                state_.tool_correction_mode = true;
+            } else {
+                diag("Aborting to prompt.", "\033[1;31m");
+            }
         }
 
         // 8b. Tool-call correction: feed system prompt, wait for valid tool call,

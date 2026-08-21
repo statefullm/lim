@@ -26,6 +26,10 @@ public:
     int token_count = 0;
     bool early_exit = false;  // context exhaustion or decode error (not normal EOG)
     double decode_time = 0.0;  // Sum of per-token decode intervals (seconds)
+    // True when the silent-loop detector aborted generation inside a tool call
+    // (FUNC_START present, FUNC_END never completed). The caller should run the
+    // standard tool-correction cycle instead of ejecting to prompt.
+    bool stuck_in_tool_call = false;
   };
 
   TokenGenerator(llama_context* ctx, const llama_vocab* vocab,

@@ -224,6 +224,7 @@ TokenGenerator::Result TokenGenerator::generate() {
 
     bool was_interrupted = false;
     bool early_exit = false;
+    bool stuck_in_tool_call = false;
 
     // Set when FUNC_START just became fully present in generated_text_ this
     // iteration; the on_tool_start_ hook is then fired after the end-of-iteration
@@ -235,7 +236,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     // Silent-loop threshold: max tokens allowed outside parameters while inside
     // a tool call before aborting. Constant for the run -- read once per turn,
     // not per token.
-    static constexpr int DEFAULT_OUTSIDE_PARAM_LIMIT = 256;
+    static constexpr int DEFAULT_OUTSIDE_PARAM_LIMIT = 100;
     const char* outside_param_env = getenv("LIM_TOOL_IGNORE");
     int outside_param_limit = (outside_param_env != nullptr && strlen(outside_param_env) > 0) ? atoi(outside_param_env) : DEFAULT_OUTSIDE_PARAM_LIMIT;
     outside_param_limit = std::max(1, outside_param_limit);
@@ -524,8 +525,9 @@ TokenGenerator::Result TokenGenerator::generate() {
         // Outside parameters, tool call tags are just a few tokens.  If the
         // threshold passes without PARAM_START or FUNC_END, something is broken.
         if (tool_call_outside_param_count_ >= outside_param_limit) {
-            diag("System: Stuck generating tool call after " + std::to_string(tool_call_outside_param_count_) + " tokens outside parameters. Aborting to prompt.", "\033[1;31m");
+            diag("System: Stuck generating tool call after " + std::to_string(tool_call_outside_param_count_) + " tokens outside parameters.", "\033[1;31m");
             stop_generation = 1;
+            stuck_in_tool_call = true;
             break;
         }
 
@@ -780,6 +782,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.has_tool_call = trigger_tool_execution_ && tool_start_ != string::npos && tool_end_ != string::npos;
     result.was_interrupted = was_interrupted;
     result.early_exit = early_exit;
+    result.stuck_in_tool_call = stuck_in_tool_call;
     result.decode_time = gen_wall_time;
 
     return result;
