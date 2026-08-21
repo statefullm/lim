@@ -2160,6 +2160,11 @@ bool ChatSession::run() {
                     state_.tool_correction_n_past = n_past_;
                     state_.auto_continue = false;
                 }
+            } else {
+                // The correction prompt (full system prompt) itself doesn't fit in the
+                // remaining context, so no correction is possible without exceeding the
+                // limit. Eject to the prompt with an explanation rather than failing silently.
+                diag("System: Tool correction aborted: correction prompt does not fit in remaining context (" + std::to_string(correction_tokens.size()) + " tokens needed, " + std::to_string(cparams_.n_ctx - n_past_) + " available). Type '/clear' to reset.", "\033[1;33m");
             }
             continue;
         }
