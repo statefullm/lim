@@ -358,11 +358,11 @@ Set via `LIM_OUTPUT`:
 | `LIM_THREADS_BATCH` | *(auto)* | Threads for batch processing (physical core count) |
 | `LIM_UBATCH` | `512` | Unbatched size |
 | `LIM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P >= min_p * P(top) |
-| `LIM_PENALTY_FREQ` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency |
-| `LIM_PENALTY_PRESENT` | `1.5` | Presence penalty: discourages repeating previously used tokens |
-| `LIM_PENALTY_REPEAT` | `1.0` | Repetition penalty multiplier (1.0 = no penalty) |
+| `LIM_FREQUENCY_PENALTY` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency. Legacy name `LIM_PENALTY_FREQ` still accepted (new name wins if both set) |
+| `LIM_PRESENCE_PENALTY` | `1.5` | Presence penalty: discourages repeating previously used tokens. Legacy name `LIM_PENALTY_PRESENT` still accepted (new name wins if both set) |
+| `LIM_REPETITION_PENALTY` | `1.0` | Repetition penalty multiplier (1.0 = no penalty). Legacy name `LIM_PENALTY_REPEAT` still accepted (new name wins if both set) |
 | `LIM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
-| `LIM_TEMP` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding) |
+| `LIM_TEMPERATURE` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding). Legacy name `LIM_TEMP` still accepted (new name wins if both set) |
 | `LIM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
 | `LIM_DUMMY_THOUGHT` | *(built-in)* | Pre-filled stub used when `LIM_THINKING=0`. Leave unset to use the built-in default, set to an empty string to emit an empty thinking block (Qwen 3.8's "no thinking" signal), or set to any other string. |
 | `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |

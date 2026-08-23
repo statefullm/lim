@@ -176,25 +176,33 @@ int main(int argc, char ** argv) {
     }
   }
 
-  // Sampling parameters: all controlled via LIM_* environment variables
-  float temp = 0.7f;
+  // Sampling parameters: all controlled via LIM_* environment variables.
+  // Variable and env names follow model-card / vLLM spelling (temperature,
+  // presence_penalty, ...). Legacy shorter env names (LIM_TEMP, LIM_PENALTY_*)
+  // are still accepted as fallbacks; the new name wins if both are set.
+  float temperature = 0.7f;
   float top_p = 0.8f;
   int32_t top_k = 20;
   float min_p = 0.0f;
-  float penalty_present = 1.5f;
-  float penalty_repeat = 1.0f;
-  float penalty_freq = 0.0f;
+  float presence_penalty = 1.5f;
+  float repetition_penalty = 1.0f;
+  float frequency_penalty = 0.0f;
   uint32_t seed = LLAMA_DEFAULT_SEED;
   bool use_dummy_thought = false;
   {
     const char* env;
-    if ((env = getenv("LIM_TEMP")) != nullptr) temp = atof(env);
+    // New names win over legacy aliases (LIM_TEMP, LIM_PENALTY_*) if both are set.
+    if ((env = getenv("LIM_TEMPERATURE")) != nullptr) temperature = atof(env);
+    else if ((env = getenv("LIM_TEMP")) != nullptr) temperature = atof(env);
     if ((env = getenv("LIM_TOP_P")) != nullptr) top_p = atof(env);
     if ((env = getenv("LIM_TOP_K")) != nullptr) top_k = atoi(env);
     if ((env = getenv("LIM_MIN_P")) != nullptr) min_p = atof(env);
-    if ((env = getenv("LIM_PENALTY_PRESENT")) != nullptr) penalty_present = atof(env);
-    if ((env = getenv("LIM_PENALTY_REPEAT")) != nullptr) penalty_repeat = atof(env);
-    if ((env = getenv("LIM_PENALTY_FREQ")) != nullptr) penalty_freq = atof(env);
+    if ((env = getenv("LIM_PRESENCE_PENALTY")) != nullptr) presence_penalty = atof(env);
+    else if ((env = getenv("LIM_PENALTY_PRESENT")) != nullptr) presence_penalty = atof(env);
+    if ((env = getenv("LIM_REPETITION_PENALTY")) != nullptr) repetition_penalty = atof(env);
+    else if ((env = getenv("LIM_PENALTY_REPEAT")) != nullptr) repetition_penalty = atof(env);
+    if ((env = getenv("LIM_FREQUENCY_PENALTY")) != nullptr) frequency_penalty = atof(env);
+    else if ((env = getenv("LIM_PENALTY_FREQ")) != nullptr) frequency_penalty = atof(env);
     if ((env = getenv("LIM_SEED")) != nullptr) seed = (uint32_t)strtoul(env, nullptr, 10);
 
     // LIM_THINKING: set to 0 to suppress thinking blocks for faster throughput.
@@ -462,13 +470,13 @@ int main(int argc, char ** argv) {
     tps_log << "# Model: " << argv[1] << "\n";
     tps_log << "# Context limit: " << cparams.n_ctx << "\n";
     tps_log << "# GPU layers: " << mparams.n_gpu_layers << "\n";
-    tps_log << "# Temperature: " << temp << "\n";
+    tps_log << "# Temperature: " << temperature << "\n";
     tps_log << "# Top_p: " << top_p << "\n";
     tps_log << "# Top_k: " << top_k << "\n";
     tps_log << "# Min_p: " << min_p << "\n";
-    tps_log << "# Penalty present: " << penalty_present << "\n";
-    tps_log << "# Penalty repeat: " << penalty_repeat << "\n";
-    tps_log << "# Penalty freq: " << penalty_freq << "\n";
+    tps_log << "# Presence penalty: " << presence_penalty << "\n";
+    tps_log << "# Repetition penalty: " << repetition_penalty << "\n";
+    tps_log << "# Frequency penalty: " << frequency_penalty << "\n";
     tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
     tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
   }
@@ -593,11 +601,12 @@ int main(int argc, char ** argv) {
   llama_sampler_chain_params lparams = llama_sampler_chain_default_params();
   llama_sampler * smpl = llama_sampler_chain_init(lparams);
   int32_t n_vocab = llama_vocab_n_tokens(vocab);
-  llama_sampler_chain_add(smpl, llama_sampler_init_penalties(n_vocab, 64, penalty_repeat, penalty_freq, penalty_present));
+  // Upstream C API argument order: (penalty_last_n, repeat, freq, present).
+  llama_sampler_chain_add(smpl, llama_sampler_init_penalties(n_vocab, 64, repetition_penalty, frequency_penalty, presence_penalty));
   llama_sampler_chain_add(smpl, llama_sampler_init_top_k(top_k));
   llama_sampler_chain_add(smpl, llama_sampler_init_top_p(top_p, 1));
   llama_sampler_chain_add(smpl, llama_sampler_init_min_p(min_p, 1));
-  llama_sampler_chain_add(smpl, llama_sampler_init_temp_ext(temp, 0.0f, 1.0f));
+  llama_sampler_chain_add(smpl, llama_sampler_init_temp_ext(temperature, 0.0f, 1.0f));
   llama_sampler_chain_add(smpl, llama_sampler_init_dist(seed));
 
   llama_batch batch = llama_batch_init(cparams.n_batch, 0, 1);
