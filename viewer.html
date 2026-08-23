@@ -518,55 +518,259 @@
             return k === 0 || tail[k - 1] === '\n';
         }
 
+        // Whitespace test that matches JS regex \s exactly -- it must agree with
+        // the list/header guard patterns, which use \s.
+        var WS_RE = /^\s$/;
+
+        function scanIntAttr(el, name, def) {
+            var v = parseInt(el.getAttribute(name));
+            return isNaN(v) ? def : v;
+        }
+
+        // True if the # run starting at p0Pos has length 1..6 and ends exactly at
+        // L (the ($) end-of-text case of #{1,6}(\s|$)).  Bounded work: a run
+        // longer than six stops matching immediately.
+        function endHeadingAt(fullText, p0Pos, L) {
+            if (p0Pos < 0) return false;
+            var h = p0Pos + 1;
+            while (h < L && fullText[h] === '#') h++;
+            return h - p0Pos <= 6 && h === L;
+        }
+
         // Try to progressively render completed paragraphs from the raw tail.
         // Splits at the last \n\n so that code fences spanning multiple
         // paragraphs are not broken: we keep one incomplete paragraph as buffer.
         // Only parses the new delta -- never re-parses already-rendered content.
+        // O(N) total: each wrapper keeps a "waiting episode" of scan state in
+        // data attributes, so every call examines ONLY the characters appended
+        // since the previous call (no character is examined more than a bounded
+        // number of times per episode):
+        //   data-scan-hwm     furthest absolute offset scanned so far; the next
+        //                     scan resumes here.  It only ever increases over the
+        //                     segment's lifetime, so every position is examined a
+        //                     bounded number of times (total O(N)); it may briefly
+        //                     trail rendered-len by <=2 after a mid-stream force-
+        //                     render outruns a deferred lookahead.
+        //   data-in-fence     fence parity over fullText[0 .. data-scan-hwm) -- the
+        //                     exact state to resume from (closed when absent).
+        //   data-last-break   furthest \n\n found OUTSIDE a fence this episode
+        //                     (absolute index of the first \n); -1 if none yet.
+        //   data-break-fence  fence parity just after that break, i.e. up to
+        //                     last-break + 2 -- the would-be render end.
+        //   data-max-list     max absolute position of a line-start list marker
+        //                     (\d+[.)]\s or bare - * +) seen this episode; the
+        //                     "any list marker in tail" guard is just an O(1)
+        //                     compare against renderEnd (marker positions only grow).
+        //   data-max-head     same for block-header markers #{1,6}(\s|$).
+        //   data-pend-line / data-pend-phase / data-pend-cur
+        //                     line-start \d+[.)]\s pattern whose deciding char has
+        //                     not arrived yet ('d' = still in digits, 'a' = after
+        //                     [.)] waiting for \s); pend-cur is the absolute
+        //                     position of the next character it consumes.
+        //   data-pend-head    line start whose # run currently ends exactly at the
+        //                     end of the text with length 1..6 (live ($) case).
+        //   data-p0-state / data-p0-pos
+        //                     status of testing the first non-whitespace char
+        //                     after data-last-break (the old trimmed-regex guard):
+        //                     'p' none seen yet, 'd' in \d+, 'a' after [.)] waiting
+        //                     \s, 'n' after \d+- waiting \s, 't' in a # run,
+        //                     'l' list item, 'h' header, 'r' ordinary text.
         function progressiveRender(wrapperDiv, segIndex) {
             var fullText = segments[segIndex].content;
+            var L = fullText.length;
 
             // How much has already been rendered (tracked via data attribute, not DOM text).
             var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
 
-            // Restore fence state from the previous render step so that unclosed
-            // code fences spanning multiple deltas are handled correctly.
-            var inFence = wrapperDiv.getAttribute('data-in-fence') === '1';
+            // Resume point: furthest offset examined so far.  data-scan-hwm only
+            // ever increases over the segment's lifetime (a commit does not reset
+            // it), so every position is scanned once -- that bounds total work to
+            // O(N).  It may briefly sit below renderedPrefixLen when a mid-stream
+            // force-render outruns a deferred lookahead; rescanning those <=2 held
+            // positions is bounded and re-runs the fence probe correctly.
+            var hwm = scanIntAttr(wrapperDiv, 'data-scan-hwm', -1);
+            if (hwm < 0) hwm = 0;
 
-            // Find \n\n boundaries that are NOT inside a fenced code block.
-            // We scan character-by-character tracking fence state so that blank
-            // lines inside ``` ... ``` do not trigger an early split.
-            var searchPos = renderedPrefixLen;
-            var tail = fullText.substring(searchPos);
-            var lastValidBreak = -1;
+            // Fence parity over fullText[0 .. hwm) -- the state to resume with.
+            var inFence    = wrapperDiv.getAttribute('data-in-fence') === '1';
+            var lastBreak  = scanIntAttr(wrapperDiv, 'data-last-break', -1);
+            var breakFence = scanIntAttr(wrapperDiv, 'data-break-fence', 0);
+            var maxList    = scanIntAttr(wrapperDiv, 'data-max-list', -1);
+            var maxHead    = scanIntAttr(wrapperDiv, 'data-max-head', -1);
+            var pendLine   = scanIntAttr(wrapperDiv, 'data-pend-line', -1);
+            var pendPhase  = wrapperDiv.getAttribute('data-pend-phase') || 'd';
+            var pendCur    = scanIntAttr(wrapperDiv, 'data-pend-cur', -1);
+            var pendHead   = scanIntAttr(wrapperDiv, 'data-pend-head', -1);
+            var p0State    = wrapperDiv.getAttribute('data-p0-state') || 'p';
+            var p0Pos      = scanIntAttr(wrapperDiv, 'data-p0-pos', -1);
 
-            for (var i = 0; i < tail.length; i++) {
-                if (tail[i] === '`' && tail.substring(i, i + 3) === '```') {
-                    // Check the absolute position in fullText so a ``` that sits at a
-                    // mid-line boundary (e.g., right after a finish=false force-render)
-                    // is still recognized as non-fence when it isn't at line start.
-                    if (isFenceMarker(fullText, searchPos + i)) {
-                        inFence = !inFence;
-                        i += 2;
-                        continue;
+            // Scan ONLY the new suffix [hwm, L), tracking fence state, paragraph
+            // breaks outside fences, and the marker positions feeding the tail guards.
+            // Position m is never "consumed" while one of its lookahead tests is still
+            // undecided (text ends mid \n\n or mid ```): it is deferred so the next
+            // call re-runs it once the missing characters have arrived.
+            var deferredPos = -1;
+            for (var m = hwm; m < L; ) {
+                var c = fullText[m];
+
+                if (!inFence && c === '\n' && m === L - 1) {
+                    deferredPos = m;   // pair (m, m+1) cannot be decided yet
+                    break;
+                }
+                if (c === '`' && (m === L - 1 || (m === L - 2 && fullText[m + 1] === '`'))) {
+                    deferredPos = m;   // a ``` triple starting at m can still complete
+                    break;
+                }
+
+                // Continuation of a line-start list pattern (\d+[.)]\s) whose
+                // deciding character arrives with a later token.
+                if (pendLine >= 0 && pendCur === m) {
+                    if (pendPhase === 'd') {
+                        if (c >= '0' && c <= '9') {
+                            pendCur = m + 1;
+                        } else if (c === '.' || c === ')') {
+                            pendPhase = 'a';
+                            pendCur = m + 1;
+                        } else {
+                            pendLine = -1;          // pattern dead
+                        }
+                    } else {                        // 'a': waiting for the \s after [.)]
+                        if (WS_RE.test(c)) maxList = Math.max(maxList, pendLine);
+                        pendLine = -1;              // decided either way
                     }
-                    // else: literal ``` in prose -- not a fence, fall through.
                 }
-                if (!inFence && tail[i] === '\n' && tail[i + 1] === '\n') {
-                    lastValidBreak = searchPos + i;
-                    i++;
+
+                // Line-start marker recording (fence-blind, like the old whole-tail
+                // regexes).  Only the MAX position is kept: the guards ask whether
+                // ANY such marker sits at/after renderEnd, and positions only grow.
+                if ((m === 0 || fullText[m - 1] === '\n')) {
+                    if (c === '-' || c === '*' || c === '+') {
+                        maxList = m;
+                    } else if (c >= '0' && c <= '9') {
+                        var d = m + 1;
+                        while (d < L && fullText[d] >= '0' && fullText[d] <= '9') d++;
+                        if (d < L && (fullText[d] === '.' || fullText[d] === ')')) {
+                            if (d + 1 < L) {
+                                if (WS_RE.test(fullText[d + 1])) maxList = m;
+                            } else {
+                                pendLine = m;      // the \s may arrive next token
+                                pendPhase = 'a';
+                                pendCur = d + 1;
+                            }
+                        } else if (d === L) {
+                            pendLine = m;          // digits still arriving
+                            pendPhase = 'd';
+                            pendCur = d;
+                        }
+                    } else if (c === '#') {
+                        var h2 = m + 1;
+                        while (h2 < L && fullText[h2] === '#') h2++;
+                        if (h2 - m <= 6) {         // run is >= 1 since c === '#'
+                            if (h2 < L) {
+                                if (WS_RE.test(fullText[h2])) maxHead = m;
+                            } else {
+                                pendHead = m;      // (\s|$): $ holds while run ends text
+                            }
+                        }
+                    }
                 }
+
+                // First non-whitespace char after the current last break drives the
+                // "list/header at start of tail" guards (the old trimmed-regexes).
+                if (m >= lastBreak + 2) {
+                    if (p0State === 'p') {
+                        if (!WS_RE.test(c)) {
+                            if (c === '-' || c === '*' || c === '+') p0State = 'l';
+                            else if (c === '#') { p0State = 't'; p0Pos = m; }
+                            else if (c >= '0' && c <= '9') p0State = 'd';
+                            else p0State = 'r';
+                        }
+                    } else if (p0State === 'd') {  // accumulating \d+ : next char decides
+                        if (!(c >= '0' && c <= '9')) {
+                            if (c === '.' || c === ')') p0State = 'a';
+                            else if (c === '-') p0State = 'n';
+                            else p0State = 'r';
+                        }
+                    } else if (p0State === 'a' || p0State === 'n') {
+                        p0State = WS_RE.test(c) ? 'l' : 'r';   // \d+[.)]\s / \d+-\s
+                    } else if (p0State === 't') {              // # run; bounded re-scan
+                        var h3 = p0Pos + 1;
+                        while (h3 < L && fullText[h3] === '#') h3++;
+                        if (c === '#') {
+                            if (h3 - p0Pos > 6) p0State = 'r'; // too many #: not a header
+                            // else stay 't' -- (\s|$) still undecided at end of text
+                        } else {
+                            p0State = (h3 - p0Pos <= 6 && WS_RE.test(c)) ? 'h' : 'r';
+                        }
+                    }
+                }
+
+                // Fence toggle: a ``` only counts at line start (up to 3 leading
+                // spaces); mid-line backticks are literal prose, NOT a fence.  The +3
+                // jump matches the original scan and skips only backtick positions,
+                // which can never affect break or marker detection; the head position
+                // itself ran all checks above first (a p0 search that meets a fence
+                // must see its leading backtick, exactly like the trimmed-regex).
+                if (c === '`' && fullText[m + 1] === '`' && fullText[m + 2] === '`' &&
+                    isFenceMarker(fullText, m)) {
+                    inFence = !inFence;
+                    m += 3;
+                    continue;
+                }
+
+                // Paragraph break outside a fence.  On a hit we skip the second \n
+                // (net +2) exactly like the original scan, so "\n\n\n" registers a
+                // single break at the first position and delta boundaries are
+                // unchanged from before.
+                if (!inFence && c === '\n' && fullText[m + 1] === '\n') {
+                    lastBreak = m;
+                    breakFence = inFence ? 1 : 0;   // == parity up to m + 2 (render end)
+                    p0State = 'p';                  // restart first-non-whitespace search
+                    p0Pos = -1;
+                    m += 2;
+                    continue;
+                }
+
+                m += 1;
             }
 
-            if (lastValidBreak < 0) {
-                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
-                // If the raw tail is very long with no paragraph break, force-render
-                // it so the user sees progress.  Rendering the entire tail is safe:
-                // no split means no risk of breaking code fences or lists.
-                if (tail.length > 2000) {
+            // Persist episode state: the next call resumes from deferredPos (if a
+            // lookahead was left undecided) or from L, with fence parity at that
+            // exact resume offset.
+            wrapperDiv.setAttribute('data-scan-hwm', String(deferredPos >= 0 ? deferredPos : L));
+            wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+            wrapperDiv.setAttribute('data-last-break', String(lastBreak));
+            wrapperDiv.setAttribute('data-break-fence', breakFence ? '1' : '0');
+            wrapperDiv.setAttribute('data-max-list', String(maxList));
+            wrapperDiv.setAttribute('data-max-head', String(maxHead));
+            wrapperDiv.setAttribute('data-pend-line', String(pendLine));
+            if (pendLine >= 0) {
+                wrapperDiv.setAttribute('data-pend-phase', pendPhase);
+                wrapperDiv.setAttribute('data-pend-cur', String(pendCur));
+            } else {
+                wrapperDiv.removeAttribute('data-pend-phase');
+                wrapperDiv.removeAttribute('data-pend-cur');
+            }
+            wrapperDiv.setAttribute('data-pend-head', String(pendHead));
+            wrapperDiv.setAttribute('data-p0-state', p0State);
+            if (p0Pos >= 0) {
+                wrapperDiv.setAttribute('data-p0-pos', String(p0Pos));
+            } else {
+                wrapperDiv.removeAttribute('data-p0-pos');
+            }
+
+            if (lastBreak < 0) {
+                // No paragraph break outside a fence yet.  If the unrendered tail is
+                // very long, force-render it so the user sees progress: no split
+                // means no risk of breaking code fences or lists.
+                var tailLen = L - renderedPrefixLen;
+                if (tailLen > 2000) {
                     if (segments[segIndex].type === SEG_THINK && inFence) {
                         // A think block sitting inside an unclosed fence: rendering now
                         // would commit a broken (open) code block, and we must not
-                        // collapse it.  Wait for the fence to close or a break to appear.
+                        // collapse it.  Wait for the fence to close or a break to
+                        // appear; the next call resumes from data-scan-hwm above, so
+                        // each waited-on character is examined only once.
                         return;
                     }
                     if (segments[segIndex].type === SEG_THINK) {
@@ -580,59 +784,50 @@
                 return;
             }
 
-            var renderEnd = lastValidBreak + 2;
+            var renderEnd = lastBreak + 2;
 
-            // Check if we'd leave an unclosed fence at renderEnd.
-            // Re-scan from the start to renderEnd for a clean count.
-            var fenceState = false;
-            var checkText = fullText.substring(0, renderEnd);
-            for (var j = 0; j < checkText.length; j++) {
-                if (checkText[j] === '`' && checkText.substring(j, j + 3) === '```') {
-                    if (isFenceMarker(checkText, j)) {
-                        fenceState = !fenceState;
-                        j += 2;
-                    }
+            // Refuse to commit while a fence is left open at renderEnd: the parity
+            // was recorded when the break was found, so no from-index-0 re-scan.
+            if (breakFence) {
+                return;
+            }
+
+            // Resolve the live ($) end-of-text header now that text may continue
+            // past its # run.
+            if (pendHead >= 0) {
+                var dh = pendHead + 1;
+                while (dh < L && fullText[dh] === '#') dh++;
+                var hrun = dh - pendHead;
+                if (dh < L) {
+                    // $ no longer applies once text continues past the run.
+                    if (hrun <= 6 && WS_RE.test(fullText[dh])) maxHead = Math.max(maxHead, pendHead);
+                    wrapperDiv.setAttribute('data-pend-head', '-1');
+                    pendHead = -1;
+                } else if (hrun > 6) {
+                    wrapperDiv.setAttribute('data-pend-head', '-1');   // more than six #
+                    pendHead = -1;
                 }
             }
-            if (fenceState) {
-                wrapperDiv.setAttribute('data-in-fence', '1');
-                return;
-            }
 
-            // Check if the remaining text after renderEnd starts with a list item.
-            // If so, this break splits a list in half -- skip it and wait.
-            var tailAfter = fullText.substring(renderEnd);
-            var trimmed = tailAfter.replace(/^\s+/, '');
-            if (/^(\d+[.)]\s|[-*+]|\d+-\s)/.test(trimmed)) {
-                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
-                return;
-            }
+            // --- Tail guards (tailAfter = fullText[renderEnd .. L)); all O(1): ---
 
-            // Also check if the tail contains ANY list marker -- the delta might
-            // end with a list whose intro/context text comes after renderEnd,
-            // which would render the list before its surrounding text.
-            if (tailAfter.length > 0 && /(?:^|\n)(?:\d+[.)]\s|[-*+])/m.test(tailAfter)) {
-                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
-                return;
-            }
+            // First non-whitespace char of the tail is a list item (old trim+regex);
+            // if so, this break splits a list in half -- skip it and wait.
+            if (p0State === 'l') return;
 
-            // Check if the tail starts with an ATX-style block header (#, ##, etc.).
-            // If so, this break would render content before its section heading -- skip it.
-            if (/^#{1,6}(?:\s|$)/.test(trimmed)) {
-                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
-                return;
-            }
+            // Any line-start list marker in the tail -- would render the list before
+            // its surrounding context text.
+            if (maxList >= renderEnd) return;
 
-            // Also check if the tail contains ANY block header marker -- a section
-            // heading appearing mid-tail would get rendered after its own content,
-            // producing a header that follows the block it should introduce.
-            if (tailAfter.length > 0 && /(?:^|\n)#{1,6}(?:\s|$)/m.test(tailAfter)) {
-                wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
-                return;
-            }
+            // First non-whitespace char of the tail is an ATX block header ($ case
+            // included); if so, this break would render content before its heading.
+            if (p0State === 'h' || (p0State === 't' && endHeadingAt(fullText, p0Pos, L))) return;
+
+            // Any line-start block header in the tail ($ case included via pendHead);
+            // a heading mid-tail must not be rendered after its own content.
+            if (maxHead >= renderEnd || pendHead >= renderEnd) return;
 
             var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
-            var remainingTail = fullText.substring(renderEnd);
 
             var html = rawTextToHtml(deltaText, segments[segIndex].type);
 
@@ -647,10 +842,41 @@
                 target.appendChild(fragment.firstChild);
             }
 
-            // Update the rendered-length tracker.  Fence state is always false
-            // here since we refused to render with an unclosed fence above.
+            // Advance the rendered prefix.  The scan state is position-based, so it
+            // carries over instead of resetting: data-scan-hwm keeps advancing (no
+            // re-scan of already-rendered content), fence parity lives at that
+            // offset, and a marker position below renderEnd can never block a later
+            // commit (the guards compare against the new renderEnd).  Only the
+            // committed break itself and the first-non-whitespace search restart.
             wrapperDiv.setAttribute('data-rendered-len', String(renderEnd));
-            wrapperDiv.removeAttribute('data-in-fence');
+            if (maxList >= renderEnd) {
+                wrapperDiv.setAttribute('data-max-list', String(maxList));
+            } else {
+                wrapperDiv.removeAttribute('data-max-list');
+            }
+            if (maxHead >= renderEnd) {
+                wrapperDiv.setAttribute('data-max-head', String(maxHead));
+            } else {
+                wrapperDiv.removeAttribute('data-max-head');
+            }
+            if (pendLine >= renderEnd) {
+                wrapperDiv.setAttribute('data-pend-line', String(pendLine));
+                wrapperDiv.setAttribute('data-pend-phase', pendPhase);
+                wrapperDiv.setAttribute('data-pend-cur', String(pendCur));
+            } else {
+                wrapperDiv.removeAttribute('data-pend-line');
+                wrapperDiv.removeAttribute('data-pend-phase');
+                wrapperDiv.removeAttribute('data-pend-cur');
+            }
+            if (pendHead >= renderEnd) {
+                wrapperDiv.setAttribute('data-pend-head', String(pendHead));
+            } else {
+                wrapperDiv.removeAttribute('data-pend-head');
+            }
+            wrapperDiv.removeAttribute('data-last-break');
+            wrapperDiv.removeAttribute('data-break-fence');
+            wrapperDiv.setAttribute('data-p0-state', 'p');
+            wrapperDiv.removeAttribute('data-p0-pos');
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
             // O(1) per step, not O(n) rescanning of already-rendered content.
@@ -1004,6 +1230,7 @@
                     if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
                         wrapperDiv.setAttribute('data-raw', '1');
                         wrapperDiv.setAttribute('data-rendered-len', '0');
+                        wrapperDiv.setAttribute('data-scan-hwm', '0');
 
                         if (segments[i].type === SEG_THINK) {
                             // Think block: create the collapsible structure immediately,
