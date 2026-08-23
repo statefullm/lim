@@ -434,7 +434,8 @@
         // Render the raw tail of a single segment.  Called by progressiveRender()
         // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
         // Only parses the new delta -- never re-parses already-rendered content.
-        function renderRawTail(wrapperDiv, segIndex) {
+        function renderRawTail(wrapperDiv, segIndex, finish) {
+            if (finish === undefined) finish = true;
             var fullText = segments[segIndex].content;
             var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
 
@@ -457,7 +458,13 @@
                 lastInserted = fragment.firstChild;
                 target.appendChild(fragment.firstChild);
             }
-            wrapperDiv.removeAttribute('data-raw');
+            if (finish) {
+                wrapperDiv.removeAttribute('data-raw');
+            } else {
+                // Mid-stream force-render: keep streaming so the next delta renders
+                // incrementally instead of triggering a full O(n) re-render.
+                wrapperDiv.setAttribute('data-rendered-len', String(fullText.length));
+            }
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
             if (firstInserted) {
@@ -473,9 +480,10 @@
             // is processed at most once, so this is O(missed), not O(n).
             injectCopyButtons(wrapperDiv);
 
-            // If this was a THINK segment that just finished rendering,
-            // collapse it immediately -- thinking is done.
-            if (segments[segIndex].type === SEG_THINK) {
+            // Only collapse a THINK segment when it is truly finishing (turn end, or
+            // a non-think segment has followed).  A mid-stream force-render must NOT
+            // collapse -- thinking is still in progress and the user needs to see it.
+            if (segments[segIndex].type === SEG_THINK && finish) {
                 collapseThinkBlock(wrapperDiv);
             }
 
@@ -494,6 +502,20 @@
 
             // Auto-collapse think blocks when thinking is done.
             autoCollapseThinkBlocks();
+        }
+
+        // True if the ``` at tail[i] begins a fenced code block.  Per CommonMark a
+        // fence only starts at the beginning of a line (up to 3 leading spaces); a
+        // ``` in the middle of a line (e.g., prose that mentions backticks, or an LLM
+        // reasoning about markdown) is literal text, NOT a fence.  Treating it as one
+        // corrupts the fence counter, which stalls progressive rendering and can
+        // force-collapse a still-active thinking block.
+        function isFenceMarker(tail, i) {
+            var spaces = 0;
+            var k = i;
+            while (k > 0 && tail[k - 1] === ' ') { spaces++; k--; }
+            if (spaces > 3) return false;
+            return k === 0 || tail[k - 1] === '\n';
         }
 
         // Try to progressively render completed paragraphs from the raw tail.
@@ -519,9 +541,15 @@
 
             for (var i = 0; i < tail.length; i++) {
                 if (tail[i] === '`' && tail.substring(i, i + 3) === '```') {
-                    inFence = !inFence;
-                    i += 2;
-                    continue;
+                    // Check the absolute position in fullText so a ``` that sits at a
+                    // mid-line boundary (e.g., right after a finish=false force-render)
+                    // is still recognized as non-fence when it isn't at line start.
+                    if (isFenceMarker(fullText, searchPos + i)) {
+                        inFence = !inFence;
+                        i += 2;
+                        continue;
+                    }
+                    // else: literal ``` in prose -- not a fence, fall through.
                 }
                 if (!inFence && tail[i] === '\n' && tail[i + 1] === '\n') {
                     lastValidBreak = searchPos + i;
@@ -535,7 +563,19 @@
                 // it so the user sees progress.  Rendering the entire tail is safe:
                 // no split means no risk of breaking code fences or lists.
                 if (tail.length > 2000) {
-                    renderRawTail(wrapperDiv, segIndex);
+                    if (segments[segIndex].type === SEG_THINK && inFence) {
+                        // A think block sitting inside an unclosed fence: rendering now
+                        // would commit a broken (open) code block, and we must not
+                        // collapse it.  Wait for the fence to close or a break to appear.
+                        return;
+                    }
+                    if (segments[segIndex].type === SEG_THINK) {
+                        // Mid-stream: render but keep streaming (finish=false) so the
+                        // box stays open and the next delta renders incrementally.
+                        renderRawTail(wrapperDiv, segIndex, false);
+                    } else {
+                        renderRawTail(wrapperDiv, segIndex);
+                    }
                 }
                 return;
             }
@@ -548,8 +588,10 @@
             var checkText = fullText.substring(0, renderEnd);
             for (var j = 0; j < checkText.length; j++) {
                 if (checkText[j] === '`' && checkText.substring(j, j + 3) === '```') {
-                    fenceState = !fenceState;
-                    j += 2;
+                    if (isFenceMarker(checkText, j)) {
+                        fenceState = !fenceState;
+                        j += 2;
+                    }
                 }
             }
             if (fenceState) {
