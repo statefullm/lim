@@ -285,6 +285,8 @@ The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships
 - `Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.`
 
 Omitting any such instruction leaves the model at its baseline behavior.
+For a full setup -- mode files, per-mode sampling env, and a login hook
+that keeps the two consistent -- see [REASONING.md](REASONING.md).
 
 ### 7. Message Shortcuts
 
