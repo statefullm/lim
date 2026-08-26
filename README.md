@@ -374,7 +374,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (persistent KV-cache, same as llama-cli interactive), `1` = standard chatbot (re-decode full history each turn), `2` = cache-aware prefix match (emulates llama-server). Modes 1 and 2 force honest speed measurement. |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
-| `LIM_TURN_TIMEOUT` | `600` | Maximum seconds per generation turn before auto-abort |
+| `LIM_TURN_TIMEOUT` | `3600` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
 | `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 

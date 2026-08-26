@@ -839,7 +839,7 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     }
 
     // Compute turn timeout from environment
-    static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 600.0;
+    static constexpr double DEFAULT_TURN_TIMEOUT_SEC = 3600.0;
     const char* timeout_env = getenv("LIM_TURN_TIMEOUT");
     double turn_timeout_sec = DEFAULT_TURN_TIMEOUT_SEC;
     if (timeout_env != nullptr && strlen(timeout_env) > 0) {
