@@ -816,7 +816,10 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   if (!begin_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(begin_str.c_str(), &endptr, 10);
-    if (*endptr != '\0' || begin_str.empty() || val < 1) {
+    // Be forgiving like path: accept a leading positive-integer prefix so a
+    // missing PARAM_END (bleeding the next tag) or trailing whitespace still
+    // recovers the intended line number.
+    if (endptr == begin_str.c_str() || val < 1) {
       out["error"] = "Error: 'begin' must be a positive integer.";
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
@@ -826,7 +829,8 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
   if (!end_str.empty()) {
     char* endptr = nullptr;
     long val = strtol(end_str.c_str(), &endptr, 10);
-    if (*endptr != '\0' || end_str.empty() || val < 0) {
+    // Same forgiveness as begin: a leading non-negative integer prefix wins.
+    if (endptr == end_str.c_str() || val < 0) {
       out["error"] = "Error: 'end' must be a positive integer.";
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
