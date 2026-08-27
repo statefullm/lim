@@ -281,7 +281,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           result = "Error: " + r_error;
           out.is_error = true;
       } else if (r_content.empty()) {
-          result = "No occurrences found for text.";
+          result = path+" contains 0 matches of this exact byte sequence (pay attention to whitespace!): \"" + text + "\"";
       } else {
           result = r_content;
       }

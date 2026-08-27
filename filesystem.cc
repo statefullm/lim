@@ -905,97 +905,54 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
 
     out["content"] = result;
   } else if (!text.empty()) {
-    bool search_with_newlines = (unescaped_text.find('\n') != string::npos);
     string result = "";
     int match_count = 0;
     int context = 5;
 
-    if (search_with_newlines) {
-      size_t pos = 0;
-      // Running line counter: avoid O(n^2) rescanning from position 0 on each match.
-      // scan_pos tracks how far we've already counted newlines.
-      size_t scan_pos = 0;
-      int running_line = 1;
+    size_t pos = 0;
 
-      while ((pos = content.find(unescaped_text, pos)) != string::npos) {
-        match_count++;
-        if (match_count > 10) {
-          result += "... (Truncated after 10 matches)\n";
-          break;
-        }
-
-        // Advance the running line counter from where we left off.
-        while (scan_pos < pos && scan_pos < content.length()) {
-          if (content[scan_pos] == '\n') running_line++;
-          scan_pos++;
-        }
-        int start_line = running_line;
-
-        size_t end_pos = pos + unescaped_text.length();
-        int end_line_local = start_line;
-        for (size_t i = pos; i < end_pos && i < content.length(); i++) {
-          if (content[i] == '\n') end_line_local++;
-        }
-
-        result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start_line) + "-" + to_string(end_line_local) + ") ---\n";
-
-        size_t ctx_start = pos;
-        size_t ctx_end = end_pos;
-
-        int lines_before = 0;
-        while (ctx_start > 0 && lines_before < context) {
-          ctx_start--;
-          if (content[ctx_start] == '\n') lines_before++;
-        }
-
-        int lines_after = 0;
-        while (ctx_end < content.length() && lines_after < context) {
-          if (content[ctx_end] == '\n') lines_after++;
-          ctx_end++;
-        }
-
-        result += content.substr(ctx_start, ctx_end - ctx_start);
-        pos = end_pos;
-      }
-    } else {
-      vector<string> lines;
-      string line;
-      ifstream line_file(fullpath);
-      if (!line_file.is_open()) {
-        out["error"] = "Failed to reopen file for line-by-line reading: " + fullpath;
-        out["display"] = "Search file: " + path + ": " + out["error"];
-        return out;
-      }
-      while (getline(line_file, line)) {
-        lines.push_back(line);
-      }
-      line_file.close();
-
-      int i = 0;
-      while (i < (int)lines.size()) {
-        if (lines[i].find(unescaped_text) != string::npos) {
-          match_count++;
-          if (match_count > 10) {
-            result += "... (Truncated after 10 matches)\n";
-            break;
-          }
-          int start = max(0, i - context);
-          int end = min((int)lines.size() - 1, i + context);
-          result += "--- Match " + to_string(match_count) + " (Lines " + to_string(start + 1) + "-" + to_string(end + 1) + ") ---\n";
-          for (int j = start; j <= end; j++) {
-            result += lines[j] + "\n";
-          }
-          result += "\n";
-          i = end;
-        }
-        i++;
+    while ((pos = content.find(unescaped_text, pos)) != string::npos) {
+      match_count++;
+      if (match_count > 10) {
+        result += "... (Truncated after 10 matches)\n";
+        break;
       }
 
-      out["match_count"] = to_string(match_count);
+      size_t end_pos = pos + unescaped_text.length();
 
-      if (match_count > 0) {
-        out["content"] = result;
+      result += "--- Match " + to_string(match_count) + " ---\n";
+
+      size_t ctx_start = pos;
+      size_t ctx_end = end_pos;
+
+      int lines_before = 0;
+      while (ctx_start > 0 && lines_before < context) {
+        ctx_start--;
+        if (content[ctx_start] == '\n') lines_before++;
       }
+      // ctx_start sits on the newline ending the first context line (or at file
+      // start); step back to that line's beginning so no partial/blank line is emitted.
+      size_t line_begin = ctx_start;
+      while (line_begin > 0 && content[line_begin - 1] != '\n') line_begin--;
+      ctx_start = line_begin;
+
+      int lines_after = 0;
+      // Pass the newline terminating each context line. If the match ends mid-line,
+      // we must also pass its own terminator first, hence context + 1.
+      int after_limit = (end_pos > 0 && content[end_pos - 1] == '\n') ? context : context + 1;
+      while (ctx_end < content.length() && lines_after < after_limit) {
+        if (content[ctx_end] == '\n') lines_after++;
+        ctx_end++;
+      }
+
+      result += content.substr(ctx_start, ctx_end - ctx_start);
+      pos = end_pos;
+    }
+
+    out["match_count"] = to_string(match_count);
+
+    if (match_count > 0) {
+      out["content"] = result;
     }
   }
 
