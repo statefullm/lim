@@ -28,6 +28,7 @@ extern std::string g_model_path;
 #include <functional>
 #include <iomanip>
 #include <unistd.h>
+#include <ctime>
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -472,6 +473,64 @@ private:
         return true;
     }
 
+    // Reload the system prompt from disk (prompt file + localprompt + cwd + date/time).
+    // Returns true on success, false if the prompt file is missing (old tokens kept).
+    bool reload_system_prompt() {
+        string system_prompt;
+        bool prompt_file_exists = false;
+
+        {
+            string config_prompt_path = LIM_CONFIG_DIR + "/prompt";
+            string legacy_prompt_path = string(HOME) + "/prompt";
+            ifstream prompt_file(config_prompt_path);
+            if (!prompt_file.is_open()) {
+                prompt_file.open(legacy_prompt_path);
+            }
+            if (prompt_file.is_open()) {
+                stringstream buffer;
+                buffer << prompt_file.rdbuf();
+                system_prompt = buffer.str();
+                prompt_file.close();
+                prompt_file_exists = true;
+            }
+        }
+
+        if (!prompt_file_exists) return false;  // Keep old tokens.
+
+        // Load site-specific localprompt: check current directory first, then LIM_CONFIG_DIR.
+        {
+            string cwd_localprompt_path = "./localprompt";
+            string config_localprompt_path = LIM_CONFIG_DIR + "/localprompt";
+            ifstream localprompt_file(cwd_localprompt_path);
+            if (!localprompt_file.is_open()) {
+                localprompt_file.open(config_localprompt_path);
+            }
+            if (localprompt_file.is_open()) {
+                stringstream buffer;
+                buffer << localprompt_file.rdbuf();
+                system_prompt = buffer.str() + "\n" + system_prompt;
+                localprompt_file.close();
+            }
+        }
+
+        // Append cwd and date/time.
+        char current_cwd[1024];
+        if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
+            system_prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
+        }
+
+        time_t now = time(nullptr);
+        struct tm tm_buf;
+        if (localtime_r(&now, &tm_buf)) {
+            char time_str[64];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
+            system_prompt += "Current date and time: " + string(time_str) + "\n";
+        }
+
+        system_tokens_ = build_system_prompt_tokens(ctx_, system_prompt);
+        return true;
+    }
+
     void clear_context() {
         llama_memory_clear(llama_get_memory(ctx_), true);
         n_past_ = 0;
@@ -479,12 +538,9 @@ private:
         state_.all_context_tokens.clear();
         state_.prompt_checkpoints.clear();
         state_.file_cache.clear();
-        feed_tokens_impl(system_tokens_);
 
-        // Reset sampler state (penalty history, RNG) for a fresh start
-        llama_sampler_reset(smpl_);
-
-        // Reset the current directory to the initial value so no memory of the last session persists
+        // Reset the current directory to the initial value so no memory of the last session persists.
+        // Done before reload_system_prompt() so getcwd() reflects the initial directory.
         {
             chdir(INITIAL_CWD.c_str());
             ofstream cwd_file(HOME + "/.cwd");
@@ -493,6 +549,15 @@ private:
                 cwd_file.close();
             }
         }
+
+        // Reload system prompt from disk to pick up any edits + fresh timestamp.
+        if (!reload_system_prompt()) {
+            diag("Prompt file not found; reusing cached system prompt.", "\033[33m");
+        }
+        feed_tokens_impl(system_tokens_);
+
+        // Reset sampler state (penalty history, RNG) for a fresh start
+        llama_sampler_reset(smpl_);
     }
 
     void reset_llm_state() {
@@ -523,7 +588,7 @@ private:
     llama_batch& batch_;
     int& n_past_;
     const llama_context_params& cparams_;
-    const vector<llama_token>& system_tokens_;
+    vector<llama_token> system_tokens_;
     bool use_dummy_thought_;
     SessionState& state_;
 
