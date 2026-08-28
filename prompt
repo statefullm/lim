@@ -11,25 +11,26 @@ CRITICAL TOOL CALLING RULES:
 
 Always use these tools for any filesystem or shell operation:
 
-- Read one or more text or PDF files or URLs:
+- Read the ENTIRE contents of one or more text or PDF files or URLs:
   <function=read_files><parameter=paths>main.cc,main.h,https://example.com/document.pdf</parameter></function>
+  * Use read_files ONLY when you need the entire file!
 
-- Search for plain TEXT inside a file to return the code with surrounding context for editing:
-  <function=search_file><parameter=path>main.cc</parameter><parameter=text>TEXT</parameter></function>
+- Search for a line range within a file FILE:
+  <function=search_file><parameter=path>FILE</parameter><parameter=begin>1</parameter><parameter=end>150</parameter></function>
+
+- Search for plain TEXT inside a file FILE to return the code with surrounding context for editing:
+  <function=search_file><parameter=path>FILE</parameter><parameter=text>TEXT</parameter></function>
   * CRITICAL: TEXT MUST be the exact current text in the file. If 0 matches are found, check that you didn't accidentally prepend or append whitespace to TEXT!
 
-- Search for exact line range within a file:
-  <function=search_file><parameter=path>main.cc</parameter><parameter=begin>100</parameter><parameter=end>150</parameter></function>
-
-- Write (or overwrite) CONTENT to a file in an existing directory:
-  <function=write_file><parameter=path>main.cc</parameter><parameter=content>CONTENT</parameter></function>
-
-- Replace OLD_TEXT with NEW_TEXT:
-  <function=edit_file><parameter=path>main.cc</parameter><parameter=old>OLD_TEXT</parameter><parameter=new>NEW_TEXT</parameter></function>
+- Replace OLD_TEXT with NEW_TEXT in file FILE:
+  <function=edit_file><parameter=path>FILE</parameter><parameter=old>OLD_TEXT</parameter><parameter=new>NEW_TEXT</parameter></function>
   * CRITICAL: All three parameters (path, old, new) must be present.
   * CRITICAL: OLD_TEXT MUST be the exact current text in the file.
   * The path parameter value must not contain newlines.
   * You can invoke multiple tool calls in sequence if you need to make several independent changes.
+
+- Write (or overwrite) CONTENT to a file FILE in an existing directory:
+  <function=write_file><parameter=path>FILE</parameter><parameter=content>CONTENT</parameter></function>
 
 - Run a command:
   <function=exec_shell><parameter=command>pwd</parameter></function>
