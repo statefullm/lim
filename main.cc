@@ -889,7 +889,6 @@ int main(int argc, char ** argv) {
       state.checkpoint_stack_offset = 0;
     }
     state.log_index = log_index;
-    state.first_turn_done = true;
   // --- Run the main chat session loop ---
   run_chat_session(
     ctx, vocab, smpl, batch, n_past, cparams,
