@@ -266,11 +266,18 @@ private:
         }
     }
 
-    // Restore saved B and C entries to readline history.
+    // Restore saved B and C entries to readline history (both saved oldest-first;
+    // add_history appends at the newest end, so chronological order is preserved).
+    // Re-count the C entries actually added so the /quit flush persists them to
+    // disk after a cancelled undo (zeroing them here would drop C from .lim_history).
     void restore_saved_history(const vector<string>& b, const vector<string>& c) {
         for (const auto& s : b) add_history(s.c_str());
-        for (auto it = c.rbegin(); it != c.rend(); ++it) add_history(it->c_str());
         c_count_since_restore_ = 0;
+        for (const auto& s : c) {
+            int before = history_length;
+            add_history(s.c_str());
+            if (history_length > before) c_count_since_restore_++;
+        }
     }
     // Flush .lim_history to disk: truncate back to the persistent baseline (A),
     // then append only the surviving C entries.  Updates the tracked file size
@@ -827,12 +834,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
                 if (c.cmd == Cmd::SAVE)    save_prefix_   = arg;
                 if (c.cmd == Cmd::RESTORE) {
                     // Optional trailing flag: "/load <path> --checkpoints"
-                    const string flag = " --checkpoints";
-                    if (arg.size() >= flag.size() &&
-                        arg.compare(arg.size() - flag.size(), flag.size(), flag) == 0) {
-                        arg.erase(arg.size() - flag.size());
-                        restore_checkpoints_ = true;
-                    }
+                    restore_checkpoints_ = strip_checkpoints_flag(arg);
                     restore_path_ = arg;
                 }
                 if (c.cmd == Cmd::DELETE)  delete_path_   = arg;
@@ -1746,7 +1748,10 @@ bool ChatSession::run() {
                     // Snapshot the current history (A + B + C) so it can be
                     // restored after the selection prompt.
                     vector<string> saved_hist;  // oldest first
-                    for (int i = history_length; i >= 1; i--) {
+                    // history_get() is 1-based: 1 = oldest, history_length = newest,
+                    // so iterate forward to collect oldest-first (add_history appends
+                    // at the newest end, so restoring in this order preserves it).
+                    for (int i = 1; i <= history_length; i++) {
                         HIST_ENTRY* he = history_get(i);
                         if (he) saved_hist.push_back(he->line);
                     }
@@ -1914,9 +1919,13 @@ bool ChatSession::run() {
                 repopulate_history();
 
                 // Re-push C entries on top of the restored checkpoint prompts,
-                // in chronological order.
+                // in chronological order. Re-count the ones actually added:
+                // repopulate_history() zeroed the counter, and without this the
+                // /quit flush would drop C from disk.
                 for (const auto& s : saved_c) {
+                    int before = history_length;
                     add_history(s.c_str());
+                    if (history_length > before) c_count_since_restore_++;
                 }
             }
 

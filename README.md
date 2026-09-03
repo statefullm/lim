@@ -478,7 +478,7 @@ You can save a running session and restore it later with zero context loss:
 ```bash
 coder $LIM_LOG_DIR/5.save    # explicit extension
 coder $LIM_LOG_DIR/5         # .save appended automatically
-coder cats          # restores from cats.save
+coder cats                   # restores from cats.save
 ```
 
 This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).

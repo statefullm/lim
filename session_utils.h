@@ -35,6 +35,12 @@ void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decod
 // Print a restore diagnostic message
 void diag_restore(const std::string& path, int token_count);
 
+// Strip an optional trailing " --checkpoints" flag from a /load-style
+// argument (shared by CLI restore validation in main.cc and /load parsing
+// in session.cc so the two can never drift apart).
+// Returns true if the flag was present and removed.
+bool strip_checkpoints_flag(std::string& arg);
+
 // Announce a new session number to the terminal and chat log
 // (used at startup, /clear, and /reincarnate).
 void announce_new_session(int session_num);

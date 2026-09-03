@@ -156,11 +156,7 @@ int main(int argc, char ** argv) {
     // Use the same parsing /load applies so the check matches: optional
     // trailing --checkpoints flag, then .save extension and LIM_SAVE_DIR.
     string arg = restore_arg;
-    const string flag = " --checkpoints";
-    if (arg.size() >= flag.size() &&
-        arg.compare(arg.size() - flag.size(), flag.size(), flag) == 0) {
-      arg.erase(arg.size() - flag.size());
-    }
+    strip_checkpoints_flag(arg);
     string check_path = apply_save_dir(append_save_ext(arg));
     struct stat st;
     if (stat(check_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {

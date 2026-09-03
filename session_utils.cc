@@ -113,6 +113,16 @@ void diag_restore(const std::string& path, int token_count) {
     diag("Restoring session from " + path + "... (" + std::to_string(token_count) + " tokens)", "\033[35m");
 }
 
+bool strip_checkpoints_flag(std::string& arg) {
+    static const std::string flag = " --checkpoints";
+    if (arg.size() >= flag.size() &&
+        arg.compare(arg.size() - flag.size(), flag.size(), flag) == 0) {
+        arg.erase(arg.size() - flag.size());
+        return true;
+    }
+    return false;
+}
+
 void announce_new_session(int session_num) {
     diag("Session #" + std::to_string(session_num) + " started: type /help to see a list of commands", "\033[35m");
     if (chat_log.is_open()) {
