@@ -463,7 +463,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
 | `/quit` or `/exit` | Auto-save the current state to `$LIM_LOG_DIR/<N>.save`, then exit the session |
 | `/quit <path>` or `/exit <path>` | Named save with fast cache to `<path>.save`, then exit the session. Accepts the same path format as `/save`. |
-| `/load <path>` | Load a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to full re-decode with checkpoint regeneration. |
+| `/load <path> [--checkpoints]` | Load a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to a re-decode that first offers checkpoint selection at a `Restore>` prompt. `--checkpoints` skips the fast cache (forcing the prompt) and skips the automatic fast-cache write. |
 | `/delete <path>` | Delete a save file and its associated fast restore cache entry (if any). Accepts the same path format as `/save`: `.save` is appended automatically if not already present. |
 | `/help` | Display a summary of all available commands |
 
@@ -473,7 +473,7 @@ You can save a running session and restore it later with zero context loss:
 
 **Save:** Type `/save` at the `>>>` prompt to save to `$LIM_LOG_DIR/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The save file contains only the conversation token sequence, keeping it small and model-agnostic. Named saves also cache the full KV-cache for fast future restores.
 
-**Restore:** Pass a save file as the last argument to `coder`. The `.save` extension is added automatically if not already present, matching `/save` behavior:
+**Restore:** Pass a save file as the last argument to `coder`. The `.save` extension is added automatically if not already present, matching `/save` behavior. The CLI restore runs the exact same code path as in-session `/load` (it injects `/load <path>` as the first command after startup), so behavior is identical in both, including `--checkpoints`:
 
 ```bash
 coder $LIM_LOG_DIR/5.save    # explicit extension
@@ -493,13 +493,17 @@ This restores the session exactly as it was: the full conversation, KV-cache pos
 [Session restored: 75432 tokens loaded]
 ```
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. On restore, if a fast-format cache is not available, LIM offers a choice of checkpoints before decoding. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C or Ctrl+D to cancel the restore and start a fresh session. Type `/quit` or `/exit` to exit LIM entirely. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. Whenever a restore can't use the fast cache (or with `--checkpoints`, CLI or `/load`), LIM offers a choice of checkpoints before decoding so you can select a good restore point. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C, Ctrl+D, or type `/quit` at the `Restore>` prompt to cancel; the session continues fresh from the system prompt. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
-**Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache and trigger the checkpoint selection prompt. This also rebuilds recurrent-state checkpoints at each prompt boundary during decode, enabling instant `/undo` for all historical turns on hybrid models (Qwen3.5/3.6). The flag can appear before or after the save file:
+**Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache, triggering the checkpoint selection prompt even when a fast cache exists. This also rebuilds recurrent-state checkpoints at each prompt boundary during decode, enabling instant `/undo` for all historical turns on hybrid models (Qwen3.5/3.6). The flag works on the command line (after the save file) and with the in-session `/load` command, so there is no need to exit and restart the model:
 
 ```bash
 coder cats --checkpoints
-coder --checkpoints cats
+```
+```
+# Or, within a running session:
+>>> /clear
+>>> /load cats --checkpoints
 ```
 
 **Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that /undo works instantly for hybrid models (Qwen3.5/3.6) right after restore. The rebuilt cache is then automatically written to `$LIM_CACHE_DIR/<hash>` so all subsequent restores from the same save file are fast. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for faster future restores. The name prefix in the cache filename is purely informational; LIM identifies cache files by their content hash, not their name. If you run `/save cats` followed by `/save dogs` with identical session content, only one cache file is written since both resolve to the same hash. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For fast cache restores, recurrent checkpoints build up naturally as new conversation turns complete, supporting instant /undo for each new turn. The `$LIM_CACHE_DIR/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.

@@ -89,7 +89,7 @@ static const struct CmdInfo {
     { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, loop detector, and web search" },
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/.config/lim/userprompt, then restart (auto-saves first)" },
     { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
-    { "load",         Cmd::RESTORE,     ArgType::PATH,   "Load session from <path>.save (must be used after /clear)" },
+    { "load",         Cmd::RESTORE,     ArgType::PATH,   "Load session from <path>.save (must be used after /clear); --checkpoints skips the fast cache" },
     { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete <path>.save and its fast restore cache" },
     { "help",         Cmd::HELP,        ArgType::NONE,   "Show this help message" },
 };
@@ -220,6 +220,7 @@ private:
     string save_prefix_;
     string restore_path_;
     string delete_path_;
+    bool restore_checkpoints_ = false;  // /load <path> --checkpoints
     // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
     bool prev_was_save_ = false;
     // Track if we already logged assistant output this turn (via process_tool_call),
@@ -822,8 +823,18 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
                 save_prefix_.clear();
                 restore_path_.clear();
                 delete_path_.clear();
+                restore_checkpoints_ = false;
                 if (c.cmd == Cmd::SAVE)    save_prefix_   = arg;
-                if (c.cmd == Cmd::RESTORE) restore_path_  = arg;
+                if (c.cmd == Cmd::RESTORE) {
+                    // Optional trailing flag: "/load <path> --checkpoints"
+                    const string flag = " --checkpoints";
+                    if (arg.size() >= flag.size() &&
+                        arg.compare(arg.size() - flag.size(), flag.size(), flag) == 0) {
+                        arg.erase(arg.size() - flag.size());
+                        restore_checkpoints_ = true;
+                    }
+                    restore_path_ = arg;
+                }
                 if (c.cmd == Cmd::DELETE)  delete_path_   = arg;
                 if (c.cmd == Cmd::QUIT)    save_prefix_   = arg;
                 return static_cast<Command>(c.cmd);
@@ -1256,14 +1267,28 @@ bool ChatSession::run() {
     // Load user-defined aliases from ~/.lim_aliases
     aliases_ = load_aliases();
 
+    // CLI restore: inject "/load <arg>" as the first input so the normal
+    // /load handler runs -- identical to in-session /clear + /load.
+    string pending_input;
+    if (!state_.cli_restore_path.empty()) {
+        pending_input = "/load " + state_.cli_restore_path;
+        state_.cli_restore_path.clear();
+    }
+
     // --- MAIN CHAT TURN LOOP ---
     while (true) {
         stop_generation = 0;
         g_was_interrupted = 0;
         assistant_logged_this_turn_ = false;
 
-        // 1. Get user input
-        string user_input = get_user_input();
+        // 1. Get user input (or the injected CLI restore command)
+        string user_input;
+        if (!pending_input.empty()) {
+            user_input = pending_input;
+            pending_input.clear();
+        } else {
+            user_input = get_user_input();
+        }
 
         // 2. Parse and dispatch commands (all require '/' prefix)
         last_cmd_ = handle_command(user_input);
@@ -1685,8 +1710,9 @@ bool ChatSession::run() {
                 restore_path_abs = rpath;
             }
 
-            // Try instant restore from V1 cache first.
-            bool cache_hit = try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
+            // Try instant restore from V1 cache first (skipped with --checkpoints).
+            bool cache_hit = restore_checkpoints_ ? false
+                : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
             int saved_session = read_save_session(rpath);
             if (cache_hit) {
                 diag_restore(rpath, (int)restored_tokens.size());
@@ -1710,12 +1736,98 @@ bool ChatSession::run() {
                 // Slow restore: re-decode through the model.
                 diag_restore(rpath, (int)restored_tokens.size());
 
+                vector<PromptCheckpoint> restored_checkpoints = read_checkpoint_offsets(rpath);
+
+                // Slow restore: offer partial restore via readline history
+                // navigation so the user can select a restore point.
+                int restore_limit = (int)restored_tokens.size();
+                int total_restore_tokens = restore_limit;
+                if (!restored_checkpoints.empty()) {
+                    // Snapshot the current history (A + B + C) so it can be
+                    // restored after the selection prompt.
+                    vector<string> saved_hist;  // oldest first
+                    for (int i = history_length; i >= 1; i--) {
+                        HIST_ENTRY* he = history_get(i);
+                        if (he) saved_hist.push_back(he->line);
+                    }
+
+                    using_history();
+                    clear_history();
+
+                    diag("Save contains " + to_string(restored_checkpoints.size()) + " prompt checkpoint" + (restored_checkpoints.size() != 1 ? "s" : "") + ".", "\033[35m");
+                    diag("Up/down arrows to navigate, Enter to confirm.", "\033[37m");
+
+                    // Add checkpoints oldest-to-newest.
+                    // Pressing up from empty line shows the most recent checkpoint first.
+                    for (const auto& cp : restored_checkpoints) {
+                        string label = cp.prompt.empty() ? "(empty)" : cp.prompt;
+                        if (label.size() > 120) label = label.substr(0, 120) + "...";
+                        string entry = label + " (" + to_string(cp.n_past) + " tokens)";
+                        add_history(entry.c_str());
+                    }
+
+                    char* line = readline("Restore> ");
+                    bool cancelled = false;
+                    // If Ctrl+C was pressed during readline, stop_generation is set.
+                    if (stop_generation) {
+                        cancelled = true;
+                        stop_generation = 0;
+                        if (line) free(line);
+                    } else if (!line) {
+                        cancelled = true;  // Ctrl+D (EOF)
+                    } else {
+                        string input = line;
+                        free(line);
+                        if (input == "/quit" || input == "/exit") {
+                            // Graceful cancel, like the Undo> prompt: return to
+                            // the user prompt without losing the session.
+                            cancelled = true;
+                        } else {
+                            // Match by extracting the token count from the "(N tokens)" suffix.
+                            // Since n_past is unique per checkpoint, this works even when
+                            // prompts are truncated or duplicated.
+                            size_t paren_open = input.rfind('(');
+                            size_t paren_close = input.rfind(')');
+                            if (paren_open != string::npos && paren_close > paren_open) {
+                                try {
+                                    int target_n_past = std::stoi(input.substr(paren_open + 1, paren_close - paren_open - 1));
+                                    for (const auto& cp : restored_checkpoints) {
+                                        if (cp.n_past == target_n_past) {
+                                            restore_limit = cp.n_past;
+                                            break;
+                                        }
+                                    }
+                                } catch (...) {}
+                            }
+                        }
+                    }
+
+                    // Restore A + B + C history.
+                    clear_history();
+                    for (const auto& s : saved_hist) add_history(s.c_str());
+
+                    if (cancelled) {
+                        diag("Restore cancelled.", "\033[35m");
+                        continue;
+                    }
+
+                    if (restore_limit < (int)restored_tokens.size()) {
+                        diag("Restoring to checkpoint: " + to_string(restore_limit) + " tokens", "\033[35m");
+                        // Trim to the selected range so the decode and session
+                        // state cover exactly the restored prefix.
+                        restored_tokens.resize(restore_limit);
+                        restored_checkpoints.erase(
+                            std::remove_if(restored_checkpoints.begin(), restored_checkpoints.end(),
+                                           [restore_limit](const PromptCheckpoint& cp) { return cp.n_past > restore_limit; }),
+                            restored_checkpoints.end());
+                    }
+                }
+
                 // Clear the KV cache before re-decoding.
                 llama_memory_clear(llama_get_memory(ctx_), true);
                 n_past_ = 0;
                 state_.all_context_tokens.clear();
 
-                vector<PromptCheckpoint> restored_checkpoints = read_checkpoint_offsets(rpath);
                 size_t cp_restore_idx = 0;
 
                 auto restore_start = chrono::high_resolution_clock::now();
@@ -1754,6 +1866,17 @@ bool ChatSession::run() {
                 state_.all_context_tokens = restored_tokens;
                 state_.prompt_checkpoints = restored_checkpoints;
                 state_.checkpoint_stack_offset = 0; // all checkpoints are live
+
+                // Auto-write V1 cache for instant future restores (full restore only
+                // -- a partial prefix would hash to an entry a later full restore
+                // never matches; skipped with --checkpoints).
+                if (!restore_checkpoints_ && !restore_path_abs.empty() &&
+                    (int)restored_tokens.size() == total_restore_tokens) {
+                    if (is_debug) {
+                        diag("Save to cache.", "\033[35m");
+                    }
+                    write_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_, "");
+                }
 
                 diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
                 log_entry("SYSTEM", "Restored session from " + rpath);

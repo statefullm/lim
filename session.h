@@ -44,6 +44,10 @@ struct SessionState {
   int checkpoint_stack_offset = 0;
   // Log file index (set by main.cc), so save files match chat log numbering
   int log_index = 0;
+  // CLI restore: the /load argument (path plus optional trailing
+  // --checkpoints) to inject as the first command (set by main.cc when
+  // started with a restore argument). Empty = none.
+  std::string cli_restore_path;
   // Path from the most recent search_file call, for edit_file path inference.
   std::string last_search_path;
   // Tool-correction checkpoint: saved at start of each generate_response()
