@@ -1837,8 +1837,18 @@ bool ChatSession::run() {
 
                 auto restore_start = chrono::high_resolution_clock::now();
                 bool restore_failed = false;
-                for (int i = 0; i < (int)restored_tokens.size() && !restore_failed; i += (int)cparams_.n_batch) {
-                    int chunk = std::min((int)cparams_.n_batch, (int)restored_tokens.size() - i);
+                for (int i = 0, chunk = 0; i < (int)restored_tokens.size() && !restore_failed; i += chunk) {
+                    // Size the chunk so it ends exactly on the next prompt boundary
+                    // when one falls within n_batch: the recurrent checkpoint saved
+                    // after the decode must correspond to the exact boundary position
+                    // (a checkpoint saved at the chunk end would let instant undo
+                    // "remember" up to a batch's worth of the undone turn).
+                    chunk = std::min((int)cparams_.n_batch, (int)restored_tokens.size() - i);
+                    if (cp_restore_idx < restored_checkpoints.size() &&
+                        restored_checkpoints[cp_restore_idx].n_past > i &&
+                        restored_checkpoints[cp_restore_idx].n_past < i + chunk) {
+                        chunk = restored_checkpoints[cp_restore_idx].n_past - i;
+                    }
                     batch_.n_tokens = 0;
                     for (int j = 0; j < chunk; j++) {
                         common_batch_add(batch_, restored_tokens[i + j], n_past_, {0}, (i + j == (int)restored_tokens.size() - 1));
