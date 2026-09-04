@@ -1535,13 +1535,24 @@ bool ChatSession::run() {
                     state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
                     state_.tool_correction_checkpoint_idx = -1;
 
+                    // Re-decode only the prefix up to the undo target.  Feeding
+                    // the whole tracker (as before) would re-feed the undone
+                    // content -- the model would keep "remembering" it -- and
+                    // would leave the KV cache ahead of the tracker, so a later
+                    // /save would be rejected by the fast-restore consistency
+                    // check.  Copy the prefix first: feed_tokens_impl appends
+                    // what it feeds to the tracker, so feeding the tracker
+                    // itself would double it.
+                    state_.all_context_tokens.resize(target.n_past);
+                    vector<llama_token> undo_prefix = state_.all_context_tokens;
+                    state_.all_context_tokens.clear();
+
                     auto start = chrono::high_resolution_clock::now();
-                    if (!feed_tokens_impl(state_.all_context_tokens)) {
+                    if (!feed_tokens_impl(undo_prefix)) {
                         diag("Failed to re-feed tokens after undo. Type '/clear' to reset.", "\033[31m");
                         log_rollback("undo", n_past_before, target_pos, false, n_past_);
                         continue;
                     }
-                    state_.all_context_tokens.resize(target.n_past);
 
                     auto end = chrono::high_resolution_clock::now();
                     double elapsed = chrono::duration<double>(end - start).count();

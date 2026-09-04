@@ -327,8 +327,24 @@ TokenGenerator::Result TokenGenerator::generate() {
             t_gen_end = chrono::high_resolution_clock::now();
         }
 
-        // Track this sampled token for compact save/restore
-        if (out_tokens_) out_tokens_->push_back(next_token);
+        // Feed the sampled token into the KV cache and the token tracker in
+        // lockstep: the tracker (state_.all_context_tokens) must contain
+        // exactly the tokens present in the KV cache, or save files outgrow
+        // the fast restore cache (one token short per turn) and the next
+        // restore is rejected.  The loop-break paths (tool call completed,
+        // final EOG, degeneration recovery) call this before breaking so the
+        // token that ends the turn is decoded like every other generated
+        // token instead of being tracked without a decode.
+        auto feed_token = [&]() -> bool {
+            if (out_tokens_) out_tokens_->push_back(next_token);
+            batch_.n_tokens = 0;
+            common_batch_add(batch_, next_token, n_past_++, {0}, true);
+            if (!handle_llama_decode_error(ctx_, batch_)) {
+                sync_n_past(ctx_, n_past_);
+                return false;
+            }
+            return true;
+        };
 
         if (llama_vocab_is_eog(vocab_, next_token)) {
             size_t active_ts = generated_text_.find(FUNC_START);
@@ -419,6 +435,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 // above handles genuine unclosed tool calls.  The tool executor
                 // validates structure on its own for anything that does look like a call.
 
+                if (!feed_token()) early_exit = true;
                 break;
             }
         }
@@ -541,6 +558,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 }
             }
             trigger_tool_execution_ = true;
+            if (!feed_token()) early_exit = true;
             break;
         }
 
@@ -551,6 +569,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             generated_text_.resize(tool_call_end);
             full_response_.resize(tool_call_end);
             trigger_tool_execution_ = true;
+            if (!feed_token()) early_exit = true;
             break;
         }
 
@@ -563,6 +582,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             diag("System: Stuck generating tool call after " + std::to_string(tool_call_outside_param_count_) + " tokens outside parameters.", "\033[1;31m");
             stop_generation = 1;
             stuck_in_tool_call = true;
+            if (!feed_token()) early_exit = true;
             break;
         }
 
@@ -769,11 +789,7 @@ TokenGenerator::Result TokenGenerator::generate() {
         // Reset EOG-recovery flag for the next iteration.
         eog_recovered_this_token_ = false;
 
-        batch_.n_tokens = 0;
-        common_batch_add(batch_, next_token, n_past_++, {0}, true);
-
-        if (!handle_llama_decode_error(ctx_, batch_)) {
-            sync_n_past(ctx_, n_past_);
+        if (!feed_token()) {
             early_exit = true;
             break;
         }
