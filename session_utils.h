@@ -49,10 +49,12 @@ void announce_new_session(int session_num);
 std::string get_git_head_sha();
 
 // Check git HEAD against saved SHA; inject warning if mismatched.
-// Returns true if there was a mismatch.
+// The note is decoded into the KV cache and appended to restored_tokens so
+// both stay consistent (skipped if it does not fit in the remaining context).
+// n_batch bounds the decode chunks. Returns true if there was a mismatch.
 bool check_git_head_on_restore(const std::string& save_path, const std::string& saved_sha,
                                llama_context* ctx, llama_batch& batch, int& n_past,
-                               std::vector<llama_token>& restored_tokens);
+                               std::vector<llama_token>& restored_tokens, int n_batch);
 
 // Print a session-restored diagnostic (with optional git SHA)
 void diag_session_restored(int session_num, size_t n_tokens, int n_ctx, const std::string& git_short = "");

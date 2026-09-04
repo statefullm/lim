@@ -1703,6 +1703,18 @@ bool ChatSession::run() {
                 continue;
             }
 
+            // Fail fast if the session can't fit in the context: the restore
+            // decode needs one KV position per token. Without this check the
+            // decode would exhaust the KV cache mid-restore, the state tracker
+            // would claim a restore that never completed, and a truncated fast
+            // cache entry would be written for it.
+            if ((int)restored_tokens.size() >= (int)cparams_.n_ctx) {
+                diag("Restore failed: session has " + to_string(restored_tokens.size()) +
+                     " tokens, which does not fit in the context size (" + to_string(cparams_.n_ctx) +
+                     "). Increase LIM_CTX or restore an older checkpoint.", "\033[31m");
+                continue;
+            }
+
             // Resolve to absolute path for cache key consistency.
             char abs_buf[4096];
             string restore_path_abs;
@@ -1854,9 +1866,13 @@ bool ChatSession::run() {
                         common_batch_add(batch_, restored_tokens[i + j], n_past_, {0}, (i + j == (int)restored_tokens.size() - 1));
                         n_past_++;
                     }
-                    if (!handle_llama_decode_error(ctx_, batch_, "KV Cache Exhausted during restore. Type '/clear' to reset.", false)) {
+                    // should_break=true: KV exhaustion (ret 1) and aborts
+                    // (ret 2) must count as failures here -- with false they
+                    // would slip through and the code below would report a
+                    // successful restore of a partially decoded cache.
+                    if (stop_generation ||
+                        !handle_llama_decode_error(ctx_, batch_, "Decode failed during restore.", true)) {
                         sync_n_past(ctx_, n_past_);
-                        diag("Restore failed: could not decode tokens", "\033[31m");
                         restore_failed = true;
                     }
                     // Save recurrent checkpoints at prompt boundaries.
@@ -1868,7 +1884,37 @@ bool ChatSession::run() {
                 }
                 sync_n_past(ctx_, n_past_);
 
-                if (restore_failed) continue;
+                if (restore_failed) {
+                    // The KV cache holds a partial restored prefix that the
+                    // token tracker doesn't account for (all_context_tokens
+                    // was cleared before the decode and is still empty).
+                    // Continuing would let the model answer from context that
+                    // /save and /undo can't see, and a /save would write a
+                    // corrupted file. Reset to a clean fresh session instead.
+                    bool was_interrupted = stop_generation;
+                    stop_generation = 0;  // proceed with the recovery feed
+                    llama_memory_clear(llama_get_memory(ctx_), true);
+                    n_past_ = 0;
+                    state_.all_context_tokens.clear();
+                    state_.prompt_checkpoints.clear();
+                    state_.file_cache.clear();
+                    state_.auto_continue = false;
+                    state_.prev_was_interrupted = false;
+                    state_.checkpoint_stack_offset = 0;
+                    state_.tool_correction_checkpoint_idx = -1;
+                    reset_session_state();
+                    if (!feed_tokens_impl(system_tokens_)) {
+                        diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
+                             " and the context reset also failed. Type '/clear' to recover.", "\033[31m");
+                    } else {
+                        llama_sampler_reset(smpl_);
+                        diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
+                             ": context reset to a fresh session", "\033[31m");
+                        log_entry("SYSTEM", string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
+                                  ", context reset to a fresh session");
+                    }
+                    continue;
+                }
 
                 auto restore_end = chrono::high_resolution_clock::now();
                 double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
@@ -1884,9 +1930,12 @@ bool ChatSession::run() {
 
                 // Auto-write V1 cache for instant future restores (full restore only
                 // -- a partial prefix would hash to an entry a later full restore
-                // never matches; skipped with --checkpoints).
+                // never matches; skipped with --checkpoints). The n_past_ check
+                // is defense in depth: the cache must cover exactly the tracked
+                // tokens or a future fast restore would desync.
                 if (!restore_checkpoints_ && !restore_path_abs.empty() &&
-                    (int)restored_tokens.size() == total_restore_tokens) {
+                    (int)restored_tokens.size() == total_restore_tokens &&
+                    n_past_ == (int)restored_tokens.size()) {
                     if (is_debug) {
                         diag("Save to cache.", "\033[35m");
                     }
@@ -1914,7 +1963,7 @@ bool ChatSession::run() {
                     fclose(fp_git);
                 }
 
-                check_git_head_on_restore(rpath, saved_sha, ctx_, batch_, n_past_, state_.all_context_tokens);
+                check_git_head_on_restore(rpath, saved_sha, ctx_, batch_, n_past_, state_.all_context_tokens, (int)cparams_.n_batch);
             }
 
             // Reset sampler state for a clean generation start.

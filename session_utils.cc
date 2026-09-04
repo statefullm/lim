@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <string>
 #include <vector>
+#include <algorithm>
 #include <iostream>
 
 using namespace std;
@@ -144,11 +145,12 @@ std::string get_git_head_sha() {
 }
 
 // Check git HEAD against saved SHA. If mismatched, warns the user and
-// injects a message into restored_tokens (and decodes it via batch/n_past).
+// injects a message into restored_tokens, decoding it into the KV cache so
+// the model actually sees the note and the cache/token tracker stay in sync.
 // Returns true if there was a mismatch.
 bool check_git_head_on_restore(const std::string& save_path, const std::string& saved_sha,
                                 llama_context* ctx, llama_batch& batch, int& n_past,
-                                std::vector<llama_token>& restored_tokens) {
+                                std::vector<llama_token>& restored_tokens, int n_batch) {
     if (saved_sha.empty()) return false;
 
     std::string current_sha = get_git_head_sha();
@@ -161,10 +163,41 @@ bool check_git_head_on_restore(const std::string& save_path, const std::string& 
     // Inform the LLM about code changes.
     auto git_msg = build_user_assistant_turn(ctx,
         "Note: Git HEAD has changed since this session was saved (was " + short_saved + ", now " + short_current + "). Code or configuration may have been modified.");
-    batch.n_tokens = 0;
-    for (size_t i = 0; i < git_msg.size(); i++) {
-        common_batch_add(batch, git_msg[i], n_past++, {0}, (i == git_msg.size() - 1));
+
+    // The note must fit in the remaining context (same >= convention as
+    // feed_user_message): it is decoded into the KV cache and appended to the
+    // token tracker, so both must stay consistent.
+    if (n_past + (int)git_msg.size() >= (int)llama_n_ctx(ctx)) {
+        diag("Git HEAD note skipped: no context room left", "\033[33m");
+        return true;
     }
+
+    // Decode the note so the model sees it (previously it was added to the
+    // batch without a decode: the model never saw the note, the positions were
+    // phantom KV slots, and the stale batch was silently dropped by the next
+    // feed).
+    int git_start = n_past;
+    bool ok = true;
+    for (int i = 0; i < (int)git_msg.size() && ok; i += n_batch) {
+        int chunk = std::min(n_batch, (int)git_msg.size() - i);
+        if (chunk <= 0) break;
+        batch.n_tokens = 0;
+        for (int j = 0; j < chunk; j++) {
+            common_batch_add(batch, git_msg[i + j], n_past + j, {0}, (i + j == (int)git_msg.size() - 1));
+        }
+        n_past += chunk;
+        if (llama_decode(ctx, batch) != 0) ok = false;
+    }
+
+    if (!ok) {
+        // Defensive (the fit check above should make this unreachable): roll
+        // the note out of the KV cache and leave the tracker untouched.
+        llama_memory_seq_rm(llama_get_memory(ctx), 0, git_start, -1);
+        n_past = git_start;
+        diag("Git HEAD note failed to decode; skipped", "\033[33m");
+        return true;
+    }
+
     restored_tokens.insert(restored_tokens.end(), git_msg.begin(), git_msg.end());
     return true;
 }

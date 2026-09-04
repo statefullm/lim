@@ -366,6 +366,27 @@ static std::vector<std::string> find_cache_files(const std::string& suffix) {
   return matches;
 }
 
+// Scan $LIM_CACHE_DIR/ and return the full paths of all entries whose names
+// start with 'prefix' (e.g., "<save-name>-").  Empty if the directory can't
+// be opened.
+static std::vector<std::string> find_cache_files_by_prefix(const std::string& prefix) {
+  std::vector<std::string> matches;
+  std::string dir = get_cache_dir_internal();
+
+  DIR* d = opendir(dir.c_str());
+  if (!d) return matches;
+
+  struct dirent* entry;
+  while ((entry = readdir(d)) != nullptr) {
+    std::string fname = entry->d_name;
+    if (fname.compare(0, prefix.size(), prefix) == 0) {
+      matches.push_back(dir + "/" + fname);
+    }
+  }
+  closedir(d);
+  return matches;
+}
+
 // Load a raw KV-cache blob from a file (no header).
 static bool load_raw_cache(const std::string& cache_path, struct llama_context* ctx) {
   FILE* fp = fopen(cache_path.c_str(), "rb");
@@ -397,7 +418,19 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
   // Look for any file ending with -<hash>. All matches share the same
   // content+model hash, so the first one that loads is valid.
   for (const auto& cache_path : find_cache_files("-" + hash)) {
-    if (load_raw_cache(cache_path, ctx)) return true;
+    if (!load_raw_cache(cache_path, ctx)) continue;
+
+    // Verify the loaded cache covers exactly the token count. A mismatch
+    // means a corrupt entry (e.g., a truncated KV cache written by an older
+    // version while a restore was still decoding) -- discard it and fall
+    // back to the next candidate or a slow restore.
+    llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+    if (max_pos + 1 != (llama_pos)tokens.size()) {
+      llama_memory_clear(llama_get_memory(ctx), true);
+      unlink(cache_path.c_str());
+      continue;
+    }
+    return true;
   }
   return false;
 }
@@ -408,8 +441,25 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   std::string dir = get_cache_dir_internal();
   std::string hash = cache_hash(tokens, model_path);
 
-  // Check if an equivalent cache entry already exists (same content+model).
-  if (!find_cache_files("-" + hash).empty()) return true;
+  // Remove orphaned entries for this save file: same name prefix, different
+  // content hash. These can't be matched by hash alone -- e.g., a previous
+  // slow restore of older content at this path (the slow-restore auto-write
+  // passes an empty old_hash, so no hash record exists for it). Without this
+  // they accumulate forever. Note: two save files in different directories
+  // with the same basename share a prefix; deleting the other one's entry
+  // only costs one slow restore later, never correctness (lookups are
+  // hash-based).
+  {
+    std::string name = save_file_name(save_path);
+    if (!name.empty()) {
+      std::string prefix = name + "-";
+      for (const auto& cache_path : find_cache_files_by_prefix(prefix)) {
+        size_t slash = cache_path.rfind('/');
+        std::string base = (slash == std::string::npos) ? cache_path : cache_path.substr(slash + 1);
+        if (base != prefix + hash) unlink(cache_path.c_str());
+      }
+    }
+  }
 
   // Delete the stale cache entry from the previous save (if we know its hash).
   if (!old_hash.empty()) {
@@ -417,6 +467,9 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
       unlink(cache_path.c_str());
     }
   }
+
+  // Check if an equivalent cache entry already exists (same content+model).
+  if (!find_cache_files("-" + hash).empty()) return true;
 
   // Write the raw KV cache as $LIM_CACHE_DIR/<name>-<hash>
   std::string cache_path = dir + "/" + cache_filename(save_path, tokens, model_path);
