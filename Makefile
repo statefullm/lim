@@ -1,6 +1,26 @@
 LLAMA_DIR := llama
 LIM_LLAMA_BUILD_DIR ?= $(LLAMA_DIR)/build
 
+# Decide whether LIM_LLAMA_BUILD_DIR is the in-tree ./llama/build or a separate,
+# pre-built EXTERNAL directory. The default (and the readlink-unavailable
+# fallback) is a textual match on the in-tree spelling; the canonical match
+# additionally catches absolute paths, ../, trailing slashes, and symlinks that
+# resolve to the same directory. readlink -fm makes a path absolute, resolves ..
+# and symlinks, and tolerates the build dir not existing yet (fresh checkout).
+CANON_BUILD_DIR   := $(shell readlink -fm $(LIM_LLAMA_BUILD_DIR) 2>/dev/null)
+CANON_LLAMA_BUILD := $(shell readlink -fm $(LLAMA_DIR)/build 2>/dev/null)
+IN_TREE_BUILD := 0
+ifeq ($(LIM_LLAMA_BUILD_DIR),$(LLAMA_DIR)/build)
+  IN_TREE_BUILD := 1
+else ifneq ($(CANON_BUILD_DIR),)
+  ifeq ($(CANON_BUILD_DIR),$(CANON_LLAMA_BUILD))
+    IN_TREE_BUILD := 1
+  endif
+endif
+# In-tree: `make` builds llama from the subrepo and `llama-clean`/`distclean`
+# remove the build dir. External: `make` never builds llama (links the pre-built
+# libs) and `distclean` never touches the directory.
+
 CXX = g++
 # Auto-detect CUDA architecture if not overridden by environment
 CUDA_ARCH_FLAGS ?=
@@ -67,8 +87,8 @@ all: $(TARGET) vscode
 $(LIM_LLAMA_BUILD_DIR):
 	mkdir -p $@
 
-ifeq ($(LIM_LLAMA_BUILD_DIR),$(LLAMA_DIR)/build)
-# Auto-build llama.cpp from subrepo
+ifeq ($(IN_TREE_BUILD),1)
+# In-tree: auto-build llama.cpp from the subrepo (LIM_LLAMA_BUILD_DIR is ./llama/build)
 $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so: $(LLAMA_DIR)/CMakeLists.txt | $(LIM_LLAMA_BUILD_DIR)
 	@if [ -z "$(CUDA_ARCH_FLAGS)" ]; then echo "Error: No GPU detected and CUDA_ARCH_FLAGS not set. Set it manually or build with GGML_CUDA=off for CPU-only." >&2; exit 1; fi
 	@echo "[llama.cpp] Configuring with CUDA architectures: $(CUDA_ARCH_FLAGS)"
@@ -137,7 +157,9 @@ clean:	FORCE
 	rm -rf vscode-extension/out vscode-extension/node_modules vscode-extension/*.vsix
 
 llama-clean:
+ifeq ($(IN_TREE_BUILD),1)
 	rm -rf $(LIM_LLAMA_BUILD_DIR)
+endif
 
 distclean: clean llama-clean
 
