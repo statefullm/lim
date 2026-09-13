@@ -445,19 +445,18 @@
                 return;
             }
 
-            var html = rawTextToHtml(tail, segments[segIndex].type, wrapperDiv);
+            // Render + insert (handles fence continuation: when the tail
+            // starts inside a fence an earlier commit left open, the fence
+            // lines are appended to the existing <pre><code> instead of being
+            // re-rendered as a synthetic-fence block).
+            var inserted = commitDeltaHtml(wrapperDiv, segIndex, tail);
+            var firstInserted = inserted.firstInserted;
+            var lastInserted = inserted.lastInserted;
 
-            // Insert the rendered HTML fragment at the end of the wrapper.
-            // For think blocks, insert into .think-body; otherwise into wrapperDiv.
+            // Insertion target (for the math pass below): .think-body for
+            // think blocks, otherwise the wrapper itself.
             var target = (segments[segIndex].type === SEG_THINK) ?
                 wrapperDiv.querySelector('.think-body') : wrapperDiv;
-            var fragment = htmlFragment(html);
-            var firstInserted = null, lastInserted = null;
-            while (fragment.firstChild) {
-                if (!firstInserted) firstInserted = fragment.firstChild;
-                lastInserted = fragment.firstChild;
-                target.appendChild(fragment.firstChild);
-            }
             if (finish) {
                 wrapperDiv.removeAttribute('data-raw');
             } else {
@@ -773,13 +772,16 @@
                         // each waited-on character is examined only once.
                         return;
                     }
-                    if (segments[segIndex].type === SEG_THINK) {
-                        // Mid-stream: render but keep streaming (finish=false) so the
-                        // box stays open and the next delta renders incrementally.
-                        renderRawTail(wrapperDiv, segIndex, false);
-                    } else {
-                        renderRawTail(wrapperDiv, segIndex);
-                    }
+                    // Mid-stream: render but keep the segment in raw mode
+                    // (finish=false) so the next delta commits incrementally
+                    // instead of leaving raw mode and paying a full O(n)
+                    // re-render of the whole segment on every subsequent delta
+                    // (quadratic for long code blocks).  Fence continuation is
+                    // safe now: commitDeltaHtml appends fence lines to the
+                    // existing <pre><code>, so a long code block stays a single
+                    // block.  The turn-end finishAllRawSegments() sweep
+                    // force-finishes the segment, as for think blocks today.
+                    renderRawTail(wrapperDiv, segIndex, false);
                 }
                 return;
             }
@@ -829,18 +831,13 @@
 
             var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
 
-            var html = rawTextToHtml(deltaText, segments[segIndex].type, wrapperDiv);
-
-            // Insert the rendered HTML fragment at the end of the target.
-            var target = (segments[segIndex].type === SEG_THINK) ?
-                wrapperDiv.querySelector('.think-body') : wrapperDiv;
-            var fragment = htmlFragment(html);
-            var firstInserted = null, lastInserted = null;
-            while (fragment.firstChild) {
-                if (!firstInserted) firstInserted = fragment.firstChild;
-                lastInserted = fragment.firstChild;
-                target.appendChild(fragment.firstChild);
-            }
+            // Render + insert (handles fence continuation: when the delta
+            // starts inside a fence a previous commit left open, the fence
+            // lines are appended to the existing <pre><code> instead of being
+            // re-rendered as a synthetic-fence block).
+            var inserted = commitDeltaHtml(wrapperDiv, segIndex, deltaText);
+            var firstInserted = inserted.firstInserted;
+            var lastInserted = inserted.lastInserted;
 
             // Advance the rendered prefix.  The scan state is position-based, so it
             // carries over instead of resetting: data-scan-hwm keeps advancing (no
@@ -920,6 +917,7 @@
             var inFence = !!startInFence;
             var fenceRunLen = 3;          // opener run length (unknown if startInFence)
             var fenceBuf = '';            // pending fence content lines
+            var heldLine = '';            // final candidate closer line, held for next delta
             var lineStart = 0;            // start of the current line
 
             // If the text itself contains %code_N% tokens (LLM output), use a
@@ -1024,8 +1022,23 @@
                         lineStart = i;
                         continue;
                     }
+                    if (ce === -1) {
+                        // Final line, no newline yet.  If it is a closer-line
+                        // CANDIDATE (<=3 spaces + only backticks), the line may
+                        // still complete into a closer with the next delta --
+                        // hold it out of the content so the next commit can
+                        // judge the COMPLETED line (a closer split across a
+                        // commit boundary would otherwise leave a stray
+                        // backtick in the content and never close the fence).
+                        if (/^ {0,3}`*$/.test(line)) {
+                            heldLine = line;
+                        } else {
+                            fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
+                        }
+                        i = L;
+                        break;
+                    }
                     fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
-                    if (ce === -1) { i = L; break; }
                     i = ce + 1;
                     lineStart = i;
                     continue;
@@ -1068,9 +1081,215 @@
                 processLineSpans();
             }
             pushTo(L);
-            if (inFence) flushFence(false);   // unclosed fence at end of delta
+            var fenceOpen = inFence;
+            var bufAtEnd = fenceBuf;            // capture before flushFence clears it
+            if (fenceOpen) flushFence(false);   // unclosed fence at end of delta
             return { text: out.join(''), codeContents: codeContents,
-                     prefix: prefix, endParity: inFence ? 1 : 0 };
+                     prefix: prefix, endParity: fenceOpen ? 1 : 0,
+                     // Fence state for the next delta (fence-continuation
+                     // append): the last content line lacks its \n (the delta
+                     // ended mid-line, so the next append needs no leading
+                     // newline -- a held closer candidate completes a line,
+                     // so it does not count as mid-line), the fence already
+                     // has content (so the next append does need one), the
+                     // opener's run length (3 = unknown when resuming across
+                     // a delta boundary), and the held closer candidate line
+                     // (the next commit judges the COMPLETED line).
+                     endMidLine: fenceOpen && bufAtEnd !== '' && heldLine === '' &&
+                                 text.charAt(L - 1) !== '\n',
+                     endHasContent: fenceOpen && bufAtEnd !== '',
+                     endFenceRunLen: fenceOpen ? fenceRunLen : 0,
+                     endHeldLine: fenceOpen ? heldLine : '' };
+        }
+
+        // CommonMark closer rule (matching maskCodeRegions): at most 3
+        // leading spaces, a backtick run of length >= fenceRunLen, then only
+        // spaces.
+        function isFenceCloseLine(line, fenceRunLen) {
+            var p = 0;
+            while (p < line.length && line[p] === ' ') p++;
+            if (p > 3) return false;
+            var rb = 0;
+            while (p + rb < line.length && line[p + rb] === '`') rb++;
+            if (rb < fenceRunLen) return false;
+            var q = p + rb;
+            while (q < line.length) {
+                if (line[q] !== ' ') return false;
+                q++;
+            }
+            return true;
+        }
+
+        // Find the line in delta that closes a fence already open before the
+        // delta starts.  firstLinePartial: the delta starts mid-line
+        // (the previous commit ended mid-line), so the first line is a
+        // continuation of an earlier fence line and can never be the closer.
+        // Returns { contentEnd, closeEnd } -- contentEnd is the start of the
+        // close line (fence content is delta[0..contentEnd)), closeEnd is the
+        // index just past the close line's newline (or delta.length when the
+        // close line is the last line without a trailing newline) -- or null
+        // when no close line is present.  Single O(delta) scan.
+        function findFenceCloseInDelta(delta, fenceRunLen, firstLinePartial) {
+            var L = delta.length;
+            var lineStart = 0;
+            var i = 0;
+            function checkLine(ls, le) {
+                if (!isFenceCloseLine(delta.substring(ls, le), fenceRunLen)) return null;
+                return { contentEnd: ls, closeEnd: le === L ? L : le + 1 };
+            }
+            while (i < L) {
+                if (delta[i] === '\n') {
+                    // The first line is a continuation of an earlier fence
+                    // line when firstLinePartial; it can never be the closer.
+                    if (!(lineStart === 0 && firstLinePartial)) {
+                        var res = checkLine(lineStart, i);
+                        if (res) return res;
+                    }
+                    lineStart = i + 1;
+                }
+                i++;
+            }
+            // Final line (no trailing newline) can still be the closer --
+            // unless the whole delta is one partial first line.
+            if (lineStart === 0 && firstLinePartial) return null;
+            return checkLine(lineStart, L);
+        }
+
+        // Proper prefixes of the C++ stream-escape tokens -- %lt%, %gt% and
+        // their backslash-escaped forms, plus &amp; (C++ escapes every &, so
+        // a bare & in the raw stream is always the start of one).  A fence
+        // commit that ends mid-token must hold the partial back and prepend
+        // it to the next commit, or the split token renders as literal text.
+        var PARTIAL_ESCAPE_PREFIXES =
+            ['&amp', '%\\lt', '&am', '%lt', '%gt', '%\\l', '%\\g', '&a', '%l', '%g', '%\\', '&', '%'];
+
+        // Longest suffix of s (length <= 4) that is a proper prefix of a
+        // stream-escape token, or '' when s does not end mid-token.  O(1).
+        // Must run on the RAW (pre-unescape) stream text: a user-literal
+        // '%lt%' (escaped form in the stream: '%\lt%') is NOT a partial.
+        // A trailing COMPLETE token is not a partial either: its final char
+        // closes the token (holding it would split the token from the next
+        // commit's content and change how the pair unescapes).
+        function longestPartialEscapeSuffix(s) {
+            if (/(?:%\\?(?:lt|gt)%|&amp;)$/.test(s)) return '';
+            for (var n = Math.min(4, s.length); n >= 1; n--) {
+                var suf = s.substring(s.length - n);
+                if (PARTIAL_ESCAPE_PREFIXES.indexOf(suf) !== -1) return suf;
+            }
+            return '';
+        }
+
+        // Plan a fence-continuation commit: the delta starts inside a fence
+        // that a previous commit left open.  Pure function (no DOM) so the
+        // plan is unit-testable; the caller performs the DOM ops:
+        //   appendText  the fence content in this delta, unescaped for
+        //               textContent ( %lt% %gt% -> < > , &amp; -> & ), or
+        //               null when the delta has no fence content (it starts
+        //               at the close line).  The caller prepends '\n' when
+        //               the previous commit ended at a line boundary AND the
+        //               block already has content (it knows both; this
+        //               function does not).
+        //   rest        text after the close line, to be run through the
+        //               normal pipeline (marked etc.) with parity 0.
+        //   closeFound  the fence closed inside this delta.
+        //   endMidLine  when the fence is still open: the appended content's
+        //               last line lacks its newline (a held closer candidate
+        //               completes a line, so it does not count as mid-line).
+        //   pending     a partial escape token held back from the (still open)
+        //               fence content's end; prepend it to the NEXT commit.
+        //   heldLine    a closer candidate line held back from the (still
+        //               open) fence content's end; the NEXT commit judges the
+        //               completed line (candidate + its first line).
+        // pending: partial escape token held back by the previous commit.
+        // heldLine: closer candidate line held back by the previous commit.
+        function fenceContinuationCommit(delta, fenceRunLen, firstLinePartial, pending, heldLine) {
+            pending = pending || '';
+            heldLine = heldLine || '';
+            var work = delta;
+
+            // A held closer candidate: the completed line = heldLine + the
+            // delta's first line.  Judge it before anything else.
+            if (heldLine !== '') {
+                var nl = work.indexOf('\n');
+                var firstLine = nl === -1 ? work : work.substring(0, nl);
+                var combined = heldLine + firstLine;
+                if (nl === -1 && /^ {0,3}`*$/.test(combined)) {
+                    // Still unterminated and still a candidate: keep holding;
+                    // nothing to append this commit.  (pending is always ''
+                    // here: a held line means the previous content ended on a
+                    // complete line, so no escape token is split.)
+                    return { appendText: null, rest: '', closeFound: false,
+                             endMidLine: false, pending: '', heldLine: combined };
+                }
+                if (nl !== -1 && isFenceCloseLine(combined, fenceRunLen)) {
+                    // The completed line is the closer: no content from it.
+                    return {
+                        appendText: (pending !== '') ? unescapeMathTex(pending) : null,
+                        rest: work.substring(nl + 1),
+                        closeFound: true, endMidLine: false,
+                        pending: '', heldLine: ''
+                    };
+                }
+                if (nl !== -1) {
+                    // The completed line is a content line.
+                    work = combined + work.substring(nl);
+                } else {
+                    // No newline yet and no longer a candidate: the completed
+                    // line is content, still mid-line.
+                    work = combined;
+                }
+                firstLinePartial = false;   // the first line is now complete
+            }
+
+            var close = findFenceCloseInDelta(work, fenceRunLen, firstLinePartial);
+            var rest = close ? work.substring(close.closeEnd) : '';
+            var newHeld = '';
+            var rawBase;
+            if (close) {
+                rawBase = work.substring(0, close.contentEnd);
+            } else {
+                // The fence stays open: hold a final closer candidate line
+                // (a commit boundary may land mid-closer-line on any commit)
+                // so the next commit can judge the COMPLETED line.
+                var lastNl = work.lastIndexOf('\n');
+                var finalLine = work.substring(lastNl + 1);
+                if (finalLine !== '' && /^ {0,3}`*$/.test(finalLine)) {
+                    newHeld = finalLine;
+                    rawBase = work.substring(0, lastNl + 1);
+                } else {
+                    rawBase = work;
+                }
+            }
+            var raw = pending + rawBase;
+            // Match the mask's convention: the last content line does not keep
+            // its newline (the \n before the close line, or a trailing \n at
+            // delta end, is a line terminator, not content).  Without this,
+            // every append would add a spurious trailing newline to <pre>.
+            if (raw.length > 0 && raw.charAt(raw.length - 1) === '\n') {
+                raw = raw.substring(0, raw.length - 1);
+            }
+            // An escape token split across commits renders as literal text, so
+            // when the fence stays open, hold any partial token at the end of
+            // the (pending + new) content for the next commit.  When the fence
+            // closes, the combined raw text is unescaped whole (the partial
+            // either completes or is a literal).
+            var newPending = '';
+            var content = raw;
+            if (!close) {
+                newPending = longestPartialEscapeSuffix(raw);
+                if (newPending !== '') {
+                    content = raw.substring(0, raw.length - newPending.length);
+                }
+            }
+            return {
+                appendText: (content !== '') ? unescapeMathTex(content) : null,
+                rest: rest,
+                closeFound: !!close,
+                endMidLine: !close && newHeld === '' && work.length > 0 &&
+                            work.charAt(work.length - 1) !== '\n',
+                pending: newPending,
+                heldLine: newHeld
+            };
         }
 
         // Shared pipeline: mask code regions, extract math delimiters, run
@@ -1157,18 +1376,197 @@
                 return '$$' + unescapeMathTex(block.srcEsc) + '$$';
             });
 
-            return { html: html, endParity: masked.endParity };
+            return { html: html, endParity: masked.endParity,
+                     endMidLine: masked.endMidLine,
+                     endHasContent: masked.endHasContent,
+                     endFenceRunLen: masked.endFenceRunLen,
+                     endHeldLine: masked.endHeldLine };
+        }
+
+        // Persist fence-continuation state on the wrapper from a pipeline
+        // result.  A delta can start inside a fence opened by an earlier
+        // delta (forced mid-fence render), so the parity is persisted on the
+        // wrapper; the other fence-state attributes feed the fence-continuation
+        // append (data-fence-midline / data-fence-content decide the
+        // leading-newline rule; data-fence-runlen is the closer rule).
+        function writeFenceAttrs(wrapperDiv, r) {
+            if (!wrapperDiv) return;
+            wrapperDiv.setAttribute('data-fence-parity', r.endParity ? '1' : '0');
+            if (r.endParity) {
+                if (r.endMidLine) wrapperDiv.setAttribute('data-fence-midline', '1');
+                else wrapperDiv.removeAttribute('data-fence-midline');
+                if (r.endHasContent) wrapperDiv.setAttribute('data-fence-content', '1');
+                else wrapperDiv.removeAttribute('data-fence-content');
+                wrapperDiv.setAttribute('data-fence-runlen', String(r.endFenceRunLen || 3));
+            } else {
+                wrapperDiv.removeAttribute('data-fence-midline');
+                wrapperDiv.removeAttribute('data-fence-content');
+                wrapperDiv.removeAttribute('data-fence-runlen');
+            }
         }
 
         function rawTextToHtml(text, segType, wrapperDiv) {
-            // Fence parity across incremental renders of one segment: a delta
-            // can start inside a fence opened by an earlier delta (forced
-            // mid-fence render), so the parity is persisted on the wrapper.
             var v = wrapperDiv ?
                 (wrapperDiv.getAttribute('data-fence-parity') === '1' ? 1 : 0) : 0;
             var r = convertTextToHtml(text, v);
-            if (wrapperDiv) wrapperDiv.setAttribute('data-fence-parity', r.endParity ? '1' : '0');
+            writeFenceAttrs(wrapperDiv, r);
             return r.html;
+        }
+
+        // Last <pre><code> element among the nodes from firstNode to
+        // lastNode (siblings, inclusive) -- the open fence's code element,
+        // when an inserted commit ends inside an unclosed fence.  O(new
+        // nodes only), not O(wrapper).
+        function findLastPreCode(firstNode, lastNode) {
+            if (!firstNode) return null;
+            var found = null;
+            var node = firstNode;
+            while (node) {
+                if (node.nodeType === 1) {
+                    var pres = (node.nodeName === 'PRE') ?
+                        [node] : Array.prototype.slice.call(node.querySelectorAll('pre'));
+                    if (pres.length > 0) found = pres[pres.length - 1];
+                }
+                if (node === lastNode) break;
+                node = node.nextSibling;
+            }
+            return found ? found.querySelector('code') : null;
+        }
+
+        // marked terminates the <pre><code> content of ANY fence with \n --
+        // even when the fence is UNTERMINATED and the source's last line has
+        // no newline (and an empty fence emits a lone \n).  The fence-
+        // continuation protocol assumes the stashed <code> holds the mask's
+        // convention (no terminator after the last content line), so strip
+        // marked's added trailing \n at stash time.  Without this, a commit
+        // boundary landing at a line terminator renders a blank line (the
+        // continuation's leading-\n prefix meets marked's \n), and a
+        // boundary mid-line splits the line in two.  The last child is a
+        // single text node at this point (fresh from the sentinel restore).
+        function stripCodeTrailingNewline(codeEl) {
+            if (!codeEl) return;
+            var last = codeEl.lastChild;
+            if (last && last.nodeType === 3 &&
+                last.nodeValue.charAt(last.nodeValue.length - 1) === '\n') {
+                last.nodeValue = last.nodeValue.slice(0, -1);
+            }
+        }
+
+        // Render deltaText and insert it into the segment wrapper (or its
+        // .think-body), handling fence continuation: when the delta starts
+        // inside a fence the previous commit left open (data-fence-parity=1
+        // and a stashed code element), the fence lines are appended as a
+        // text node to the EXISTING <pre><code> instead of being rendered
+        // through marked as a synthetic-fence block -- which would split one
+        // logical code block into one <pre> per commit.  When the fence
+        // closes inside the delta, only the post-close remainder goes
+        // through marked.  Returns { firstInserted, lastInserted }.
+        function commitDeltaHtml(wrapperDiv, segIndex, deltaText) {
+            var segType = segments[segIndex].type;
+            var target = (segType === SEG_THINK) ?
+                wrapperDiv.querySelector('.think-body') : wrapperDiv;
+            var firstInserted = null, lastInserted = null;
+
+            function insertHtml(html) {
+                var fragment = htmlFragment(html);
+                while (fragment.firstChild) {
+                    if (!firstInserted) firstInserted = fragment.firstChild;
+                    lastInserted = fragment.firstChild;
+                    target.appendChild(fragment.firstChild);
+                }
+            }
+
+            // Normal-pipeline render with sentinel hold-back: if the delta
+            // ends inside an open fence AND its tail is a partial sentinel,
+            // render the trimmed text and hold the partial for the next
+            // commit (a sentinel split across commits would otherwise render
+            // as literal text).  When the fence is not open at the end, the
+            // full text renders as before (a trailing partial in non-fence
+            // text is pre-existing behavior, unchanged).
+            function renderWithHold(text) {
+                var start = wrapperDiv.getAttribute('data-fence-parity') === '1' ? 1 : 0;
+                var hold = longestPartialEscapeSuffix(text);
+                var r = null, used = false;
+                if (hold !== '') {
+                    var rt = convertTextToHtml(
+                        text.substring(0, text.length - hold.length), start);
+                    if (rt.endParity) { r = rt; used = true; }
+                }
+                if (!used) r = convertTextToHtml(text, start);
+                writeFenceAttrs(wrapperDiv, r);
+                return { r: r, hold: used ? hold : '' };
+            }
+
+            if (wrapperDiv.getAttribute('data-fence-parity') === '1' &&
+                wrapperDiv.__openFenceCode) {
+                var runLen = scanIntAttr(wrapperDiv, 'data-fence-runlen', 3);
+                var partial = wrapperDiv.getAttribute('data-fence-midline') === '1';
+                var hasContent = wrapperDiv.getAttribute('data-fence-content') === '1';
+                var plan = fenceContinuationCommit(deltaText, runLen, partial,
+                    wrapperDiv.__fencePending || '', wrapperDiv.__fenceHeldLine || '');
+                if (plan.appendText !== null) {
+                    var prefix = (!partial && hasContent) ? '\n' : '';
+                    wrapperDiv.__openFenceCode.appendChild(
+                        document.createTextNode(prefix + plan.appendText));
+                    if (!plan.closeFound) {
+                        // Fence still open: content now exists.
+                        wrapperDiv.setAttribute('data-fence-content', '1');
+                    }
+                }
+                if (plan.closeFound) {
+                    // Fence closed in this delta: clear continuation state;
+                    // the post-close remainder renders normally (parity 0).
+                    wrapperDiv.__openFenceCode = null;
+                    wrapperDiv.__fencePending = null;
+                    wrapperDiv.__fenceHeldLine = null;
+                    wrapperDiv.setAttribute('data-fence-parity', '0');
+                    wrapperDiv.removeAttribute('data-fence-midline');
+                    wrapperDiv.removeAttribute('data-fence-content');
+                    wrapperDiv.removeAttribute('data-fence-runlen');
+                    if (plan.rest !== '') {
+                        var rr = renderWithHold(plan.rest);
+                        insertHtml(rr.r.html);
+                        if (rr.r.endParity) {
+                            // The remainder opened a new fence: stash it.
+                            wrapperDiv.__openFenceCode =
+                                findLastPreCode(firstInserted, lastInserted);
+                            stripCodeTrailingNewline(wrapperDiv.__openFenceCode);
+                            wrapperDiv.__fencePending = rr.hold || null;
+                            wrapperDiv.__fenceHeldLine =
+                                rr.r.endHeldLine || null;
+                        } else {
+                            wrapperDiv.__fencePending = null;
+                            wrapperDiv.__fenceHeldLine = null;
+                        }
+                    }
+                } else if (plan.endMidLine) {
+                    // Still open, appended content ends mid-line.
+                    wrapperDiv.setAttribute('data-fence-midline', '1');
+                    wrapperDiv.__fencePending = plan.pending || null;
+                    wrapperDiv.__fenceHeldLine = plan.heldLine || null;
+                } else {
+                    wrapperDiv.removeAttribute('data-fence-midline');
+                    wrapperDiv.__fencePending = plan.pending || null;
+                    wrapperDiv.__fenceHeldLine = plan.heldLine || null;
+                }
+                // (No close: stash and parity are unchanged.)
+            } else {
+                var rr = renderWithHold(deltaText);
+                insertHtml(rr.r.html);
+                // Stash (or clear) the open fence's code element.
+                if (rr.r.endParity) {
+                    wrapperDiv.__openFenceCode =
+                        findLastPreCode(firstInserted, lastInserted);
+                    stripCodeTrailingNewline(wrapperDiv.__openFenceCode);
+                    wrapperDiv.__fencePending = rr.hold || null;
+                    wrapperDiv.__fenceHeldLine = rr.r.endHeldLine || null;
+                } else {
+                    wrapperDiv.__openFenceCode = null;
+                    wrapperDiv.__fencePending = null;
+                    wrapperDiv.__fenceHeldLine = null;
+                }
+            }
+            return { firstInserted: firstInserted, lastInserted: lastInserted };
         }
 
         // Parse an HTML string into a DocumentFragment (no outerHTML wrapper).
@@ -1404,6 +1802,9 @@
                                     // Content shrank (shouldn't happen normally, but handle it).
                         wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
                                     wrapperDiv.removeAttribute('data-raw');
+                                    wrapperDiv.__openFenceCode = null;   // DOM replaced
+                                    wrapperDiv.__fencePending = null;
+                                    wrapperDiv.__fenceHeldLine = null;
                                     injectCopyButtons(wrapperDiv);
                                     renderMathInDiv(wrapperDiv);
                                     segRenderedContent[i] = segments[i].content;
@@ -1429,6 +1830,9 @@
                                 });
 
                                 wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                                wrapperDiv.__openFenceCode = null;   // DOM replaced
+                                wrapperDiv.__fencePending = null;
+                                wrapperDiv.__fenceHeldLine = null;
                                 injectCopyButtons(wrapperDiv);
                                 renderMathInDiv(wrapperDiv);
 
