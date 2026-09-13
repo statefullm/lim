@@ -445,7 +445,7 @@
                 return;
             }
 
-            var html = rawTextToHtml(tail, segments[segIndex].type);
+            var html = rawTextToHtml(tail, segments[segIndex].type, wrapperDiv);
 
             // Insert the rendered HTML fragment at the end of the wrapper.
             // For think blocks, insert into .think-body; otherwise into wrapperDiv.
@@ -829,7 +829,7 @@
 
             var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
 
-            var html = rawTextToHtml(deltaText, segments[segIndex].type);
+            var html = rawTextToHtml(deltaText, segments[segIndex].type, wrapperDiv);
 
             // Insert the rendered HTML fragment at the end of the target.
             var target = (segments[segIndex].type === SEG_THINK) ?
@@ -893,20 +893,208 @@
             // is processed at most once, so this is O(missed), not O(n).
             injectCopyButtons(wrapperDiv);
         }
-        // Shared pipeline: extract math delimiters, run through marked, render KaTeX.
-        // Used by both rawTextToHtml (streaming) and segToHtml (full re-render).
-        function convertTextToHtml(text) {
-            var mathBlocks = [];
+        /* ------------------------------------------------------------------ */
+        /*  Code region masking (O(N))                                        */
+        /* ------------------------------------------------------------------ */
+        /*  A '$' inside a code span or fenced block is a shell/env reference, */
+        /*  never a math delimiter -- and rendered LaTeX in code we might      */
+        /*  cut and paste would be useless.  So before math extraction, the   */
+        /*  content of all code regions is masked out and restored verbatim   */
+        /*  (still C++-escaped) after marked.parse().                         */
+        /*                                                                     */
+        /*  Complexity: one forward scan -- the index only moves forward.     */
+        /*  Inline spans are handled per line: all backtick runs on the line  */
+        /*  are gathered in a single pass and matched to same-length closers  */
+        /*  with monotonically advancing per-length pointers, so every run is */
+        /*  visited a bounded number of times even when many backticks are    */
+        /*  unpaired -- strictly O(N) over the whole text.                    */
+        /*                                                                     */
+        /*  Streaming: a delta can start inside a fence opened by an earlier  */
+        /*  delta (forced mid-fence render), so the caller passes the fence   */
+        /*  parity at the delta's start; the parity at the delta's end is     */
+        /*  returned for the next call.                                        */
+        function maskCodeRegions(text, startInFence) {
+            var codeContents = [];
+            var out = [];
+            var i = 0, L = text.length;
+            var inFence = !!startInFence;
+            var fenceRunLen = 3;          // opener run length (unknown if startInFence)
+            var fenceBuf = '';            // pending fence content lines
+            var lineStart = 0;            // start of the current line
 
-            var content = text.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
-                mathBlocks.push({ tex: m.trim(), display: true });
+            // If the text itself contains %code_N% tokens (LLM output), use a
+            // different placeholder family to avoid a restore collision (same
+            // idea as the mth escape system).
+            var prefix = /%code_\d+%/.test(text) ? 'codeB_' : 'code_';
+
+            function pushTo(pos) {
+                if (pos > i) out.push(text.substring(i, pos));
+                i = pos;
+            }
+
+            function flushFence(withNewline) {
+                if (fenceBuf !== '') {
+                    codeContents.push(fenceBuf);
+                    out.push(HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
+                             HTML_SENTINEL_CHAR + (withNewline ? '\n' : ''));
+                }
+                fenceBuf = '';
+            }
+
+            // Inline code spans for one line, in one pass.  i sits at the
+            // line's first backtick (not a fence).  All backtick runs on the
+            // line are gathered in a single forward scan, then each opener is
+            // matched to the next same-length run (the closer) using a
+            // monotonically advancing pointer per run length -- each run is
+            // visited a bounded number of times, so this is O(line length)
+            // even with many unpaired backticks.  Spans are same-line only
+            // (cross-line spans are pathological in LLM output; the
+            // restriction keeps line structure intact).  Different-length
+            // runs inside a span are content.
+            function processLineSpans() {
+                var lineEnd = text.indexOf('\n', i);
+                if (lineEnd === -1) lineEnd = L;
+
+                var runs = [];
+                var r = i;
+                while (r < lineEnd) {
+                    if (text[r] === '`') {
+                        var r2 = r;
+                        while (r2 < lineEnd && text[r2] === '`') r2++;
+                        runs.push({ start: r, end: r2, len: r2 - r });
+                        r = r2;
+                    } else {
+                        r++;
+                    }
+                }
+
+                var emit = i;
+                var nextFor = {};   // run length -> candidate index in runs
+                var idx = 0;
+                while (idx < runs.length) {
+                    var op = runs[idx];
+                    var q = (nextFor[op.len] !== undefined) ? nextFor[op.len] : (idx + 1);
+                    while (q < runs.length &&
+                           (runs[q].len !== op.len || runs[q].start < op.end)) q++;
+                    nextFor[op.len] = q;
+                    if (q < runs.length) {
+                        var cl = runs[q];
+                        if (op.start > emit) out.push(text.substring(emit, op.start));
+                        codeContents.push(text.substring(op.end, cl.start));
+                        out.push('`' + HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
+                                 HTML_SENTINEL_CHAR + '`');
+                        emit = cl.end;
+                        idx = q + 1;   // closer is consumed
+                    } else {
+                        // No same-length closer on the line: literal backticks.
+                        if (op.end > emit) out.push(text.substring(emit, op.end));
+                        emit = op.end;
+                        idx++;
+                    }
+                }
+                if (lineEnd > emit) out.push(text.substring(emit, lineEnd));
+                if (lineEnd < L) out.push('\n');   // preserve line structure
+                i = (lineEnd < L) ? lineEnd + 1 : L;
+                lineStart = i;
+            }
+
+            // If we start inside a fence opened by an earlier delta, the
+            // previous delta's marked auto-closed its fence; open a synthetic
+            // one here so this delta's remaining fence content (and its real
+            // closer line) forms a complete code block as well.
+            if (inFence) out.push('```\n');
+
+            while (i < L) {
+                if (inFence) {
+                    // Consume one line; check if it closes the fence: at most 3
+                    // leading spaces, a backtick run of length >= fenceRunLen,
+                    // then only spaces.
+                    var ce = text.indexOf('\n', i);
+                    var line = text.substring(i, ce === -1 ? L : ce);
+                    var p = 0;
+                    while (p < line.length && line[p] === ' ') p++;
+                    var ls = p, rb = 0;
+                    while (p + rb < line.length && line[p + rb] === '`') rb++;
+                    var rest = line.substring(p + rb);
+                    if (ls <= 3 && rb >= fenceRunLen && rest.replace(/ /g, '') === '') {
+                        flushFence(true);
+                        out.push(line + (ce === -1 ? '' : '\n'));
+                        i = (ce === -1 ? L : ce) + 1;
+                        inFence = false;
+                        lineStart = i;
+                        continue;
+                    }
+                    fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
+                    if (ce === -1) { i = L; break; }
+                    i = ce + 1;
+                    lineStart = i;
+                    continue;
+                }
+
+                if (text[i] !== '`') {
+                    // Literal text up to the next backtick (chunked: one push).
+                    var nb = text.indexOf('`', i);
+                    var stop = nb === -1 ? L : nb;
+                    var seg = text.substring(i, stop);
+                    var nl = seg.lastIndexOf('\n');
+                    if (nl !== -1) lineStart = i + nl + 1;
+                    out.push(seg);
+                    i = stop;
+                    continue;
+                }
+
+                // A backtick run.
+                var j = i;
+                while (j < L && text[j] === '`') j++;
+                var n = j - i;
+
+                // Fence opener?  Same rule as isFenceMarker(): a run of 3+
+                // backticks at text start or after \n, with at most 3 leading
+                // spaces.
+                var b = i, sp = 0;
+                while (b > 0 && text[b - 1] === ' ' && sp < 3) { b--; sp++; }
+                if (n >= 3 && (b === 0 || text[b - 1] === '\n')) {
+                    // Emit the opening fence line (info string) verbatim.
+                    var nl2 = text.indexOf('\n', j);
+                    pushTo(nl2 === -1 ? L : nl2 + 1);
+                    i = nl2 === -1 ? L : nl2 + 1;
+                    inFence = true;
+                    fenceRunLen = n;
+                    lineStart = i;
+                    continue;
+                }
+
+                // Inline spans: process the whole line in one pass.
+                processLineSpans();
+            }
+            pushTo(L);
+            if (inFence) flushFence(false);   // unclosed fence at end of delta
+            return { text: out.join(''), codeContents: codeContents,
+                     prefix: prefix, endParity: inFence ? 1 : 0 };
+        }
+
+        // Shared pipeline: mask code regions, extract math delimiters, run
+        // through marked, render KaTeX.  Used by both rawTextToHtml (streaming)
+        // and segToHtml (full re-render).  Every step is a single linear pass
+        // over its input, so the pipeline is O(N) per call; progressive
+        // rendering feeds each character exactly once, so O(N) per segment.
+        function convertTextToHtml(text, startInFence) {
+            var mathBlocks = [];
+            var masked = maskCodeRegions(text, startInFence);
+            var content = masked.text;
+
+            content = content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
+                mathBlocks.push({ tex: m.trim(), display: true, srcEsc: m });
                 return HTML_SENTINEL_CHAR + 'mth_' + (mathBlocks.length - 1) + HTML_SENTINEL_CHAR;
             });
 
             // Extract inline math $...$ so that | inside $a|b$ doesn't get
-            // treated as a table delimiter by marked.
+            // treated as a table delimiter by marked.  $ pairs inside code
+            // regions can't reach here (masked above).  Candidates are still
+            // validated at restore time: a $ pair in prose is usually an
+            // env-var reference, not math.
             content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
-                mathBlocks.push({ tex: m.trim(), display: false });
+                mathBlocks.push({ tex: m.trim(), display: false, srcEsc: m });
                 return HTML_SENTINEL_CHAR + 'mth_' + (mathBlocks.length - 1) + HTML_SENTINEL_CHAR;
             });
 
@@ -915,35 +1103,72 @@
                 var content2 = content.replace(/\\\\/g, '\x00\x00');
                 html = marked.parse(content2, { breaks: true });
                 html = html.replace(/\x00\x00/g, '\\\\');
-                html = htmlUnescapeSentinels(html);
             } else {
                 var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
             }
 
+            // Restore masked code content verbatim (still C++-escaped: &amp;
+            // and %lt%/%gt% tokens).  Runs before htmlUnescapeSentinels so the
+            // %lt%/%gt% inside resolve to entities like everywhere else.
+            var codeRe = new RegExp(HTML_SENTINEL_CHAR + masked.prefix + '(\\d+)' + HTML_SENTINEL_CHAR, 'g');
+            html = html.replace(codeRe, function(_, idx) {
+                return masked.codeContents[parseInt(idx)];
+            });
+            html = htmlUnescapeSentinels(html);
+
             // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
             html = html.replace(new RegExp(HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&') + 'mth_(\\d+)' + HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&'), 'g'), function(_, idx) {
                 var block = mathBlocks[parseInt(idx)];
                 var tex = unescapeMathTex(block.tex);
-                // When LIM_INLINE_LATEX is disabled, only render display-mode (block-level) math.
-                // Inline $...$ falls through to raw delimiters to avoid mangling $HOME etc.
-                if (!LIM_INLINE_LATEX_ENABLED && !block.display) {
-                    return '$' + tex + '$';
+                if (!block.display) {
+                    // Inline $...$: the same byte sequence is usually a shell/
+                    // env reference.  Render only if it looks like real inline
+                    // math:
+                    //   1. TeX convention: a math delimiter never abuts
+                    //      whitespace (kills "$HOME and $PATH" pairings).
+                    //   2. An all-uppercase [A-Z0-9_] token is an env var, not
+                    //      math (math variables are lowercase).
+                    //   3. Backticks never appear in math -- they mark code.
+                    //   4. It must actually parse as math.
+                    // Otherwise fall back to the exact original text (srcEsc is
+                    // the untrimmed capture, unescaped for display).
+                    if (!LIM_INLINE_LATEX_ENABLED) return '$' + unescapeMathTex(block.srcEsc) + '$';
+                    var src = block.srcEsc;
+                    if (/\s/.test(src.charAt(0)) || /\s/.test(src.charAt(src.length - 1))) {
+                        return '$' + unescapeMathTex(src) + '$';
+                    }
+                    if (/^[A-Z][A-Z0-9_]*$/.test(src)) return '$' + unescapeMathTex(src) + '$';
+                    if (src.indexOf('`') !== -1) return '$' + unescapeMathTex(src) + '$';
+                    if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
+                        try {
+                            return katex.renderToString(tex, { displayMode: false, throwOnError: true });
+                        } catch(e) {}
+                    }
+                    return '$' + unescapeMathTex(src) + '$';
                 }
+                // Display $$...$$: intentional block math -- render as before.
                 if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                     try {
-                        var result = katex.renderToString(tex, { displayMode: block.display, throwOnError: false });
+                        var result = katex.renderToString(tex, { displayMode: true, throwOnError: false });
                         if (!result.includes('katex-error')) return result;
                     } catch(e) {}
                 }
-                return block.display ? '$$' + tex + '$$' : '$' + tex + '$';
+                return '$$' + unescapeMathTex(block.srcEsc) + '$$';
             });
 
-            return html;
+            return { html: html, endParity: masked.endParity };
         }
 
-        function rawTextToHtml(text, segType) {
-            return convertTextToHtml(text);
+        function rawTextToHtml(text, segType, wrapperDiv) {
+            // Fence parity across incremental renders of one segment: a delta
+            // can start inside a fence opened by an earlier delta (forced
+            // mid-fence render), so the parity is persisted on the wrapper.
+            var v = wrapperDiv ?
+                (wrapperDiv.getAttribute('data-fence-parity') === '1' ? 1 : 0) : 0;
+            var r = convertTextToHtml(text, v);
+            if (wrapperDiv) wrapperDiv.setAttribute('data-fence-parity', r.endParity ? '1' : '0');
+            return r.html;
         }
 
         // Parse an HTML string into a DocumentFragment (no outerHTML wrapper).
@@ -992,9 +1217,9 @@
 
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
-                return convertTextToHtml(seg.content);
+                return convertTextToHtml(seg.content).html;
             } else if (seg.type === SEG_THINK) {
-                var html = convertTextToHtml(seg.content);
+                var html = convertTextToHtml(seg.content).html;
                 return '<div class="think-header" onclick="toggleThinkBlock(this)">' +
                     '<span class="arrow">&#9660;</span> Thinking' +
                     '</div>' +
@@ -1072,9 +1297,12 @@
         function renderMathInDiv(parentDiv) {
             if (typeof renderMathInElement === 'function') {
                 renderMathInElement(parentDiv, {
+                    // No single-$ delimiter: inline math is fully handled by the
+                    // validated pipeline in convertTextToHtml; a blind $ pairing
+                    // over the DOM would re-render env vars that the pipeline
+                    // deliberately left as raw text.
                     delimiters: [
                         { left: '$$',  right: '$$',  display: true  },
-                        { left: '$',   right: '$',   display: false },
                         { left: '\\(', right: '\\)', display: false },
                         { left: '\\[', right: '\\]', display: true  }
                     ],
@@ -1108,7 +1336,10 @@
                 while (walker.nextNode()) textNodes.push(walker.currentNode);
             }
 
-            var delimRe = /\$\$([^\$]+?)\$\$|\$([^\$]+?)\$/g;
+            // $$ only: inline $...$ is handled (with validation) by the
+            // convertTextToHtml pipeline; a blind $ pairing over DOM text nodes
+            // would re-render env vars the pipeline deliberately left raw.
+            var delimRe = /\$\$([^\$]+?)\$\$/g;
             textNodes.forEach(function(tn) {
                 var text = tn.nodeValue;
                 if (!text.includes('$')) return;
@@ -1117,11 +1348,10 @@
                 var m;
                 while ((m = delimRe.exec(text)) !== null) {
                     if (m.index > lastIdx) fragments.push(document.createTextNode(text.substring(lastIdx, m.index)));
-                    var tex = m[1] ? m[1].trim() : m[2].trim();
-                    var display = !!m[1];
+                    var tex = m[1].trim();
                     if (typeof katex !== 'undefined') {
                         try {
-                            var result = katex.renderToString(tex, { displayMode: display, throwOnError: false });
+                            var result = katex.renderToString(tex, { displayMode: true, throwOnError: false });
                             if (!result.includes('katex-error')) {
                                 fragments.push(result);
                             } else {
@@ -1457,7 +1687,7 @@
                 var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
                 var tail = fullText.substring(renderedPrefixLen);
                 if (tail.length === 0) { wrapperDiv.removeAttribute('data-raw'); continue; }
-                var html = rawTextToHtml(tail, segments[i].type);
+                var html = rawTextToHtml(tail, segments[i].type, wrapperDiv);
                 var target = (segments[i].type === SEG_THINK) ?
                     wrapperDiv.querySelector('.think-body') : wrapperDiv;
                 if (target) target.innerHTML += html;
@@ -1535,8 +1765,11 @@
             URL.revokeObjectURL(url);
         }
 
-        // LIM_INLINE_LATEX_ENABLED: set to 0 by limServer.py (via LIM_INLINE_LATEX env var)
-        // to disable client-side LaTeX rendering in the browser.
+
+        // LIM_INLINE_LATEX_ENABLED: overridden by limServer.py (via LIM_INLINE_LATEX env var).
+        // Defaults to 1: inline math renders, but each $...$ candidate is validated
+        // (whitespace / env-var / parse rules) and code regions are never treated as
+        // math, so env vars like $HOME and $PATH are left as literal text.
         var LIM_INLINE_LATEX_ENABLED = 1;
 
         connect();

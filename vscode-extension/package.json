@@ -2,7 +2,7 @@
   "name": "vscode-extension",
   "displayName": "LIM Workspace",
   "description": "Integrated terminal and browser workspace for LIM",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "publisher": "statefullm",
   "repository": {
     "type": "git",
