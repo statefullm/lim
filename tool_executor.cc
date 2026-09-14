@@ -97,60 +97,45 @@ ToolExecutor::Result ToolExecutor::execute(
 
     ToolResult tool_out;
     bool abort_auto = false;
-    bool inject_auto_user_msg = false;
-    string active_intervention_msg = "";
 
     // Execute the tool.
     tool_out = execute_tool_call(tool_call, state);
 
     // Handle validation errors reported by the struct.
+    // Policy: one correction attempt per malformed call.  If this call's
+    // attempt is already spent (a corrected call came back bad) or no
+    // rollback checkpoint exists, feed the abort message and eject.
     if (!tool_out.recognized || !tool_out.params_valid || tool_out.malformed_xml) {
-        // If path was auto-inferred, skip strike counting and diagnostics
-        if (tool_out.path_inferred) {
-            state.invalid_tool_strikes = 0;
-        } else {
-            state.invalid_tool_strikes++;
-            string label = tool_out.recognized ? "Malformed Tool Call" : "Invalid Tool Call";
-            if (state.invalid_tool_strikes > 1)
-                diag("System: " + label + " (Strike " + std::to_string(state.invalid_tool_strikes) + ").", "\033[1;31m");
-            if (is_debug) {
-                // Show the raw tool call for diagnosis.
-                diag("  Raw tool_call: " + tool_call, "\033[2;90m");
-                diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[2;90m");
-                if (!tool_out.recognized) {
-                    diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[2;90m");
-                }
-                if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
-                    string mp;
-                    for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
-                        if (i > 0) mp += ", ";
-                        mp += "\"" + tool_out.missing_params[i] + "\"";
-                    }
-                    diag("  Missing required parameters: " + mp, "\033[2;90m");
-                }
+        if (is_debug) {
+            // Show the raw tool call for diagnosis.
+            diag("  Raw tool_call: " + tool_call, "\033[2;90m");
+            diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[2;90m");
+            if (!tool_out.recognized) {
+                diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[2;90m");
             }
-
-            if (state.invalid_tool_strikes >= 5) {
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool call" + (state.invalid_tool_strikes != 1 ? "s" : "") + ". Intervention failed, ejecting to prompt.", "\033[1;31m");
-                abort_auto = true;
-            } else if (state.invalid_tool_strikes >= 1 && !state.correction_attempted_this_turn && state.has_tool_correction_checkpoint) {
-                // Attempt tool-call correction on first strike: roll back via slot checkpoint,
-                // feed full system prompt, let the LLM generate a fix, then
-                // inject the good tool call cleanly.
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " invalid tool call" + (state.invalid_tool_strikes != 1 ? "s" : "") + ". Attempting correction.", "\033[1;33m");
-                state.correction_attempted_this_turn = true;
-                result.needs_correction = true;
-                // Don't set inject_auto_user_msg or abort_auto -- the main loop
-                // will handle the correction cycle.
-            } else if (state.invalid_tool_strikes >= 2) {
-                diag("System: " + std::to_string(state.invalid_tool_strikes) + " consecutive invalid tool call" + (state.invalid_tool_strikes != 1 ? "s" : "") + ". Injecting intervention.", "\033[1;31m");
-                inject_auto_user_msg = true;
-                active_intervention_msg = "Follow the system prompt strictly.";
+            if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
+                string mp;
+                for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
+                    if (i > 0) mp += ", ";
+                    mp += "\"" + tool_out.missing_params[i] + "\"";
+                }
+                diag("  Missing required parameters: " + mp, "\033[2;90m");
             }
         }
-    } else {
-        state.invalid_tool_strikes = 0;
 
+        if (!state.correction_attempted_this_turn && state.has_tool_correction_checkpoint) {
+            // Attempt tool-call correction: the main loop rolls back via the
+            // slot checkpoint, feeds the full system prompt, lets the LLM
+            // generate a fix, then injects the good tool call cleanly.
+            diag("System: Invalid tool call. Attempting correction.", "\033[1;33m");
+            state.correction_attempted_this_turn = true;
+            result.needs_correction = true;
+        } else {
+            // No correction available: eject to the prompt with an abort message.
+            diag("System: Invalid tool call. Ejecting to prompt.", "\033[1;31m");
+            abort_auto = true;
+        }
+    } else {
         if (stop_generation) {
             diag("Tool Interrupted by User", "\033[31m");
             stop_generation = 0;
@@ -236,11 +221,8 @@ ToolExecutor::Result ToolExecutor::execute(
         // Build tool result message as a string, then tokenize in one pass.
         vector<llama_token> t_tokens;
         {
-            // User turn + assistant prefill, with optional intervention message.
+            // User turn + assistant prefill.
             string tool_content = "[Tool Result]\n" + tool_out.content;
-            if (inject_auto_user_msg && !active_intervention_msg.empty()) {
-                tool_content += "\n" + active_intervention_msg;
-            }
 
             // Escape PARAM_END and model turn tokens in the content so they
             // don't get misinterpreted as structural boundaries during tokenization.

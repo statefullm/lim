@@ -220,28 +220,38 @@ static bool find_param_tag(const string& tool_call, const string& arg_name, size
     return false;
 }
 
-// Linear-time string parser for XML schema
-string extract_string_arg_bounded(const string& tool_call, const string& arg_name) {
+// Extract the raw parameter block: text between the opening tag
+// (canonical PARAM_START name> form or the bare-tag fallback) and the
+// closing PARAM_END, or through the end of the tool call if no PARAM_END
+// is present.  Returns "" if the parameter tag is not found.
+static string extract_param_block(const string& tool_call, const string& arg_name) {
     size_t content_begin = 0;
     if (!find_param_tag(tool_call, arg_name, content_begin)) {
         return "";
     }
-
     size_t end = find_unescaped_param_end(tool_call, content_begin);
     if (end == string::npos) end = tool_call.length();
+    return tool_call.substr(content_begin, end - content_begin);
+}
 
-    // For the path parameter, treat a newline as an implicit PARAM_END.
-    // If the LLM forgets to close the path param, the newline prevents
-    // bleeding into subsequent parameters.
-    if (arg_name == "path") {
-        size_t nl = tool_call.find('\n', content_begin);
-        if (nl != string::npos && nl < end) {
-            end = nl;
-        }
-    }
+// Raw variant of extract_string_arg_bounded: returns the parameter block
+// without quote stripping.  Used for value-level validation (e.g. detecting
+// newlines in the "paths" array value, which the array parser's splitting
+// would otherwise hide).
+string extract_raw_arg_bounded(const string& tool_call, const string& arg_name) {
+    return extract_param_block(tool_call, arg_name);
+}
 
-    string val = tool_call.substr(content_begin, end - content_begin);
-    return strip_quotes(val);
+// Linear-time string parser for XML schema
+string extract_string_arg_bounded(const string& tool_call, const string& arg_name) {
+    // Note: newlines inside "path" are intentionally NOT truncated here.
+    // A newline in a path almost always means the model forgot the closing
+    // PARAM_END tag -- that is a malformed call the handler must route
+    // through the correction cycle (param_has_newline checks), not a value
+    // to silently truncate.  When PARAM_END is genuinely missing the value
+    // extends to the next parameter's PARAM_END; harmless, since handlers
+    // return a malformed-XML error before executing anything.
+    return strip_quotes(extract_param_block(tool_call, arg_name));
 }
 
 // Linear-time array parser for XML schema (Newline/Comma separated)
@@ -251,15 +261,8 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
 
-    size_t content_begin = 0;
-    if (!find_param_tag(tool_call, arg_name, content_begin)) {
-        return result;
-    }
-
-    size_t end = find_unescaped_param_end(tool_call, content_begin);
-    if (end == string::npos) end = tool_call.length();
-
-    string val = tool_call.substr(content_begin, end - content_begin);
+    string val = extract_param_block(tool_call, arg_name);
+    if (val.empty()) return result;
 
     // If the llm bleeds its schema (</<), truncate the parameter exactly at the bleed.
     size_t bleed_pos = val.find("</<");

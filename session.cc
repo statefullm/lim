@@ -568,12 +568,8 @@ private:
         llama_sampler_reset(smpl_);
     }
 
-    void reset_llm_state() {
-        state_.invalid_tool_strikes = 0;
-    }
-
     void reset_session_state() {
-        reset_llm_state();
+        state_.correction_attempted_this_turn = false;
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
         g_browser_warning_suppressed = false;
@@ -1604,7 +1600,6 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::RESET) {
-            reset_llm_state();
             NetworkTools().reset_search();
             system("reset");
             log_entry("SYSTEM", "Terminal and search reset");
@@ -2075,7 +2070,6 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::CONTINUE) {
-            state_.invalid_tool_strikes = 0;
             if (state_.tool_interrupt_pending) {
                 state_.prev_was_interrupted = false;
                 diag("Resuming after tool interruption...", "\033[1;33m");
@@ -2282,8 +2276,8 @@ bool ChatSession::run() {
         }
 
         // 8a. Stuck tool call (silent-loop abort): handle identically to an invalid
-        // tool call -- consume a strike and this turn's correction attempt, then run
-        // the same correction cycle in step 8b (feed system prompt, regenerate once,
+        // tool call -- consume this call's correction attempt, then run the same
+        // correction cycle in step 8b (feed system prompt, regenerate once,
         // roll back to right after FUNC_START, inject the clean call). The garbage
         // tokens are simply part of what the rollback removes.
         // The checkpoint is guaranteed available: the detector can only fire after
@@ -2291,11 +2285,10 @@ bool ChatSession::run() {
         // from the original generation on a mid-tool-call resume).  The
         // has_tool_correction_checkpoint check is defensive -- if the invariant ever
         // breaks, ejecting to prompt is safer than rolling back to a stale position.
-        // Ejects as well when this turn's correction attempts are exhausted.
+        // Ejects as well when this call's correction attempt is already spent.
         if (gen_result.stuck_in_tool_call) {
             if (state_.has_tool_correction_checkpoint && !state_.correction_attempted_this_turn) {
-                state_.invalid_tool_strikes++;
-                diag("System: " + std::to_string(state_.invalid_tool_strikes) + " invalid tool call" + (state_.invalid_tool_strikes != 1 ? "s" : "") + ". Attempting correction.", "\033[1;33m");
+                diag("System: Invalid tool call. Attempting correction.", "\033[1;33m");
                 state_.correction_attempted_this_turn = true;
                 state_.tool_correction_mode = true;
             } else {
@@ -2324,7 +2317,7 @@ bool ChatSession::run() {
                 }
             }
 
-            string correction_msg = "System Error: Invalid tool call. Follow these instructions:\n\n";
+            string correction_msg = "System Error: Invalid tool call. Did you forget a closing parameter or function tag in your tool call?\n\nFollow these instructions strictly:\n\n";
             correction_msg += system_prompt;
 
             vector<llama_token> correction_tokens = build_tool_result_turn(ctx_, correction_msg);
@@ -2361,6 +2354,11 @@ bool ChatSession::run() {
                             (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
                         state_.tool_correction_n_past = n_past_;
                         state_.auto_continue = false;
+                        // Returning control to the user prompt: the correction latch is
+                        // only meaningful within one auto-continue chain (step 9 clears it
+                        // on a normal prompt return, but this path `continue`s past it).
+                        // Clearing it also lets /continue trigger a fresh correction.
+                        state_.correction_attempted_this_turn = false;
                         continue;
                     }
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
@@ -2404,13 +2402,11 @@ bool ChatSession::run() {
                     // block overwrites the slot with the final state when this turn
                     // completes.
                     state_.has_tool_correction_checkpoint = true;
-                    // Allow one more correction only if we haven't already used both.
-                    // After injection, invalid_tool_strikes is still at its pre-injection
-                    // value (>= 1). If it's already >= 2, don't reset the flag -- let the
-                    // next failure fall through to the eject path.
-                    if (state_.invalid_tool_strikes < 2) {
-                        state_.correction_attempted_this_turn = false;
-                    }
+                    // The corrected call passed the gate, which mirrors the execution
+                    // checks, so it cannot come back malformed: this call's correction
+                    // attempt is consumed, and a future malformed call in this chain
+                    // gets a fresh attempt.
+                    state_.correction_attempted_this_turn = false;
 
                     // Hand off to process_tool_call -- it executes normally from here.
                     if (process_tool_call()) {
@@ -2426,12 +2422,21 @@ bool ChatSession::run() {
                         (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
                     state_.tool_correction_n_past = n_past_;
                     state_.auto_continue = false;
+                    // Returning control to the user prompt: the correction latch is only
+                    // meaningful within one auto-continue chain (step 9 would clear it but
+                    // this path `continue`s past it). Clearing it lets /continue trigger a
+                    // fresh correction attempt.
+                    state_.correction_attempted_this_turn = false;
                 }
             } else {
                 // The correction prompt (full system prompt) itself doesn't fit in the
                 // remaining context, so no correction is possible without exceeding the
                 // limit. Eject to the prompt with an explanation rather than failing silently.
                 diag("System: Tool correction aborted: correction prompt does not fit in remaining context (" + std::to_string(correction_tokens.size()) + " tokens needed, " + std::to_string(cparams_.n_ctx - n_past_) + " available). Type '/clear' to reset.", "\033[1;33m");
+                // Returning control to the user prompt: clear the correction latch
+                // (step 9 would do it on a normal prompt return, but this path
+                // `continue`s past it) so the next turn gets a fresh correction attempt.
+                state_.correction_attempted_this_turn = false;
             }
             continue;
         }
@@ -2440,10 +2445,9 @@ bool ChatSession::run() {
         if (!state_.auto_continue && !assistant_logged_this_turn_ && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
 
         // Reset per-turn failure state before returning to the user prompt.
-        // Strikes, correction flags, and tool-interrupt state are only meaningful
-        // within a single auto-continue chain; once the user gets control back,
-        // they start fresh so that /continue or a new prompt behave correctly.
-        reset_llm_state();
+        // Correction and tool-interrupt state are only meaningful within a single
+        // auto-continue chain; once the user gets control back, they start fresh
+        // so that /continue or a new prompt behave correctly.
         state_.correction_attempted_this_turn = false;
         state_.tool_interrupt_pending = false;
 

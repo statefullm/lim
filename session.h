@@ -29,7 +29,6 @@ struct SessionState {
   double last_feed_time = 0.0;    // Time spent feeding/re-decoding tokens (chatbot mode)
   int last_n_past = 0;
   std::map<std::string, std::string> file_cache;  // path -> content hash (for cache validation)
-  int invalid_tool_strikes = 0;
   // Internal state (was static inside the function)
   int auto_continue_depth_val = 0;
   bool tool_interrupt_pending = false;
@@ -53,6 +52,9 @@ struct SessionState {
   // Tool-correction checkpoint: saved at start of each generate_response()
   int tool_correction_n_past = 0;
   bool has_tool_correction_checkpoint = false;
+  // True once this malformed call's single correction attempt has been
+  // consumed.  Cleared on a validated correction injection and at prompt
+  // return; a second malformed call with it set ejects to the prompt.
   bool correction_attempted_this_turn = false;
   // Stack index of the most recent tool-correction checkpoint (for pruning).
   int tool_correction_checkpoint_idx = -1;

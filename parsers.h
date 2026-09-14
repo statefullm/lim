@@ -28,6 +28,11 @@ void escape_tag(std::string& str, const std::string& token, char esc_char);
 // Handles arbitrary-length tool calls safely
 std::string extract_string_arg_bounded(const std::string& tool_call, const std::string& arg_name);
 
+// Raw variant: parameter block between the opening and closing parameter
+// tags without quote stripping.  Used for value-level validation (e.g.
+// newline detection in the "paths" array value).
+std::string extract_raw_arg_bounded(const std::string& tool_call, const std::string& arg_name);
+
 std::vector<std::string> extract_array_arg_bounded(const std::string& tool_call, const std::string& arg_name);
 
 // Collect base turn tokens from model turn markers.
