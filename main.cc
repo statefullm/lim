@@ -290,7 +290,7 @@ int main(int argc, char ** argv) {
   if (chatbot_mode == 1) {
     diag("Chatbot mode 1 enabled: full re-tokenize + re-decode each turn", "\033[33m");
   } else if (chatbot_mode == 2) {
-    diag("Chatbot mode 2 enabled: KV-cache save/restore each turn", "\033[33m");
+    diag("Chatbot mode 2 enabled: cache-aware prefix match + delta decode each turn", "\033[33m");
   }
   if (is_debug) Taskset::log_core_detection(std::cerr);
 

@@ -31,7 +31,7 @@
 //     Override the pinning command. Default is "taskset -c".
 //     On macOS, you can install numactl via Homebrew and use:
 //       export LIM_TASKSET="0-3:4-7"
-//       export LIM_TASKSET_CMD="numactl --cpunodebind"
+//       export LIM_TASKSET_CMD="numactl --physcpubind"
 //     Or write a wrapper script and point to it:
 //       export LIM_TASKSET_CMD="/path/to/pin_cores.sh"
 //

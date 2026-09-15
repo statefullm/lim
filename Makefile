@@ -125,7 +125,9 @@ LIM_CONFIG_DIR ?= $(HOME)/.config/lim
 CONFIG_FILES = prompt reincarnate limServer.py viewer.html
 LIBS_FILES = auto-render.min.js katex-standalone.css katex.min.css katex.min.js marked.min.js
 
-install: $(TARGET)
+# Install the binary and config files, then build and install the
+# VS Code extension.
+install: $(TARGET) vscode
 	mkdir -p ~/bin
 	cp $(TARGET) ~/bin/
 	mkdir -p $(LIM_CONFIG_DIR)
@@ -134,6 +136,7 @@ install: $(TARGET)
 	mkdir -p $(LIM_CONFIG_DIR)/libs
 	cd libs && cp $(LIBS_FILES) $(LIM_CONFIG_DIR)/libs
 	cp -r libs/fonts $(LIM_CONFIG_DIR)/libs/
+	NODE_NO_WARNINGS=1 code --install-extension $(VSIX) --force
 
 install-vscode: vscode
 	NODE_NO_WARNINGS=1 code --install-extension $(VSIX) --force
@@ -141,7 +144,8 @@ install-vscode: vscode
 uninstall-vscode: FORCE
 	-NODE_NO_WARNINGS=1 code --uninstall-extension statefullm.vscode-extension
 
-install-all: install install-vscode
+# Alias: install now includes the VS Code extension.
+install-all: install
 
 uninstall: FORCE
 	-cd $(LIM_CONFIG_DIR) && rm -f $(CONFIG_FILES) userprompt && rmdir searchCache 2>/dev/null || true

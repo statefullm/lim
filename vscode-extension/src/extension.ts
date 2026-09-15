@@ -84,7 +84,7 @@ function startWorkspace() {
     });
 
     if (limHost && limHost !== getHostname()) {
-        const aiUser = process.env.AI_USER || 'ai';
+        const aiUser = process.env.LIM_AI_USER || 'ai';
         terminal.sendText(`ssh -t -a ${aiUser}@${limHost} 'export TERM_PROGRAM=vscode; exec bash -l'`);
     }
     // For local terminals, VS Code already sets TERM_PROGRAM=vscode automatically.

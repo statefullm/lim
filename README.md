@@ -46,7 +46,7 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
 4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search and [Docling](https://github.com/DS4SD/docling) for PDF reading. LIM auto-starts them on demand; override the commands with `LIM_SEARXNG_CMD` / `LIM_DOCLING_CMD` (see **Web Search & PDF Setup** below).
 
-> **Note:** llama.cpp is bundled as a git subrepo with a LIM-specific patch for recurrent state checkpointing (required for instant `/undo` on hybrid models). The patched code is built automatically by the Makefile. A PR upstream to llama.cpp is pending.
+> **Note:** llama.cpp is bundled as a git subrepo with two LIM-specific patches: one adding recurrent state checkpointing (required for instant `/undo` on hybrid models), and one rejecting out-of-range 4-byte UTF-8 sequences so malformed output can't terminate the process. The patched code is built automatically by the Makefile. Both patches are pending PRs upstream to llama.cpp.
 
 ---
 
@@ -56,10 +56,12 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 git clone https://github.com/statefullm/lim.git
 cd lim
 make
-./lim --help
+./lim
 ```
 
 The build will automatically detect your GPU (if any) and compile llama with the appropriate architecture flags. No manual setup is required.
+
+`make` also builds the [VS Code extension](#vs-code-extension) (requires Node.js and npm; it is installed by `make install`). To build only the binary at any time, use `make lim`.
 
 ### Custom Build Options
 
@@ -81,7 +83,7 @@ make llama-clean
 
 ### Installing LIM
 
-After building, install the binary and config files. This **must** be run as `$LIM_AI_USER` (e.g., `su - $LIM_AI_USER`) so that files are installed into that user's home directory, which is where LIM will look for them at runtime:
+After building, install the binary, config files, and VS Code extension. This **must** be run as `$LIM_AI_USER` (e.g., `su - $LIM_AI_USER`) so that files are installed into that user's home directory, which is where LIM will look for them at runtime:
 
 ```bash
 su - $LIM_AI_USER
@@ -94,6 +96,7 @@ This installs:
 - Reincarnate instructions to `~/.config/lim/reincarnate`
 - Search cache directory at `~/.config/lim/searchCache`
 - Browser server files (`limServer.py`, `viewer.html`, `libs/`) to `~/.config/lim/`
+- VS Code extension (built, then installed into this user's VS Code via `code`)
 
 All LIM configuration files live under `~/.config/lim/` by default. Override with the `LIM_CONFIG_DIR` environment variable (set in `$LIM_AI_USER`'s `.bashrc`) to place them elsewhere:
 
@@ -159,13 +162,13 @@ To set permissions in any project sandbox, copy `aishare` from this repository t
 cp aishare /home/$USER/bin/
 ```
 
-Then run it on any directory you want the AI to access:
+Then run it on any directory under `/home/$LIM_AI_USER` that you want the AI to access:
 
 ```bash
 aishare /home/$LIM_AI_USER/project
 ```
 
-It sets ownership to `$USER:$LIM_AI_USER`, grants group read/write and setgid, and clears the sticky bit. When run on `/home/$LIM_AI_USER`, it fixes permissions on the home directory itself plus all top-level entries, skipping `.ssh`.
+It sets ownership to `$USER:$LIM_AI_USER` (via `sudo`), grants group read/write and setgid, and clears the sticky bit. It refuses targets outside `/home/$LIM_AI_USER`. When run on `/home/$LIM_AI_USER`, it fixes permissions on the home directory itself plus all top-level entries, skipping `.ssh`.
 
 ### 4. Connecting and Running LIM
 
@@ -235,12 +238,12 @@ export LIM_TASKSET="::"           # Disable all taskset pinning
 # Install numactl via Homebrew, then use it as the pinning backend
 brew install numactl
 export LIM_TASKSET="0-3:4-7"
-export LIM_TASKSET_CMD="numactl --cpunodebind"
+export LIM_TASKSET_CMD="numactl --physcpubind"
 ```
 
 Or write a custom wrapper script and set `LIM_TASKSET_CMD` to its path. If the command isn't on `$PATH`, pinning is silently skipped -- services still start normally, just unpinned.
 
-The detected topology and pinning status are logged to stderr at startup.
+The detected topology and pinning status are logged to stderr at startup when `LIM_DEBUG=1`.
 
 ### 5. Setting Up `$HOME/.bashrc` for `$LIM_AI_USER`
 
@@ -273,11 +276,11 @@ git() {
 export PATH="$HOME/bin:$PATH"
 ```
 
-The `cd` override writes the current directory to `$HOME/.cwd`, which LIM reads at startup so it knows your working directory. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
+The `cd` override writes the current directory to `$HOME/.cwd`. LIM writes it at startup from its own working directory and reads it to resolve relative paths in the file tools and to set the working directory for `exec_shell` commands. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
 
 ### 6. The System Prompt
 
-The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read once at startup and baked into the KV-cache. It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.). An optional directory-specific file `localprompt` (with a fallback to `$LIM_CONFIG_DIR/localprompt`) will be prepended to the system prompt.
+The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read at startup and baked into the KV-cache (and re-read from disk on `/clear` and `/reincarnate`). It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.). An optional directory-specific file `localprompt` (with a fallback to `$LIM_CONFIG_DIR/localprompt`) will be prepended to the system prompt.
 
 **Reasoning effort:** For models that support reasoning-effort steering, you can add a reasoning effort instructions to `localprompt`, matching how Qwen's own template places its reasoning instructions. The suggested Qwen 3.8 instructions are:
 
@@ -319,7 +322,7 @@ Set via `LIM_OUTPUT`:
 | 3 | Y | Y | Both stdout and browser |
 | 2 (default) | N | Y | Browser only |
 | 1 | Y | N | Stdout only |
-| 0 | N | N | No output (system stderr still works) |
+| 0 | N | N | No LLM output |
 
 ---
 
@@ -336,7 +339,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
 | `LIM_OUTPUT` | `2` | Output mode: `0` = none, `1` = stdout only, `2` = browser only (default), `3` = both |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
-| `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget, so ~3-4 files fill it. Set between `0.0` and `1.0`. |
+| `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget. Set between `0.0` and `1.0` (0.0 means the default value of `0.75`). |
 | `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget (`LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4`). Set explicitly to override. |
 | `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
@@ -347,6 +350,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && exec python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
+| `LIM_LLAMA_DEBUG_LOG` | `0` | Only with `LIM_DEBUG=1`: set to `1` to also print DEBUG-level llama.cpp/ggml log lines (e.g. "CUDA Graph id N reused" on every decode). Default keeps INFO and above. |
 | `LIM_EOG_RESAMPLE_MAX` | `256` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings. |
 | `LIM_TOOL_IGNORE` | `100` | Maximum tokens allowed outside parameters while inside a tool call before attempting a tool correction. |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
@@ -356,8 +360,8 @@ Set via `LIM_OUTPUT`:
 | `LIM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
 | `LIM_BATCH` | `2048` | Batch size for token feeding |
 | `LIM_CTX` | `262144` | Context window size (KV-cache token capacity) |
-| `LIM_THREADS` | *(auto)* | Threads for inference (physical core count) |
-| `LIM_THREADS_BATCH` | *(auto)* | Threads for batch processing (physical core count) |
+| `LIM_THREADS` | *(auto)* | Threads for inference: physical P-core count on hybrid CPUs (E-cores excluded), physical core count on non-hybrid CPUs, logical core count if the CPU topology can't be read |
+| `LIM_THREADS_BATCH` | *(auto)* | Threads for batch processing (same default as `LIM_THREADS`) |
 | `LIM_UBATCH` | `512` | Unbatched size |
 | `LIM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P >= min_p * P(top) |
 | `LIM_FREQUENCY_PENALTY` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency. Legacy name `LIM_PENALTY_FREQ` still accepted (new name wins if both set) |
@@ -369,7 +373,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_DUMMY_THOUGHT` | *(built-in)* | Pre-filled stub used when `LIM_THINKING=0`. Leave unset to use the built-in default, set to an empty string to emit an empty thinking block (Qwen 3.8's "no thinking" signal), or set to any other string. |
 | `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. |
 | `LIM_INLINE_LATEX` | `1` | Set to `0` to disable inline KaTeX rendering in the browser viewer. Inline `$...$` candidates are validated before rendering (LaTeX whitespace rule, env-var identifier pattern, KaTeX parse check) and code spans / fenced blocks are never treated as math, so env vars like `$HOME` or `$PATH` are left as literal text. Block-level `$$...$$` math always renders via `katex.renderToString`. |
-| `LIM_TOP_K` | `20` | Keep only the top_k most likely tokens before applying other samplers |
+| `LIM_TOP_K` | `20` | Keep only the top_k most likely tokens (applied after the penalty sampler, before top_p / min_p / temperature) |
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
@@ -378,11 +382,11 @@ Set via `LIM_OUTPUT`:
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `3600` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
-| `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --cpunodebind`. If the command isn't on `$PATH`, pinning is silently skipped. |
+| `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --physcpubind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
 ### Sampling Behavior
 
-Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG seed). This means repetition penalties apply only to tokens generated *during the current turn*, not to stale tokens from previous responses, and not to the user's input. This differs from llama-cli, which feeds user input tokens into the sampler chain: in a chat interface, penalizing words the user explicitly used in their message would actively harm response quality. During auto-continue (tool-call chains, `/continue`), the sampler state is preserved so generation continues seamlessly.
+Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG seed). This means repetition penalties apply only to tokens generated *during the current turn*, not to stale tokens from previous responses, and not to the user's input. llama-cli also penalizes only generated tokens, but it never resets the sampler chain between turns, so its penalty ring (64 tokens by default) can still carry tokens from the previous response into the next one. During auto-continue (tool-call chains, `/continue`), the sampler state is preserved so generation continues seamlessly.
 
 ---
 
@@ -457,7 +461,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/clear` | Auto-save the current state to `$LIM_LOG_DIR/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
 | `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models (Qwen3.5/3.6), instant undo works for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback unless restored via `--checkpoints`. Readline history is updated to reflect the restored session state. |
 | `/continue` | Resume generation after an interruption. If interrupted mid-tool-call, resumes from the exact point of interruption |
-| `/reset` | Reset terminal, loop detector, and web search. Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
+| `/reset` | Reset terminal and web search. Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
 | `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
@@ -471,7 +475,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 
 You can save a running session and restore it later with zero context loss:
 
-**Save:** Type `/save` at the `>>>` prompt to save to `$LIM_LOG_DIR/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The save file contains only the conversation token sequence, keeping it small and model-agnostic. Named saves also cache the full KV-cache for fast future restores.
+**Save:** Type `/save` at the `>>>` prompt to save to `$LIM_LOG_DIR/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The save file contains only the conversation token sequence, keeping it small. Named saves also cache the full KV-cache for fast future restores.
 
 **Restore:** Pass a save file as the last argument to `coder`. The `.save` extension is added automatically if not already present, matching `/save` behavior. The CLI restore runs the exact same code path as in-session `/load` (it injects `/load <path>` as the first command after startup), so behavior is identical in both, including `--checkpoints`:
 
@@ -487,10 +491,10 @@ This restores the session exactly as it was: the full conversation, KV-cache pos
 
 ```
 >>> /clear
-[Context Cleared Successfully]
+Context Cleared Successfully
 >>> /load cats
-[Restoring session from cats.save... (75432 tokens, from cache)]
-[Session restored: 75432 tokens loaded]
+Restoring session from cats.save... (75432 tokens)
+Session #5 restored: 75432 tokens loaded (28%)
 ```
 
 **Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. Whenever a restore can't use the fast cache (or with `--checkpoints`, CLI or `/load`), LIM offers a choice of checkpoints before decoding so you can select a good restore point. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C, Ctrl+D, or type `/quit` at the `Restore>` prompt to cancel; the session continues fresh from the system prompt. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
@@ -524,7 +528,7 @@ http://<hostname>:8765/viewer.html
 
 This ensures the server is already running when the browser connects, avoiding any need to reload the page.
 
-The Python server (`limServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores (auto-detected, or all cores on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients.
+The Python server (`limServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores when a hybrid CPU is detected (unpinned on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients.
 
 ### VS Code Extension
 
@@ -538,31 +542,33 @@ You then run your `coder` alias in that terminal as usual.
 
 **Install:**
 
+`make install` (see **Installing LIM**) builds and installs the extension. To build or install it separately:
+
 ```bash
 make vscode             # builds and packages the extension
 make install-vscode     # installs the extension into VS Code
 ```
 
-To install everything (binary, config files, and VS Code extension) in one step:
+`make install` installs everything (binary, config files, and VS Code extension). To uninstall:
 
 ```bash
-make install-all        # runs make install && make install-vscode
+make uninstall          # removes the binary and config files
 make uninstall-all      # removes installed files and uninstalls the extension
 ```
 
 Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
 
-To rebuild both the C++ binary and the extension together:
+To rebuild both the C++ binary and the extension:
 
 ```bash
-make all
+make
 ```
 
 ---
 
 ## Benchmarking
 
-LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its persistent KV-cache approach against standard chatbot and cache-aware decoding. Each mode writes a TPS log (`log/<N>.tps`) recording context position and tokens-per-second for every turn.
+LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its persistent KV-cache approach against standard chatbot and cache-aware decoding. Each mode writes a TPS log (`log/<N>.tps`) recording context position and tokens-per-second at each speed diagnostic update (see **Logging**).
 
 | Value | Mode | Description |
 |---|---|---|
@@ -617,7 +623,7 @@ The FIFO at `/tmp/lim.fifo` is created automatically when LIM starts. If it was 
 
 ### "SearxNG connection failed"
 
-LIM tries to connect to SearXNG on `127.0.0.1:8888`. Make sure SearXNG is installed at `~/searxng/` and configured to listen on that port in `settings.yaml`. You can also run SearXNG externally and point LIM to it -- just ensure the server is already listening before your first web search.
+LIM tries to connect to SearXNG on `127.0.0.1:8888`. Make sure SearXNG is installed at `~/searxng/` and configured to listen on that port in `settings.yml`. You can also run SearXNG externally and point LIM to it -- just ensure the server is already listening before your first web search.
 
 ### "Docling Error" when reading PDFs
 
