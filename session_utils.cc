@@ -87,27 +87,42 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags) {
     }
 }
 
-void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time) {
+void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time, bool to_stdout) {
     if (t_count <= 0 || elapsed <= 0.0) return;
-    double context_percent = (n_past / (double)n_ctx) * 100.0;
 
-    // Pick denominator based on honest_speed global
-    double denom = elapsed;  // default: wall clock ("honest")
+    // Pick denominator based on honest_speed global:
+    //   false (default): sample+sync window (first to last token),
+    //                     matching llama-cli's "Generation: X t/s"
+    //   true: full wall-clock elapsed time including pre/post overhead
+    double denom = elapsed;
     if (!honest_speed && decode_time > 0.0) {
         denom = decode_time;
     }
-
     double speed = t_count / denom;
-    int speed_rounded = round_int(speed);
+
+    string msg = format_speed_ctx(round_int(speed), n_past, n_ctx);
+
+    // Terminal + chat log: only for the once-per-turn diagnostic printed at
+    // the >>> prompt (mid-chain / mid-generation updates are browser-only).
+    if (to_stdout) {
+        if (should_output_to_stdout()) {
+            cout << "\033[35m[" << msg << "]\033[0m\n";
+            consoleMarkNewline(true);
+        }
+        if (chat_log.is_open()) {
+            chat_log << "[" << msg << "]" << "\n\n";
+            chat_log.flush();
+        }
+    }
 
     // Write to TPS log file
-    tps_log << n_past << " " << std::fixed << std::setprecision(3) << speed << "\n";
+    if (denom > 0) {
+        tps_log << n_past << " " << std::fixed << std::setprecision(3) << speed << "\n";
+    }
 
     // Send to browser status bar (compact: no labels)
     if (should_output_to_browser()) {
-        std::ostringstream oss2;
-        oss2 << speed_rounded << " t/s | " << n_past << " (" << (int)context_percent << "%)";
-        stream_speed(oss2.str());
+        stream_speed(msg);
     }
 }
 void diag_restore(const std::string& path, int token_count) {

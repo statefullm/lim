@@ -27,10 +27,22 @@ bool open_session_logs(int idx);
 // Strip all occurrences of given tags from a string
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
 
-// Print speed/context diagnostic to stdout (used during auto-continue chains)
-// When gen_wall_time > 0 and honest_speed is false, uses wall-clock generation time
-// (first-token decode start to last-token decode end), matching llama-cli's "Generation t/s".
-void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time = 0.0);
+// Format the compact speed + context string shown in the browser status bar:
+// "123 t/s | 45678 (51%)". Shared by the turn-end diagnostic and the
+// mid-generation status update.
+inline std::string format_speed_ctx(int speed_tps, int n_past, int n_ctx) {
+  int pct = (n_ctx > 0) ? (int)((n_past / (double)n_ctx) * 100.0) : 0;
+  return std::to_string(speed_tps) + " t/s | " + std::to_string(n_past) + " (" + std::to_string(pct) + "%)";
+}
+
+// Speed/context diagnostic. Always writes the TPS log line and (when browser
+// output is on) updates the browser status bar. With to_stdout, also prints
+// the bracketed line to stdout and the chat log -- used for the once-per-turn
+// diagnostic at the >>> prompt; mid-chain / mid-generation updates pass false.
+// The denominator is the sample+sync window (matching llama-cli's
+// "Generation: X t/s") unless honest_speed, in which case it is the full
+// wall-clock elapsed time.
+void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time = 0.0, bool to_stdout = false);
 
 // Print a restore diagnostic message
 void diag_restore(const std::string& path, int token_count);

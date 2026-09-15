@@ -54,7 +54,6 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
 bool delete_save_and_cache(const std::string& save_path,
                            const std::string& model_path,
                            int* cache_deleted = nullptr);
-std::string get_cache_dir();
 
 // Append the .save extension if not already present.
 std::string append_save_ext(std::string path);

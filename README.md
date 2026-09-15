@@ -345,7 +345,7 @@ Set via `LIM_OUTPUT`:
 | `GH_TOKEN` | *(empty)* | Optional GitHub personal access token for higher API rate limits when cloning repos or fetching from GitHub. |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
 | `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
-| `LIM_SEARXNG_CMD` | `cd ~/searxng && python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
+| `LIM_SEARXNG_CMD` | `cd ~/searxng && exec python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
 | `LIM_EOG_RESAMPLE_MAX` | `256` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings. |
 | `LIM_TOOL_IGNORE` | `100` | Maximum tokens allowed outside parameters while inside a tool call before attempting a tool correction. |

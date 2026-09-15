@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
 import os
-import socket
 from pathlib import Path
 from aiohttp import web
 

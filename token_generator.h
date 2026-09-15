@@ -40,7 +40,6 @@ public:
                  std::vector<llama_token>* out_tokens = nullptr,
                  double feed_time = 0.0,
                  bool is_reincarnating = false,
-                 bool is_auto_continue = false,
                  std::function<void()> on_tool_start = nullptr);
 
   Result generate();
@@ -58,7 +57,6 @@ private:
   // Internal state
   std::string generated_text_;
   std::string unprinted_text_;
-  std::string full_response_;
   size_t print_pos_;
   bool in_tool_call_stream_;
   bool in_parameter_;
@@ -66,14 +64,12 @@ private:
   size_t tool_end_;
   bool trigger_tool_execution_;
   size_t func_search_pos_;
-  bool had_eog_recovery_;
   bool context_warned_this_turn_;
   bool in_thinking_block_;
   size_t think_start_;
   size_t think_end_;
   int think_depth_;        // open think tags in current block (1 = outer)
   size_t think_scan_pos_;  // incremental scan position for nested think-tag matching
-  std::string think_buffer_;
   bool think_buffering_;
   int t_count_;
   // Fired once per generation, after the token that completes FUNC_START has
@@ -83,7 +79,6 @@ private:
   int last_n_past_;
   bool was_mid_tool_call_;
   bool is_reincarnating_;
-  bool is_auto_continue_;
   std::vector<llama_token>* out_tokens_;  // If non-null, each sampled token is appended here
 
   // Silent-loop detector: count tokens generated outside parameters while

@@ -187,7 +187,6 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                std::vector<llama_token>* out_tokens,
                                double feed_time,
                                bool is_reincarnating,
-                               bool is_auto_continue,
                                std::function<void()> on_tool_start)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
@@ -198,7 +197,6 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       tool_end_(string::npos),
       trigger_tool_execution_(false),
       func_search_pos_(0),
-      had_eog_recovery_(false),
       context_warned_this_turn_(false),
       in_thinking_block_(false),
       think_start_(string::npos),
@@ -211,14 +209,12 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       last_n_past_(last_n_past),
       was_mid_tool_call_(was_mid_tool_call),
       is_reincarnating_(is_reincarnating),
-      is_auto_continue_(is_auto_continue),
       out_tokens_(out_tokens),
       tool_call_outside_param_count_(0),
       eog_recovered_this_token_(false)
 {
     generated_text_.reserve(32768);
     unprinted_text_.reserve(1024);
-    full_response_.reserve(32768);
 }
 
 TokenGenerator::Result TokenGenerator::generate() {
@@ -398,7 +394,6 @@ TokenGenerator::Result TokenGenerator::generate() {
                         last_printed_eog = eog_event_count;
                     }
                 }
-                had_eog_recovery_ = true;
                 eog_recovered_this_token_ = true;
 
                 // Reset sampler state after EOG recovery. Each call to
@@ -418,13 +413,10 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                     size_t trailing_slash = generated_text_.rfind("</");
                     if (trailing_slash != string::npos && trailing_slash > active_ts) {
-                        size_t drop_len = generated_text_.length() - trailing_slash;
                         generated_text_.erase(trailing_slash);
-                        full_response_.erase(full_response_.length() - drop_len);
                     }
                     string forced_close = "\n" + string(FUNC_END) + "\n";
                     generated_text_ += forced_close;
-                    full_response_ += forced_close;
                     tool_start_ = active_ts;
                     tool_end_ = generated_text_.length() - string(FUNC_END).length();
                     trigger_tool_execution_ = true;
@@ -452,7 +444,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             const int n2 = llama_token_to_piece(vocab_, next_token, &token_heap[0], needed + 1, 0, true);
             GGML_ASSERT(n2 > 0 && "heap-allocated buffer still too small for token piece");
             generated_text_.append(token_heap.data(), n2);
-            full_response_.append(token_heap.data(), n2);
 
             if (is_debug && token_log.is_open()) {
                 token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_heap.substr(0, n2)) << "\"\n";
@@ -461,7 +452,6 @@ TokenGenerator::Result TokenGenerator::generate() {
         } else if (n_chars > 0) {
             string_view token_sv(token_buf, n_chars);
             generated_text_.append(token_sv.data(), token_sv.size());
-            full_response_.append(token_sv.data(), token_sv.size());
 
             if (is_debug && token_log.is_open()) {
                 string token_str(token_sv);
@@ -545,9 +535,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
             size_t bad_pos = generated_text_.rfind(DOUBLE_OPEN);
             if (bad_pos != string::npos && bad_pos > tool_start_) {
-                size_t drop_len = generated_text_.length() - bad_pos;
                 generated_text_.erase(bad_pos);
-                full_response_.erase(full_response_.length() - drop_len);
             }
             string forced_close = "\n" + string(FUNC_END) + "\n";
             if (tool_end_ != string::npos) {
@@ -567,7 +555,6 @@ TokenGenerator::Result TokenGenerator::generate() {
             // any trailing garbage (e.g., ^L spam from spurious EOG recovery).
             size_t tool_call_end = tool_end_ + strlen(FUNC_END);
             generated_text_.resize(tool_call_end);
-            full_response_.resize(tool_call_end);
             trigger_tool_execution_ = true;
             if (!feed_token()) early_exit = true;
             break;
@@ -602,7 +589,6 @@ TokenGenerator::Result TokenGenerator::generate() {
                     consoleFlush();
                     g_stdout_ended_with_newline = true;
                 }
-                think_buffer_.clear();
                 think_buffering_ = true;
                 if (print_pos_ < think_block_end) {
                     print_pos_ = think_block_end;
@@ -696,7 +682,6 @@ TokenGenerator::Result TokenGenerator::generate() {
                         }
                     }
                     if (found_content) {
-                        think_buffer_.clear();
                         think_output = think_output.substr(content_start);
                         // Output the opening think tag to stdout when content begins.
                         if (should_output_to_stdout()) {
@@ -710,8 +695,6 @@ TokenGenerator::Result TokenGenerator::generate() {
                         stream_think(think_output);
                         if (!think_output.empty()) g_stdout_ended_with_newline = (think_output.back() == '\n');
                         think_buffering_ = false;
-                    } else {
-                        think_buffer_ += think_output;
                     }
                 } else {
                     _strip_think_and_tool_tags(think_output);
@@ -769,18 +752,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                     if (!honest_speed && t_count_ >= 1) {
                         denom = chrono::duration<double>(now - t_gen_start).count();
                     }
-                    double speed = t_count_ / denom;
-                    double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-                    int speed_rounded = round_int(speed);
-
-                    // Write to TPS log file (once per turn, not mid-generation)
-                    // tps_log is flushed in diag_speed() at turn end.
-
-                    char speed_buf[64];
-                    snprintf(speed_buf, sizeof(speed_buf), "%d t/s | %d (%d%%)", speed_rounded, n_past_, (int)context_percent);
-
-                    if (should_output_to_browser()) {
-                        stream_speed(string(speed_buf));
+                    if (denom > 0) {
+                        // Browser status bar only: the TPS log line is written
+                        // once per turn in diag_speed() at turn end.
+                        if (should_output_to_browser()) {
+                            stream_speed(format_speed_ctx(round_int(t_count_ / denom), n_past_, (int)cparams_.n_ctx));
+                        }
                     }
                 }
             }

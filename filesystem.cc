@@ -155,16 +155,7 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
 bool write_token_save_v3(const string& save_path, const vector<llama_token>& tokens,
                          const vector<PromptCheckpoint>& checkpoints,
                          int session_num) {
-  FILE* pipe = popen("git rev-parse HEAD 2>/dev/null", "r");
-  char buf[48];
-  string sha;
-  if (pipe) {
-    if (fgets(buf, sizeof(buf), pipe)) {
-      sha = buf;
-      while (!sha.empty() && (sha.back() == '\n' || sha.back() == '\r')) sha.pop_back();
-    }
-    pclose(pipe);
-  }
+  string sha = get_git_head_sha();
 
   // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M> session=<S>\n"
   string header = string(header_keys[0].name) + "git_sha=" + sha +
@@ -286,7 +277,6 @@ static std::string get_cache_dir_internal() {
   mkdir(dir.c_str(), 0755);
   return dir;
 }
-std::string get_cache_dir() { return get_cache_dir_internal(); }
 
 std::string append_save_ext(std::string path) {
   if (path.size() < std::strlen(SAVE_EXT) ||

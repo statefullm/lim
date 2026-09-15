@@ -346,7 +346,8 @@ static void start_service(const string& name, const string& probe_url,
 
 void NetworkTools::start_searxng_if_needed(const string& base_url) {
   if (g_searxng_pid != -1) return;
-  string cmd = Taskset::e_core_taskset()+"cd "+HOME+"/searxng && exec python -m searx.webapp";
+  string searxng_cmd = getenvOrDefault("LIM_SEARXNG_CMD", "cd "+HOME+"/searxng && exec python -m searx.webapp");
+  string cmd = Taskset::e_core_taskset()+searxng_cmd;
   start_service("SearxNG", base_url, SEARXNG_LOG_PATH, cmd, g_searxng_pid);
 }
 

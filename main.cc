@@ -286,20 +286,13 @@ int main(int argc, char ** argv) {
     }
   }
 
-  auto log_entry = [&](const string& role, const string& text) {
-    if (chat_log.is_open()) {
-      chat_log << "=== " << role << " ===\n" << text << "\n\n";
-      chat_log.flush();
-    }
-  };
-  announce_new_session(log_index);
+  announce_new_session(log_index);  // also logs "Starting LLM Controller Session (#N)" to the chat log
   if (chatbot_mode == 1) {
     diag("Chatbot mode 1 enabled: full re-tokenize + re-decode each turn", "\033[33m");
   } else if (chatbot_mode == 2) {
     diag("Chatbot mode 2 enabled: KV-cache save/restore each turn", "\033[33m");
   }
   if (is_debug) Taskset::log_core_detection(std::cerr);
-  log_entry("SYSTEM", "Starting LLM Controller Session (#" + to_string(log_index) + ")");
 
   llama_backend_init();
   llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
@@ -516,56 +509,9 @@ int main(int argc, char ** argv) {
   // This is needed even during restore so that `system_tokens` holds only the
   // actual system prompt (not the full conversation).  clear_context() uses
   // system_tokens to re-seed the KV cache after a wipe, so it must be correct.
+  // If no prompt file exists, system_prompt stays empty (unbiased comparison).
   string system_prompt;
-
-  bool prompt_file_exists = false;
-  {
-    string config_prompt_path = LIM_CONFIG_DIR + "/prompt";
-    ifstream prompt_file(config_prompt_path);
-    if (prompt_file.is_open()) {
-      stringstream buffer;
-      buffer << prompt_file.rdbuf();
-      system_prompt = buffer.str();
-      prompt_file.close();
-      prompt_file_exists = true;
-    }
-
-    // Load site-specific localprompt: check current directory first, then LIM_CONFIG_DIR.
-    {
-      string cwd_localprompt_path = "./localprompt";
-      string config_localprompt_path = LIM_CONFIG_DIR + "/localprompt";
-      ifstream localprompt_file(cwd_localprompt_path);
-      if (!localprompt_file.is_open()) {
-        localprompt_file.open(config_localprompt_path);
-      }
-      if (localprompt_file.is_open()) {
-        stringstream buffer;
-        buffer << localprompt_file.rdbuf();
-        // Prepend (not append) so site-specific text -- e.g., a Qwen 3.8
-        // reasoning-effort instruction placed in localprompt -- lands at the
-        // start of the system message, matching where Qwen's own template puts it.
-        system_prompt = buffer.str() + "\n" + system_prompt;
-        localprompt_file.close();
-      }
-    }
-  }
-
-  // Only append cwd and date if a system prompt file was found.
-  // If ~/.config/lim/prompt is missing, leave system_prompt empty for unbiased comparison.
-  if (prompt_file_exists) {
-    char current_cwd[1024];
-    if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
-      system_prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
-    }
-
-    time_t now = time(nullptr);
-    struct tm tm_buf;
-    if (localtime_r(&now, &tm_buf)) {
-      char time_str[64];
-      strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
-      system_prompt += "Current date and time: " + string(time_str) + "\n";
-    }
-  }
+  load_system_prompt_text(system_prompt);
 
   // Initialize model-specific turn delimiters by asking llama.cpp for the correct tokens.
   init_model_tokens(ctx, model);

@@ -34,8 +34,7 @@ ToolExecutor::Result ToolExecutor::execute(
     int& n_past,
     const llama_context_params& cparams,
     int& g_auto_continue_depth,
-    int max_auto_continue,
-    bool allow_continue_resume
+    int max_auto_continue
 ) {
     Result result;
 
@@ -139,7 +138,6 @@ ToolExecutor::Result ToolExecutor::execute(
         if (stop_generation) {
             diag("Tool Interrupted by User", "\033[31m");
             stop_generation = 0;
-            result.was_interrupted = true;
             state.reincarnate_mode = false;
         }
     }
@@ -256,12 +254,6 @@ ToolExecutor::Result ToolExecutor::execute(
             g_auto_continue_depth++;
             if (g_auto_continue_depth > max_auto_continue) {
                 diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
-                state.auto_continue = false;
-            } else if (allow_continue_resume && result.was_interrupted) {
-                // Interrupted during tool call -- feed result but drop to prompt.
-                // User can type "continue" to resume generation.
-                diag("Tool execution interrupted. Type '/continue' to let the LLM proceed, or provide input.", "\033[1;33m");
-                state.tool_interrupt_pending = true;
                 state.auto_continue = false;
             } else {
                 diag_speed(n_past, cparams.n_ctx, state.last_t_count, state.last_elapsed, state.last_decode_time);

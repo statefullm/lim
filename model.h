@@ -74,6 +74,19 @@ std::string get_chat_template_name(ModelType model_type);
 // Returns a string with explicit token list, rules, and examples.
 std::string generate_turn_escape_contract();
 
+// --- System prompt text assembly ---
+
+// Read the base system prompt file: $LIM_CONFIG_DIR/prompt, falling back to
+// the legacy $HOME/prompt. Returns the file contents (possibly empty) and,
+// if 'found' is non-null, sets it to whether a prompt file was opened.
+std::string read_prompt_file(bool* found = nullptr);
+
+// Assemble the full system prompt text: base prompt file, with a
+// site-specific localprompt (./localprompt, then $LIM_CONFIG_DIR/localprompt)
+// prepended when present, and the current working directory and date/time
+// appended. Returns false if no base prompt file exists (prompt left empty).
+bool load_system_prompt_text(std::string& prompt);
+
 // --- Convenience helpers for message construction (token-vector based) ---
 
 // Build system prompt tokens: BOS + system_turn_start + content + turn_end

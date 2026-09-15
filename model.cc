@@ -2,14 +2,19 @@
 #include "common.h"
 #include "chat.h"
 #include "filesystem.h"
+#include "network.h"
 #include "parsers.h"
 #include "token_generator.h"
 #include "tokens.h"
 #include <algorithm>
+#include <ctime>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <unistd.h>
 
 using namespace std;
 
@@ -143,28 +148,6 @@ static vector<llama_token> tok(llama_context *ctx, const string &s) {
   if (s.empty()) return {};
   return common_tokenize(ctx, s, false, true);
 }
-
-// Trim a string from the front, returning the removed prefix.
-// Useful for extracting delimiters by comparing template outputs.
-static string strip_prefix(string &s, const string &prefix) {
-  if (s.rfind(prefix, 0) == 0) {
-    s.erase(0, prefix.size());
-    return prefix;
-  }
-  return "";
-}
-
-// Trim a string from the back, returning the removed suffix.
-static string strip_suffix(string &s, const string &suffix) {
-  if (!suffix.empty() && s.size() >= suffix.size() &&
-      s.compare(s.size() - suffix.size(), suffix.size(), suffix) == 0) {
-    string removed = s.substr(s.size() - suffix.size());
-    s.resize(s.size() - suffix.size());
-    return removed;
-  }
-  return "";
-}
-
 
 // --- init_model_tokens: ask llama.cpp for the correct tokens ---
 
@@ -399,6 +382,72 @@ string generate_turn_escape_contract() {
   contract += "same text when writing it back. The system handles both directions symmetrically.\n";
 
   return contract;
+}
+
+// Read the base system prompt file: $LIM_CONFIG_DIR/prompt, falling back to
+// the legacy $HOME/prompt. Returns the file contents (possibly empty) and,
+// if 'found' is non-null, sets it to whether a prompt file was opened.
+string read_prompt_file(bool* found) {
+  if (found) *found = false;
+  string prompt;
+  ifstream prompt_file(LIM_CONFIG_DIR + "/prompt");
+  if (!prompt_file.is_open()) {
+    prompt_file.open(HOME + "/prompt");
+  }
+  if (prompt_file.is_open()) {
+    stringstream buffer;
+    buffer << prompt_file.rdbuf();
+    prompt = buffer.str();
+    prompt_file.close();
+    if (found) *found = true;
+  }
+  return prompt;
+}
+
+// Assemble the full system prompt text: the base prompt file
+// (read_prompt_file()), with a site-specific localprompt
+// (./localprompt, falling back to $LIM_CONFIG_DIR/localprompt) prepended when
+// present -- so site text lands at the start of the system message, matching
+// where Qwen's own template puts its reasoning-effort instruction -- and the
+// current working directory and date/time appended.
+// Returns true if a base prompt file was opened (possibly empty); returns
+// false if none exists and leaves 'prompt' empty, so callers can keep a
+// cached version or proceed with an empty prompt for unbiased benchmarking.
+bool load_system_prompt_text(string& prompt) {
+  bool found = false;
+  prompt = read_prompt_file(&found);
+  if (!found) return false;
+
+  // Load site-specific localprompt: check current directory first, then LIM_CONFIG_DIR.
+  {
+    string cwd_localprompt_path = "./localprompt";
+    string config_localprompt_path = LIM_CONFIG_DIR + "/localprompt";
+    ifstream localprompt_file(cwd_localprompt_path);
+    if (!localprompt_file.is_open()) {
+      localprompt_file.open(config_localprompt_path);
+    }
+    if (localprompt_file.is_open()) {
+      stringstream buffer;
+      buffer << localprompt_file.rdbuf();
+      prompt = buffer.str() + "\n" + prompt;
+      localprompt_file.close();
+    }
+  }
+
+  // Append cwd and date/time.
+  char current_cwd[1024];
+  if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
+    prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
+  }
+
+  time_t now = time(nullptr);
+  struct tm tm_buf;
+  if (localtime_r(&now, &tm_buf)) {
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
+    prompt += "Current date and time: " + string(time_str) + "\n";
+  }
+  return true;
 }
 
 vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string &content) {
