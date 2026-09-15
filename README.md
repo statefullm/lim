@@ -377,7 +377,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
 | `LIM_CACHE_TYPE_K` | `Q8_0` | KV-cache key storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
 | `LIM_CACHE_TYPE_V` | `Q8_0` | KV-cache value storage type (`F16`, `Q4_0`, `Q5_0`, `Q5_1`, `Q8_0`, `Q8_1`) |
-| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (persistent KV-cache, same as llama-cli interactive), `1` = standard chatbot (re-decode full history each turn), `2` = cache-aware prefix match (emulates llama-server). Modes 1 and 2 force honest speed measurement. |
+| `LIM_CHATBOT_MODE` | `0` | Benchmarking mode: `0` = LIM normal (persistent KV-cache, same as llama-cli interactive), `1` = standard chatbot (re-tokenize + re-decode full history each turn), `2` = cache-aware prefix match (emulates llama-server). Modes 1 and 2 force honest speed measurement. |
 | `LIM_EXEC_TRUNCATION` | `32768` | Maximum bytes of exec_shell output before truncation |
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `3600` | Maximum seconds per generation turn before auto-abort |
@@ -573,14 +573,14 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 | Value | Mode | Description |
 |---|---|---|
 | `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. Same approach as llama-cli interactive mode. |
-| `1` | Standard chatbot | Clears cache each turn and re-decodes the full history from scratch. Re-feeds exact saved tokens plus the new user input, paying the full re-decode cost while generating the same responses as mode 0 (minor GPU floating-point drift from different batch boundaries may cause slight divergence after many turns). TPS includes re-decode + generation. |
+| `1` | Standard chatbot | Emulates a plain text-based chatbot: the conversation is held as text, so each turn re-tokenizes the full conversation text and re-decodes everything from scratch (no KV reuse). TPS includes re-tokenize + re-decode + generation. |
 | `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding. |
 
-**Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the full re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
+**Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
 ![Cumulative time vs context length](cumulative.svg)
 
-*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. Mode 0 (LIM) adds only O(input tokens) per turn. Mode 1 (CHATBOT) re-decodes the full history each turn. Mode 2 (CACHED) does prefix matching but is only slightly slower than Mode 0 since it avoids re-decoding the history.*
+*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. Mode 0 (LIM) adds only O(input tokens) per turn. Mode 1 (CHATBOT) re-decodes the full history each turn. Mode 2 (CACHED) does prefix matching but is only slightly slower than Mode 0 since it avoids re-decoding the entire history.*
 
 > **Note:** For fair comparisons, run benchmarks with an empty system prompt (remove `~/.config/lim/prompt`) to inhibit tool calls. In mode 1, previous tool calls would be both re-decoded **and re-executed** on every turn, causing massive slowdowns plus unwanted side effects.
 

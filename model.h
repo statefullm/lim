@@ -90,6 +90,13 @@ bool load_system_prompt_text(std::string& prompt);
 // --- Convenience helpers for message construction (token-vector based) ---
 
 // Build system prompt tokens: BOS + system_turn_start + content + turn_end
+// Text-only variant of build_system_prompt_tokens (no tokenization): the
+// exact string build_system_prompt_tokens tokenizes, so benchmark modes 1/2
+// can keep a canonical conversation text in lockstep with the token tracker.
+std::string build_system_prompt_text(const std::string &content);
+// The system turn as the session feeds it: build_system_prompt_text, or
+// empty when no system turn is fed at all (empty prompt = no system turn).
+std::string build_system_turn_text(const std::string &content);
 std::vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const std::string &content);
 
 // Build user turn + assistant prefill as token vector:

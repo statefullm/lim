@@ -223,6 +223,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     bool was_interrupted = false;
     bool early_exit = false;
     bool stuck_in_tool_call = false;
+    bool ended_on_eog = false;
 
     // Set when FUNC_START just became fully present in generated_text_ this
     // iteration; the on_tool_start_ hook is then fired after the end-of-iteration
@@ -427,6 +428,10 @@ TokenGenerator::Result TokenGenerator::generate() {
                 // above handles genuine unclosed tool calls.  The tool executor
                 // validates structure on its own for anything that does look like a call.
 
+                // The EOG token is fed (decoded + tracked) but its piece is never
+                // appended to generated_text_ (this break precedes the detokenize
+                // block): flag it so canonical-text maintainers can mirror it.
+                ended_on_eog = true;
                 if (!feed_token()) early_exit = true;
                 break;
             }
@@ -811,6 +816,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.was_interrupted = was_interrupted;
     result.early_exit = early_exit;
     result.stuck_in_tool_call = stuck_in_tool_call;
+    result.ended_on_eog = ended_on_eog;
     result.decode_time = gen_wall_time;
 
     return result;

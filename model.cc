@@ -450,15 +450,30 @@ bool load_system_prompt_text(string& prompt) {
   return true;
 }
 
+string build_system_prompt_text(const string &content) {
+  // Exactly the string build_system_prompt_tokens tokenizes: system turn
+  // start + content + explicit turn end (when the template has one).  The BOS
+  // is NOT part of the text -- it is added by common_tokenize(add_bos=true).
+  string msg = g_model_tokens.system_turn_start.text + content;
+  if (g_model_tokens.has_explicit_turn_end())
+    msg += g_model_tokens.turn_end.text;
+  return msg;
+}
+
+string build_system_turn_text(const string &content) {
+  // The system turn exactly as the session feeds it: build_system_prompt_text,
+  // or empty when no system turn is fed at all -- an empty prompt makes
+  // callers skip build_system_prompt_tokens entirely (matching llama-cli
+  // -sys ""), which the canonical conversation text represents as empty.
+  return content.empty() ? "" : build_system_prompt_text(content);
+}
+
 vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string &content) {
   // Build full string then tokenize in one pass with add_bos=true.
   // Critical: some models (e.g., Qwen3.6) share BOS and <|im_start|> token IDs,
   // so manually prepending BOS would produce a duplicate. common_tokenize(add_bos=true)
   // handles this correctly by letting the tokenizer decide.
-  string msg = g_model_tokens.system_turn_start.text + content;
-  if (g_model_tokens.has_explicit_turn_end())
-    msg += g_model_tokens.turn_end.text;
-  return common_tokenize(ctx, msg, true, true);
+  return common_tokenize(ctx, build_system_prompt_text(content), true, true);
 }
 
 vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content) {

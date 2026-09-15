@@ -184,6 +184,37 @@ static string context_limit_diag(int n_past, int last_n_past, size_t needed) {
     return oss.str();
 }
 
+// --- One-time probe: does this tokenizer space-prefix raw text fragments? ---
+// Vocabularies following the SPM convention (Llama, Qwen, etc.; the
+// add_space_prefix setting inside llama.cpp) prepend a space to the first raw
+// text fragment of a text and to every raw text fragment following a special
+// token, so the first word token of each fragment carries a leading space
+// (e.g. " system").  The public API does not expose the setting, so probe the
+// tokenizer once: encoding "ab12" (which contains no space) yields a first
+// token whose piece starts with a space iff the vocabulary space-prefixes.
+// detokenize_tracker_to_text (the one-time reconstruction fallback of
+// benchmark modes 1/2) uses this to keep the detokenize/re-tokenize round-trip
+// lossless (the tokenizer would otherwise re-add the prefix on top of the
+// space the detokenized pieces render).
+static bool vocab_space_prefixes(const llama_vocab* vocab) {
+    static bool cached = [](const llama_vocab* v) {
+        vector<llama_token> toks = common_tokenize(v, "ab12", false, true);
+        if (toks.empty()) return false;
+        string piece = common_token_to_piece(v, toks[0], true);
+        return !piece.empty() && piece.front() == ' ';
+    } (vocab);
+    return cached;
+}
+
+// --- Benchmark-mode canonical conversation text --------------------------
+// Modes 1 (standard chatbot) and 2 (llama-server emulation) maintain
+// SessionState::conversation_text -- the fully templated conversation text a
+// text-based client would hold -- so each turn appends to it instead of
+// detokenizing the cached KV.  Mode 0 (normal operation) never touches it.
+static bool maintains_conversation_text() {
+    return chatbot_mode == 1 || chatbot_mode == 2;
+}
+
 // Forward declarations for save helpers defined after the class.
 static string save_diag(size_t n_checkpoints, size_t n_tokens);
 static bool save_session_with_header(const vector<llama_token>& tokens, const string& path,
@@ -204,10 +235,12 @@ public:
         int& n_past,
         const llama_context_params& cparams,
         const vector<llama_token>& system_tokens,
+        const string& system_prompt_text,
         bool use_dummy_thought,
         SessionState& state
     ) : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch),
        n_past_(n_past), cparams_(cparams), system_tokens_(system_tokens),
+       system_prompt_text_(system_prompt_text),
        use_dummy_thought_(use_dummy_thought), state_(state),
        g_auto_continue_depth_(0)
     {
@@ -364,6 +397,16 @@ private:
         }
     }
 
+    // Text form of a new user turn: optional turn-end close (if the previous
+    // turn was interrupted) + user turn + assistant prefill.  Takes the flag
+    // explicitly so the text can be built before or after the token build
+    // (build_new_user_turn_tokens consumes state_.prev_was_interrupted).
+    static string new_user_turn_text(bool prev_was_interrupted, const string& input) {
+        string text = prev_was_interrupted ? g_model_tokens.turn_end.text : "";
+        text += build_user_assistant_turn_text(input);
+        return text;
+    }
+
     // Build tokens for a new user turn: optional turn-end close (if the
     // previous turn was interrupted) + user turn + assistant prefill.
     vector<llama_token> build_new_user_turn_tokens(const string& input) {
@@ -377,6 +420,69 @@ private:
         auto user_ass = build_user_assistant_turn(ctx_, input);
         tokens.insert(tokens.end(), user_ass.begin(), user_ass.end());
         return tokens;
+    }
+
+    // --- Canonical conversation text (benchmark modes 1/2 only) -----------
+    // Detokenize a cached token sequence back to conversation text, token by
+    // token.  One-time reconstruction fallback for events that discard the
+    // text (session start, /undo, /load, tool rollback) -- steady-state turns
+    // append to the maintained text and never pay this.  For space-prefixing
+    // vocabularies, the first content token of every fragment following a
+    // special token (or the start of text) carries an encoding space that
+    // common_token_to_piece renders as a literal; re-tokenization would
+    // re-add its own prefix on top, so strip exactly one leading space from
+    // those fragments to keep the round-trip lossless (mirrors is_prev_special
+    // in the tokenizer).
+    string detokenize_tracker_to_text(const vector<llama_token>& toks) {
+        bool space_prefixes = vocab_space_prefixes(vocab_);
+        string text;
+        bool prev_was_special = true;  // start of text is a special boundary
+        for (llama_token tok : toks) {
+            bool is_special = (llama_vocab_get_attr(vocab_, tok) &
+                (LLAMA_TOKEN_ATTR_CONTROL | LLAMA_TOKEN_ATTR_USER_DEFINED | LLAMA_TOKEN_ATTR_UNKNOWN)) != 0;
+            string piece = common_token_to_piece(vocab_, tok, true);
+            if (!is_special && prev_was_special && space_prefixes &&
+                !piece.empty() && piece.front() == ' ') {
+                piece.erase(0, 1);
+            }
+            text += piece;
+            prev_was_special = is_special;
+        }
+        return text;
+    }
+
+    // Should a one-pass re-tokenization of the canonical conversation text
+    // prepend BOS?  Only when the cached stream started with BOS AND the BOS
+    // detokenizes to an empty piece: if it has a visible piece, that piece is
+    // already in the text and add_bos=true would double it (degenerating the
+    // prefix match to 0); without add_bos the literal marker parses back to
+    // the BOS token instead.  (build_system_prompt_tokens likewise leaves the
+    // BOS decision to common_tokenize(add_bos=true).)
+    bool should_add_bos(const vector<llama_token>& toks) {
+        const llama_token bos = llama_vocab_bos(vocab_);
+        if (toks.empty() || toks[0] != bos) return false;
+        return common_token_to_piece(vocab_, bos, true).empty();
+    }
+
+    // New user turn text, consuming state_.prev_was_interrupted exactly like
+    // build_new_user_turn_tokens (used by the mode 1/2 branches, which feed
+    // the turn themselves instead of going through feed_user_message).
+    string build_new_user_turn_text(const string& input) {
+        bool was_interrupted = state_.prev_was_interrupted;
+        state_.prev_was_interrupted = false;
+        return new_user_turn_text(was_interrupted, input);
+    }
+
+    // Full conversation text for a benchmark turn: the canonical text plus
+    // the new turn (steady state, pure append), or a one-time detokenize
+    // reconstruction of the tracker when the text was discarded (session
+    // start, /undo, /load, tool rollback).
+    string build_full_conversation_text(const vector<llama_token>& tracker,
+                                        const string& new_turn_text) {
+        if (!state_.conversation_text.empty()) {
+            return state_.conversation_text + new_turn_text;
+        }
+        return detokenize_tracker_to_text(tracker) + new_turn_text;
     }
 
     // --- Rollback instrumentation (correction.md 4) -----------------------
@@ -430,6 +536,10 @@ private:
         if (rm_ok) {
             n_past_ = state_.tool_correction_n_past;
             state_.all_context_tokens.resize(state_.tool_correction_n_past);
+            // Tracker rewound: the canonical conversation text no longer
+            // describes it -- invalidate (benchmark modes 1/2 rebuild from the
+            // tracker on the next turn).
+            state_.conversation_text.clear();
             log_rollback("correction", n_past_before, target_pos, true, n_past_);
             return 0;
         }
@@ -444,6 +554,9 @@ private:
         }
         n_past_ = state_.tool_correction_n_past;
         state_.all_context_tokens.resize(n_past_);
+        // Tracker rewound (via clear + re-decode): invalidate the canonical
+        // conversation text, same as the seq_rm path above.
+        state_.conversation_text.clear();
         log_rollback("correction", n_past_before, target_pos, false, n_past_);
         return 1;
     }
@@ -471,11 +584,13 @@ private:
     }
 
     // Reload the system prompt from disk (prompt file + localprompt + cwd + date/time).
-    // Returns true on success, false if the prompt file is missing (old tokens kept).
+    // Returns true on success, false if the prompt file is missing (old tokens AND
+    // old text kept -- the pair must stay in lockstep for conversation_text).
     bool reload_system_prompt() {
         string system_prompt;
-        if (!load_system_prompt_text(system_prompt)) return false;  // Keep old tokens.
+        if (!load_system_prompt_text(system_prompt)) return false;  // Keep old pair.
         system_tokens_ = build_system_prompt_tokens(ctx_, system_prompt);
+        system_prompt_text_ = system_prompt;
         return true;
     }
 
@@ -503,6 +618,13 @@ private:
             diag("Prompt file not found; reusing cached system prompt.", "\033[33m");
         }
         feed_tokens_impl(system_tokens_);
+
+        // Benchmark modes 1/2: re-seed the canonical conversation text to
+        // exactly what was just fed (an empty prompt means no system turn,
+        // which is the empty/invalid text).
+        if (maintains_conversation_text()) {
+            state_.conversation_text = build_system_turn_text(system_prompt_text_);
+        }
 
         // Reset sampler state (penalty history, RNG) for a fresh start
         llama_sampler_reset(smpl_);
@@ -533,6 +655,12 @@ private:
     int& n_past_;
     const llama_context_params& cparams_;
     vector<llama_token> system_tokens_;
+    // The text system_tokens_ was built from (build_system_prompt_tokens).
+    // Kept in lockstep with the tokens so benchmark modes 1/2 can seed
+    // state_.conversation_text after a clear/restore without re-reading disk
+    // (and so "prompt file not found, reusing cached prompt" keeps the old
+    // pair instead of mixing new text with old tokens).
+    string system_prompt_text_;
     bool use_dummy_thought_;
     SessionState& state_;
 
@@ -787,13 +915,24 @@ bool ChatSession::feed_user_message(const string& input) {
     }
 
     // Build user turn + assistant prefill using model-type-aware token vectors.
+    // Read prev_was_interrupted BEFORE build_new_user_turn_tokens: it consumes
+    // the flag while tokenizing the turn-close, and the text form below needs it.
+    bool turn_was_closed = state_.prev_was_interrupted;
     vector<llama_token> tokens = build_new_user_turn_tokens(input);
+
+    // Benchmark modes 1/2: text form of exactly what the feed below adds, so
+    // the canonical conversation text stays in lockstep with the tracker.
+    string turn_text;
+    if (maintains_conversation_text() && !state_.conversation_text.empty()) {
+        turn_text = new_user_turn_text(turn_was_closed, input);
+    }
 
     // If using dummy thought, append the thinking block as content tokens.
     if (use_dummy_thought_) {
         string think_block = g_model_tokens.think_start + "\n" + g_dummy_thought_text + "\n" + g_model_tokens.think_end + "\n";
         auto think_tok = common_tokenize(ctx_, think_block, false, true);
         tokens.insert(tokens.end(), think_tok.begin(), think_tok.end());
+        if (!turn_text.empty()) turn_text += think_block;
     }
 
     if (n_past_ + (int)tokens.size() >= (int)cparams_.n_ctx) {
@@ -809,6 +948,11 @@ bool ChatSession::feed_user_message(const string& input) {
         }
         return false;
     }
+
+    // The feed succeeded: keep the canonical text in lockstep (only when it
+    // is currently valid -- an empty text is rebuilt from the tracker by the
+    // next mode 1/2 turn instead of being appended to stale state).
+    if (!turn_text.empty()) state_.conversation_text += turn_text;
 
     // Log user input tokens to token_log when debug is enabled
     log_tokens("FEED USER_INPUT", tokens, ctx_);
@@ -913,6 +1057,26 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
 
     generated_text_ = gen_result_.text;
     t_count_ = gen_result_.token_count;
+
+    // Benchmark modes 1/2: the generated tokens just landed in the tracker;
+    // append their streamed text (the same text a text-based chatbot or
+    // llama-server's client would send back on the next turn).  Its
+    // re-tokenization may drift from the sampled tokens -- that is the real
+    // drift the prefix match measures.  Interrupted generations append their
+    // partial text, which matches the partial tracker.
+    // A non-recovered EOG termination feeds the EOG token into the tracker
+    // WITHOUT appending its piece to the streamed text (the break precedes
+    // the detokenize block in TokenGenerator): mirror that piece here, or the
+    // next turn's re-tokenization comes up one token short at every turn
+    // boundary -- a systematic "drift" the old detokenize path reproduced
+    // for free.
+    if (maintains_conversation_text() && !state_.conversation_text.empty()) {
+        string turn_text = gen_result_.text;
+        if (gen_result_.ended_on_eog) {
+            turn_text += common_token_to_piece(vocab_, llama_vocab_eot(vocab_), true);
+        }
+        state_.conversation_text += turn_text;
+    }
 
     // Handle mid-tool-call state saving (regardless of exit reason).
     // A silent-loop abort (stuck_in_tool_call) is excluded: the correction cycle
@@ -1098,6 +1262,13 @@ bool ChatSession::handle_reincarnate_completion() {
         if (stop_generation) stop_generation = 0;
         diag("Failed to feed reincarnated session tokens. Type '/clear' to reset.", "\033[31m");
         return true; // continue outer loop
+    }
+
+    // Keep the canonical conversation text (benchmark modes 1/2) in lockstep:
+    // clear_context() above re-seeded it with the system turn; append this
+    // turn's text form (new_session_tokens was built by build_user_assistant_turn).
+    if (maintains_conversation_text() && !state_.conversation_text.empty()) {
+        state_.conversation_text += build_user_assistant_turn_text(follow_prompt);
     }
 
     // Log reincarnated session tokens to token_log when debug is enabled
@@ -1400,8 +1571,13 @@ bool ChatSession::run() {
 
             diag("Restoring to: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\" (" + to_string(target.n_past) + " tokens)", "\033[35m");
 
-            // Truncate the token tracker to what we're keeping.
+            // Truncate the token tracker to what we're keeping.  The canonical
+            // conversation text no longer describes the tracker: invalidate it
+            // (benchmark modes 1/2 rebuild it from the truncated tracker on the
+            // next turn) rather than trying to find the text offset of the
+            // checkpoint boundary.
             state_.all_context_tokens.resize(target.n_past);
+            state_.conversation_text.clear();
 
             // Undo via seq_rm.  For pure attention models this works instantly.
             // For hybrid models (Qwen3.5/3.6) we first restore the saved recurrent
@@ -1558,6 +1734,13 @@ bool ChatSession::run() {
                 continue;
             }
 
+            // The reincarnate turn was fed but not appended to the canonical
+            // conversation text: invalidate it.  The successful path clears the
+            // context again (re-seeding the text); if generation is interrupted
+            // before that, the invalid text is rebuilt from the tracker by the
+            // next mode 1/2 turn instead of being used stale.
+            state_.conversation_text.clear();
+
             // Log reincarnate tokens to token_log when debug is enabled
             log_tokens("FEED USER_INPUT", reincarnate_tokens, ctx_);
 
@@ -1651,6 +1834,10 @@ bool ChatSession::run() {
 
                 // Update session state.
                 state_.all_context_tokens = restored_tokens;
+                // Restored tracker comes from disk, not from a maintained text:
+                // invalidate the canonical conversation text (benchmark modes
+                // 1/2 rebuild it from the tokens on the next turn).
+                state_.conversation_text.clear();
                 state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
                 // Save a boundary checkpoint so instant undo works for the restore
                 // point and subsequent new turns (same logic as CLI fast restore).
@@ -1754,6 +1941,11 @@ bool ChatSession::run() {
                 llama_memory_clear(llama_get_memory(ctx_), true);
                 n_past_ = 0;
                 state_.all_context_tokens.clear();
+                // The old tracker is gone (and the decode below may fail):
+                // invalidate the canonical conversation text now; the success
+                // path re-invalidates after re-feeding, the failure path
+                // re-seeds it with the system prompt.
+                state_.conversation_text.clear();
 
                 size_t cp_restore_idx = 0;
 
@@ -1817,6 +2009,12 @@ bool ChatSession::run() {
                         diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
                              " and the context reset also failed. Type '/clear' to recover.", "\033[31m");
                     } else {
+                        // Fresh session re-seeded with the system prompt: re-seed
+                        // the canonical conversation text the same way
+                        // clear_context() does.
+                        if (maintains_conversation_text()) {
+                            state_.conversation_text = build_system_turn_text(system_prompt_text_);
+                        }
                         llama_sampler_reset(smpl_);
                         diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
                              ": context reset to a fresh session", "\033[31m");
@@ -1835,6 +2033,10 @@ bool ChatSession::run() {
 
                 // Update session state.
                 state_.all_context_tokens = restored_tokens;
+                // Restored tracker comes from disk, not from a maintained text:
+                // invalidate the canonical conversation text (benchmark modes
+                // 1/2 rebuild it from the tokens on the next turn).
+                state_.conversation_text.clear();
                 state_.prompt_checkpoints = restored_checkpoints;
                 state_.checkpoint_stack_offset = 0; // all checkpoints are live
 
@@ -1997,6 +2199,11 @@ bool ChatSession::run() {
                 vector<llama_token> ass_prefill = common_tokenize(ctx_, g_model_tokens.assistant_turn_start.text, false, true);
                 if (!ass_prefill.empty() && n_past_ + (int)ass_prefill.size() < (int)cparams_.n_ctx) {
                     feed_tokens_impl(ass_prefill);
+                    // Keep the canonical conversation text (benchmark modes 1/2)
+                    // in lockstep with the fed prefill.
+                    if (!state_.conversation_text.empty()) {
+                        state_.conversation_text += g_model_tokens.assistant_turn_start.text;
+                    }
                 }
                 user_input = "";
             } else {
@@ -2048,12 +2255,47 @@ bool ChatSession::run() {
 
             // Chatbot mode: re-decode full history each turn for comparison
             if (chatbot_mode == 1 && !state_.all_context_tokens.empty()) {
-                // Mode 1: clear cache, re-decode full history + new user message from scratch.
-                // We re-feed the exact saved tokens (preserving BOS positions from per-turn
-                // tokenization) rather than detokenizing+re-tokenizing, so the model sees
-                // the same sequence it would in mode 0 while still paying the re-decode cost.
-                vector<llama_token> saved_history = state_.all_context_tokens;
+                // Mode 1: standard chatbot.  The conversation is held as TEXT
+                // (like a plain chat UI): each turn re-tokenizes the full
+                // conversation text and re-decodes everything from scratch --
+                // no KV reuse.  Per-turn cost: O(N) re-tokenize + O(N) re-decode.
+                // The canonical text is maintained per turn (see
+                // SessionState::conversation_text), so steady state is a pure
+                // append -- the one-time detokenize round-trip only runs after
+                // an event that discarded the text (build_full_conversation_text).
+                // Timing: text append + re-tokenize + clear + full re-decode
+                // (modes 1/2 force LIM_HONEST_SPEED=1, so it is part of the
+                // measured TPS).
+                auto feed_start = chrono::high_resolution_clock::now();
 
+                // 1. New turn text (same construction as the mode 2 branch).
+                string new_turn_text = build_new_user_turn_text(user_input);
+
+                // 2. Full conversation text: canonical text + new turn, or the
+                // one-time detokenize reconstruction if the text was discarded.
+                string full_text =
+                    build_full_conversation_text(state_.all_context_tokens, new_turn_text);
+
+                // 3. Re-tokenize the full conversation in one pass: BOS at
+                // position 0 iff the cached stream started with BOS (see
+                // build_system_prompt_tokens), and parse_special=true so literal
+                // turn-marker strings round-trip back into special tokens.
+                vector<llama_token> full_request =
+                    common_tokenize(vocab_, full_text, should_add_bos(state_.all_context_tokens), true);
+
+                // Fail fast if the full request cannot fit in the context (like
+                // the mode 2 and restore paths), before touching the KV cache.
+                if ((int)full_request.size() >= (int)cparams_.n_ctx) {
+                    auto feed_end = chrono::high_resolution_clock::now();
+                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                    diag("Context Limit Reached! Mode 1 full request does not fit" +
+                         context_limit_diag(n_past_, state_.last_n_past, full_request.size()) +
+                         ". Type '/clear' to reset.", "\033[31m");
+                    continue;
+                }
+
+                // 4. A plain chatbot has no persistent cache: clear and re-decode
+                // the whole request from scratch.
                 llama_memory_clear(llama_get_memory(ctx_), true);
                 n_past_ = 0;
                 state_.all_context_tokens.clear();
@@ -2061,25 +2303,16 @@ bool ChatSession::run() {
                 state_.checkpoint_stack_offset = 0;
                 state_.tool_correction_checkpoint_idx = -1;
                 llama_sampler_reset(smpl_);
-                // Build the new user turn tokens the same way feed_user_message does.
-                vector<llama_token> new_turn_tokens = build_new_user_turn_tokens(user_input);
 
-                // Timing starts here: tokenize (new turn only) + re-decode everything.
-                auto feed_start = chrono::high_resolution_clock::now();
-
-                // Concatenate saved history tokens + new turn tokens to re-decode as one batch.
-                vector<llama_token> full_tokens;
-                full_tokens.reserve(saved_history.size() + new_turn_tokens.size());
-                full_tokens.insert(full_tokens.end(), saved_history.begin(), saved_history.end());
-                full_tokens.insert(full_tokens.end(), new_turn_tokens.begin(), new_turn_tokens.end());
-
-                diag("Chatbot mode 1: re-decoding " + to_string(full_tokens.size()) +
-                     " tokens (" + to_string(saved_history.size()) +
-                     " history + " + to_string(new_turn_tokens.size()) +
-                     " new)", "\033[90m");
-                if (!feed_tokens_impl(full_tokens)) continue;
+                diag("Chatbot mode 1: re-decoding " + to_string(full_request.size()) +
+                     " tokens (" + to_string(full_text.size()) + " chars of conversation text)", "\033[90m");
+                if (!feed_tokens_impl(full_request)) continue;
+                // The feed succeeded: the tracker is exactly full_request, so the
+                // canonical text is valid again.
+                state_.conversation_text = full_text;
                 auto feed_end = chrono::high_resolution_clock::now();
                 state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                log_tokens("FEED MODE1_FULL", full_request, ctx_);
                 // Perform the logging/browser output that feed_user_message would do,
                 // but skip its token feeding since we already included the input above.
                 if (!state_.auto_continue) {
@@ -2088,53 +2321,160 @@ bool ChatSession::run() {
                 }
                 // Skip feed_user_message -- tokens already fed. Fall through to generate_response().
             } else if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {                // Mode 2: cache-aware prefix matching (emulates llama-server behavior).
-                // Build new tokens the same way mode 0 does, prepend cached tokens to
-                // simulate a full request, then find the prefix match and decode only delta.
+                // Emulate llama-server: the KV cache persists across turns, but every
+                // request re-tokenizes the full conversation from scratch and decodes
+                // only the delta after the longest token prefix still in the cache.
+                // Per-turn cost (steady state): O(N) text append + O(N) re-tokenize +
+                // O(N) prefix compare + O(delta) decode -- the detokenize tax the
+                // server never pays is gone; the one-time detokenize reconstruction
+                // (inside build_full_conversation_text) only runs after an event
+                // that discarded the text.
                 vector<llama_token> saved_history = state_.all_context_tokens;
 
-                // Timing: build new tokens + prefix match + decode delta.
+                // Timing: text append + re-tokenize + prefix match + decode delta.
+                // All of it lands in last_feed_time (modes 1/2 force
+                // LIM_HONEST_SPEED=1, so it is part of the measured TPS).
                 auto feed_start = chrono::high_resolution_clock::now();
-                // Build just the new user turn tokens (same as feed_user_message).
-                vector<llama_token> new_turn_tokens = build_new_user_turn_tokens(user_input);
 
-                // Simulate full request: cached tokens + new turn tokens.
-                // The prefix match is trivially the full cache since we built new tokens
-                // the same way. This measures the O(N) comparison cost, not decode cost.
-                vector<llama_token> full_request;
-                full_request.reserve(saved_history.size() + new_turn_tokens.size());
-                full_request.insert(full_request.end(), saved_history.begin(), saved_history.end());
-                full_request.insert(full_request.end(), new_turn_tokens.begin(), new_turn_tokens.end());
+                // 1. New turn text (same construction as the mode 1 branch).
+                string new_turn_text = build_new_user_turn_text(user_input);
 
-                // Prefix match: compare against cached tokens (O(N) comparison).
+                // 2. Full conversation text, exactly as the server would receive it:
+                // the canonical conversation text (maintained per turn; see
+                // SessionState::conversation_text) plus the new turn.  Steady state
+                // is a pure append -- the one-time detokenize reconstruction only
+                // runs when the text was discarded (session start, /undo, /load,
+                // tool rollback).
+                string full_text = build_full_conversation_text(saved_history, new_turn_text);
+
+                // 3. Re-tokenize the full conversation in one pass: BOS at position 0
+                // iff the cached stream started with BOS (see
+                // build_system_prompt_tokens / should_add_bos), and parse_special=true
+                // so literal turn-marker strings round-trip back into special tokens.
+                vector<llama_token> full_request =
+                    common_tokenize(vocab_, full_text, should_add_bos(saved_history), true);
+
+                // Fail fast if the full request cannot fit in the context (like the
+                // restore path), before touching the KV cache.
+                if ((int)full_request.size() >= (int)cparams_.n_ctx) {
+                    auto feed_end = chrono::high_resolution_clock::now();
+                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                    diag("Context Limit Reached! Mode 2 full request does not fit" +
+                         context_limit_diag(n_past_, state_.last_n_past, full_request.size()) +
+                         ". Type '/clear' to reset.", "\033[31m");
+                    continue;
+                }
+
+                // 4. Real prefix match: longest i with saved_history[i] ==
+                // full_request[i].  Now that re-tokenization is real, the match can be
+                // shorter than the cache (drift), and the request can be shorter than
+                // the cache (round-trip truncation).
                 size_t match_len = 0;
                 size_t min_len = std::min(saved_history.size(), full_request.size());
-                for (size_t i = 0; i < min_len; i++) {
-                    if (saved_history[i] == full_request[i]) {
-                        match_len = i + 1;
-                    } else {
-                        break;
-                    }
+                while (match_len < min_len && saved_history[match_len] == full_request[match_len]) {
+                    match_len++;
                 }
 
-                // Decode only the delta after the matched prefix.
-                if ((int)match_len < (int)full_request.size()) {
-                    diag("Chatbot mode 2: prefix match " + to_string(match_len) + "/" +
-                         to_string(saved_history.size()) + " tokens, decoding " +
-                         to_string(full_request.size() - match_len) + " new", "\033[90m");
-                    vector<llama_token> delta(full_request.begin() + match_len, full_request.end());
-                    if (!feed_tokens_impl(delta)) {
-                        auto feed_end = chrono::high_resolution_clock::now();
-                        state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
-                        continue;
+                // Position the suffix feed is decoded from.  Normally match_len; on
+                // drift the KV tail is removed and the feed starts where the cache was
+                // truncated (the drift point, or an earlier prompt checkpoint on
+                // hybrid models, or 0 after a full clear).
+                size_t cut = match_len;
+                if (match_len < saved_history.size()) {
+                    // Stale KV tail: positions match_len..end hold cache entries for
+                    // tokens the re-tokenized request no longer has.  Remove them so the
+                    // suffix decodes at the right positions and the token tracker and KV
+                    // cache stay consistent.  llama-server does the same: truncate the
+                    // cache where the match ends and re-parse the suffix.  The re-parsed
+                    // suffix is canonical, so the next turn matches fully again (the
+                    // drift is a one-time cost).
+                    llama_memory_t mem = llama_get_memory(ctx_);
+                    int cp_idx = -1;
+                    bool rm_ok = llama_memory_seq_rm(mem, 0, (llama_pos)match_len, -1);
+                    if (!rm_ok) {
+                        // Hybrid model: seq_rm also needs the recurrent (R/S) state at
+                        // the cut point, which is only checkpointed at prompt returns.
+                        // Anchor the cut at the newest prompt checkpoint at or before
+                        // the drift point: restore its recurrent state (like the undo
+                        // path), truncate there, and re-decode the shorter suffix.
+                        for (int i = (int)state_.prompt_checkpoints.size() - 1; i >= 0; i--) {
+                            if (state_.prompt_checkpoints[i].n_past <= (int)match_len &&
+                                i - state_.checkpoint_stack_offset >= 0) {
+                                cp_idx = i;
+                                break;
+                            }
+                        }
+                        if (cp_idx >= 0) {
+                            int target = state_.prompt_checkpoints[cp_idx].n_past;
+                            llama_memory_rs_checkpoint_restore(mem, 0,
+                                (uint32_t)(cp_idx - state_.checkpoint_stack_offset));
+                            if (llama_memory_seq_rm(mem, 0, (llama_pos)target, -1)) {
+                                cut = (size_t)target;
+                                rm_ok = true;
+                            }
+                        }
                     }
-                } else {
-                    // Full match -- nothing new to decode. This shouldn't happen in practice
-                    // since we always add new user input, but handle it gracefully.
-                    diag("Chatbot mode 2: full prefix match, no delta to decode", "\033[90m");
+                    if (rm_ok) {
+                        n_past_ = (int)cut;
+                        if (cut != match_len) {
+                            diag("Chatbot mode 2: re-tokenization drift at token " + to_string(match_len) +
+                                 " of " + to_string(saved_history.size()) +
+                                 "; re-decoding from prompt checkpoint " + to_string(cut), "\033[35m");
+                            // Slots beyond the anchor describe the old (drifted) tail:
+                            // prune them so a later undo re-decodes instead of restoring
+                            // stale R/S state.  (No-op when the anchor is the newest
+                            // checkpoint, the common case.)
+                            int live_top = cp_idx - state_.checkpoint_stack_offset;
+                            if (live_top < (int)state_.prompt_checkpoints.size() - 1 - state_.checkpoint_stack_offset) {
+                                llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)live_top);
+                                state_.checkpoint_stack_offset = cp_idx + 1;
+                            }
+                            state_.tool_correction_checkpoint_idx = -1;
+                        }
+                    } else {
+                        // No usable recurrent state at or before the drift point:
+                        // clear and re-decode the full request from scratch (like the
+                        // undo fallback).  Recurrent checkpoints are lost with the clear.
+                        diag("Chatbot mode 2: re-tokenization drift at token " + to_string(match_len) +
+                             " of " + to_string(saved_history.size()) +
+                             "; regenerating KV cache", "\033[35m");
+                        llama_memory_clear(mem, true);
+                        n_past_ = 0;
+                        cut = 0;
+                        state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
+                        state_.tool_correction_checkpoint_idx = -1;
+                    }
+                    // feed_tokens_impl appends to the tracker: shrink it to the cut
+                    // point first so it ends up exactly full_request after the suffix feed.
+                    state_.all_context_tokens.resize(cut);
+                    // Drop checkpoints beyond the (possibly shorter) new sequence.
+                    int full_len = (int)full_request.size();
+                    state_.prompt_checkpoints.erase(
+                        std::remove_if(state_.prompt_checkpoints.begin(), state_.prompt_checkpoints.end(),
+                                       [full_len](const PromptCheckpoint& cp) { return cp.n_past > full_len; }),
+                        state_.prompt_checkpoints.end());
                 }
+
+                // 5. Decode only the delta after the cut point (normally the matched
+                // prefix; earlier on drift, where the KV cache was truncated).
+                vector<llama_token> delta(full_request.begin() + cut, full_request.end());
+                diag("Chatbot mode 2: prefix match " + to_string(match_len) + "/" +
+                     to_string(saved_history.size()) + " tokens, decoding " +
+                     to_string(delta.size()) + " new", "\033[90m");
+                if (!delta.empty() && !feed_tokens_impl(delta)) {
+                    auto feed_end = chrono::high_resolution_clock::now();
+                    state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                    continue;
+                }
+
+                // The feed succeeded: the tracker is exactly full_request (after
+                // the possible drift truncation), so the canonical text is valid
+                // again and the next turn appends to it.
+                state_.conversation_text = full_text;
 
                 auto feed_end = chrono::high_resolution_clock::now();
                 state_.last_feed_time = chrono::duration<double>(feed_end - feed_start).count();
+                if (!delta.empty()) log_tokens("FEED MODE2_DELTA", delta, ctx_);
                 // Logging
                 if (!state_.auto_continue) {
                     log_entry("USER", user_input);
@@ -2144,7 +2484,6 @@ bool ChatSession::run() {
             } else {
                 state_.last_feed_time = 0.0;
             }
-
 
             // Mode 1 already fed tokens above and falls through to generate_response().
             // Mode 2 fed tokens only when cache existed; otherwise needs feed_user_message.
@@ -2373,10 +2712,11 @@ bool run_chat_session(
     int& n_past,
     const llama_context_params& cparams,
     const vector<llama_token>& system_tokens,
+    const string& system_prompt_text,
     bool use_dummy_thought,
     SessionState& state
 ) {
     ChatSession session(ctx, vocab, smpl, batch, n_past, cparams,
-                        system_tokens, use_dummy_thought, state);
+                        system_tokens, system_prompt_text, use_dummy_thought, state);
     return session.run();
 }

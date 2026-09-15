@@ -567,6 +567,12 @@ int main(int argc, char ** argv) {
   // normal /load path -- identical to in-session /clear + /load.
   SessionState state;
   state.all_context_tokens = system_tokens;
+  // Benchmark modes 1/2: seed the canonical conversation text with exactly
+  // what was just fed (an empty prompt means the empty/invalid text and the
+  // first mode 1/2 turn reconstructs it from the tracker).
+  if (chatbot_mode == 1 || chatbot_mode == 2) {
+    state.conversation_text = build_system_turn_text(system_prompt);
+  }
   state.log_index = log_index;
   if (restore_from_file) {
     state.cli_restore_path = restore_arg;
@@ -575,7 +581,7 @@ int main(int argc, char ** argv) {
   // --- Run the main chat session loop ---
   bool result = run_chat_session(
     ctx, vocab, smpl, batch, n_past, cparams,
-    system_tokens, use_dummy_thought,
+    system_tokens, system_prompt, use_dummy_thought,
     state
     );
 

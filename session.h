@@ -35,6 +35,21 @@ struct SessionState {
   std::string partial_tool_text;
   // All tokens fed into context, for save/restore
   std::vector<llama_token> all_context_tokens;
+  // Benchmark modes only (LIM_CHATBOT_MODE=1/2; mode 0 never touches it): the
+  // canonical text that, fed chunk-wise as done by the build_* helpers in
+  // model.cc, reproduces all_context_tokens -- i.e. the fully templated
+  // conversation (system turn + user/assistant turns, including the streamed
+  // text of generated tokens) that a text-based chatbot or llama-server would
+  // hold and re-tokenize on the next turn.  EMPTY means invalid: the next mode
+  // 1/2 turn rebuilds it from the cached tokens (one-time detokenize
+  // round-trip).  In-memory only; never written to save files.
+  // Tool-result and correction-cycle feeds are NOT appended (tools don't occur
+  // in the benchmark runs): if tools ever do run in these modes, the text is
+  // simply shorter than the tracker -- mode 2 handles that as re-tokenization
+  // drift (the anchored re-decode path rebuilds the text), and mode 1
+  // re-tokenizes the text it holds (the model just can't see the tool results,
+  // as a text chatbot whose client dropped them would).
+  std::string conversation_text;
   // Token positions and prompt text at each prompt return, for partial restore
   std::vector<PromptCheckpoint> prompt_checkpoints;
   // Number of historical checkpoints not present in the live recurrent checkpoint
@@ -75,6 +90,11 @@ bool run_chat_session(
 
   // System prompt tokens
   const std::vector<llama_token>& system_tokens,
+
+  // System prompt text (same content the tokens were built from; keeps the
+  // token/text pair in lockstep for conversation_text reconstruction in
+  // benchmark modes 1/2)
+  const std::string& system_prompt_text,
 
   // Configuration
   bool use_dummy_thought,

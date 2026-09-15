@@ -30,6 +30,12 @@ public:
     // (FUNC_START present, FUNC_END never completed). The caller should run the
     // standard tool-correction cycle instead of ejecting to prompt.
     bool stuck_in_tool_call = false;
+    // True when generation ended on a non-recovered EOG: the EOG token WAS
+    // fed (decoded + appended to the out_tokens tracker) but its piece was NOT
+    // appended to `text` (the break precedes the detokenize block).  Callers
+    // maintaining a canonical text form of the tracker must mirror this, or
+    // their re-tokenization comes up one token short at every turn boundary.
+    bool ended_on_eog = false;
   };
 
   TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
