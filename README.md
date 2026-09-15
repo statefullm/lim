@@ -8,6 +8,12 @@
 
 ![LIM - Stateful Local Inference Manager](Screenshot.png)
 
+## Benchmark Results
+
+![Cumulative time vs context length](cumulative.svg)
+
+*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. Mode 0 (LIM) adds only O(input tokens) per turn. At 222041 context tokens, Mode 2 (CACHED), which emulates llama-server, is only 1.8% slower than Mode 0 since it uses prefix matching to avoid re-decoding the entire history: every turn pays the O(history) re-tokenize + prefix-compare cost, and when the re-tokenization drifts from the sampled tokens it re-decodes from the last prompt checkpoint. Mode 1 (CHATBOT) re-tokenizes the full conversation text and re-decodes the entire history at each turn, growing quadratically: at the same context it has used 73% more time than Mode 0. That is, LIM is 1.73x faster than a standard chatbot.*
+
 ## How It Works
 
 Every mainstream chatbot (and most local LLM frontends using server APIs) follows the *reprocess-every-turn* model: each time you send a message, the **entire conversation history** is re-transmitted in full and re-tokenized from scratch. The per-turn decode cost grows linearly with context length, making long conversations progressively slower.
@@ -578,9 +584,7 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
-![Cumulative time vs context length](cumulative.svg)
-
-*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. Mode 0 (LIM) adds only O(input tokens) per turn. Mode 1 (CHATBOT) re-decodes the full history each turn. Mode 2 (CACHED) does prefix matching but is only slightly slower than Mode 0 since it avoids re-decoding the entire history.*
+*(See the cumulative-time benchmark figure at the top of this README.)*
 
 > **Note:** For fair comparisons, run benchmarks with an empty system prompt (remove `~/.config/lim/prompt`) to inhibit tool calls. In mode 1, previous tool calls would be both re-decoded **and re-executed** on every turn, causing massive slowdowns plus unwanted side effects.
 
