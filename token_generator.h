@@ -98,6 +98,34 @@ private:
   // Those tokens are spurious artifacts and should not count toward the
   // silent-loop detector.
   bool eog_recovered_this_token_ = false;
+
+  // --- MTP speculative decoding round state (design in mtp.h) ---
+  // A round drafts d1..dk for the positions right after the last committed
+  // token.  d1 is compared with the next sampled token (origin); on a match
+  // d1 is committed WITHOUT a decode and the verify batch [d1..dk] is
+  // decoded in one pass (d1's cell comes from it), so each verify row r
+  // samples the token right after draft d_{r+1} and is compared with the
+  // draft at its own position: matched tokens are committed without a
+  // decode (their KV cell already holds the identical token), the first
+  // mismatch rolls the context back (n_rs_seq window) and feeds the
+  // target's own token.  A free bonus token is sampled from the last verify
+  // row when all drafts match.
+  std::vector<llama_token> spec_draft_;
+  bool spec_origin_pending_ = false;    // next sample (default row) vs d1
+  bool spec_in_progress_ = false;       // sampling verify rows (batch_ = V)
+  bool spec_bonus_pending_ = false;     // next sample (last V row) = bonus
+  bool spec_verify_pending_ = false;    // decode V after this iteration's feed
+  bool spec_round_complete_pending_ = false; // round closes when bonus is fed
+  bool spec_no_feed_ = false;           // this iteration's feed = no-decode advance
+  int spec_verify_row_ = 0;             // verify row to sample this iteration
+  int spec_verify_rows_ = 0;            // V row count (k - 1)
+  int spec_draft_idx_ = 0;              // 1-based draft idx of current comparison
+  int spec_committed_verify_ = 0;       // verify rows committed so far
+
+  // Fallback for a failed draft rollback: clear the main KV and re-decode
+  // the committed prefix (the token tracker) -- the MTP mirror rebuilds via
+  // the mirror hook along the way.  Returns false on decode failure.
+  bool spec_rollback_redecode();
 };
 
 #endif // TOKEN_GENERATOR_H

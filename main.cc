@@ -8,6 +8,8 @@
 #include "signals.h"
 #include "server.h"
 #include "model.h"
+#include "mtp.h"
+#include "gguf.h"
 #include "session_utils.h"
 #include "token_generator.h"
 #include "session.h"
@@ -38,6 +40,11 @@ using namespace std;
 
 // --- Global State ---
 bool is_debug = false;
+// Deterministic (greedy) mode: temperature 0.  Set in main() after env
+// parsing.  In this mode load_system_prompt_text() omits the wall-clock
+// timestamp (the only session-varying prompt piece) so greedy runs are
+// byte-reproducible -- required for Gate 1 token-identity testing.
+bool g_deterministic_mode = false;
 ofstream chat_log;
 ofstream token_log;
 ofstream tps_log;
@@ -183,6 +190,7 @@ int main(int argc, char ** argv) {
     // New names win over legacy aliases (LIM_TEMP, LIM_PENALTY_*) if both are set.
     if ((env = getenv("LIM_TEMPERATURE")) != nullptr) temperature = atof(env);
     else if ((env = getenv("LIM_TEMP")) != nullptr) temperature = atof(env);
+    g_deterministic_mode = (temperature <= 0.0f);
     if ((env = getenv("LIM_TOP_P")) != nullptr) top_p = atof(env);
     if ((env = getenv("LIM_TOP_K")) != nullptr) top_k = atoi(env);
     if ((env = getenv("LIM_MIN_P")) != nullptr) min_p = atof(env);
@@ -298,6 +306,56 @@ int main(int argc, char ** argv) {
   llama_numa_init(GGML_NUMA_STRATEGY_DISABLED);
 
   auto mparams = llama_model_default_params();
+
+  // --- MTP speculative decoding (LIM_MTP=1) ---
+  // Probe the GGUF for a nextn (MTP) head before loading: mparams.load_mtp
+  // must be set pre-load, and loading MTP tensors on a model that lacks them
+  // would fail.  Benchmark chatbot modes 1/2 are excluded (they benchmark the
+  // re-decode cost and must not be sped up by speculation).
+  bool mtp_enabled = false;
+  int mtp_draft_len = 4;
+  // Cap on the MTP draft context's batch (its scheduler work buffers scale
+  // with it and dominate its VRAM cost; nothing decodes more rows than this
+  // at once).  128 keeps the draft context to a few hundred MB; raise up to
+  // 512 (the old default) if VRAM is plentiful.
+  int mtp_draft_batch = 128;
+  {
+    const char* env = getenv("LIM_MTP");
+    const bool wanted = (env != nullptr && atoi(env) == 1) && chatbot_mode == 0;
+    if (wanted) {
+      const char* env_d = getenv("LIM_MTP_DRAFT");
+      if (env_d != nullptr && strlen(env_d) > 0) {
+        int v = atoi(env_d);
+        if (v >= 1 && v <= 32) mtp_draft_len = v;
+      }
+      const char* env_b = getenv("LIM_MTP_BATCH");
+      if (env_b != nullptr && strlen(env_b) > 0) {
+        int v = atoi(env_b);
+        if (v >= 1 && v <= 512) mtp_draft_batch = v;
+      }
+      struct gguf_init_params gp = { /*.no_alloc=*/ true, /*.ctx=*/ nullptr };
+      struct gguf_context* gc = gguf_init_from_file(argv[1], gp);
+      if (gc) {
+        const int64_t arch_id = gguf_find_key(gc, "general.architecture");
+        if (arch_id >= 0 && gguf_get_kv_type(gc, arch_id) == GGUF_TYPE_STRING) {
+          const std::string arch = gguf_get_val_str(gc, arch_id);
+          const int64_t bc_id = gguf_find_key(gc, (arch + ".block_count").c_str());
+          if (bc_id < 0) return 1;
+          const uint32_t block_count = gguf_get_val_u32(gc, bc_id);
+          const bool has_mtp = gguf_find_tensor(gc,
+              ("blk." + std::to_string((int)block_count - 1) + ".nextn.eh_proj.weight").c_str()) >= 0;
+          if (has_mtp) {
+            mtp_enabled = true;
+            mparams.load_mtp = true;
+          } else {
+            diag("MTP: LIM_MTP=1 but model has no nextn (MTP) head -- MTP disabled", "\033[33m");
+          }
+        }
+      }
+      if (gc) gguf_free(gc);
+    }
+  }
+
   // Allow overriding model params with LIM_* environment variables
   bool gpu_layers_explicit = false;
   {
@@ -460,6 +518,9 @@ int main(int argc, char ** argv) {
     tps_log << "# Repetition penalty: " << repetition_penalty << "\n";
     tps_log << "# Frequency penalty: " << frequency_penalty << "\n";
     tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
+    tps_log << "# MTP: " << (mtp_enabled
+                       ? "enabled (draft=" + std::to_string(mtp_draft_len) + ", batch=" + std::to_string(mtp_draft_batch) + ")"
+                       : "disabled") << "\n";
     tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
   }
 
@@ -492,9 +553,11 @@ int main(int argc, char ** argv) {
   cparams.flash_attn_type = (llama_flash_attn_type)1;
   cparams.offload_kqv = true;
 
-  // Recurrent state snapshots disabled - undo uses the checkpoint mechanism
-  // (rs_checkpoint_save/restore) which is independent of n_rs_seq.
-  cparams.n_rs_seq = 0;
+  // Recurrent state snapshots: the rs_checkpoint stack (turn boundaries,
+  // /undo) works with n_rs_seq = 0.  MTP verification additionally needs the
+  // per-token snapshot window (n_rs_seq = draft length) so a partially
+  // accepted draft batch can be rolled back mid-turn on hybrid models.
+  cparams.n_rs_seq = mtp_enabled ? (uint32_t)mtp_draft_len : 0;
 
   llama_context * ctx = llama_init_from_model(model, cparams);
   if (!ctx) {
@@ -503,6 +566,13 @@ int main(int argc, char ** argv) {
     diag("Failed to initialize model context: " + to_string(gpu_layers) +
          "/" + to_string(n_layers) + " layers on GPU. The model may be too large for available device memory.", "\033[31m");
     return 1;
+  }
+
+  // Create the MTP draft context (before the system prompt feed, so the
+  // mirror hook covers the initial prefill too).
+  if (mtp_enabled) {
+    g_mtp = MtpSpeculator::create(ctx, model, cparams, mtp_draft_len, mtp_draft_batch);
+    if (!g_mtp) mtp_enabled = false;
   }
 
   // Always load and tokenize the system prompt.
@@ -585,7 +655,11 @@ int main(int argc, char ** argv) {
     state
     );
 
-  // Cleanup
+  // Cleanup (free the MTP draft context before the model it shares)
+  if (g_mtp) {
+    delete g_mtp;
+    g_mtp = nullptr;
+  }
   llama_free(ctx);
   llama_model_free(model);
   llama_backend_free();

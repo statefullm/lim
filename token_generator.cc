@@ -4,6 +4,7 @@
 #include "session_utils.h"
 #include "signals.h"
 #include "model.h"
+#include "mtp.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -312,7 +313,12 @@ TokenGenerator::Result TokenGenerator::generate() {
             early_exit = true;
             break;
         }
-        llama_token next_token = llama_sampler_sample(smpl_, ctx_, batch_.n_tokens - 1);
+        // MTP: during an in-progress round the batch is the verify batch and
+        // this iteration samples a specific verify row (the bonus, sampled
+        // after all drafts matched, sits at the last row -- same index as the
+        // default).  Normal iterations sample the batch's last row as before.
+        const int mtp_sample_row = spec_in_progress_ ? spec_verify_row_ : batch_.n_tokens - 1;
+        llama_token next_token = llama_sampler_sample(smpl_, ctx_, mtp_sample_row);
 
         // Generation timing: record start on first sampled token, end on every sample.
         // llama_sampler_sample already synchronizes the context internally via
@@ -333,6 +339,19 @@ TokenGenerator::Result TokenGenerator::generate() {
         // token that ends the turn is decoded like every other generated
         // token instead of being tracked without a decode.
         auto feed_token = [&]() -> bool {
+            if (spec_no_feed_) {
+                // Matched draft token: the KV cell at n_past_ holds (or, for
+                // the origin, is about to be created by) the verify batch,
+                // which decodes this exact token.  Advance the tracker and
+                // n_past in lockstep without a decode.  The tracker/KV
+                // consistency invariant holds at every turn exit: a break
+                // between an origin commit and the verify decode is healed
+                // by the post-loop cleanup (single-row cell fill).
+                if (out_tokens_) out_tokens_->push_back(next_token);
+                n_past_++;
+                spec_no_feed_ = false;
+                return true;
+            }
             if (out_tokens_) out_tokens_->push_back(next_token);
             batch_.n_tokens = 0;
             common_batch_add(batch_, next_token, n_past_++, {0}, true);
@@ -356,7 +375,9 @@ TokenGenerator::Result TokenGenerator::generate() {
 
             bool recovered = false;
             {
-                llama_token polled = llama_sampler_sample(smpl_, ctx_, batch_.n_tokens - 1);
+                // Poll the row the token came from (a verify row during an
+                // in-progress MTP round, otherwise the batch's last row).
+                llama_token polled = llama_sampler_sample(smpl_, ctx_, mtp_sample_row);
                 if (!llama_vocab_is_eog(vocab_, polled)) {
                     next_token = polled;
                     recovered = true;
@@ -366,7 +387,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             if (!recovered) {
                 for (int poll_iter = 0; poll_iter < max_iterations; ++poll_iter) {
                     if (stop_generation) break;
-                    llama_token polled = llama_sampler_sample(smpl_, ctx_, batch_.n_tokens - 1);
+                    llama_token polled = llama_sampler_sample(smpl_, ctx_, mtp_sample_row);
                     if (!llama_vocab_is_eog(vocab_, polled)) {
                         next_token = polled;
                         recovered = true;
@@ -428,12 +449,112 @@ TokenGenerator::Result TokenGenerator::generate() {
                 // above handles genuine unclosed tool calls.  The tool executor
                 // validates structure on its own for anything that does look like a call.
 
-                // The EOG token is fed (decoded + tracked) but its piece is never
-                // appended to generated_text_ (this break precedes the detokenize
-                // block): flag it so canonical-text maintainers can mirror it.
+                // The EOG token is fed (decoded + tracked, or no-feed when it
+                // matched a verify-row draft below) but its piece is never
+                // appended to generated_text_ (this break precedes the
+                // detokenize block): flag it so canonical-text maintainers
+                // can mirror it.
                 ended_on_eog = true;
+
+                // MTP: if this EOG matched a verify-row draft, its KV cell
+                // already holds the token -- feed without re-decoding (which
+                // would advance the hybrid recurrent state an extra step).
+                // The break skips the comparison block below, so mirror its
+                // match bookkeeping here: this EOG is a committed verify row,
+                // and the post-loop cleanup rolls back / closes the round
+                // based on spec_committed_verify_.
+                if (spec_in_progress_ && spec_verify_row_ < spec_verify_rows_ &&
+                    next_token == spec_draft_[spec_draft_idx_ - 1]) {
+                    spec_no_feed_ = true;
+                    spec_committed_verify_ = spec_verify_row_ + 1;
+                    if (g_mtp) g_mtp->on_verify_match();
+                }
+
                 if (!feed_token()) early_exit = true;
                 break;
+            }
+        }
+
+        // --- MTP speculative comparison ---
+        // Placed after EOG recovery so the comparison uses the token that is
+        // actually committed; EOG recovery's sampler-reset side effect then
+        // applies to later verify rows exactly as it does in the
+        // non-speculative path.  The sampled token at each verify row is
+        // always the target's own fresh sample from the full sampler chain,
+        // so the committed sequence is distribution-exact regardless of the
+        // sampling configuration.
+        if (spec_bonus_pending_) {
+            // Bonus token (all drafts matched): no comparison, fed normally.
+            spec_bonus_pending_ = false;
+            if (g_mtp) g_mtp->on_bonus();
+        } else if (spec_origin_pending_) {
+            spec_origin_pending_ = false;
+            if (next_token == spec_draft_[0]) {
+                // d1 matched: commit it WITHOUT a decode (spec_no_feed_).
+                // The verify batch below decodes d1..dk in one pass, so d1's
+                // KV cell comes from there -- and its row's logits are what
+                // sample d2's position, so every draft is verified at its own
+                // position (the common_sampler_sample_and_accept_n protocol).
+                // A separate d1 feed would discard the row's logits, shifting
+                // every verify-row sample one position ahead of its draft.
+                spec_no_feed_ = true;
+                spec_verify_pending_ = true;
+                spec_in_progress_ = true;
+                spec_verify_row_ = 0;
+                spec_verify_rows_ = (int)spec_draft_.size() - 1;
+                spec_committed_verify_ = 0;
+                spec_draft_idx_ = 2;
+                if (g_mtp) g_mtp->on_origin_match();
+            } else {
+                // d1 rejected: discard the drafts; this token is handled
+                // exactly like a non-speculative token.
+                spec_draft_.clear();
+                if (g_mtp) {
+                    g_mtp->on_origin_mismatch();
+                    g_mtp->note_round(1);
+                }
+            }
+        } else if (spec_in_progress_ && spec_verify_row_ < spec_verify_rows_) {
+            if (next_token == spec_draft_[spec_draft_idx_ - 1]) {
+                // Matched: the KV cell at this position already holds the
+                // identical token (decoded with the verify batch) -- commit
+                // it without a decode.
+                spec_no_feed_ = true;
+                spec_committed_verify_ = spec_verify_row_ + 1;
+                spec_verify_row_++;
+                spec_draft_idx_++;
+                if (g_mtp) g_mtp->on_verify_match();
+                if (spec_verify_row_ >= spec_verify_rows_) {
+                    // All drafts matched: the next sample (last verify row)
+                    // is a free bonus token.
+                    spec_in_progress_ = false;
+                    spec_bonus_pending_ = true;
+                    spec_round_complete_pending_ = true;
+                }
+            } else {
+                // Mismatch: roll back the uncommitted draft cells.  The
+                // n_rs_seq snapshot window covers the hybrid recurrent
+                // state; the attention KV truncates in the same call.
+                const int keep_pos = n_past_;
+                if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, keep_pos, -1)) {
+                    // Fallback (should be unreachable): regenerate the KV
+                    // from the committed prefix, as the /undo fallback does.
+                    diag("MTP: draft rollback failed; regenerating KV cache", "\033[31m");
+                    if (!spec_rollback_redecode()) {
+                        early_exit = true;
+                        break;
+                    }
+                }
+                if (g_mtp) {
+                    g_mtp->on_verify_mismatch(spec_draft_idx_);
+                    g_mtp->note_round(1 + spec_committed_verify_ + 1);
+                }
+                spec_in_progress_ = false;
+                spec_no_feed_ = false;
+                spec_verify_row_ = 0;
+                spec_draft_.clear();
+                // next_token is the target's own token; feed_token below
+                // commits it as in the normal path.
             }
         }
 
@@ -776,14 +897,171 @@ TokenGenerator::Result TokenGenerator::generate() {
             break;
         }
 
+        // --- MTP: post-feed round advancement ---
+        if (spec_verify_pending_) {
+            // d1 (the origin token) was just committed no-feed: its KV cell
+            // does not exist yet.  Decode the full verify batch [d1..dk] in
+            // one pass -- every position is new, so the recurrent state
+            // advances through them exactly once, and each row's logits
+            // verify the next draft at its own position (row 0 verifies d2,
+            // ..., row k-2 verifies dk; row k-1 yields the bonus), exactly
+            // like common_sampler_sample_and_accept_n.  One forward
+            // evaluates every draft at once: the speculative speedup.
+            spec_verify_pending_ = false;
+            batch_.n_tokens = 0;
+            const int k = (int)spec_draft_.size();
+            for (int i = 0; i < k; i++) {
+                common_batch_add(batch_, spec_draft_[i], n_past_ - 1 + i, {0}, true);
+            }
+            if (!handle_llama_decode_error(ctx_, batch_)) {
+                // Decode failed (KV exhausted or aborted): the verify cells
+                // may be partially written.  Drop the uncommitted draft
+                // cells (keep d1's if it made it in), then either keep d1
+                // committed -- truncating the batch to its row so a later
+                // /continue samples valid logits -- or, if no verify cell
+                // survived, drop d1 from the tracker (it has no KV cell)
+                // and empty the batch so /continue cannot sample stale
+                // logits.  MTP may have been invalidated by the hook along
+                // the way.
+                llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1);
+                if (llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) >= n_past_ - 1) {
+                    batch_.n_tokens = 1;
+                    if (g_mtp) g_mtp->note_round(1);
+                } else {
+                    if (out_tokens_) out_tokens_->pop_back();
+                    n_past_--;
+                    batch_.n_tokens = 0;
+                    if (g_mtp) g_mtp->note_round(0);
+                }
+                spec_in_progress_ = false;
+                spec_bonus_pending_ = false;
+                spec_round_complete_pending_ = false;
+                spec_draft_.clear();
+                early_exit = true;
+                break;
+            }
+            if (spec_verify_rows_ > 0) {
+                // Sampling of the verify rows starts next iteration
+                // (spec_verify_row_ = 0, spec_in_progress_ already true).
+            } else {
+                // k = 1: no verify rows; the next sample (from the d1 row)
+                // is a free bonus token.
+                spec_in_progress_ = false;
+                spec_bonus_pending_ = true;
+                spec_round_complete_pending_ = true;
+            }
+        } else if (spec_round_complete_pending_) {
+            // The bonus token was just fed: the round is complete.
+            spec_round_complete_pending_ = false;
+            if (g_mtp) g_mtp->note_round(1 + spec_verify_rows_ + 1);
+        } else if (!spec_in_progress_ && !spec_bonus_pending_ && !spec_verify_pending_ &&
+                   batch_.n_tokens == 1 && g_mtp && g_mtp->can_draft()) {
+            // Set up the next round: draft the tokens right after the row
+            // just fed (the mirror hook updated the mirror during that feed,
+            // with MTP logits on the last row).
+            auto drafts = g_mtp->draft();
+            if (!drafts.empty()) {
+                spec_draft_ = std::move(drafts);
+                spec_origin_pending_ = true;
+            }
+        }
+
         // Fire the FUNC_START hook after the feed+decode: n_past is exactly
         // right after FUNC_START and the recurrent (R/S) state is up to date,
         // so a checkpoint saved by the hook matches this position.
         if (tool_start_hook_pending) {
             tool_start_hook_pending = false;
-            if (on_tool_start_) on_tool_start_();
+            // MTP: while uncommitted verify cells exist, the recurrent state
+            // is ahead of n_past_ (the verify batch decoded past it), so a
+            // checkpoint saved now would hold the wrong state for
+            // tool-correction rollback.  Skip this FUNC_START: a later
+            // (lockstep) one saves the slot, or the correction path ejects
+            // to prompt when none exists (its designed safe fallback).
+            if (on_tool_start_ &&
+                !(spec_in_progress_ && spec_committed_verify_ < spec_verify_rows_)) {
+                on_tool_start_();
+            }
         }
     } // END INNER TOKEN LOOP
+
+    // --- MTP: post-loop round abort cleanup ---
+    // The loop only exits via break.  If a spec round was left active (tool
+    // call completed mid-round, EOG end-of-turn, interrupt, timeout, context
+    // exhaustion), roll back any uncommitted draft cells and close the round
+    // so the KV/tracker state is exactly the committed prefix.
+    if (spec_verify_pending_ || spec_in_progress_ || spec_bonus_pending_ ||
+        spec_round_complete_pending_ || spec_origin_pending_) {
+        if (spec_verify_pending_) {
+            // The origin token was committed no-feed but the verify batch
+            // never decoded (a break -- e.g. a completed tool call -- landed
+            // between the commit and the post-feed advancement).  Give it
+            // its KV cell with a single-row decode: position n_past_-1 is
+            // new, so this is a plain decode and the recurrent state lands
+            // in lockstep.  The emitted context (a tool call included)
+            // stays complete.
+            spec_verify_pending_ = false;
+            batch_.n_tokens = 0;
+            common_batch_add(batch_, spec_draft_[0], n_past_ - 1, {0}, true);
+            if (!handle_llama_decode_error(ctx_, batch_)) {
+                // The token has no guaranteed KV cell now: roll back to the
+                // pre-round state (drops a partially written cell if any)
+                // and drop it from the tracker to keep the invariant.
+                n_past_--;
+                llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1);
+                if (out_tokens_) out_tokens_->pop_back();
+                early_exit = true;
+            }
+            spec_in_progress_ = false;
+            spec_bonus_pending_ = false;
+            spec_round_complete_pending_ = false;
+            spec_draft_.clear();
+        }
+        // Stale verify cells exist only when the verify batch was decoded
+        // but not all of its rows were committed (n_past_ is behind the
+        // verify batch tail).  An empty range (nothing decoded, or all
+        // committed) is a no-op.
+        if (spec_in_progress_ && spec_committed_verify_ < spec_verify_rows_) {
+            if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1)) {
+                diag("MTP: abort rollback failed; regenerating KV cache", "\033[31m");
+                if (!spec_rollback_redecode()) {
+                    early_exit = true;
+                }
+            } else {
+                // The verify batch's rows past the last committed one no
+                // longer exist: truncate the batch so a later /continue
+                // samples the last valid row (its logits predict n_past_),
+                // not a rolled-back row's stale logits.
+                batch_.n_tokens = spec_committed_verify_ + 1;
+            }
+        }
+        if (g_mtp) {
+            if (spec_origin_pending_) {
+                // The break landed before the origin comparison ran: count
+                // the origin as not matched so the origin_ok denominator
+                // always equals the round count.
+                g_mtp->on_origin_mismatch();
+            }
+            if (spec_round_complete_pending_) {
+                // Bonus was pending but never fed (break before its feed).
+                g_mtp->note_round(1 + spec_verify_rows_);
+            } else {
+                // A round left at the origin (spec_origin_pending_: the turn
+                // ended before the comparison block ran) committed its one
+                // fed token.  (A top-of-loop exit before the origin sample
+                // overcounts by one -- rare, and the harmless direction.)
+                g_mtp->note_round(1 + spec_committed_verify_);
+            }
+            g_mtp->on_abort(spec_committed_verify_, spec_verify_rows_);
+        }
+        spec_verify_pending_ = spec_in_progress_ = spec_bonus_pending_ = false;
+        spec_round_complete_pending_ = false;
+        spec_no_feed_ = false;
+        spec_origin_pending_ = false;
+        spec_verify_row_ = 0;
+        spec_committed_verify_ = 0;
+        spec_draft_idx_ = 0;
+        spec_draft_.clear();
+    }
 
     // Compute wall-clock generation time (first sample -> last sample).
     if (!honest_speed && t_count_ > 0) {
@@ -820,4 +1098,29 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.decode_time = gen_wall_time;
 
     return result;
+}
+
+// Fallback for a failed MTP draft rollback: clear the main KV cache and
+// re-decode the committed prefix (the token tracker holds exactly the tokens
+// present in the KV).  The MTP mirror rebuilds via the mirror hook on each
+// re-decoded chunk, so the speculator stays consistent (and, if it was the
+// cause of the failure, has been invalidated by the hook).
+bool TokenGenerator::spec_rollback_redecode() {
+    llama_memory_clear(llama_get_memory(ctx_), true);
+    n_past_ = 0;
+    if (!out_tokens_) return false;
+    const size_t n = out_tokens_->size();
+    for (size_t i = 0; i < n; i += (size_t)cparams_.n_batch) {
+        const size_t chunk = std::min((size_t)cparams_.n_batch, n - i);
+        batch_.n_tokens = 0;
+        for (size_t j = 0; j < chunk; j++) {
+            common_batch_add(batch_, (*out_tokens_)[i + j], n_past_++, {0}, false);
+        }
+        if (!handle_llama_decode_error(ctx_, batch_, "KV Cache Exhausted (MTP rollback re-decode).", true)) {
+            sync_n_past(ctx_, n_past_);
+            return false;
+        }
+        batch_.n_tokens = 0;
+    }
+    return n_past_ == (int)n;
 }

@@ -1,5 +1,6 @@
 #include "session.h"
 #include "tokens.h"
+#include "mtp.h"
 #include "output.h"
 #include "server.h"
 #include "model.h"
@@ -540,11 +541,16 @@ private:
             // describes it -- invalidate (benchmark modes 1/2 rebuild from the
             // tracker on the next turn).
             state_.conversation_text.clear();
+            // Instant rollback leaves the MTP mirror ahead of the main
+            // context (its hidden-state bookkeeping can't be rolled back).
+            // Drafting stops until the next /clear or a re-decode.
+            if (g_mtp) g_mtp->invalidate("mirror stale after tool-correction rollback");
             log_rollback("correction", n_past_before, target_pos, true, n_past_);
             return 0;
         }
         diag("System: Correction rollback failed, re-decoding...", "\033[33m");
         llama_memory_clear(mem, true);
+        if (g_mtp) g_mtp->clear();  // re-decode rebuilds the mirror via the hook
         n_past_ = 0;
         if (!feed_tokens_impl(state_.all_context_tokens)) {
             diag("Correction restore failed. Type /clear to reset.", "\033[31m");
@@ -596,6 +602,9 @@ private:
 
     void clear_context() {
         llama_memory_clear(llama_get_memory(ctx_), true);
+        // Reset the MTP mirror with the main cache: the re-fed system prompt
+        // rebuilds the mirror via the mirror hook, re-arming the speculator.
+        if (g_mtp) g_mtp->clear();
         n_past_ = 0;
         // Reset context token tracker to empty; feed_tokens_impl will rebuild it.
         state_.all_context_tokens.clear();
@@ -1128,6 +1137,20 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
 
+    // Per-turn MTP acceptance stats (benchmark: compare against mode 0 runs).
+    if (g_mtp) {
+        std::string mtp_stats;
+        if (g_mtp->stats_line(mtp_stats)) {
+            if (tps_log.is_open()) {
+                tps_log << mtp_stats;
+            }
+            if (is_debug) {
+                diag(std::string("MTP this turn: ") + mtp_stats, "\033[90m");
+            }
+            g_mtp->reset_stats();
+        }
+    }
+
     // Flush TPS log so data is durable after each turn
     tps_log.flush();
 
@@ -1609,10 +1632,15 @@ bool ChatSession::run() {
                         llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)stack_idx);
                     }
                     // If stack_idx < 0: nothing to prune (no live entries for pre-restore).
+                    // Instant undo leaves the MTP mirror ahead of the main
+                    // context; drafting stops until the next /clear or a
+                    // re-decode rebuilds it.
+                    if (g_mtp) g_mtp->invalidate("mirror stale after /undo");
                     log_rollback("undo", n_past_before, target_pos, true, n_past_);
                 } else {
                     diag("Regenerating KV cache for " + to_string(target.n_past) + " tokens...", "\033[35m");
                     llama_memory_clear(mem, true);
+                    if (g_mtp) g_mtp->clear();  // re-decode rebuilds the mirror via the hook
                     n_past_ = 0;
                     // Recurrent checkpoints were lost with the clear; reset tracking.
                     state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
@@ -1829,6 +1857,10 @@ bool ChatSession::run() {
                 : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
             int saved_session = read_save_session(rpath);
             if (cache_hit) {
+                // The fast cache restores the main KV only; the MTP mirror is
+                // not part of the cache format yet, so drafting stops until a
+                // /clear (or a future cache-format extension restores it).
+                if (g_mtp) g_mtp->invalidate("mirror stale after fast restore");
                 diag_restore(rpath, (int)restored_tokens.size());
                 n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
 
@@ -1939,6 +1971,7 @@ bool ChatSession::run() {
 
                 // Clear the KV cache before re-decoding.
                 llama_memory_clear(llama_get_memory(ctx_), true);
+                if (g_mtp) g_mtp->clear();  // re-decode rebuilds the mirror via the hook
                 n_past_ = 0;
                 state_.all_context_tokens.clear();
                 // The old tracker is gone (and the decode below may fail):
@@ -2512,7 +2545,10 @@ bool ChatSession::run() {
         // tokens are simply part of what the rollback removes.
         // The checkpoint is guaranteed available: the detector can only fire after
         // FUNC_START, which is exactly when on_tool_start saves it (or it carries over
-        // from the original generation on a mid-tool-call resume).  The
+        // from the original generation on a mid-tool-call resume) -- except when
+        // MTP speculation leaves the recurrent state ahead of n_past_ at that moment
+        // (uncommitted verify cells), in which case the save is skipped and this
+        // turn ejects instead of correcting.  The
         // has_tool_correction_checkpoint check is defensive -- if the invariant ever
         // breaks, ejecting to prompt is safer than rolling back to a stale position.
         // Ejects as well when this call's correction attempt is already spent.

@@ -6,6 +6,7 @@
 #include "parsers.h"
 #include "token_generator.h"
 #include "tokens.h"
+#include "mtp.h"
 #include <algorithm>
 #include <ctime>
 #include <fstream>
@@ -20,6 +21,11 @@ using namespace std;
 
 // Global model tokens (declared extern in model.h)
 ModelTokens g_model_tokens;
+
+// Deterministic (greedy) mode flag (defined in main.cc): when temperature is 0,
+// load_system_prompt_text() omits the wall-clock timestamp so greedy runs are
+// byte-reproducible.
+extern bool g_deterministic_mode;
 
 // --- llama.cpp internal symbols, exported from libllama.so ---
 // These are not in the public llama.h header but are compiled into the shared library.
@@ -409,7 +415,8 @@ string read_prompt_file(bool* found) {
 // (./localprompt, falling back to $LIM_CONFIG_DIR/localprompt) prepended when
 // present -- so site text lands at the start of the system message, matching
 // where Qwen's own template puts its reasoning-effort instruction -- and the
-// current working directory and date/time appended.
+// current working directory (plus date/time, except in deterministic
+// temperature-0 mode) appended.
 // Returns true if a base prompt file was opened (possibly empty); returns
 // false if none exists and leaves 'prompt' empty, so callers can keep a
 // cached version or proceed with an empty prompt for unbiased benchmarking.
@@ -434,18 +441,23 @@ bool load_system_prompt_text(string& prompt) {
     }
   }
 
-  // Append cwd and date/time.
+  // Append cwd and date/time.  The wall-clock timestamp is omitted in
+  // deterministic (temperature 0) mode: it is the only session-varying piece
+  // of the prompt, and dropping it makes greedy runs byte-reproducible.  (A
+  // fixed date can still be given explicitly in the user prompt if needed.)
   char current_cwd[1024];
   if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
     prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
   }
 
-  time_t now = time(nullptr);
-  struct tm tm_buf;
-  if (localtime_r(&now, &tm_buf)) {
-    char time_str[64];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
-    prompt += "Current date and time: " + string(time_str) + "\n";
+  if (!g_deterministic_mode) {
+    time_t now = time(nullptr);
+    struct tm tm_buf;
+    if (localtime_r(&now, &tm_buf)) {
+      char time_str[64];
+      strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
+      prompt += "Current date and time: " + string(time_str) + "\n";
+    }
   }
   return true;
 }
@@ -521,8 +533,18 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
     return false;
   } else if (ret == 1 || ret == 2) {
     diag(ret == 1 ? error_msg : "Aborted", "\033[31m");
+    // Context exhaustion (ret 1) desynchronizes the MTP mirror -- the batch
+    // was truncated, so the mirror rows past the truncation point are gone.
+    // An abort (ret 2) leaves the KV at the last complete row: the mirror is
+    // still consistent up to there and can continue after /continue.
+    if (ret == 1 && g_mtp && g_mtp->owns(ctx)) g_mtp->invalidate("main decode truncated (KV exhausted)");
     if (should_break) return false;
     return true;
+  }
+  // MTP mirror hook: extend the draft mirror with this batch's rows (main
+  // context only; the MTP context's own decodes never pass through here).
+  if (g_mtp && g_mtp->owns(ctx)) {
+    g_mtp->process(batch);
   }
   return true;
 }
