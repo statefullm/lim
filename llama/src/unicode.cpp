@@ -58,16 +58,6 @@ uint32_t unicode_cpt_from_utf8(const std::string & utf8, size_t & offset) {
             throw std::invalid_argument("invalid character");
         }
         auto result = ((utf8[offset + 0] & 0x07) << 18) | ((utf8[offset + 1] & 0x3f) << 12) | ((utf8[offset + 2] & 0x3f) << 6) | (utf8[offset + 3] & 0x3f);
-        if (result > 0x10ffff) {
-            // This 4-byte sequence decodes above U+10FFFF: lead bytes 0xF5-0xFF
-            // always, 0xF1-0xF3 always, and 0xF0-0xF4 when the continuation
-            // bytes push the value past the canonical range (e.g. F0 91 80 80).
-            // Reject here: unicode_cpts_from_utf8() catches this and maps the
-            // byte to U+FFFD like any other invalid sequence, instead of letting
-            // unicode_cpt_to_utf8() throw an uncaught std::invalid_argument
-            // later, which terminates the process.
-            throw std::invalid_argument("invalid character");
-        }
         offset += 4;
         return result;
     }
@@ -1251,7 +1241,7 @@ std::vector<std::string> unicode_regex_split(const std::string & text, const std
         { unicode_cpt_flags::LETTER,      "\x41-\x5A\x61-\x7A" }, // A-Za-z
         { unicode_cpt_flags::PUNCTUATION, "\x21-\x23\x25-\x2A\x2C-\x2F\x3A-\x3B\x3F-\x40\\\x5B-\\\x5D\x5F\\\x7B\\\x7D" }, // !-#%-*,-/:-;?-@\[-\]_\{\}
         { unicode_cpt_flags::ACCENT_MARK, "" }, // no sub-128 codepoints
-        { unicode_cpt_flags::SYMBOL,      "\\\x24\\\x2B\x3C-\x3E\x5E\x60\\\x7C" }, // $+<=>^`|
+        { unicode_cpt_flags::SYMBOL,      "\\\x24\\\x2B\x3C-\x3E\x5E\x60\\\x7C\\\x7E" }, // $+<=>^`|~
     };
 
     // compute collapsed codepoints only if needed by at least one regex

@@ -43,10 +43,10 @@
 #define LLAMA_FILE_MAGIC_GGSQ 0x67677371u // 'ggsq'
 
 #define LLAMA_SESSION_MAGIC   LLAMA_FILE_MAGIC_GGSN
-#define LLAMA_SESSION_VERSION 9
+#define LLAMA_SESSION_VERSION 10
 
 #define LLAMA_STATE_SEQ_MAGIC   LLAMA_FILE_MAGIC_GGSQ
-#define LLAMA_STATE_SEQ_VERSION 2
+#define LLAMA_STATE_SEQ_VERSION 3
 
 #ifdef __cplusplus
 extern "C" {
@@ -214,6 +214,12 @@ extern "C" {
     LLAMA_API const char * llama_load_mode_name(enum llama_load_mode load_mode);
     LLAMA_API enum llama_load_mode llama_load_mode_from_str(const char * str);
 
+    enum llama_lazy_mode {
+        LLAMA_LAZY_MODE_OFF  = 0, // always read the whole tensor up front
+        LLAMA_LAZY_MODE_AUTO = 1, // lazy only for marked tensors larger than 4 GiB (requires mmap)
+        LLAMA_LAZY_MODE_ON   = 2, // read the rows of tensors marked by the arch on demand (requires mmap)
+    };
+
     enum llama_context_type {
         LLAMA_CONTEXT_TYPE_DEFAULT = 0,
         LLAMA_CONTEXT_TYPE_MTP     = 1,
@@ -314,6 +320,8 @@ extern "C" {
         int32_t n_gpu_layers; // number of layers to store in VRAM, a negative value means all layers
         enum llama_split_mode split_mode; // how to split the model across multiple GPUs
         enum llama_load_mode  load_mode;  // how to load the model
+
+        enum llama_lazy_mode lazy_mode; // on-demand reading of tensors marked by the arch
 
         // the GPU that is used for the entire model when split_mode is LLAMA_SPLIT_MODE_NONE
         int32_t main_gpu;
@@ -437,6 +445,7 @@ extern "C" {
         const struct llama_model_kv_override * kv_overrides;        // pointer to kv overrides
         const struct llama_model_tensor_override * tt_overrides;    // pointer to tensor overrides
         const int32_t * prune_layers;                               // pointer to layer indices to prune
+        size_t max_buf_size;                                        // max bytes of tensor rows kept in memory at once, 0 = default (8 GiB)
     } llama_model_quantize_params;
 
     typedef struct llama_logit_bias {
@@ -733,7 +742,7 @@ extern "C" {
 
     // Removes all tokens that belong to the specified sequence and have positions in [p0, p1)
     // Returns false if a partial sequence cannot be removed. Removing a whole sequence never fails
-    // seq_id < 0 : match any sequence
+    // seq_id < 0 : match any sequence [TAG_LLAMA_SEQ_ID_NEG]
     // p0 < 0     : [0,  p1]
     // p1 < 0     : [p0, inf)
     LLAMA_API bool llama_memory_seq_rm(
@@ -794,41 +803,6 @@ extern "C" {
 
     // Check if the memory supports shifting
     LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
-
-    //
-    // Recurrent state checkpointing (no-op for pure attention models)
-    //
-
-    // Push current R/S state onto a per-seq stack.
-    LLAMA_API void llama_memory_rs_checkpoint_save(
-            llama_memory_t mem,
-              llama_seq_id seq_id);
-
-    // Overwrite an existing checkpoint at a specific stack index in place
-    // (avoids push/pop churn for ephemeral checkpoints like tool-correction).
-    LLAMA_API void llama_memory_rs_checkpoint_overwrite(
-            llama_memory_t mem,
-              llama_seq_id seq_id,
-                     uint32_t checkpoint_idx);
-
-    // Restore from a specific stack index (0 = first saved).
-    // After restore, llama_memory_seq_rm will succeed on the recurrent cache
-    // even for large rollback distances, since plane 0 already holds correct state.
-    LLAMA_API void llama_memory_rs_checkpoint_restore(
-            llama_memory_t mem,
-              llama_seq_id seq_id,
-                     uint32_t checkpoint_idx);
-
-    // Discard checkpoints beyond keep_idx (0-based).
-    LLAMA_API void llama_memory_rs_checkpoint_prune(
-            llama_memory_t mem,
-              llama_seq_id seq_id,
-                     uint32_t keep_idx);
-
-    // Pop the most recent checkpoint from the stack.
-    LLAMA_API void llama_memory_rs_checkpoint_pop(
-            llama_memory_t mem,
-              llama_seq_id seq_id);
 
     //
     // State / sessions
@@ -1383,7 +1357,7 @@ extern "C" {
     LLAMA_API struct llama_sampler * llama_sampler_chain_get(      struct llama_sampler * chain, int32_t i);
 
     // the total number of samplers in the chain
-    LLAMA_API int                    llama_sampler_chain_n  (const struct llama_sampler * chain);
+    LLAMA_API int32_t                llama_sampler_chain_n  (const struct llama_sampler * chain);
 
     // after removing a sampler, the chain will no longer own it, and it will not be freed when the chain is freed
     LLAMA_API struct llama_sampler * llama_sampler_chain_remove(   struct llama_sampler * chain, int32_t i);
