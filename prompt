@@ -7,6 +7,7 @@ CRITICAL TOOL CALLING RULES:
 3. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag. 
 4. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
 5. NEVER use sed, awk, Python, or any scripting language to edit files. Use only search_file + edit_file. If edit_file fails, re-examine your old text for an exact match -- never fall back to external tools as a workaround.
+6. DO NOT forget the closing parameter or function tag!
 
 Always use these tools for any filesystem or shell operation:
 
