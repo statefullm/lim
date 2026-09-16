@@ -308,16 +308,19 @@ int main(int argc, char ** argv) {
   auto mparams = llama_model_default_params();
 
   // --- MTP speculative decoding (LIM_MTP=1) ---
-  // Probe the GGUF for a nextn (MTP) head before loading: mparams.load_mtp
-  // must be set pre-load, and loading MTP tensors on a model that lacks them
-  // would fail.  Benchmark chatbot modes 1/2 are excluded (they benchmark the
-  // re-decode cost and must not be sped up by speculation).
+  // Two modes:
+  //   1. Embedded MTP: the main model contains nextn tensors -- set
+  //      mparams.load_mtp and create the draft ctx from the same model.
+  //   2. Sidecar MTP: a separate MTP-only GGUF provides the draft head.
+  //      Set LIM_MTP_SIDECAR=<path>; the main model does not need to contain
+  //      nextn tensors (e.g. Qwen3.8-Flash-Next quants that strip them).
+  //
+  // Detection uses the {arch}.nextn_predict_layers metadata key (present in
+  // the GGUF header of every shard), the same mechanism llama.cpp uses.
+  // Benchmark chatbot modes 1/2 are excluded.
   bool mtp_enabled = false;
+  bool mtp_use_sidecar = false;
   int mtp_draft_len = 4;
-  // Cap on the MTP draft context's batch (its scheduler work buffers scale
-  // with it and dominate its VRAM cost; nothing decodes more rows than this
-  // at once).  128 keeps the draft context to a few hundred MB; raise up to
-  // 512 (the old default) if VRAM is plentiful.
   int mtp_draft_batch = 128;
   {
     const char* env = getenv("LIM_MTP");
@@ -333,24 +336,38 @@ int main(int argc, char ** argv) {
         int v = atoi(env_b);
         if (v >= 1 && v <= 512) mtp_draft_batch = v;
       }
+
+      // Determine which GGUF to probe: sidecar if set, otherwise the main model.
+      const char* sidecar_path = getenv("LIM_MTP_SIDECAR");
+      const bool sidecar_set = (sidecar_path != nullptr && strlen(sidecar_path) > 0);
+      const char* probe_path = sidecar_set ? sidecar_path : argv[1];
+
       struct gguf_init_params gp = { /*.no_alloc=*/ true, /*.ctx=*/ nullptr };
-      struct gguf_context* gc = gguf_init_from_file(argv[1], gp);
+      struct gguf_context* gc = gguf_init_from_file(probe_path, gp);
       if (gc) {
         const int64_t arch_id = gguf_find_key(gc, "general.architecture");
         if (arch_id >= 0 && gguf_get_kv_type(gc, arch_id) == GGUF_TYPE_STRING) {
           const std::string arch = gguf_get_val_str(gc, arch_id);
-          const int64_t bc_id = gguf_find_key(gc, (arch + ".block_count").c_str());
-          if (bc_id < 0) return 1;
-          const uint32_t block_count = gguf_get_val_u32(gc, bc_id);
-          const bool has_mtp = gguf_find_tensor(gc,
-              ("blk." + std::to_string((int)block_count - 1) + ".nextn.eh_proj.weight").c_str()) >= 0;
-          if (has_mtp) {
+          const int64_t nextn_id = gguf_find_key(gc, (arch + ".nextn_predict_layers").c_str());
+          const bool has_mtp = (nextn_id >= 0 &&
+                                gguf_get_kv_type(gc, nextn_id) == GGUF_TYPE_UINT32 &&
+                                gguf_get_val_u32(gc, nextn_id) > 0);
+          if (has_mtp && sidecar_set) {
+            mtp_enabled = true;
+            mtp_use_sidecar = true;
+          } else if (has_mtp) {
             mtp_enabled = true;
             mparams.load_mtp = true;
+          } else if (sidecar_set) {
+            diag("MTP: sidecar file has no nextn (MTP) head -- MTP disabled", "\033[33m");
           } else {
             diag("MTP: LIM_MTP=1 but model has no nextn (MTP) head -- MTP disabled", "\033[33m");
           }
+        } else {
+          diag("MTP: cannot read architecture from " + std::string(probe_path) + " -- MTP disabled", "\033[33m");
         }
+      } else {
+        diag("MTP: failed to open " + std::string(probe_path) + " -- MTP disabled", "\033[33m");
       }
       if (gc) gguf_free(gc);
     }
@@ -520,7 +537,9 @@ int main(int argc, char ** argv) {
     tps_log << "# Frequency penalty: " << frequency_penalty << "\n";
     tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
     tps_log << "# MTP: " << (mtp_enabled
-                       ? "enabled (draft=" + std::to_string(mtp_draft_len) + ", batch=" + std::to_string(mtp_draft_batch) + ")"
+                       ? std::string("enabled (draft=") + std::to_string(mtp_draft_len) +
+                         ", batch=" + std::to_string(mtp_draft_batch) +
+                         (mtp_use_sidecar ? ", sidecar)" : ")")
                        : "disabled") << "\n";
     tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
   }
@@ -571,9 +590,28 @@ int main(int argc, char ** argv) {
 
   // Create the MTP draft context (before the system prompt feed, so the
   // mirror hook covers the initial prefill too).
+  llama_model* model_mtp = nullptr;  // sidecar model (freed at exit)
   if (mtp_enabled) {
-    g_mtp = MtpSpeculator::create(ctx, model, cparams, mtp_draft_len, mtp_draft_batch);
-    if (!g_mtp) mtp_enabled = false;
+    if (mtp_use_sidecar) {
+      const char* sidecar_path = getenv("LIM_MTP_SIDECAR");
+      auto scparams = llama_model_default_params();
+      scparams.n_gpu_layers = -1;    // tiny model, all on GPU
+      scparams.load_mtp = true;
+      scparams.load_mode = LLAMA_LOAD_MODE_NONE;  // tiny model, no need for mmap
+      model_mtp = llama_model_load_from_file(sidecar_path, scparams);
+      if (!model_mtp) {
+        diag("MTP: failed to load sidecar '" + std::string(sidecar_path) + "' -- MTP disabled", "\033[33m");
+        mtp_enabled = false;
+      }
+    }
+    if (mtp_enabled) {
+      llama_model* draft_model = mtp_use_sidecar ? model_mtp : model;
+      g_mtp = MtpSpeculator::create(ctx, draft_model, cparams, mtp_draft_len, mtp_draft_batch);
+      if (!g_mtp) {
+        mtp_enabled = false;
+        if (model_mtp) { llama_model_free(model_mtp); model_mtp = nullptr; }
+      }
+    }
   }
 
   // Always load and tokenize the system prompt.
@@ -656,12 +694,14 @@ int main(int argc, char ** argv) {
     state
     );
 
-  // Cleanup (free the MTP draft context before the model it shares)
+  // Cleanup (free the MTP draft context before the model it shares;
+  // sidecar model is freed after the draft ctx but before the main model)
   if (g_mtp) {
     delete g_mtp;
     g_mtp = nullptr;
   }
   llama_free(ctx);
+  if (model_mtp) llama_model_free(model_mtp);
   llama_model_free(model);
   llama_backend_free();
   return 0;
