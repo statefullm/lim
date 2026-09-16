@@ -473,6 +473,7 @@ int main(int argc, char ** argv) {
         tensor_buft_overrides.data(),
         margins.data(),
         n_ctx_min,
+        /*extra=*/nullptr,
         GGML_LOG_LEVEL_ERROR);
 
       // On success the message is deferred until after model load, when we know total layers.

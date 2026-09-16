@@ -1,8 +1,8 @@
 diff --git a/llama/include/llama.h b/llama/include/llama.h
-index 59c9bad3e..740bff5b0 100644
+index 3ab935939..b6ef9658a 100644
 --- a/llama/include/llama.h
 +++ b/llama/include/llama.h
-@@ -791,6 +791,41 @@ extern "C" {
+@@ -804,6 +804,41 @@ extern "C" {
      // Check if the memory supports shifting
      LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
  
@@ -45,10 +45,10 @@ index 59c9bad3e..740bff5b0 100644
      // State / sessions
      //
 diff --git a/llama/src/llama-context.cpp b/llama/src/llama-context.cpp
-index 19cca7df1..4e63ce1b7 100644
+index 6334f3cca..c20e8cfa5 100644
 --- a/llama/src/llama-context.cpp
 +++ b/llama/src/llama-context.cpp
-@@ -3968,6 +3968,28 @@ bool llama_memory_can_shift(llama_memory_t mem) {
+@@ -4116,6 +4116,28 @@ bool llama_memory_can_shift(llama_memory_t mem) {
      return mem->get_can_shift();
  }
  
@@ -77,6 +77,24 @@ index 19cca7df1..4e63ce1b7 100644
  // llama state API
  
  // deprecated
+diff --git a/llama/src/llama-kv-cache-dsa-iswa.h b/llama/src/llama-kv-cache-dsa-iswa.h
+index 28cf95bf0..eb29df073 100644
+--- a/llama/src/llama-kv-cache-dsa-iswa.h
++++ b/llama/src/llama-kv-cache-dsa-iswa.h
+@@ -63,6 +63,13 @@ public:
+     void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
+     void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
+ 
++    // Recurrent state checkpointing (no-op for pure attention models)
++    void rs_checkpoint_save     (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++    void rs_checkpoint_overwrite(llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_restore  (llama_seq_id seq_id, uint32_t checkpoint_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(checkpoint_idx); }
++    void rs_checkpoint_prune    (llama_seq_id seq_id, uint32_t keep_idx) override { GGML_UNUSED(seq_id); GGML_UNUSED(keep_idx); }
++    void rs_checkpoint_pop      (llama_seq_id seq_id) override { GGML_UNUSED(seq_id); }
++
+     //
+     // llama_kv_cache_dsa_iswa specific API
+     //
 diff --git a/llama/src/llama-kv-cache-dsa.h b/llama/src/llama-kv-cache-dsa.h
 index e74fc4d91..18cbb8d6a 100644
 --- a/llama/src/llama-kv-cache-dsa.h
@@ -150,10 +168,10 @@ index f09b6d32b..7da6cd214 100644
  
      llama_kv_cache * get_base() const;
 diff --git a/llama/src/llama-kv-cache.h b/llama/src/llama-kv-cache.h
-index 6cb6dbd2f..534a62635 100644
+index c4d8699de..8a1ad3c2e 100644
 --- a/llama/src/llama-kv-cache.h
 +++ b/llama/src/llama-kv-cache.h
-@@ -149,6 +149,13 @@ public:
+@@ -151,6 +151,13 @@ public:
      void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const override;
      void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) override;
  
@@ -204,7 +222,7 @@ index 484eafb74..63871dc67 100644
      // llama_memory_hybrid specific API
      //
 diff --git a/llama/src/llama-memory-recurrent.cpp b/llama/src/llama-memory-recurrent.cpp
-index ef82eb976..2bb4e3b26 100644
+index 57919accf..95e856475 100644
 --- a/llama/src/llama-memory-recurrent.cpp
 +++ b/llama/src/llama-memory-recurrent.cpp
 @@ -35,6 +35,10 @@ llama_memory_recurrent::llama_memory_recurrent(
@@ -218,7 +236,7 @@ index ef82eb976..2bb4e3b26 100644
      cells.clear();
      cells.resize(mem_size);
  
-@@ -145,6 +149,8 @@ void llama_memory_recurrent::clear(bool data) {
+@@ -156,6 +160,8 @@ void llama_memory_recurrent::clear(bool data) {
      }
  
      std::fill(rs_idx.begin(), rs_idx.end(), 0);
@@ -227,7 +245,7 @@ index ef82eb976..2bb4e3b26 100644
  }
  
  bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
-@@ -186,6 +192,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+@@ -200,6 +206,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                      cell.pos = p0 - 1;
                      return true;
                  }
@@ -242,8 +260,8 @@ index ef82eb976..2bb4e3b26 100644
                  return false;
              }
              // invalidate tails which will be cleared
-@@ -396,6 +410,144 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
-     rs_idx[seq_id] = (idx > n_rs_seq) ? n_rs_seq : idx;
+@@ -417,6 +431,144 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
+     rs_idx[seq_id] = idx;
  }
  
 +// --- Recurrent state checkpointing ---
@@ -388,7 +406,7 @@ index ef82eb976..2bb4e3b26 100644
      std::map<ggml_backend_buffer_type_t, size_t> ret;
      for (const auto & [_, buf] : ctxs_bufs) {
 diff --git a/llama/src/llama-memory-recurrent.h b/llama/src/llama-memory-recurrent.h
-index b13b7b748..770b3eae3 100644
+index 4abb3f5cf..c714bd350 100644
 --- a/llama/src/llama-memory-recurrent.h
 +++ b/llama/src/llama-memory-recurrent.h
 @@ -66,6 +66,15 @@ public:

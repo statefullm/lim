@@ -1,5 +1,5 @@
 diff --git a/llama/src/unicode.cpp b/llama/src/unicode.cpp
-index b02ecdc93..71553d55d 100644
+index 93996f9dd..410de69b3 100644
 --- a/llama/src/unicode.cpp
 +++ b/llama/src/unicode.cpp
 @@ -58,6 +58,16 @@ uint32_t unicode_cpt_from_utf8(const std::string & utf8, size_t & offset) {

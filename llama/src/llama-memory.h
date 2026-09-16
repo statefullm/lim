@@ -124,6 +124,18 @@ struct llama_memory_i {
 
     virtual void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) const = 0;
     virtual void state_read (llama_io_read_i  & io, llama_seq_id seq_id = -1, llama_state_seq_flags flags = 0) = 0;
+
+    // Recurrent state checkpointing (no-op for pure attention models).
+    // save() pushes current R/S state onto a per-seq stack.
+    // overwrite() replaces an existing checkpoint at a specific stack index in place.
+    // restore() restores from a specific stack index (0 = first saved).
+    // prune() discards checkpoints beyond keep_idx.
+    // pop() removes the most recent checkpoint from the stack.
+    virtual void rs_checkpoint_save     (llama_seq_id seq_id) = 0;
+    virtual void rs_checkpoint_overwrite(llama_seq_id seq_id, uint32_t checkpoint_idx) = 0;
+    virtual void rs_checkpoint_restore  (llama_seq_id seq_id, uint32_t checkpoint_idx) = 0;
+    virtual void rs_checkpoint_prune    (llama_seq_id seq_id, uint32_t keep_idx) = 0;
+    virtual void rs_checkpoint_pop      (llama_seq_id seq_id) = 0;
 };
 
 using llama_memory_ptr = std::unique_ptr<llama_memory_i>;
