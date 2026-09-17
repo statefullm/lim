@@ -489,10 +489,13 @@ int main(int argc, char ** argv) {
 
       // When MTP is enabled, account for the draft's VRAM cost so the fitter
       // doesn't fill VRAM and leave no room for the sidecar/draft context.
-      // For embedded MTP (shares_model=true, loads fine) pass as extra.
-      // For shared sidecars (cannot load standalone -- needs ctx_other) skip
-      // the extra model and inflate the per-device margin by the sidecar's
-      // file size + estimated KV/compute for one attention layer.
+      //   - Embedded MTP (no sidecar): the draft context shares the main model's
+      //     weights, so pass it as an `extra` model with shares_model=true. It
+      //     loads fine standalone (same file).
+      //   - Any sidecar (shared OR self-contained): MTP draft heads are rejected
+      //     when loaded on their own (missing trunk tensors), so the fitter can't
+      //     measure them. Skip the extra model and inflate the per-device margin
+      //     by the sidecar file size plus an estimate of the draft KV/compute.
       common_fit_extra_model * extra_ptr = nullptr;
       llama_model_params mparams_mtp;
       llama_context_params cparams_mtp;
@@ -510,28 +513,27 @@ int main(int argc, char ** argv) {
         cparams_mtp.n_outputs_max = 2;
         cparams_mtp.n_outputs_max_per_seq = 2;
 
-        const bool can_measure_extra = !mtp_sidecar_shared;  // shared heads can't load standalone
-        if (can_measure_extra) {
+        if (!mtp_use_sidecar) {
+          // Embedded MTP: same model file, draft shares weights. Measure as extra.
           const common_fit_extra_model extra_mtp = {
-              /*.path_model   =*/ mtp_use_sidecar ? getenv("LIM_MTP_SIDECAR") : argv[1],
+              /*.path_model   =*/ argv[1],
               /*.mparams      =*/ &mparams_mtp,
               /*.cparams      =*/ &cparams_mtp,
-              /*.shares_model =*/ !mtp_use_sidecar,
+              /*.shares_model =*/ true,
           };
           extra_ptr = const_cast<common_fit_extra_model*>(&extra_mtp);
         } else {
-          // Estimate sidecar VRAM: file size (weights on GPU) + KV + compute.
-          // KV for one full-attention layer: n_head_kv * (head_k + head_v) * n_ctx * bpp.
-          // Compute buffers: proportional to draft batch; approximate from n_embd * batch * 8.
+          // Sidecar (shared or self-contained): cannot be measured standalone.
+          // Reserve the sidecar file size (weights go to GPU) + draft KV/compute.
           size_t extra_vram = 0;
           struct stat st;
           if (stat(getenv("LIM_MTP_SIDECAR"), &st) == 0) {
-            extra_vram = (size_t)st.st_size;  // all weights go to GPU
+            extra_vram = (size_t)st.st_size;  // draft head weights, all on GPU
           }
-          // Conservative KV + compute estimate: 1.5x the KV, batch-proportional compute.
-          // Use ~300 MB per 100K context tokens for one layer at q8_0 (measured).
+          // Draft KV + compute: one full-attention layer. ~300 MB per 100K tokens
+          // at q8_0 (measured), plus ~4 MB per draft-batch row for compute buffers.
           extra_vram += (size_t)(cparams.n_ctx / 100000.0 * 300.0 * 1024.0 * 1024.0);
-          extra_vram += (size_t)(mtp_draft_batch) * 4 * 1024 * 1024;  // ~4 MB per batch row
+          extra_vram += (size_t)(mtp_draft_batch) * 4 * 1024 * 1024;
           for (size_t i = 0; i < margins.size(); i++) {
             margins[i] += extra_vram;
           }
