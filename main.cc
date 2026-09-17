@@ -320,6 +320,7 @@ int main(int argc, char ** argv) {
   // Benchmark chatbot modes 1/2 are excluded.
   bool mtp_enabled = false;
   bool mtp_use_sidecar = false;
+  bool mtp_sidecar_shared = false;
   int mtp_draft_len = 4;
   int mtp_draft_batch = 128;
   {
@@ -355,6 +356,8 @@ int main(int argc, char ** argv) {
           if (has_mtp && sidecar_set) {
             mtp_enabled = true;
             mtp_use_sidecar = true;
+            // Detect shared-head sidecars (no own tok_embd; borrows from main).
+            mtp_sidecar_shared = gguf_find_tensor(gc, "token_embd.weight") < 0;
           } else if (has_mtp) {
             mtp_enabled = true;
             mparams.load_mtp = true;
@@ -484,13 +487,64 @@ int main(int argc, char ** argv) {
 
       uint32_t n_ctx_min = cparams.n_ctx;
 
+      // When MTP is enabled, account for the draft's VRAM cost so the fitter
+      // doesn't fill VRAM and leave no room for the sidecar/draft context.
+      // For embedded MTP (shares_model=true, loads fine) pass as extra.
+      // For shared sidecars (cannot load standalone -- needs ctx_other) skip
+      // the extra model and inflate the per-device margin by the sidecar's
+      // file size + estimated KV/compute for one attention layer.
+      common_fit_extra_model * extra_ptr = nullptr;
+      llama_model_params mparams_mtp;
+      llama_context_params cparams_mtp;
+      if (mtp_enabled) {
+        mparams_mtp = llama_model_default_params();
+        mparams_mtp.n_gpu_layers = -1;
+        mparams_mtp.load_mtp = true;
+        mparams_mtp.load_mode = LLAMA_LOAD_MODE_NONE;
+        cparams_mtp = cparams;
+        cparams_mtp.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
+        cparams_mtp.n_rs_seq = 0;
+        cparams_mtp.n_seq_max = 1;
+        cparams_mtp.n_batch = std::min<int>(cparams.n_batch, mtp_draft_batch);
+        cparams_mtp.n_ubatch = std::min<int>(cparams.n_ubatch, mtp_draft_batch);
+        cparams_mtp.n_outputs_max = 2;
+        cparams_mtp.n_outputs_max_per_seq = 2;
+
+        const bool can_measure_extra = !mtp_sidecar_shared;  // shared heads can't load standalone
+        if (can_measure_extra) {
+          const common_fit_extra_model extra_mtp = {
+              /*.path_model   =*/ mtp_use_sidecar ? getenv("LIM_MTP_SIDECAR") : argv[1],
+              /*.mparams      =*/ &mparams_mtp,
+              /*.cparams      =*/ &cparams_mtp,
+              /*.shares_model =*/ !mtp_use_sidecar,
+          };
+          extra_ptr = const_cast<common_fit_extra_model*>(&extra_mtp);
+        } else {
+          // Estimate sidecar VRAM: file size (weights on GPU) + KV + compute.
+          // KV for one full-attention layer: n_head_kv * (head_k + head_v) * n_ctx * bpp.
+          // Compute buffers: proportional to draft batch; approximate from n_embd * batch * 8.
+          size_t extra_vram = 0;
+          struct stat st;
+          if (stat(getenv("LIM_MTP_SIDECAR"), &st) == 0) {
+            extra_vram = (size_t)st.st_size;  // all weights go to GPU
+          }
+          // Conservative KV + compute estimate: 1.5x the KV, batch-proportional compute.
+          // Use ~300 MB per 100K context tokens for one layer at q8_0 (measured).
+          extra_vram += (size_t)(cparams.n_ctx / 100000.0 * 300.0 * 1024.0 * 1024.0);
+          extra_vram += (size_t)(mtp_draft_batch) * 4 * 1024 * 1024;  // ~4 MB per batch row
+          for (size_t i = 0; i < margins.size(); i++) {
+            margins[i] += extra_vram;
+          }
+        }
+      }
+
       common_params_fit_status fit_status = common_fit_params(
         argv[1], &mparams, &cparams,
         tensor_split.data(),
         tensor_buft_overrides.data(),
         margins.data(),
         n_ctx_min,
-        /*extra=*/nullptr,
+        extra_ptr,
         GGML_LOG_LEVEL_ERROR);
 
       // On success the message is deferred until after model load, when we know total layers.

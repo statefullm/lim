@@ -65,6 +65,8 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
   mc.n_rs_seq = 0;
   mc.n_seq_max = 1;
   mc.n_ctx = cparams_main.n_ctx;
+  // Sidecar/shared-head models borrow tok_embd/output from the main context.
+  mc.ctx_other = ctx_main;
   // Cap the draft context's batch (LIM_MTP_BATCH, default 128): the
   // scheduler's work buffers (GEMM/attention scratch) scale with it and
   // dominate the draft context's VRAM cost (~1.3 GB at 512 rows on a 27B
