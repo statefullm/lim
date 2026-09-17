@@ -52,7 +52,10 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
 4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search and [Docling](https://github.com/DS4SD/docling) for PDF reading. LIM auto-starts them on demand; override the commands with `LIM_SEARXNG_CMD` / `LIM_DOCLING_CMD` (see **Web Search & PDF Setup** below).
 
-> **Note:** llama.cpp is bundled as a git subrepo with two LIM-specific patches: one adding recurrent state checkpointing (required for instant `/undo` on hybrid models), and one rejecting out-of-range 4-byte UTF-8 sequences so malformed output can't terminate the process. The patched code is built automatically by the Makefile. Both patches are pending PRs upstream to llama.cpp.
+> **Note:** llama.cpp is bundled as a git subrepo with three patches applied in-tree (the patched code is committed and built directly by the Makefile; the matching `*.patch` files are kept as records so a future `git subrepo pull` can re-derive them):
+> - `llama-checkpoint.patch` (LIM-authored) -- recurrent state checkpointing, required for instant `/undo` on hybrid models. Pending PR upstream.
+> - `llama-utf8.patch` (LIM-authored) -- rejects out-of-range 4-byte UTF-8 sequences so malformed output can't terminate the process. Pending PR upstream.
+> - `llama-pr28243.patch` (upstream [PR #28243](https://github.com/ggml-org/llama.cpp/pull/28243), not authored by LIM) -- qwen4exp MTP draft graph, required for `LIM_MTP` on the `qwen4exp` architecture (Qwen3.8-Flash-Next). Two hunks were hand-merged against the current upstream base (the `TENSOR_ALLOW_RESHAPE` hyper-connection refactor).
 
 ---
 
