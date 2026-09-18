@@ -80,6 +80,20 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
   mc.n_outputs_max_per_seq = 2;
   self->n_batch_mtp_ = mc.n_batch;
 
+  // Mirror KV quantization: always Q8_0, independent of the main cache
+  // type.  The draft context holds a SINGLE layer's KV and every proposal
+  // is verified by the main model, so the mirror's precision only costs
+  // acceptance rate (the verify pass re-samples every committed token from
+  // the full-precision target chain) -- never output correctness.  Q8_0 is
+  // the most compact type the MMA_F16 flash-attention kernel natively
+  // dequantizes: F16 doubles the mirror's size, and other quant types
+  // trigger the full-cache F16 pre-conversion whose f16_extra buffer scales
+  // with the context.  A Q8_0 mirror works with an F16 main KV -- the MTP
+  // layer's inputs are full-precision hidden states, so the quantized-
+  // mirror acceptance cost stays second-order.
+  mc.type_k = GGML_TYPE_Q8_0;
+  mc.type_v = GGML_TYPE_Q8_0;
+
   // Mirror KV estimate (pre-creation): the draft context holds ONE
   // full-attention layer's KV (n_head_kv x head_dim, keys + values) per
   // context token.  Used to report a sizing hint when the draft context
@@ -206,7 +220,8 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
   self->valid_ = true;
   diag("MTP: speculative decoding enabled (draft=" + std::to_string(draft_len) +
        ", mirror ctx " + std::to_string(mc.n_ctx) + " tokens, " +
-       std::string(ggml_type_name(mc.type_k)) + " KV)", "\033[32m");
+       std::string(ggml_type_name(mc.type_k)) + "/" +
+       std::string(ggml_type_name(mc.type_v)) + " KV)", "\033[32m");
   return self;
 }
 

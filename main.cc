@@ -513,6 +513,11 @@ int main(int argc, char ** argv) {
         cparams_mtp.n_outputs_max = 2;
         cparams_mtp.n_outputs_max_per_seq = 2;
 
+        // Mirror the forced Q8_0 mirror KV in mtp.cc so the fitter's memory
+        // estimate matches the real draft context.
+        cparams_mtp.type_k = GGML_TYPE_Q8_0;
+        cparams_mtp.type_v = GGML_TYPE_Q8_0;
+
         if (!mtp_use_sidecar) {
           // Embedded MTP: same model file, draft shares weights. Measure as extra.
           const common_fit_extra_model extra_mtp = {
@@ -530,8 +535,9 @@ int main(int argc, char ** argv) {
           if (stat(getenv("LIM_MTP_SIDECAR"), &st) == 0) {
             extra_vram = (size_t)st.st_size;  // draft head weights, all on GPU
           }
-          // Draft KV + compute: one full-attention layer. ~300 MB per 100K tokens
-          // at q8_0 (measured), plus ~4 MB per draft-batch row for compute buffers.
+          // Draft KV + compute: one full-attention layer at q8_0 (the mirror
+          // KV type is fixed). ~300 MB per 100K tokens (measured). Plus ~4 MB
+          // per draft-batch row for compute buffers.
           extra_vram += (size_t)(cparams.n_ctx / 100000.0 * 300.0 * 1024.0 * 1024.0);
           extra_vram += (size_t)(mtp_draft_batch) * 4 * 1024 * 1024;
           for (size_t i = 0; i < margins.size(); i++) {
