@@ -2604,18 +2604,21 @@ bool ChatSession::run() {
                     size_t ce = gen_result_.tool_end;
                     string corr_tool_call_raw = corr_text.substr(cs, ce - cs + string(FUNC_END).length());
                     if (!validate_tool_call(corr_tool_call_raw)) {
-                        diag("System: Correction produced another invalid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
+                        diag("System: Correction produced another invalid tool call. Ejecting to prompt.", "\033[1;31m");
 
-
-                        // Roll back the failed correction tokens so the KV cache is left clean.
-                        // Context ends right after FUNC_START of the original bad call.
-                        if (rollback_to_tool_checkpoint(true) < 0) continue;
-
-                        // Re-enable the checkpoint for a future correction attempt (e.g., after /continue).
+                        // Eject WITHOUT rolling back: a rollback would leave the
+                        // context at a weird place (right after FUNC_START, mid
+                        // tool call with no body), and the rollback itself is the
+                        // unstable part (a failed seq_rm means a slow full
+                        // re-decode + MTP clear).  The failed correction stays in
+                        // the LLM's history; it recovers on the next turn.  The
+                        // checkpoint slot is deliberately left untouched (still
+                        // valid at tool_correction_n_past): the next prompt
+                        // return overwrites it in place, and a /continue resume
+                        // can still correct from it.  MTP is untouched: no
+                        // rollback, so the mirror stays in lockstep.
                         state_.has_tool_correction_checkpoint = true;
-                        state_.tool_correction_checkpoint_idx =
-                            (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
-                        state_.tool_correction_n_past = n_past_;
+                        state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
                         // Returning control to the user prompt: the correction latch is
                         // only meaningful within one auto-continue chain (step 9 clears it
@@ -2675,20 +2678,24 @@ bool ChatSession::run() {
                     if (process_tool_call()) {
                         continue;
                     }                } else {
-                    diag("System: Correction failed to produce valid tool call. Rolling back and ejecting to prompt.", "\033[1;31m");
+                    diag("System: Correction failed to produce valid tool call. Ejecting to prompt.", "\033[1;31m");
 
-                    // Roll back the failed correction tokens so the KV cache is left clean.
-                    if (rollback_to_tool_checkpoint(true) < 0) continue;
-
+                    // Eject WITHOUT rolling back: a rollback would leave the
+                    // context at a weird place (right after FUNC_START, mid
+                    // tool call with no body), and the rollback itself is the
+                    // unstable part (a failed seq_rm means a slow full
+                    // re-decode + MTP clear).  The failed correction stays in
+                    // the LLM's history; it recovers on the next turn.  The
+                    // checkpoint slot is deliberately left untouched: this path
+                    // falls through to the prompt-return block, which
+                    // overwrites it in place (final state) and resets the
+                    // index.  MTP is untouched: no rollback, mirror in lockstep.
                     state_.has_tool_correction_checkpoint = true;
-                    state_.tool_correction_checkpoint_idx =
-                        (int)state_.prompt_checkpoints.size() - state_.checkpoint_stack_offset;
-                    state_.tool_correction_n_past = n_past_;
+                    state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                     state_.auto_continue = false;
                     // Returning control to the user prompt: the correction latch is only
-                    // meaningful within one auto-continue chain (step 9 would clear it but
-                    // this path `continue`s past it). Clearing it lets /continue trigger a
-                    // fresh correction attempt.
+                    // meaningful within one auto-continue chain (step 9 clears it on the
+                    // fall-through, which also resets tool_interrupt_pending).
                     state_.correction_attempted_this_turn = false;
                 }
             } else {
