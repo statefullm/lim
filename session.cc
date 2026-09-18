@@ -1632,10 +1632,19 @@ bool ChatSession::run() {
                         llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)stack_idx);
                     }
                     // If stack_idx < 0: nothing to prune (no live entries for pre-restore).
-                    // Instant undo leaves the MTP mirror ahead of the main
-                    // context; drafting stops until the next /clear or a
-                    // re-decode rebuilds it.
-                    if (g_mtp) g_mtp->invalidate("mirror stale after /undo");
+                    // MTP stays enabled: the mirror is left ahead of the
+                    // truncated main context and self-heals in process() --
+                    // the next main decode (the user's new prompt) lands
+                    // behind the mirror's stale max, so its position guard
+                    // seq_rm's the mirror back to that position and re-
+                    // mirrors with fresh hidden states.  Rows before the
+                    // undo point are untouched by the undo and remain valid
+                    // in the mirror.  Only pending_h_ is stale: it feeds the
+                    // embd of exactly one re-mirrored row (the first after
+                    // the heal point) -- negligible for acceptance,
+                    // irrelevant for correctness (verify re-samples every
+                    // committed token from the main model); the same decode
+                    // refreshes it.
                     log_rollback("undo", n_past_before, target_pos, true, n_past_);
                 } else {
                     diag("Regenerating KV cache for " + to_string(target.n_past) + " tokens...", "\033[35m");
