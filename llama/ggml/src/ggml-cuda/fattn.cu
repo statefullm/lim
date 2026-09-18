@@ -221,6 +221,15 @@ static void ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2(ggml_backend_cuda_con
         }
     }
 
+    // Natively dequantized Q8_0 K/V: use the GQA-optimized ncols2=8 builds directly.
+    // The Q8_0 kernel loads synchronously (no cp_async), so the 16-byte alignment requirement
+    // of use_gqa_opt does not apply. Must stay in sync with
+    // ggml_cuda_fattn_mma_f16_can_use_q8_0 (also used by the allocation size computation).
+    if (ggml_cuda_fattn_mma_f16_can_use_q8_0(ggml_cuda_get_device(), dst)) {
+        ggml_cuda_flash_attn_ext_mma_f16_switch_ncols1<DKQ, DV, 8>(ctx, dst);
+        return;
+    }
+
     // On RDNA it is preferable to minimize wasted compute vs. duplicate I/O for the mask.
     if (amd_wmma_available(cc)) {
         if (use_gqa_opt && gqa_ratio % 8 == 0) {
@@ -704,10 +713,17 @@ size_t ggml_cuda_flash_attn_ext_get_alloc_size(int device, const ggml_tensor * d
 
     switch (kernel) {
         case BEST_FATTN_KERNEL_TILE:
-        case BEST_FATTN_KERNEL_MMA_F16:
             need_f16_K = true;
             need_f16_V = true;
             break;
+        case BEST_FATTN_KERNEL_MMA_F16: {
+            // The MMA_F16 kernel can natively dequantize Q8_0 K/V without the f16 pre-conversion for
+            // a subset of head sizes / GQA ratios. Must stay in sync with the kernel selection in
+            // ggml_cuda_flash_attn_ext_mma_f16_case.
+            const bool q8_0_native = ggml_cuda_fattn_mma_f16_can_use_q8_0(device, dst);
+            need_f16_K = K->type != GGML_TYPE_F16 && !q8_0_native;
+            need_f16_V = V->type != GGML_TYPE_F16 && !q8_0_native;
+        } break;
         case BEST_FATTN_KERNEL_VEC: {
             const bool f16_fallback = ggml_cuda_get_fattn_vec_case(Q->ne[0], K->type, V->type) == nullptr;
             need_f16_K = K->type == GGML_TYPE_F32 || f16_fallback;

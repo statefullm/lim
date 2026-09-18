@@ -84,6 +84,62 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
     return data;
 }
 
+// Whether the MMA_F16 kernel can natively dequantize the Q8_0 K/V tiles (no F16 pre-conversion,
+// no f16_extra). Q8_0 variants of the kernel are only compiled for head sizes 128/256 with the
+// GQA-optimized ncols2=8 builds (ncols1 <= 8).
+// Both the allocation size computation and the kernel launch must agree on this decision for
+// every graph of a context, so it may only depend on properties that are constant for a context
+// (in particular not on 16-byte row alignment, which depends on n_tokens and which the Q8_0
+// build does not require: it loads synchronously without cp_async). Must stay in sync with the
+// dispatch in ggml_cuda_flash_attn_ext_mma_f16_switch_ncols2 and the kernel selection in
+// ggml_cuda_flash_attn_ext_mma_f16_case.
+static inline bool ggml_cuda_fattn_mma_f16_can_use_q8_0(const int device, const ggml_tensor * dst) {
+    GGML_ASSERT(dst->op == GGML_OP_FLASH_ATTN_EXT);
+    const ggml_tensor * Q = dst->src[0];
+    const ggml_tensor * K = dst->src[1];
+    const ggml_tensor * V = dst->src[2];
+
+    const int cc = ggml_cuda_info().devices[device].cc;
+    // Volta/RDNA dispatch to a different ncols2 for the same conditions, no Q8_0 variants there:
+    if (cc == GGML_CUDA_CC_VOLTA || amd_wmma_available(cc)) {
+        return false;
+    }
+
+    const int DKQ = Q->ne[0];
+    if (DKQ != V->ne[0] || (DKQ != 128 && DKQ != 256)) {
+        return false;
+    }
+    if (K->type != GGML_TYPE_Q8_0 || K->ne[0] % QK8_0 != 0) {
+        return false;
+    }
+    const bool V_is_K_view = V->view_src && (V->view_src == K || (V->view_src == K->view_src && V->view_offs == K->view_offs));
+    if (!V_is_K_view && (V->type != GGML_TYPE_Q8_0 || V->ne[0] % QK8_0 != 0)) {
+        return false;
+    }
+
+    // The Q8_0 variants exist only for the GQA-optimized builds, which require a (causal) mask:
+    if (Q->ne[2] / K->ne[2] <= 4) {
+        return false;
+    }
+    if (dst->src[3] == nullptr) {
+        return false;
+    }
+    float max_bias = 0.0f;
+    memcpy(&max_bias, (const float *) dst->op_params + 1, sizeof(float));
+    if (max_bias != 0.0f) {
+        return false;
+    }
+    if (K->ne[1] % FATTN_KQ_STRIDE != 0) {
+        return false;
+    }
+    float logit_softcap = 0.0f;
+    memcpy(&logit_softcap, (const float *) dst->op_params + 2, sizeof(float));
+    if (logit_softcap != 0.0f) {
+        return false; // no Q8_0 kernel variant with logit softcap
+    }
+    return true;
+}
+
 template <int D, int nthreads>
 static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_f16(
     const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8 , const void * __restrict__ Q_ds_v) {
