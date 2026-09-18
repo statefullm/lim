@@ -73,6 +73,9 @@ struct SessionState {
   bool correction_attempted_this_turn = false;
   // Stack index of the most recent tool-correction checkpoint (for pruning).
   int tool_correction_checkpoint_idx = -1;
+  // True once the rs_checkpoint_save for this turn's slot has been pushed
+  // (first lockstep FUNC_START).  Subsequent FUNC_STARTs overwrite it.
+  bool rs_checkpoint_saved_this_turn = false;
   // Correction mode: set by tool_executor when a bad tool call needs retry.
   bool tool_correction_mode = false;
 };

@@ -188,7 +188,7 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                std::vector<llama_token>* out_tokens,
                                double feed_time,
                                bool is_reincarnating,
-                               std::function<void()> on_tool_start)
+                               std::function<void(bool lockstep)> on_tool_start)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
@@ -971,15 +971,15 @@ TokenGenerator::Result TokenGenerator::generate() {
         // so a checkpoint saved by the hook matches this position.
         if (tool_start_hook_pending) {
             tool_start_hook_pending = false;
-            // MTP: while uncommitted verify cells exist, the recurrent state
-            // is ahead of n_past_ (the verify batch decoded past it), so a
-            // checkpoint saved now would hold the wrong state for
-            // tool-correction rollback.  Skip this FUNC_START: a later
-            // (lockstep) one saves the slot, or the correction path ejects
-            // to prompt when none exists (its designed safe fallback).
-            if (on_tool_start_ &&
-                !(spec_in_progress_ && spec_committed_verify_ < spec_verify_rows_)) {
-                on_tool_start_();
+            // Fire the hook unconditionally so tool_correction_n_past always
+            // tracks the latest FUNC_START position.  The lockstep flag tells
+            // the hook whether the R/S state matches n_past_ (safe to save) or
+            // is ahead (uncommitted verify cells -- skip the checkpoint save;
+            // the correction path will eject instead of rolling back to a stale
+            // position).
+            if (on_tool_start_) {
+                bool lockstep = !(spec_in_progress_ && spec_committed_verify_ < spec_verify_rows_);
+                on_tool_start_(lockstep);
             }
         }
     } // END INNER TOKEN LOOP

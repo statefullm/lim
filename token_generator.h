@@ -46,7 +46,7 @@ public:
                  std::vector<llama_token>* out_tokens = nullptr,
                  double feed_time = 0.0,
                  bool is_reincarnating = false,
-                 std::function<void()> on_tool_start = nullptr);
+                 std::function<void(bool lockstep)> on_tool_start = nullptr);
 
   Result generate();
 
@@ -81,7 +81,7 @@ private:
   // Fired once per generation, after the token that completes FUNC_START has
   // been fed+decoded (n_past is exactly right after FUNC_START). Null when no
   // hook is set (e.g. the correction's own regeneration).
-  std::function<void()> on_tool_start_;
+  std::function<void(bool lockstep)> on_tool_start_;
   int last_n_past_;
   bool was_mid_tool_call_;
   bool is_reincarnating_;

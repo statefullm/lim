@@ -71,6 +71,7 @@ public:
   ~MtpSpeculator();
 
   bool valid() const { return valid_; }
+  llama_pos mirrorPos() const { return mirror_pos_; }
 
   // True when ctx is the main context this speculator mirrors.
   bool owns(llama_context* ctx) const { return ctx == ctx_main_; }
