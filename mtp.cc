@@ -340,6 +340,27 @@ void MtpSpeculator::clear() {
   diag("MTP: mirror cleared -- speculative decoding enabled", "\033[32m");
 }
 
+void MtpSpeculator::on_mirror_loaded() {
+  if (!ctx_dft_) return;
+  // The mirror KV was restored from a V1 fast-restore cache: its rows are
+  // exactly the saved session's rows, so it matches the restored main context
+  // again.  Re-arm mirror_pos_ from the loaded memory; hidden-state
+  // bookkeeping (pending_h_, origin) is deliberately NOT reconstructed -- it
+  // is refreshed by the first forward feed via process()'s position guard, and
+  // the one slightly-off re-mirrored row at the heal point only affects the
+  // very first draft round's acceptance (the verify pass re-samples every
+  // committed token from the main model, so output correctness is untouched).
+  // Drafting is held off (origin_has_logits_ = false) until that first feed.
+  // A few stale draft rows may sit past n_past_ (draft chains are mirrored
+  // too); the same position guard trims them on the first main decode.
+  mirror_pos_ = llama_memory_seq_pos_max(llama_get_memory(ctx_dft_), 0);
+  origin_has_logits_ = false;
+  origin_row_idx_ = 0;
+  valid_ = true;
+  warned_ = false;
+  diag("MTP: mirror restored from cache -- speculative decoding enabled", "\033[32m");
+}
+
 void MtpSpeculator::invalidate(const std::string& reason) {
   if (!valid_) return;
   valid_ = false;

@@ -34,20 +34,35 @@ int read_save_session(const std::string& save_path);
 // future restores.  Cache lives in <cwd>/$LIM_CACHE_DIR/<name>-<hash>.
 // The hash is content-based (SHA-256 of token data + model filename), so it
 // survives save file renames and moves.  The name suffix is purely informational.
+// File format: a "LIM_CACHE_V1 main_size=<N> mtp_size=<M>\n" header line (same
+// key=value convention as the LIM_SAVE_V3 save file) followed by the raw
+// llama_state_get_data() dumps -- main KV state (N bytes) and, when M > 0, the
+// MTP mirror KV state (M bytes) so a fast restore can bring MTP back with it.
+// Header-less files are rejected: the cache is disposable (it rebuilds on the
+// next /save or slow restore) and a header-less entry carries no mirror state,
+// so falling back to a slow re-decode (which rebuilds the mirror) beats a fast
+// restore that silently drops MTP.
 static constexpr const char* SAVE_EXT = ".save";
 
+// ctx_mtp: when non-null, a mirror KV state in the cache (if present) is
+// restored into this draft context; *mtp_loaded reports whether that happened
+// (the caller keeps the mirror invalidated when it did not).
 bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
-                       const std::string& model_path, struct llama_context* ctx);
+                       const std::string& model_path, struct llama_context* ctx,
+                       struct llama_context* ctx_mtp = nullptr, bool* mtp_loaded = nullptr);
 // Compute the content-based cache hash for a token sequence and model.
 std::string cache_hash_for_save(const std::vector<llama_token>& tokens,
                                 const std::string& model_path);
 // After a successful restore or named save, persist the current KV cache.
 // old_hash: if non-empty, the cache entry matching this hash is deleted first
 // (it corresponds to the previous content of the save file).
+// ctx_mtp: when non-null (MTP active and the mirror consistent), the MTP mirror
+// KV state is persisted alongside the main KV in the same cache file, so a
+// future fast restore can bring MTP back with it.
 // Returns true on success (or if an equivalent cache entry already exists).
 bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
-                    const std::string& old_hash = "");
+                    const std::string& old_hash = "", struct llama_context* ctx_mtp = nullptr);
 // Delete a save file and its associated fast restore cache entry (if any).
 // Returns true if the save file was deleted.  Also returns the number of
 // cache files removed via *cache_deleted (optional).

@@ -1475,7 +1475,12 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
         if (realpath(path.c_str(), abs_buf)) abs_path = abs_buf;
 
         if (is_debug) diag("Save to cache.", "\033[35m");
-        write_v1_cache(abs_path, tokens, g_model_path, ctx, old_hash);
+        // Persist the MTP mirror KV alongside the main KV so a future fast
+        // restore can bring MTP back with it (only when the mirror is currently
+        // consistent with the main context; an invalidated mirror is skipped
+        // and the next fast restore just falls back to disabling MTP).
+        write_v1_cache(abs_path, tokens, g_model_path, ctx, old_hash,
+                       (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr);
     }
     return ok;
 }
@@ -1990,14 +1995,25 @@ bool ChatSession::run() {
             }
 
             // Try instant restore from V1 cache first (skipped with --checkpoints).
+            // When MTP is active, the cache's mirror KV state (if it holds one)
+            // is restored into the draft context alongside the main KV.
+            bool mtp_loaded = false;
             bool cache_hit = restore_checkpoints_ ? false
-                : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_);
+                : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_,
+                                    (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr,
+                                    &mtp_loaded);
             int saved_session = read_save_session(rpath);
             if (cache_hit) {
-                // The fast cache restores the main KV only; the MTP mirror is
-                // not part of the cache format yet, so drafting stops until a
-                // /clear (or a future cache-format extension restores it).
-                if (g_mtp) g_mtp->invalidate("mirror stale after fast restore");
+                if (g_mtp && mtp_loaded) {
+                    // The mirror KV came from the same save as the main KV, so
+                    // it matches the restored context; re-arm the speculator.
+                    g_mtp->on_mirror_loaded();
+                } else if (g_mtp) {
+                    // The cache holds no usable mirror state (saved without MTP,
+                    // or an incompatible mirror KV type): it can only be rebuilt
+                    // by a /clear or a re-decode, so drafting stops until then.
+                    g_mtp->invalidate("mirror stale after fast restore");
+                }
                 diag_restore(rpath, (int)restored_tokens.size());
                 n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
 
@@ -2221,7 +2237,10 @@ bool ChatSession::run() {
                     if (is_debug) {
                         diag("Save to cache.", "\033[35m");
                     }
-                    write_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_, "");
+                    // The slow-restore re-decode fed the mirror via the decode
+                    // hook, so it is consistent here: persist it too.
+                    write_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_, "",
+                                   (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr);
                 }
 
                 diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);

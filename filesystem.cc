@@ -377,48 +377,106 @@ static std::vector<std::string> find_cache_files_by_prefix(const std::string& pr
   return matches;
 }
 
-// Load a raw KV-cache blob from a file (no header).
-static bool load_raw_cache(const std::string& cache_path, struct llama_context* ctx) {
-  FILE* fp = fopen(cache_path.c_str(), "rb");
-  if (!fp) return false;
+// V1 cache file format (current): a newline-terminated key=value header line
+// followed by two raw llama_state_get_data() blobs (main KV, then MTP mirror
+// KV):
+//   LIM_CACHE_V1 main_size=<N> mtp_size=<M>\n
+//   <main KV state, N bytes><mtp mirror KV state, M bytes>
+// The main KV is always present; the mirror is present only when the session
+// had MTP enabled and its mirror was consistent at save time (mtp_size == 0
+// otherwise, e.g. a non-MTP save).  Files without the magic are rejected: the
+// cache is disposable and header-less entries carry no mirror state -- a
+// header-less hit would silently drop MTP, so fall back to a slow re-decode
+// that rebuilds the mirror.
+static constexpr const char* CACHE_MAGIC = "LIM_CACHE_V1 ";
 
+// Parse the cache header line; false when the magic or a size field is absent.
+static bool parse_cache_header(const std::string& header,
+                               uint64_t* out_main_size, uint64_t* out_mtp_size) {
+  if (header.size() < strlen(CACHE_MAGIC) ||
+      header.compare(0, strlen(CACHE_MAGIC), CACHE_MAGIC) != 0) return false;
+  auto parse_field = [&header](const char* key, uint64_t* out) -> bool {
+    size_t pos = header.find(key);
+    if (pos == std::string::npos) return false;
+    std::string val = header.substr(pos + strlen(key));
+    size_t sp = val.find(' ');
+    if (sp != std::string::npos) val.resize(sp);
+    try { *out = std::stoull(val); } catch (...) { return false; }
+    return true;
+  };
+  return parse_field("main_size=", out_main_size) && parse_field("mtp_size=", out_mtp_size);
+}
+
+// Read a whole file into buf.  NOTE: ftell leaves the cursor at EOF, so rewind
+// before fread -- omitting the rewind reads zero bytes and silently rejects
+// every cache entry (which used to skip the fast path entirely).
+static bool read_file_buf(const std::string& path, std::vector<uint8_t>& buf) {
+  FILE* fp = fopen(path.c_str(), "rb");
+  if (!fp) return false;
   fseek(fp, 0, SEEK_END);
   long fsize = ftell(fp);
+  if (fsize <= 0) { fclose(fp); return false; }
+  buf.resize(static_cast<size_t>(fsize));
+  rewind(fp);
+  bool ok = fread(buf.data(), 1, buf.size(), fp) == buf.size();
   fclose(fp);
-  if (fsize <= 0) return false;
-
-  size_t state_size = static_cast<size_t>(fsize);
-  std::vector<uint8_t> state_buf(state_size);
-
-  fp = fopen(cache_path.c_str(), "rb");
-  if (!fp || fread(state_buf.data(), 1, state_size, fp) != state_size) {
-    if (fp) fclose(fp);
-    return false;
-  }
-  fclose(fp);
-
-  size_t n_loaded = llama_state_set_data(ctx, state_buf.data(), state_size);
-  return n_loaded == state_size;
+  return ok;
 }
 
 bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
-                       const std::string& model_path, struct llama_context* ctx) {
+                       const std::string& model_path, struct llama_context* ctx,
+                       struct llama_context* ctx_mtp, bool* mtp_loaded) {
+  if (mtp_loaded) *mtp_loaded = false;
   std::string hash = cache_hash(tokens, model_path);
 
   // Look for any file ending with -<hash>. All matches share the same
   // content+model hash, so the first one that loads is valid.
   for (const auto& cache_path : find_cache_files("-" + hash)) {
-    if (!load_raw_cache(cache_path, ctx)) continue;
+    std::vector<uint8_t> file;
+    if (!read_file_buf(cache_path, file)) continue;
 
-    // Verify the loaded cache covers exactly the token count. A mismatch
+    // Split off the header line (short; only the file head is scanned for the
+    // terminating newline) from the binary state payload that follows.  Files
+    // without the magic are rejected (see the format note above).
+    size_t nl = std::string::npos;
+    const size_t scan = std::min(file.size(), (size_t)512);
+    for (size_t i = 0; i < scan; i++) {
+      if (file[i] == '\n') { nl = i; break; }
+    }
+    if (nl == std::string::npos) continue;
+    std::string header((const char*)file.data(), nl);
+    uint64_t main_size = 0, mtp_size = 0;
+    if (!parse_cache_header(header, &main_size, &mtp_size)) continue;
+
+    const size_t payload_size = file.size() - (nl + 1);
+    if (main_size > payload_size || mtp_size > payload_size - (size_t)main_size) continue;
+    const uint8_t* payload = file.data() + nl + 1;
+
+    if (llama_state_set_data(ctx, payload, (size_t)main_size) != (size_t)main_size) continue;
+
+    // Verify the loaded main KV covers exactly the token count. A mismatch
     // means a corrupt entry (e.g., a truncated KV cache written by an older
-    // version while a restore was still decoding) -- discard it and fall
-    // back to the next candidate or a slow restore.
+    // version while a restore was still decoding) -- discard it and fall back
+    // to the next candidate or a slow restore.
     llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
     if (max_pos + 1 != (llama_pos)tokens.size()) {
       llama_memory_clear(llama_get_memory(ctx), true);
       unlink(cache_path.c_str());
       continue;
+    }
+
+    // Restore the MTP mirror KV when the cache holds one and a draft context
+    // was supplied.  A failed set (e.g. the mirror KV type changed since the
+    // save) leaves the mirror empty; *mtp_loaded stays false and the caller
+    // keeps the mirror invalidated, rebuilding it on the next /clear or
+    // re-decode.  A main-restore success is still a fast hit either way.
+    if (ctx_mtp && mtp_size > 0) {
+      bool mtp_ok = llama_state_set_data(ctx_mtp, payload + main_size, (size_t)mtp_size) == (size_t)mtp_size;
+      if (mtp_ok) {
+        if (mtp_loaded) *mtp_loaded = true;
+      } else {
+        llama_memory_clear(llama_get_memory(ctx_mtp), true);
+      }
     }
     return true;
   }
@@ -427,7 +485,7 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
 
 bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
-                    const std::string& old_hash) {
+                    const std::string& old_hash, struct llama_context* ctx_mtp) {
   std::string dir = get_cache_dir_internal();
   std::string hash = cache_hash(tokens, model_path);
 
@@ -461,7 +519,8 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   // Check if an equivalent cache entry already exists (same content+model).
   if (!find_cache_files("-" + hash).empty()) return true;
 
-  // Write the raw KV cache as $LIM_CACHE_DIR/<name>-<hash>
+  // Write the cache as $LIM_CACHE_DIR/<name>-<hash>: header + main KV state
+  // + optional MTP mirror KV state (single file, current format).
   std::string cache_path = dir + "/" + cache_filename(save_path, tokens, model_path);
 
   size_t state_size = llama_state_get_size(ctx);
@@ -471,9 +530,30 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   size_t n_written = llama_state_get_data(ctx, state_buf.data(), state_size);
   if (n_written == 0) return false;
 
+  // Optional MTP mirror KV blob (only when a draft context is provided and it
+  // serializes).  Recorded verbatim (actual bytes written) so the loader can
+  // split the payload at exactly main_size.
+  std::vector<uint8_t> mtp_buf;
+  if (ctx_mtp) {
+    size_t mtp_cap = llama_state_get_size(ctx_mtp);
+    if (mtp_cap > 0) {
+      std::vector<uint8_t> mtp_tmp(mtp_cap);
+      size_t mtp_written = llama_state_get_data(ctx_mtp, mtp_tmp.data(), mtp_cap);
+      if (mtp_written > 0) { mtp_tmp.resize(mtp_written); mtp_buf = std::move(mtp_tmp); }
+    }
+  }
+
+  std::string header = std::string(CACHE_MAGIC) + "main_size=" + std::to_string(n_written) +
+                       " mtp_size=" + std::to_string(mtp_buf.size()) + "\n";
+  std::vector<uint8_t> file;
+  file.reserve(header.size() + n_written + mtp_buf.size());
+  file.insert(file.end(), header.begin(), header.end());
+  file.insert(file.end(), state_buf.begin(), state_buf.begin() + n_written);
+  file.insert(file.end(), mtp_buf.begin(), mtp_buf.end());
+
   FILE* fp = fopen(cache_path.c_str(), "wb");
   if (!fp) return false;
-  if (fwrite(state_buf.data(), 1, n_written, fp) != n_written) { fclose(fp); return false; }
+  if (fwrite(file.data(), 1, file.size(), fp) != file.size()) { fclose(fp); return false; }
 
   bool ok = fflush(fp) == 0 && fclose(fp) == 0;
   return ok;

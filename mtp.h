@@ -76,6 +76,20 @@ public:
   // True when ctx is the main context this speculator mirrors.
   bool owns(llama_context* ctx) const { return ctx == ctx_main_; }
 
+  // The draft context whose KV mirrors the main context (nullptr when no draft
+  // context).  Exposed so the V1 fast-restore cache can persist/restore the
+  // mirror KV alongside the main KV, keeping MTP enabled across a fast restore.
+  llama_context* draft_ctx() const { return ctx_dft_; }
+
+  // Re-arm the speculator after its mirror KV was restored from a V1 cache:
+  // the mirror rows are exactly the saved session's rows, so it matches the
+  // restored main context again.  Hidden-state bookkeeping (pending_h_, origin)
+  // is refreshed by the first forward feed via process()'s position guard (one
+  // slightly-off re-mirrored row at the heal point -- see the restore/rollback
+  // comments in session.cc); any stale draft rows past n_past_ are trimmed by
+  // that same guard.
+  void on_mirror_loaded();
+
   // Mirror hook: extend the mirror with the rows of a main-context decode.
   // No-op when invalid.  On MTP decode failure the speculator invalidates
   // itself (falls back to normal decoding).
@@ -85,8 +99,9 @@ public:
   // the mirror rebuilds from the next main decode.
   void clear();
 
-  // Invalidate: the mirror no longer matches the main context (e.g. after an
-  // instant /undo or a fast-restore cache load).  Drafting stops until the
+  // Invalidate: the mirror no longer matches the main context and can't be
+  // healed by the process() position guard (e.g. a KV-exhausted truncation, or
+  // a fast restore whose cache held no mirror state).  Drafting stops until the
   // next clear() or a full re-decode re-mirrors the context.
   void invalidate(const std::string& reason);
 
