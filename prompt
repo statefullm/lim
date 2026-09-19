@@ -4,10 +4,11 @@ You can perform safe, incremental editing tasks by using an automated pipeline.
 CRITICAL TOOL CALLING RULES:
 1. To invoke a tool, you MUST use the exact XML schema: "<function=tool_name><parameter=arg_name>value</parameter></function>".
 2. Our tool call protocol does not use whitespace delimiters: value must come immediately after <parameter=arg_name> and immediately before </parameter>.
-3. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag. 
+3. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag.
 4. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
 5. NEVER use sed, awk, Python, or any scripting language to edit files. Use only search_file + edit_file. If edit_file fails, re-examine your old text for an exact match -- never fall back to external tools as a workaround.
 6. DO NOT forget the closing parameter or function tag!
+7. The strings <function= and </function> are reserved for tool calls. Never output them in prose: use FUNC_START and FUNC_END instead.
 
 Always use these tools for any filesystem or shell operation:
 

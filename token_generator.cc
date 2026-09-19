@@ -221,10 +221,17 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
 TokenGenerator::Result TokenGenerator::generate() {
     auto start = chrono::high_resolution_clock::now();
 
+
     bool was_interrupted = false;
     bool early_exit = false;
     bool stuck_in_tool_call = false;
     bool ended_on_eog = false;
+    // Swallowed in-block EOG count (EOG block in the token loop below).
+    // Resets only on an EOG sampled outside the block, so the cap bounds
+    // the TOTAL in-block swallows since the last out-of-block EOG, even
+    // when they are separated by regular tokens: an EOG-word-EOG-word
+    // degenerate loop still hits the cap and ends the turn.
+    int think_eog_count = 0;
 
     // Set when FUNC_START just became fully present in generated_text_ this
     // iteration; the on_tool_start_ hook is then fired after the end-of-iteration
@@ -363,9 +370,12 @@ TokenGenerator::Result TokenGenerator::generate() {
         };
 
         if (llama_vocab_is_eog(vocab_, next_token)) {
-            size_t active_ts = generated_text_.find(FUNC_START);
-            size_t active_te = find_tool_end_robust(generated_text_, active_ts != string::npos ? active_ts : 0);
-            bool inside_unclosed_tool = (active_ts != string::npos && (active_te == string::npos || active_ts > active_te));
+            // Tracked tool state from the previous iteration, computed on
+            // this same generated_text_ (the EOG piece is not appended yet).
+            // A raw re-search here would match prose tokens inside the
+            // (closed) thinking block and mis-pair them with a real call.
+            size_t active_ts = tool_start_;
+            bool inside_unclosed_tool = (tool_start_ != string::npos && tool_end_ == string::npos);
 
             int poll_iter_used = 0;
             static constexpr int DEFAULT_EOG_RESAMPLE_MAX = 256;
@@ -373,8 +383,32 @@ TokenGenerator::Result TokenGenerator::generate() {
             int max_iterations = (eog_env != nullptr && strlen(eog_env) > 0) ? atoi(eog_env) : DEFAULT_EOG_RESAMPLE_MAX;
             max_iterations = std::max(1, max_iterations);
 
+            // EOG while the thinking block is open: the model paused
+            // mid-reasoning.  Swallow it (piece appended + fed at the bottom
+            // of the loop) and let it continue -- no resample, and no tool
+            // repair (raw FUNC_START/FUNC_END tokens inside the block are
+            // prose, never a call).  This is the loop's only EOG break,
+            // though: a model stuck emitting EOGs inside the block would
+            // otherwise never end the turn.  Past max_iterations consecutive
+            // swallows, fall through to the normal EOG termination below.
+            bool swallow = false;
+            if (in_thinking_block_) {
+                think_eog_count++;
+                if (think_eog_count > max_iterations) {
+                    if (is_debug) {
+                        message("\033[90m[EOG inside thinking block: " + std::to_string(think_eog_count) +
+                                " consecutive -- ending turn]\033[0m\n");
+                        cout.flush();
+                    }
+                } else {
+                    swallow = true;
+                }
+            } else {
+                think_eog_count = 0;
+            }
+
             bool recovered = false;
-            {
+            if (!swallow) {
                 // Poll the row the token came from (a verify row during an
                 // in-progress MTP round, otherwise the batch's last row).
                 llama_token polled = llama_sampler_sample(smpl_, ctx_, mtp_sample_row);
@@ -383,16 +417,16 @@ TokenGenerator::Result TokenGenerator::generate() {
                     recovered = true;
                     poll_iter_used = 1;
                 }
-            }
-            if (!recovered) {
-                for (int poll_iter = 0; poll_iter < max_iterations; ++poll_iter) {
-                    if (stop_generation) break;
-                    llama_token polled = llama_sampler_sample(smpl_, ctx_, mtp_sample_row);
-                    if (!llama_vocab_is_eog(vocab_, polled)) {
-                        next_token = polled;
-                        recovered = true;
-                        poll_iter_used = poll_iter + 2;
-                        break;
+                if (!recovered) {
+                    for (int poll_iter = 0; poll_iter < max_iterations; ++poll_iter) {
+                        if (stop_generation) break;
+                        llama_token polled = llama_sampler_sample(smpl_, ctx_, mtp_sample_row);
+                        if (!llama_vocab_is_eog(vocab_, polled)) {
+                            next_token = polled;
+                            recovered = true;
+                            poll_iter_used = poll_iter + 2;
+                            break;
+                        }
                     }
                 }
             }
@@ -427,7 +461,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 llama_sampler_reset(smpl_);
             }
 
-            if (!recovered) {
+            if (!recovered && !swallow) {
                 if (inside_unclosed_tool) {
                     if (is_debug) {
                         message("\033[31m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
@@ -439,7 +473,6 @@ TokenGenerator::Result TokenGenerator::generate() {
                     }
                     string forced_close = "\n" + string(FUNC_END) + "\n";
                     generated_text_ += forced_close;
-                    tool_start_ = active_ts;
                     tool_end_ = generated_text_.length() - string(FUNC_END).length();
                     trigger_tool_execution_ = true;
                 }
@@ -587,9 +620,12 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
         // n_chars == 0 means unknown/out-of-range token; skip silently.
 
-        // Think-tag detection for output rendering only.
-        // Never use think-tag positions to suppress tool-call detection:
-        // think blocks and tool calls are sequential, never nested.
+        // Think-tag detection: drives output rendering, and excludes the
+        // thinking-block region from tool-call detection below.  Raw tool
+        // tokens inside thinking are prose (the model may discuss the tool
+        // schema while reasoning); real tool calls are sequential with
+        // thinking, never nested, so a token inside the block can never be
+        // a call.
         if (!g_model_tokens.think_start.empty() && !g_model_tokens.think_end.empty()) {
             if (think_start_ == string::npos) {
                 think_start_ = generated_text_.find(g_model_tokens.think_start);
@@ -633,13 +669,29 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         if (tool_start_ == string::npos) {
             size_t search_from = func_search_pos_;
-            tool_start_ = generated_text_.find(FUNC_START, search_from);
-            if (tool_start_ == string::npos) {
-                func_search_pos_ = generated_text_.length() > 20 ? generated_text_.length() - 20 : 0;
-            } else {
+            while (true) {
+                size_t found = generated_text_.find(FUNC_START, search_from);
+                if (found == string::npos) break;
+                // Raw tool tokens inside the thinking block are prose, never
+                // a call (calls are sequential with thinking, never nested):
+                // skip past them so they can't start a phantom call.  When
+                // think_start_ is npos the condition is false for every
+                // found position, so non-thinking turns scan exactly as
+                // before.
+                if (found >= think_start_ &&
+                    (think_end_ == string::npos ||
+                     found < think_end_ + g_model_tokens.think_end.length())) {
+                    search_from = found + string(FUNC_START).length();
+                    continue;
+                }
+                tool_start_ = found;
                 // FUNC_START just became fully present: schedule the hook for
                 // after this token is fed (see end of iteration).
                 tool_start_hook_pending = true;
+                break;
+            }
+            if (tool_start_ == string::npos) {
+                func_search_pos_ = generated_text_.length() > 20 ? generated_text_.length() - 20 : 0;
             }
         }
         if (tool_start_ != string::npos && tool_end_ == string::npos) {
