@@ -101,9 +101,14 @@ ToolExecutor::Result ToolExecutor::execute(
     tool_out = execute_tool_call(tool_call, state);
 
     // Handle validation errors reported by the struct.
-    // Policy: one correction attempt per malformed call.  If this call's
-    // attempt is already spent (a corrected call came back bad) or no
-    // rollback checkpoint exists, feed the abort message and eject.
+    // Policy: every malformed call gets a correction attempt -- the main
+    // loop rolls back via the slot checkpoint (or, when the slot is stale
+    // after a non-lockstep MTP FUNC_START, re-decodes the suffix from the
+    // newest prompt checkpoint -- never a full-context re-decode), feeds
+    // the system prompt, lets the LLM generate a fix, then injects the good
+    // tool call cleanly.  Feeding the abort message and ejecting to the
+    // prompt happens only when this call's correction attempt is already
+    // spent, or when the correction itself fails (step 8b in the main loop).
     if (!tool_out.recognized || !tool_out.params_valid || tool_out.malformed_xml) {
         if (is_debug) {
             // Show the raw tool call for diagnosis.
@@ -122,15 +127,18 @@ ToolExecutor::Result ToolExecutor::execute(
             }
         }
 
-        if (!state.correction_attempted_this_turn && state.has_tool_correction_checkpoint) {
+        if (!state.correction_attempted_this_turn) {
             // Attempt tool-call correction: the main loop rolls back via the
-            // slot checkpoint, feeds the full system prompt, lets the LLM
-            // generate a fix, then injects the good tool call cleanly.
+            // slot checkpoint (or the prompt-anchor suffix re-decode when the
+            // slot is stale after a non-lockstep MTP FUNC_START), feeds the
+            // full system prompt, lets the LLM generate a fix, then injects
+            // the good tool call cleanly.
             diag("System: Invalid tool call. Attempting correction.", "\033[1;33m");
             state.correction_attempted_this_turn = true;
             result.needs_correction = true;
         } else {
-            // No correction available: eject to the prompt with an abort message.
+            // A correction was already attempted for this call: feed the
+            // abort message and eject to the prompt.
             diag("System: Invalid tool call. Ejecting to prompt.", "\033[1;31m");
             abort_auto = true;
         }

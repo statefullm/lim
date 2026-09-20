@@ -524,15 +524,18 @@ private:
     }
 
     // Roll back to the tool-correction checkpoint (removes bad call + any
-    // correction tokens). Returns 0 if seq_rm succeeded, 1 if the KV cache was
-    // cleared and re-decoded, -1 on failure (caller should eject to prompt).
+    // correction tokens). Returns 0 if the fast seq_rm succeeded (the slot
+    // holds the R/S state for the target), 2 if the prompt-checkpoint anchor
+    // suffix re-decode succeeded, -1 on failure (no anchor available or a
+    // feed failed; the caller ejects to the prompt).  Never clears and
+    // re-decodes the full context.
     int rollback_to_tool_checkpoint(bool eject_on_failure) {
         llama_memory_t mem = llama_get_memory(ctx_);
         int n_past_before = n_past_;
         long target_pos = state_.tool_correction_n_past;
 
-        // --- Diagnostics: capture state before the rollback attempt ---
-        {
+        // --- Diagnostics: capture state before the rollback attempt (LIM_DEBUG=1) ---
+        if (is_debug) {
             uint32_t rs_seq = llama_n_rs_seq(ctx_);
             llama_pos mem_max = llama_memory_seq_pos_max(mem, 0);
             std::string d = "System: [ROLLBACK-DIAG] cp_idx=" + std::to_string(state_.tool_correction_checkpoint_idx) +
@@ -578,9 +581,25 @@ private:
             return -1;
         }
 
-        llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-        llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
-        bool rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
+        // Fast path: only when the slot holds the R/S state for the target
+        // position (has_tool_correction_checkpoint: the FUNC_START was in
+        // lockstep and the hook saved/overwrote the slot).  With a stale or
+        // absent slot (non-lockstep FUNC_START under MTP: uncommitted verify
+        // cells left the recurrent state ahead of n_past_ when the hook
+        // skipped the save), a restore would apply state from the wrong
+        // position (or no-op) and make seq_rm falsely succeed -- the R/S
+        // state would then be inconsistent with the truncated attention KV.
+        // Skip the fast path; the anchor re-decode below rebuilds the state
+        // from a valid prompt checkpoint.  prune is only safe here: it must
+        // never run against a short stack (resize would grow it with default
+        // entries), and has_tool_correction_checkpoint guarantees the slot
+        // exists.
+        bool rm_ok = false;
+        if (state_.has_tool_correction_checkpoint) {
+            llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+            llama_memory_rs_checkpoint_prune(mem, 0, (uint32_t)state_.tool_correction_checkpoint_idx);
+            rm_ok = llama_memory_seq_rm(mem, 0, state_.tool_correction_n_past, -1);
+        }
         if (rm_ok) {
             n_past_ = state_.tool_correction_n_past;
             state_.all_context_tokens.resize(state_.tool_correction_n_past);
@@ -603,7 +622,14 @@ private:
             log_rollback("correction", n_past_before, target_pos, true, n_past_);
             return 0;
         }
-        diag("System: Correction rollback failed, re-decoding...", "\033[33m");
+        if (state_.has_tool_correction_checkpoint) {
+            // Slot valid but seq_rm failed: fall back to the anchor re-decode.
+            diag("System: Correction rollback failed, re-decoding...", "\033[33m");
+        } else {
+            // Slot stale/absent: the fast path was skipped above; rebuild the
+            // R/S state from the newest valid prompt checkpoint.
+            diag("System: Tool-correction slot unavailable (non-lockstep FUNC_START); re-decoding suffix from prompt checkpoint.", "\033[33m");
+        }
 
         // Fast fallback: anchor at the newest prompt checkpoint at or before
         // the target.  Prompt checkpoints are always saved at lockstep prompt
@@ -640,39 +666,27 @@ private:
                     log_rollback("correction", n_past_before, target_pos, false, n_past_);
                     return 2;
                 }
-                // Suffix feed failed: n_past_ was synced to the partial KV and
-                // the tracker still holds only [0, anchor_pos).  Put the
-                // tracker back to [0, target) so the last-resort full re-decode
-                // below feeds the whole context -- otherwise it would feed the
-                // anchor-truncated prefix and then resize-grow the tracker to
-                // the target with garbage default tokens.
+                // Suffix feed failed (interrupt or decode error): n_past_ was
+                // synced to the partial KV, which holds [0, anchor) plus the
+                // partially fed suffix tokens.  Re-attach exactly those
+                // partial tokens to the tracker (keeping tracker == KV), then
+                // fall through to the abort below -- repairing further would
+                // require a full-context re-decode, which this path never
+                // does.  /clear recovers.
                 state_.all_context_tokens.insert(state_.all_context_tokens.end(),
-                    suffix.begin(), suffix.end());
+                    suffix.begin(), suffix.begin() + (size_t)(n_past_ - anchor_pos));
             }
         }
 
-        // Last resort: clear everything and re-decode the full context.
-        llama_memory_clear(mem, true);
-        if (g_mtp) g_mtp->clear();  // re-decode rebuilds the mirror via the hook
-        n_past_ = 0;
-        // Copy first: feed_tokens_impl appends what it feeds to the tracker, so
-        // feeding the tracker itself would pass its own iterators to
-        // vector::insert (undefined behavior) -- the resize below then shrinks
-        // the doubled tracker back to the target.
-        vector<llama_token> full_ctx = state_.all_context_tokens;
-        if (!feed_tokens_impl(full_ctx)) {
-            diag("Correction restore failed. Type /clear to reset.", "\033[31m");
-            log_rollback("correction", n_past_before, target_pos, false, n_past_);
-            if (eject_on_failure) state_.auto_continue = false;
-            return -1;
-        }
-        n_past_ = state_.tool_correction_n_past;
-        state_.all_context_tokens.resize(n_past_);
-        // Tracker rewound (via clear + re-decode): invalidate the canonical
-        // conversation text, same as the seq_rm path above.
-        state_.conversation_text.clear();
+        // No anchor (or the suffix re-decode above failed): eject rather than
+        // clear and re-decode the full context -- a slow decode of the whole
+        // context is worse than ending the turn.  The context is left as-is
+        // (bad call still in place, or truncated to the anchor with a partial
+        // suffix); the LLM sees it on the next turn and /clear recovers fully.
+        diag("System: Correction aborted: no prompt checkpoint available for suffix re-decode. Type '/clear' to reset.", "\033[1;31m");
         log_rollback("correction", n_past_before, target_pos, false, n_past_);
-        return 1;
+        if (eject_on_failure) state_.auto_continue = false;
+        return -1;
     }
 
     bool feed_tokens_impl(const vector<llama_token>& toks) {
@@ -1166,7 +1180,10 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
             } else {
                 // R/S state is ahead of n_past_ (uncommitted verify cells):
                 // a checkpoint from an earlier position would be stale for
-                // this target -- mark rollback as unavailable.
+                // this target -- mark the fast rollback path as unavailable
+                // (the correction rollback re-decodes the suffix from the
+                // newest prompt checkpoint instead; never a full-context
+                // re-decode).
                 state_.has_tool_correction_checkpoint = false;
             }
             // Always update the rollback target: n_past_ is correct
@@ -1336,8 +1353,10 @@ bool ChatSession::process_tool_call() {
         }
 
         // Tool-call correction: feed system prompt reminder, generate once,
-        // parse for a valid tool call, roll back to the slot checkpoint,
-        // and inject the good tool call + its output cleanly.
+        // parse for a valid tool call, roll back to the tool-correction
+        // checkpoint (fast slot path, or the prompt-anchor suffix re-decode
+        // when the slot is stale), and inject the good tool call + its output
+        // cleanly.
         if (tool_result.needs_correction) {
             state_.tool_correction_mode = true;
             // Return false so we fall through to step 8b in the same iteration,
@@ -2702,17 +2721,14 @@ bool ChatSession::run() {
         // correction cycle in step 8b (feed system prompt, regenerate once,
         // roll back to right after FUNC_START, inject the clean call). The garbage
         // tokens are simply part of what the rollback removes.
-        // The checkpoint is guaranteed available: the detector can only fire after
-        // FUNC_START, which is exactly when on_tool_start saves it (or it carries over
-        // from the original generation on a mid-tool-call resume) -- except when
-        // MTP speculation leaves the recurrent state ahead of n_past_ at that moment
-        // (uncommitted verify cells), in which case the save is skipped and this
-        // turn ejects instead of correcting.  The
-        // has_tool_correction_checkpoint check is defensive -- if the invariant ever
-        // breaks, ejecting to prompt is safer than rolling back to a stale position.
-        // Ejects as well when this call's correction attempt is already spent.
+        // The slot may be stale when MTP speculation left the recurrent state
+        // ahead of n_past_ at the FUNC_START (uncommitted verify cells: the hook
+        // skipped the save) -- the rollback in step 8b handles that by re-decoding
+        // the suffix from the newest prompt checkpoint (never a full-context
+        // re-decode).  Ejects when this call's correction attempt is already
+        // spent.
         if (gen_result.stuck_in_tool_call) {
-            if (state_.has_tool_correction_checkpoint && !state_.correction_attempted_this_turn) {
+            if (!state_.correction_attempted_this_turn) {
                 diag("System: Invalid tool call. Attempting correction.", "\033[1;33m");
                 state_.correction_attempted_this_turn = true;
                 state_.tool_correction_mode = true;
@@ -2769,8 +2785,9 @@ bool ChatSession::run() {
                         // Eject WITHOUT rolling back: a rollback would leave the
                         // context at a weird place (right after FUNC_START, mid
                         // tool call with no body), and the rollback itself is the
-                        // unstable part (a failed seq_rm means a slow full
-                        // re-decode + MTP clear).  The failed correction stays in
+                        // unstable part (a failed seq_rm falls back to the
+                        // prompt-anchor suffix re-decode, or aborts the turn if
+                        // no anchor exists).  The failed correction stays in
                         // the LLM's history; it recovers on the next turn.  The
                         // checkpoint slot is deliberately left untouched (still
                         // valid at tool_correction_n_past if the hook pushed
@@ -2778,9 +2795,10 @@ bool ChatSession::run() {
                         // and a /continue resume can still correct from it.
                         // has_tool_correction_checkpoint is left as the hook
                         // set it (a /continue re-correction without a pushed
-                        // slot ejects at the rollback gate instead of rolling
-                        // back to a missing entry).  MTP is untouched: no
-                        // rollback, so the mirror stays in lockstep.
+                        // slot takes the prompt-anchor suffix re-decode path in
+                        // the rollback instead of restoring a missing entry).
+                        // MTP is untouched: no rollback, so the mirror stays
+                        // in lockstep.
                         state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
                         // Returning control to the user prompt: the correction latch is
@@ -2792,42 +2810,27 @@ bool ChatSession::run() {
                     }
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
 
-                    // Gate: the slot must actually hold a checkpoint for the
-                    // target position.  has_tool_correction_checkpoint is true
-                    // only when the latest FUNC_START was in lockstep, i.e. the
-                    // hook saved or overwrote the slot at exactly
-                    // tool_correction_n_past.  A non-lockstep FUNC_START (MTP
-                    // verify cells uncommitted when it was fed) skips the push,
-                    // so the live stack is one short of the target: the restore
-                    // would no-op, the seq_rm would fail, and the rollback would
-                    // fall to an expensive re-decode.  Eject instead (the same
-                    // safe fallback as the stuck path): the failed correction
-                    // stays in the LLM's history; the end-of-turn block pushes a
-                    // fresh prompt checkpoint, keeping the one-entry-per-prompt
-                    // invariant.  MTP is untouched: no rollback, so the mirror
-                    // stays in lockstep.
-                    if (!state_.has_tool_correction_checkpoint) {
-                        diag("System: Tool-correction checkpoint unavailable (FUNC_START was non-lockstep). Ejecting to prompt.", "\033[1;31m");
+                    // Roll back to the tool-correction checkpoint (removes bad call + system prompt + correction).
+                    // rc: 0 = fast seq_rm (the slot holds the R/S state for the
+                    // target: the FUNC_START was in lockstep), 2 = prompt-checkpoint
+                    // anchor + suffix re-decode (the slot is stale/absent after a
+                    // non-lockstep MTP FUNC_START, or seq_rm failed: the R/S state
+                    // is rebuilt from a valid prompt checkpoint; the re-decode ends
+                    // at the same FUNC_START, so the slot, if pushed, still holds
+                    // the R/S state for exactly this position and the end-of-turn
+                    // overwrite reuses it), -1 = no anchor available -- the turn
+                    // ejects to the prompt instead of paying for a full-context
+                    // re-decode.
+                    int rollback_rc = rollback_to_tool_checkpoint(true);
+                    if (rollback_rc < 0) {
+                        // The rollback could not complete without a full-context
+                        // re-decode, which we never do: eject to the prompt.  The
+                        // failed correction stays in the LLM's history; /clear
+                        // recovers fully.
                         state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
                         state_.correction_attempted_this_turn = false;
                         continue;
-                    }
-
-                    // Roll back to the tool-correction checkpoint (removes bad call + system prompt + correction).
-                    // rc: 0 = fast seq_rm, 1 = full clear + re-decode (checkpoints
-                    // lost), 2 = prompt-checkpoint anchor + suffix re-decode
-                    // (checkpoints intact: the correction slot, if pushed, still
-                    // holds the R/S state for exactly this position, since the
-                    // suffix re-decode ends one token after the anchor at the
-                    // same FUNC_START -- the end-of-turn overwrite reuses it).
-                    int rollback_rc = rollback_to_tool_checkpoint(false);
-                    if (rollback_rc < 0) continue;
-                    if (rollback_rc == 1) {
-                        // Recurrent checkpoints lost with clear; reset tracking.
-                        state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
-                        state_.tool_correction_checkpoint_idx = -1;
-                        state_.rs_checkpoint_saved_this_turn = false;
                     }
 
                     // Inject the corrected tool call into the Assistant field.
@@ -2869,12 +2872,16 @@ bool ChatSession::run() {
                     // correction attempt on the same call rolls back to exactly the
                     // same position with a matching recurrent state.  The turn-end
                     // block overwrites the slot with the final state when this turn
-                    // completes.
-                    state_.has_tool_correction_checkpoint = true;
-                    // The corrected call passed the gate, which mirrors the execution
-                    // checks, so it cannot come back malformed: this call's correction
-                    // attempt is consumed, and a future malformed call in this chain
-                    // gets a fresh attempt.
+                    // completes.  After the anchor re-decode (rc 2) the slot is still
+                    // stale/absent for the target even though the live state was
+                    // rebuilt -- clear the flag so a second correction takes the
+                    // anchor path again instead of restoring a stale slot (rc 0
+                    // leaves the slot valid, as it already was).
+                    state_.has_tool_correction_checkpoint = (rollback_rc == 0);
+                    // The corrected call passed validate_tool_call, which mirrors
+                    // the execution checks, so it cannot come back malformed: this
+                    // call's correction attempt is consumed, and a future malformed
+                    // call in this chain gets a fresh attempt.
                     state_.correction_attempted_this_turn = false;
 
                     // Hand off to process_tool_call -- it executes normally from here.
@@ -2886,17 +2893,18 @@ bool ChatSession::run() {
                     // Eject WITHOUT rolling back: a rollback would leave the
                     // context at a weird place (right after FUNC_START, mid
                     // tool call with no body), and the rollback itself is the
-                    // unstable part (a failed seq_rm means a slow full
-                    // re-decode + MTP clear).  The failed correction stays in
+                    // unstable part (a failed seq_rm falls back to the
+                    // prompt-anchor suffix re-decode, or aborts the turn if
+                    // no anchor exists).  The failed correction stays in
                     // the LLM's history; it recovers on the next turn.  The
                     // checkpoint slot is deliberately left untouched: this path
                     // falls through to the prompt-return block, which
                     // overwrites it in place (final state) and resets the
                     // index.  has_tool_correction_checkpoint is left as the
                     // hook set it (a /continue re-correction without a pushed
-                    // slot ejects at the rollback gate instead of rolling back
-                    // to a missing entry).  MTP is untouched: no rollback,
-                    // mirror in lockstep.
+                    // slot takes the prompt-anchor suffix re-decode path in
+                    // the rollback instead of restoring a missing entry).
+                    // MTP is untouched: no rollback, mirror in lockstep.
                     state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                     state_.auto_continue = false;
                     // Returning control to the user prompt: the correction latch is only
