@@ -982,7 +982,29 @@ TokenGenerator::Result TokenGenerator::generate() {
                 // and empty the batch so /continue cannot sample stale
                 // logits.  MTP may have been invalidated by the hook along
                 // the way.
-                llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1);
+                if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1)) {
+                    // The rollback itself failed (hybrid model: the
+                    // recurrent state can't be restored to n_past_ -- the
+                    // per-token snapshot window doesn't cover it).  The
+                    // verify cells beyond n_past_ would then stay in the KV
+                    // with a stale recurrent state: generation would
+                    // continue from inconsistent hybrid state.  Rebuild the
+                    // committed prefix from scratch (clear + re-decode; the
+                    // mirror rebuilds via the hook) and end the turn, like
+                    // the mismatch-path fallback.  d1 was origin-matched,
+                    // so it is committed in the re-decoded prefix.
+                    diag("MTP: verify-abort rollback failed; regenerating KV cache", "\033[31m");
+                    if (spec_rollback_redecode()) {
+                        batch_.n_tokens = 0;
+                    }
+                    if (g_mtp) g_mtp->note_round(1);
+                    spec_in_progress_ = false;
+                    spec_bonus_pending_ = false;
+                    spec_round_complete_pending_ = false;
+                    spec_draft_.clear();
+                    early_exit = true;
+                    break;
+                }
                 if (llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) >= n_past_ - 1) {
                     batch_.n_tokens = 1;
                     if (g_mtp) g_mtp->note_round(1);

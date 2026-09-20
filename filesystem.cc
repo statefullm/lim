@@ -473,6 +473,21 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
     if (ctx_mtp && mtp_size > 0) {
       bool mtp_ok = llama_state_set_data(ctx_mtp, payload + main_size, (size_t)mtp_size) == (size_t)mtp_size;
       if (mtp_ok) {
+        // Validate the mirror against the just-validated main KV (the same
+        // consistency check the main blob got above).  In every well-formed
+        // save the mirror covers at least the main's rows: the mirror hook
+        // mirrors every main batch, plus possibly a few stale draft rows.
+        // A blob that falls short (corrupt or truncated write, or a save
+        // taken while the mirror was invalidated and behind) would leave the
+        // mirror gapped: the first feed then decodes at a position past the
+        // mirror's max and fails, or drafts silently from stale rows.  Reject
+        // it: the main restore stays a fast hit, and MTP rebuilds the mirror
+        // from scratch like a mirror-less cache hit.
+        if (llama_memory_seq_pos_max(llama_get_memory(ctx_mtp), 0) < max_pos) {
+          mtp_ok = false;
+        }
+      }
+      if (mtp_ok) {
         if (mtp_loaded) *mtp_loaded = true;
       } else {
         llama_memory_clear(llama_get_memory(ctx_mtp), true);
