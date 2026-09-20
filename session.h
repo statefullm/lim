@@ -71,11 +71,20 @@ struct SessionState {
   // consumed.  Cleared on a validated correction injection and at prompt
   // return; a second malformed call with it set ejects to the prompt.
   bool correction_attempted_this_turn = false;
+
   // Stack index of the most recent tool-correction checkpoint (for pruning).
   int tool_correction_checkpoint_idx = -1;
   // True once the rs_checkpoint_save for this turn's slot has been pushed
   // (first lockstep FUNC_START).  Subsequent FUNC_STARTs overwrite it.
   bool rs_checkpoint_saved_this_turn = false;
+  // Index into prompt_checkpoints of the checkpoint pushed at the last
+  // mid-turn interrupt (or -1).  That checkpoint is provisional: if /continue
+  // resumes the turn, the completion overwrites it in place (position + R/S
+  // slot, the same slot reuse as the tool-correction end-of-turn overwrite);
+  // a new user prompt finalizes it at the interrupt position instead.
+  // Cleared at every checkpoint-tracking reset (see reset_session_state and
+  // the explicit tracking resets) and in step 6 on a new prompt.
+  int interrupted_checkpoint_idx = -1;
   // Correction mode: set by tool_executor when a bad tool call needs retry.
   bool tool_correction_mode = false;
 };

@@ -398,6 +398,13 @@ private:
         }
     }
 
+    // Mid-turn iff the last tracked token is not an EOG; fresh sessions
+    // (system prompt only) are never mid-turn.  Read-only.
+    bool position_ends_mid_turn() {
+        if (state_.all_context_tokens.size() <= system_tokens_.size()) return false;
+        return !llama_vocab_is_eog(vocab_, state_.all_context_tokens.back());
+    }
+
     // Text form of a new user turn: optional turn-end close (if the previous
     // turn was interrupted) + user turn + assistant prefill.  Takes the flag
     // explicitly so the text can be built before or after the token build
@@ -411,7 +418,7 @@ private:
     // Build tokens for a new user turn: optional turn-end close (if the
     // previous turn was interrupted) + user turn + assistant prefill.
     vector<llama_token> build_new_user_turn_tokens(const string& input) {
-        string turn_close_str = state_.prev_was_interrupted ? g_model_tokens.turn_end.text : "";
+        string turn_close_str = (state_.prev_was_interrupted || position_ends_mid_turn()) ? g_model_tokens.turn_end.text : "";
         state_.prev_was_interrupted = false;
         vector<llama_token> tokens;
         if (!turn_close_str.empty()) {
@@ -469,7 +476,7 @@ private:
     // build_new_user_turn_tokens (used by the mode 1/2 branches, which feed
     // the turn themselves instead of going through feed_user_message).
     string build_new_user_turn_text(const string& input) {
-        bool was_interrupted = state_.prev_was_interrupted;
+        bool was_interrupted = state_.prev_was_interrupted || position_ends_mid_turn();
         state_.prev_was_interrupted = false;
         return new_user_turn_text(was_interrupted, input);
     }
@@ -766,8 +773,10 @@ private:
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
         g_browser_warning_suppressed = false;
+
         state_.partial_tool_text.clear();
         state_.tool_interrupt_pending = false;
+        state_.interrupted_checkpoint_idx = -1;
         state_.rs_checkpoint_saved_this_turn = false;
     }
 
@@ -1041,15 +1050,17 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 bool ChatSession::feed_user_message(const string& input) {
     // If user provides regular input (not "continue"), clear any pending tool interrupt state.
     if (!state_.auto_continue) state_.tool_interrupt_pending = false;
+    if (!state_.auto_continue) state_.partial_tool_text.clear();  // abandoned partial would otherwise be prepended to the next executed call
     if (!state_.auto_continue) {
         log_entry("USER", input);
         stream_user_input_html(input);
     }
 
     // Build user turn + assistant prefill using model-type-aware token vectors.
-    // Read prev_was_interrupted BEFORE build_new_user_turn_tokens: it consumes
-    // the flag while tokenizing the turn-close, and the text form below needs it.
-    bool turn_was_closed = state_.prev_was_interrupted;
+    // Read the close decision BEFORE build_new_user_turn_tokens: it consumes
+    // state_.prev_was_interrupted while tokenizing the turn-close, and the
+    // text form below needs it.  position_ends_mid_turn() is read-only.
+    bool turn_was_closed = state_.prev_was_interrupted || position_ends_mid_turn();
     vector<llama_token> tokens = build_new_user_turn_tokens(input);
 
     // Benchmark modes 1/2: text form of exactly what the feed below adds, so
@@ -1449,6 +1460,7 @@ bool ChatSession::handle_reincarnate_completion() {
     // Reset checkpoint tracking after context clear + new checkpoint.
     state_.checkpoint_stack_offset = 0;
     state_.tool_correction_checkpoint_idx = -1;
+    state_.interrupted_checkpoint_idx = -1;
     state_.rs_checkpoint_saved_this_turn = false;
 
     state_.auto_continue = true;
@@ -2051,6 +2063,7 @@ bool ChatSession::run() {
                 } else {
                     state_.checkpoint_stack_offset = 0;
                 }
+                state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
 
                 diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
                 log_entry("SYSTEM", "Restored session from " + rpath);
@@ -2244,6 +2257,7 @@ bool ChatSession::run() {
                 state_.conversation_text.clear();
                 state_.prompt_checkpoints = restored_checkpoints;
                 state_.checkpoint_stack_offset = 0; // all checkpoints are live
+                state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
 
                 // Auto-write V1 cache for instant future restores (full restore only
                 // -- a partial prefix would hash to an entry a later full restore
@@ -2397,6 +2411,10 @@ bool ChatSession::run() {
                 state_.auto_continue_depth_val = 0;
                 user_input = "";
             } else if (state_.first_turn_done) {
+                // Mid-turn position (only reachable after /undo to a mid-turn
+                // checkpoint): no live interrupt to resume -- no-op silently.
+                // The turn will be closed by the next real user prompt.
+                if (position_ends_mid_turn()) continue;
                 // Not interrupted, but user wants to keep the model going.
                 // After a normal EOG the batch is empty (EOG token wasn't added),
                 // so we need to feed an assistant prefill for the LLM to sample from.
@@ -2460,6 +2478,10 @@ bool ChatSession::run() {
         if (!user_input.empty()) {
             prev_was_save_ = false;
             last_user_input_ = user_input;
+            // A new prompt finalizes any provisional interrupt checkpoint: the
+            // feed prepends the turn close and the checkpoint stands at the
+            // interrupt position (a legitimate mid-turn undo target).
+            state_.interrupted_checkpoint_idx = -1;
 
             // Chatbot mode: re-decode full history each turn for comparison
             if (chatbot_mode == 1 && !state_.all_context_tokens.empty()) {
@@ -2510,6 +2532,7 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints.clear();
                 state_.checkpoint_stack_offset = 0;
                 state_.tool_correction_checkpoint_idx = -1;
+                state_.interrupted_checkpoint_idx = -1;
                 state_.rs_checkpoint_saved_this_turn = false;
                 llama_sampler_reset(smpl_);
 
@@ -2909,7 +2932,7 @@ bool ChatSession::run() {
                     state_.auto_continue = false;
                     // Returning control to the user prompt: the correction latch is only
                     // meaningful within one auto-continue chain (step 9 clears it on the
-                    // fall-through, which also resets tool_interrupt_pending).
+                    // fall-through).
                     state_.correction_attempted_this_turn = false;
                 }
             } else {
@@ -2929,11 +2952,14 @@ bool ChatSession::run() {
         if (!state_.auto_continue && !assistant_logged_this_turn_ && !gen_result.text.empty()) log_entry("ASSISTANT", gen_result.text);
 
         // Reset per-turn failure state before returning to the user prompt.
-        // Correction and tool-interrupt state are only meaningful within a single
-        // auto-continue chain; once the user gets control back, they start fresh
-        // so that /continue or a new prompt behave correctly.
+        // Correction state is only meaningful within a single auto-continue
+        // chain; once the user gets control back, it starts fresh.
+        // tool_interrupt_pending is NOT cleared here: it is the /continue
+        // handoff (consumed by the next generate_response as
+        // was_mid_tool_call_).  Staleness is covered by the clears in
+        // feed_user_message (new prompt) and reset_session_state (/clear,
+        // /reincarnate, restore failure).
         state_.correction_attempted_this_turn = false;
-        state_.tool_interrupt_pending = false;
 
         // 10. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;
@@ -2969,7 +2995,32 @@ bool ChatSession::run() {
                 llama_memory_rs_checkpoint_save(mem, 0);
             }
 
+            // An interrupted return leaves the context mid-turn: the checkpoint
+            // just pushed is provisional until the user either /continue-resumes
+            // the turn (the completion overwrites it in place, below) or types a
+            // new prompt (finalizes it at the interrupt position, step 6).
+            if (gen_result.was_interrupted) {
+                state_.interrupted_checkpoint_idx = (int)state_.prompt_checkpoints.size() - 1;
+            }
+
             last_user_input_.clear();
+        } else if (state_.interrupted_checkpoint_idx >= 0 &&
+                   state_.interrupted_checkpoint_idx < (int)state_.prompt_checkpoints.size() &&
+                   !gen_result.was_interrupted) {
+            // /continue resumed the interrupted turn and it has now ended (EOG or
+            // ejection): move the provisional interrupt checkpoint to the turn
+            // end in place -- the same slot reuse as the tool-correction
+            // overwrite above, so the stack keeps one entry per prompt_checkpoint.
+            // The label (prompt text) is unchanged; only the position and the
+            // R/S state advance.
+            PromptCheckpoint& cp = state_.prompt_checkpoints[state_.interrupted_checkpoint_idx];
+            cp.n_past = n_past_;
+            llama_memory_t mem = llama_get_memory(ctx_);
+            int stack_idx = state_.interrupted_checkpoint_idx - state_.checkpoint_stack_offset;
+            if (stack_idx >= 0) {
+                llama_memory_rs_checkpoint_overwrite(mem, 0, (uint32_t)stack_idx);
+            }
+            state_.interrupted_checkpoint_idx = -1;
         }
     }
 
