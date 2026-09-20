@@ -274,8 +274,11 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     string path = extract_path_arg(tool_call);
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string text = extract_string_arg_bounded(tool_call, "text");
-    string begin_str = extract_string_arg_bounded(tool_call, "begin");
-    string end_str = extract_string_arg_bounded(tool_call, "end");
+    // Numeric args: all whitespace is trimmable (strtol would skip it
+    // anyway) -- trimming here keeps the diagnostic label tight
+    // ("lines 1349-1354", not "lines 1349 -1354").
+    string begin_str = trim_chars(extract_string_arg_bounded(tool_call, "begin"), " \t\r\n");
+    string end_str = trim_chars(extract_string_arg_bounded(tool_call, "end"), " \t\r\n");
     if (!path.empty()) {
       string search_label = "search_file(\"" + path + "\"";
       if (!begin_str.empty() && !end_str.empty()) {

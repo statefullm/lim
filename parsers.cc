@@ -184,16 +184,20 @@ string strip_quotes_from_name(const string& s) {
     return out.substr(first, last - first + 1);
 }
 
+// Trim leading/trailing characters that appear in 'chars'.
+string trim_chars(const string& s, const string& chars) {
+    size_t first = s.find_first_not_of(chars);
+    if (first == string::npos) return "";
+    size_t last = s.find_last_not_of(chars);
+    return s.substr(first, last - first + 1);
+}
+
 // Extract the 'path' parameter value, trimming leading/trailing horizontal
 // whitespace (space, tab, CR).  Newlines are preserved: a newline at the edge
 // means the model placed the value on its own line, and param_has_newline
 // flags that as a malformed call before the handler acts on the path.
 string extract_path_arg(const string& tool_call) {
-    string path = extract_string_arg_bounded(tool_call, "path");
-    size_t first = path.find_first_not_of(" \t\r");
-    if (first == string::npos) return "";
-    size_t last = path.find_last_not_of(" \t\r");
-    return path.substr(first, last - first + 1);
+    return trim_chars(extract_string_arg_bounded(tool_call, "path"), " \t\r");
 }
 
 // Extract the raw param name from a PARAM_START tag, stripping stray quotes.

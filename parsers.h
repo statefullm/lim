@@ -19,6 +19,9 @@ void unescape_turn_tags(std::string& str);
 // forgiving tag-name matching: <parameter= paths> -> paths).
 std::string strip_quotes_from_name(const std::string& s);
 
+// Trim leading/trailing characters that appear in 'chars'.
+std::string trim_chars(const std::string& s, const std::string& chars);
+
 // Extract the 'path' parameter value, trimming leading/trailing horizontal
 // whitespace (space, tab, CR).  Newlines are preserved: a newline at the edge
 // means the model placed the value on its own line, and param_has_newline
