@@ -36,6 +36,10 @@ public:
     // maintaining a canonical text form of the tracker must mirror this, or
     // their re-tokenization comes up one token short at every turn boundary.
     bool ended_on_eog = false;
+    // True when generation stopped (interrupt) with the thinking block still
+    // open.  /continue uses it to resume the generator in thinking mode so
+    // the viewer re-enters the thinking display.
+    bool was_in_thinking_block = false;
   };
 
   TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
@@ -46,7 +50,8 @@ public:
                  std::vector<llama_token>* out_tokens = nullptr,
                  double feed_time = 0.0,
                  bool is_reincarnating = false,
-                 std::function<void(bool lockstep)> on_tool_start = nullptr);
+                 std::function<void(bool lockstep)> on_tool_start = nullptr,
+                 bool was_mid_thinking_block = false);
 
   Result generate();
 

@@ -33,6 +33,12 @@ struct SessionState {
   int auto_continue_depth_val = 0;
   bool tool_interrupt_pending = false;
   std::string partial_tool_text;
+  // True when the last generation was interrupted inside an open thinking
+  // block.  Consumed by the next generate_response and passed to the
+  // TokenGenerator, which resumes in thinking mode so the viewer re-enters
+  // the thinking display.  Cleared on a new prompt (feed_user_message) and
+  // in reset_session_state.
+  bool thinking_block_open = false;
   // All tokens fed into context, for save/restore
   std::vector<llama_token> all_context_tokens;
   // Benchmark modes only (LIM_CHATBOT_MODE=1/2; mode 0 never touches it): the

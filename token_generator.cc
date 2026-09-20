@@ -188,7 +188,8 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                std::vector<llama_token>* out_tokens,
                                double feed_time,
                                bool is_reincarnating,
-                               std::function<void(bool lockstep)> on_tool_start)
+                               std::function<void(bool lockstep)> on_tool_start,
+                               bool was_mid_thinking_block)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
@@ -199,12 +200,18 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       trigger_tool_execution_(false),
       func_search_pos_(0),
       context_warned_this_turn_(false),
-      in_thinking_block_(false),
-      think_start_(string::npos),
+      // Resuming mid-think: the opening tag was already in the context before
+      // the interrupt, so start with the block open (think_start_ = 0 keeps
+      // the open-tag re-search and the depth count from double-counting;
+      // raw tool tokens are skipped as prose until think_end is found) and
+      // skip the buffered first-chunk path so the opening tag is not emitted
+      // to the terminal a second time.
+      in_thinking_block_(was_mid_thinking_block),
+      think_start_(was_mid_thinking_block ? 0 : string::npos),
       think_end_(string::npos),
       think_depth_(1),
       think_scan_pos_(0),
-      think_buffering_(true),
+      think_buffering_(!was_mid_thinking_block),
       t_count_(0),
       on_tool_start_(std::move(on_tool_start)),
       last_n_past_(last_n_past),
@@ -1147,6 +1154,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.early_exit = early_exit;
     result.stuck_in_tool_call = stuck_in_tool_call;
     result.ended_on_eog = ended_on_eog;
+    result.was_in_thinking_block = in_thinking_block_;
     result.decode_time = gen_wall_time;
 
     return result;

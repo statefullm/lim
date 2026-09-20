@@ -776,6 +776,7 @@ private:
 
         state_.partial_tool_text.clear();
         state_.tool_interrupt_pending = false;
+        state_.thinking_block_open = false;
         state_.interrupted_checkpoint_idx = -1;
         state_.rs_checkpoint_saved_this_turn = false;
     }
@@ -1051,6 +1052,7 @@ bool ChatSession::feed_user_message(const string& input) {
     // If user provides regular input (not "continue"), clear any pending tool interrupt state.
     if (!state_.auto_continue) state_.tool_interrupt_pending = false;
     if (!state_.auto_continue) state_.partial_tool_text.clear();  // abandoned partial would otherwise be prepended to the next executed call
+    if (!state_.auto_continue) state_.thinking_block_open = false;
     if (!state_.auto_continue) {
         log_entry("USER", input);
         stream_user_input_html(input);
@@ -1145,6 +1147,12 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     was_mid_tool_call_ = state_.tool_interrupt_pending;
     state_.tool_interrupt_pending = false;
 
+    // When resuming mid-think (interrupted inside an open thinking block), the
+    // generator starts in thinking mode: the opening tag is already in the
+    // context, and the viewer is reminded via the SEG_THINK of the first chunk.
+    bool was_mid_thinking_block = state_.thinking_block_open;
+    state_.thinking_block_open = false;
+
     // The turn's recurrent checkpoint slot is saved lazily by the on_tool_start
     // hook (passed to TokenGenerator below), right after the FUNC_START token is
     // fed -- the only point where "right before the tool-call body" is reachable.
@@ -1206,7 +1214,8 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     TokenGenerator tg(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
                       &state_.all_context_tokens, state_.last_feed_time,
-                      state_.reincarnate_mode, on_tool_start);
+                      state_.reincarnate_mode, on_tool_start,
+                      was_mid_thinking_block);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
@@ -1257,6 +1266,9 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
         state_.prev_was_interrupted = true;
         state_.auto_continue = false;
         state_.reincarnate_mode = false;
+        // Interrupted inside an open thinking block: /continue must resume in
+        // thinking mode (see the consume at the top of this function).
+        state_.thinking_block_open = gen_result_.was_in_thinking_block;
     } else if (gen_result_.early_exit) {
         state_.auto_continue = false;
         state_.reincarnate_mode = false;
