@@ -166,14 +166,34 @@ static string strip_quotes(const string& s) {
     return s;
 }
 
-// Strip quote characters from a string (used for forgiving tag-name matching).
+// Strip quote characters and surrounding whitespace from a string (used for
+// forgiving tag-name matching: <parameter= paths> -> paths).  Names never
+// contain whitespace, so trimming is safe.  Values are never run through
+// here -- exact value whitespace (edit_file old/new) is preserved by the
+// value extractors.  Quotes are stripped before trimming so quoted names
+// with inner padding (" paths ") also normalize.
 string strip_quotes_from_name(const string& s) {
     string out;
     out.reserve(s.size());
     for (char c : s) {
         if (c != '"' && c != '\'') out += c;
     }
-    return out;
+    size_t first = out.find_first_not_of(" \t\r\n");
+    if (first == string::npos) return "";
+    size_t last = out.find_last_not_of(" \t\r\n");
+    return out.substr(first, last - first + 1);
+}
+
+// Extract the 'path' parameter value, trimming leading/trailing horizontal
+// whitespace (space, tab, CR).  Newlines are preserved: a newline at the edge
+// means the model placed the value on its own line, and param_has_newline
+// flags that as a malformed call before the handler acts on the path.
+string extract_path_arg(const string& tool_call) {
+    string path = extract_string_arg_bounded(tool_call, "path");
+    size_t first = path.find_first_not_of(" \t\r");
+    if (first == string::npos) return "";
+    size_t last = path.find_last_not_of(" \t\r");
+    return path.substr(first, last - first + 1);
 }
 
 // Extract the raw param name from a PARAM_START tag, stripping stray quotes.

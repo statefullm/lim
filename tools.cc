@@ -106,7 +106,7 @@ static bool path_params_have_newline(const string& tool_name, const string& tool
         return param_has_newline(extract_raw_arg_bounded(tool_call, "paths"));
     }
     if (tool_name == "search_file" || tool_name == "write_file" || tool_name == "edit_file") {
-        return param_has_newline(extract_string_arg_bounded(tool_call, "path"));
+        return param_has_newline(extract_path_arg(tool_call));
     }
     return false;
 }
@@ -271,7 +271,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       result = "Error: No paths provided to read_files";
     }
   } else if (tool_name == "search_file") {
-    string path = extract_string_arg_bounded(tool_call, "path");
+    string path = extract_path_arg(tool_call);
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string text = extract_string_arg_bounded(tool_call, "text");
     string begin_str = extract_string_arg_bounded(tool_call, "begin");
@@ -317,7 +317,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       result = "Error: path is required for search_file";
     }
   } else if (tool_name == "write_file") {
-    string path = extract_string_arg_bounded(tool_call, "path");
+    string path = extract_path_arg(tool_call);
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
     state.file_cache.erase(path);
@@ -341,7 +341,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       result = "Error: No path provided to write_file";
     }
   } else if (tool_name == "edit_file") {
-    string path = extract_string_arg_bounded(tool_call, "path");
+    string path = extract_path_arg(tool_call);
     if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
 
     string old_str = extract_string_arg_bounded(tool_call, "old");

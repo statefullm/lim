@@ -15,8 +15,15 @@ void unescape_parameter_tags(std::string& str);
 void escape_turn_tags(std::string& str);
 void unescape_turn_tags(std::string& str);
 
-// Strip quote characters from a string (used for forgiving tag-name matching).
+// Strip quote characters and surrounding whitespace from a string (used for
+// forgiving tag-name matching: <parameter= paths> -> paths).
 std::string strip_quotes_from_name(const std::string& s);
+
+// Extract the 'path' parameter value, trimming leading/trailing horizontal
+// whitespace (space, tab, CR).  Newlines are preserved: a newline at the edge
+// means the model placed the value on its own line, and param_has_newline
+// flags that as a malformed call before the handler acts on the path.
+std::string extract_path_arg(const std::string& tool_call);
 
 // Generic escape: insert one copy of 'esc_char' after the first char of every
 // occurrence of 'token'.  Handles recursive escaping: if already escaped, adds
