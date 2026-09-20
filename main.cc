@@ -681,22 +681,12 @@ int main(int argc, char ** argv) {
   // actual system prompt (not the full conversation).  clear_context() uses
   // system_tokens to re-seed the KV cache after a wipe, so it must be correct.
   // If no prompt file exists, system_prompt stays empty (unbiased comparison).
+  // load_system_prompt_text also applies the LIM_ESCAPE_CONTRACT rule.
   string system_prompt;
   load_system_prompt_text(system_prompt);
 
   // Initialize model-specific turn delimiters by asking llama.cpp for the correct tokens.
   init_model_tokens(ctx, model);
-
-  // Optionally append the reserved-token escape contract to the system prompt.
-  // Controlled by env var LIM_ESCAPE_CONTRACT (default 0 = hidden, 1 = included).
-  {
-    const char* env = getenv("LIM_ESCAPE_CONTRACT");
-    int include_contract = 0; // default: hidden from prompt (still functional in code)
-    if (env) include_contract = atoi(env);
-    if (include_contract) {
-      system_prompt += "\n\n" + generate_turn_escape_contract();
-    }
-  }
 
   // Build system prompt using model-type-aware token vectors (BOS + system turn).
   // If no prompt file was found, skip the system turn entirely to match llama-cli's -sys "" behavior.

@@ -718,7 +718,9 @@ private:
         return true;
     }
 
-    // Reload the system prompt from disk (prompt file + localprompt + cwd + date/time).
+    // Reload the system prompt from disk (prompt file + localprompt + cwd +
+    // date/time + escape contract, when enabled) so /clear re-feeds exactly
+    // what startup did.
     // Returns true on success, false if the prompt file is missing (old tokens AND
     // old text kept -- the pair must stay in lockstep for conversation_text).
     bool reload_system_prompt() {

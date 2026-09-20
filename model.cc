@@ -390,6 +390,9 @@ string generate_turn_escape_contract() {
   return contract;
 }
 
+// Forward declaration of the diagnostic helper defined in main.cc.
+extern void diag(const string& msg, const char* color);
+
 // Read the base system prompt file: $LIM_CONFIG_DIR/prompt, falling back to
 // the legacy $HOME/prompt. Returns the file contents (possibly empty) and,
 // if 'found' is non-null, sets it to whether a prompt file was opened.
@@ -414,9 +417,13 @@ string read_prompt_file(bool* found) {
 // (read_prompt_file()), with a site-specific localprompt
 // (./localprompt, falling back to $LIM_CONFIG_DIR/localprompt) prepended when
 // present -- so site text lands at the start of the system message, matching
-// where Qwen's own template puts its reasoning-effort instruction -- and the
+// where Qwen's own template puts its reasoning-effort instruction -- the
 // current working directory (plus date/time, except in deterministic
-// temperature-0 mode) appended.
+// temperature-0 mode) appended, and -- when LIM_ESCAPE_CONTRACT=1 -- the
+// reserved-token escape contract appended. The contract is always skipped
+// when the base prompt file is empty (the no-prompt benchmark setup):
+// appending it there would resurrect a system turn made of nothing but
+// contract text.
 // Returns true if a base prompt file was opened (possibly empty); returns
 // false if none exists and leaves 'prompt' empty, so callers can keep a
 // cached version or proceed with an empty prompt for unbiased benchmarking.
@@ -424,6 +431,11 @@ bool load_system_prompt_text(string& prompt) {
   bool found = false;
   prompt = read_prompt_file(&found);
   if (!found) return false;
+
+  // Base content captured before assembly: the escape-contract skip rule
+  // depends on the base file, not on the final text (which carries
+  // localprompt/cwd/date even when the base file is empty).
+  string base_prompt = prompt;
 
   // Load site-specific localprompt: check current directory first, then LIM_CONFIG_DIR.
   {
@@ -457,6 +469,22 @@ bool load_system_prompt_text(string& prompt) {
       char time_str[64];
       strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S %Z", &tm_buf);
       prompt += "Current date and time: " + string(time_str) + "\n";
+    }
+  }
+
+  // Append the reserved-token escape contract (LIM_ESCAPE_CONTRACT=1,
+  // default hidden -- the escape mechanism itself is always active in code;
+  // this only controls whether the LLM sees the explicit rules).
+  {
+    const char* env = getenv("LIM_ESCAPE_CONTRACT");
+    int include_contract = 0;
+    if (env) include_contract = atoi(env);
+    if (include_contract) {
+      if (trim_chars(base_prompt, " \t\r\n").empty()) {
+        diag("LIM_ESCAPE_CONTRACT set but the base prompt is empty: contract skipped.", "\033[1;33m");
+      } else {
+        prompt += "\n\n" + generate_turn_escape_contract();
+      }
     }
   }
   return true;
@@ -519,9 +547,6 @@ vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &too
 }
 
 // --- Decode Error Handling ---
-
-// Forward declaration for diagnostic helper defined in main.cc
-extern void diag(const string& msg, const char* color);
 
 bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char* error_msg, bool should_break) {
   int ret = llama_decode(ctx, batch);
