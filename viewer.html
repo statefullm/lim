@@ -1341,23 +1341,27 @@
                 var block = mathBlocks[parseInt(idx)];
                 var tex = unescapeMathTex(block.tex);
                 if (!block.display) {
-                    // Inline $...$: the same byte sequence is usually a shell/
-                    // env reference.  Render only if it looks like real inline
-                    // math:
+                    // Inline $...$ validation (LIM_INLINE_LATEX=1): the same
+                    // byte sequence in prose is usually a shell/env reference,
+                    // so render only candidates that look like deliberate
+                    // inline math:
                     //   1. TeX convention: a math delimiter never abuts
-                    //      whitespace (kills "$HOME and $PATH" pairings).
-                    //   2. An all-uppercase [A-Z0-9_] token is an env var, not
-                    //      math (math variables are lowercase).
-                    //   3. Backticks never appear in math -- they mark code.
-                    //   4. It must actually parse as math.
-                    // Otherwise fall back to the exact original text (srcEsc is
-                    // the untrimmed capture, unescaped for display).
+                    //      whitespace.  This is what kills the adjacent-env-var
+                    //      pairing artifacts: in "$HOME $PATH" / "$HOME and
+                    //      $PATH" the non-greedy pair captures "HOME " /
+                    //      "HOME and ", which ends in whitespace.
+                    //   2. Backticks never appear in math -- they mark code.
+                    //   3. It must actually parse as math.
+                    // Clean unspaced pairs like $N$ and $H_0$ render as math;
+                    // only a parse failure (or mode 0) leaves them literal.
+                    // $ pairs in code regions never reach here (masked above
+                    // by maskCodeRegions).  Fallback is the exact original
+                    // text (srcEsc is the untrimmed capture, unescaped).
                     if (!LIM_INLINE_LATEX_ENABLED) return '$' + unescapeMathTex(block.srcEsc) + '$';
                     var src = block.srcEsc;
                     if (/\s/.test(src.charAt(0)) || /\s/.test(src.charAt(src.length - 1))) {
                         return '$' + unescapeMathTex(src) + '$';
                     }
-                    if (/^[A-Z][A-Z0-9_]*$/.test(src)) return '$' + unescapeMathTex(src) + '$';
                     if (src.indexOf('`') !== -1) return '$' + unescapeMathTex(src) + '$';
                     if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                         try {
@@ -2171,9 +2175,10 @@
 
 
         // LIM_INLINE_LATEX_ENABLED: overridden by limServer.py (via LIM_INLINE_LATEX env var).
-        // Defaults to 1: inline math renders, but each $...$ candidate is validated
-        // (whitespace / env-var / parse rules) and code regions are never treated as
-        // math, so env vars like $HOME and $PATH are left as literal text.
+        // 1 = default: inline $...$ renders when the candidate doesn't abut
+        // whitespace (which leaves adjacent-env-var pairings like "$HOME $PATH"
+        // literal), contains no backticks, and parses as math; 0 = never render
+        // inline $...$.  Code regions are never treated as math in either mode.
         var LIM_INLINE_LATEX_ENABLED = 1;
 
         connect();
