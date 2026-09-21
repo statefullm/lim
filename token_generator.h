@@ -23,6 +23,14 @@ public:
     size_t tool_start = std::string::npos;
     size_t tool_end = std::string::npos;
     bool was_interrupted = false;
+    // True when the turn was force-ended at the 90% context threshold
+    // (housekeeping interrupt): the session records a PERMANENT /undo
+    // checkpoint at this position (labeled with this turn's prompt) and
+    // auto-resumes the turn without dropping to the prompt, so the user can
+    // later /undo to the 90% point (e.g. to free up context for a
+    // /reincarnate).  The resumed turn ends with its own turn-end checkpoint
+    // labeled with the "/continue" placeholder.  The LLM never sees the break.
+    bool ctx_limit_interrupt = false;
     int token_count = 0;
     bool early_exit = false;  // context exhaustion or decode error (not normal EOG)
     double decode_time = 0.0;  // Sum of per-token decode intervals (seconds)

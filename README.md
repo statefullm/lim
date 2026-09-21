@@ -511,7 +511,7 @@ Restoring session from cats.save... (75432 tokens)
 Session #5 restored: 75432 tokens loaded (28%)
 ```
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn, storing your prompt text and the token position. Whenever a restore can't use the fast cache (or with `--checkpoints`, CLI or `/load`), LIM offers a choice of checkpoints before decoding so you can select a good restore point. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C, Ctrl+D, or type `/quit` at the `Restore>` prompt to cancel; the session continues fresh from the system prompt. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn -- plus one at the 90% context point for turns that crossed it (see **Automatic 90% Context Checkpoint**) -- storing your prompt text and the token position. Whenever a restore can't use the fast cache (or with `--checkpoints`, CLI or `/load`), LIM offers a choice of checkpoints before decoding so you can select a good restore point. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C, Ctrl+D, or type `/quit` at the `Restore>` prompt to cancel; the session continues fresh from the system prompt. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
 
 **Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache, triggering the checkpoint selection prompt even when a fast cache exists. This also rebuilds recurrent-state checkpoints at each prompt boundary during decode, enabling instant `/undo` for all historical turns on hybrid models (Qwen3.5/3.6). The flag works on the command line (after the save file) and with the in-session `/load` command, so there is no need to exit and restart the model:
 
@@ -531,6 +531,17 @@ coder cats --checkpoints
 ### Interrupting Generation
 
 Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `/continue` to resume seamlessly: the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
+
+### Automatic 90% Context Checkpoint
+
+When a turn's generation **crosses 90% of the context window**, LIM transparently force-ends the turn (exactly like a Ctrl+C interrupt) and immediately resumes it, so the LLM never notices the break. The only visible effect is the usual "Context approaching limit" message -- there is no pause and no new output.
+
+Behind the scenes, two `/undo` checkpoints are recorded for such a turn:
+
+- **The 90% point**, labeled with the turn's original prompt. Undoing to it truncates the session back to 90% context, freeing up the last 10% -- useful when you need room for a command the context no longer fits, e.g. `/reincarnate` (which must generate a new prompt) or `/clear`.
+- **The real turn end**, labeled with the `"/continue"` placeholder. It is an `/undo` label only -- it has no connection to the `/continue` command, it just looks like one in the checkpoint list and readline history.
+
+You can then `/undo` to either point. Note that after undoing to the 90% point the session is mid-turn: `/continue` there is a silent no-op, while a new prompt, `/reincarnate`, or `/clear` all close the dangling turn normally. This checkpointing never happens during a `/reincarnate` turn itself; a turn that *starts* at/above 90% (e.g., right after a previous 90% turn ended) only gets the warning and runs to EOG or the exhaustion backstop, as before.
 
 ### Browser Output
 

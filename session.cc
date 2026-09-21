@@ -151,6 +151,13 @@ static void save_history_safe(const char* filename, const string& input) {
     out << enc << "\n";
 }
 
+// Placeholder label for the turn-end checkpoint of a turn that crossed the 90%
+// context threshold (see the ctx_limit_interrupt housekeeping in run()): the
+// 90% point keeps this turn's original prompt as its label, while the real
+// turn end is labeled with this.  It is an /undo placeholder only -- it has no
+// functional connection to the /continue command, it just looks like one.
+static const char* CTX_LIMIT_TURN_END_LABEL = "/continue";
+
 // --- Checkpoint selection prompt helpers (shared by /undo and /load) ---
 
 // Format one checkpoint for the selection prompt:
@@ -3009,15 +3016,38 @@ bool ChatSession::run() {
                 llama_memory_rs_checkpoint_save(mem, 0);
             }
 
-            // An interrupted return leaves the context mid-turn: the checkpoint
-            // just pushed is provisional until the user either /continue-resumes
-            // the turn (the completion overwrites it in place, below) or types a
-            // new prompt (finalizes it at the interrupt position, step 6).
-            if (gen_result.was_interrupted) {
-                state_.interrupted_checkpoint_idx = (int)state_.prompt_checkpoints.size() - 1;
-            }
+            if (gen_result.was_interrupted && gen_result.ctx_limit_interrupt) {
+                // 90% context housekeeping: the checkpoint just pushed is
+                // PERMANENT -- a /undo target at the 90% position, labeled with
+                // this turn's prompt -- so it is NOT marked provisional.  The
+                // resumed turn's completion pushes its own turn-end checkpoint;
+                // label it with the "/continue" placeholder (record it in
+                // readline history as a C entry too, like any user input), and
+                // auto-resume the turn without dropping to the prompt: the
+                // batch still holds the last row's logits, so the next
+                // generate_response() picks up exactly where this one paused
+                // (as with Ctrl-C + /continue) and the LLM never sees the break.
+                // The user can later /undo to either the 90% point (this turn's
+                // prompt) or the real turn end ("/continue").
+                save_history_safe(".lim_history", CTX_LIMIT_TURN_END_LABEL);
+                int hist_before = history_length;
+                add_history(CTX_LIMIT_TURN_END_LABEL);
+                if (history_length > hist_before) c_count_since_restore_++;
+                last_user_input_ = CTX_LIMIT_TURN_END_LABEL;
+                state_.prev_was_interrupted = false;
+                state_.auto_continue = true;
+                state_.auto_continue_depth_val = 0;
+            } else {
+                // An interrupted return leaves the context mid-turn: the checkpoint
+                // just pushed is provisional until the user either /continue-resumes
+                // the turn (the completion overwrites it in place, below) or types a
+                // new prompt (finalizes it at the interrupt position, step 6).
+                if (gen_result.was_interrupted) {
+                    state_.interrupted_checkpoint_idx = (int)state_.prompt_checkpoints.size() - 1;
+                }
 
-            last_user_input_.clear();
+                last_user_input_.clear();
+            }
         } else if (state_.interrupted_checkpoint_idx >= 0 &&
                    state_.interrupted_checkpoint_idx < (int)state_.prompt_checkpoints.size() &&
                    !gen_result.was_interrupted) {
