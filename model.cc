@@ -583,7 +583,27 @@ void sync_n_past(llama_context *ctx, int &n_past) {
 
 // --- Log Callbacks ---
 
-void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {}
+void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+  // Never swallow errors. ggml/llama report fatal conditions (e.g. the CUDA
+  // error string from ggml_cuda_error) via GGML_LOG_ERROR immediately before
+  // GGML_ABORT; dropping them turns a 10-second diagnosis into a 7GB core-dump
+  // hunt. Only the final "file:line: msg" abort line would otherwise print
+  // (ggml_abort() bypasses the logger). WARN/INFO/DEBUG/CONT stay suppressed in
+  // normal mode -- LIM_DEBUG=1 installs custom_log_callback for the full feed.
+  static bool in_error = false;
+  if (level == GGML_LOG_LEVEL_ERROR) {
+    cerr << text;
+    cerr.flush();
+    in_error = true;
+    return;
+  }
+  if (level == GGML_LOG_LEVEL_CONT && in_error) {
+    cerr << text;
+    cerr.flush();
+    return;
+  }
+  in_error = false;
+}
 
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
   // Suppress DEBUG-level llama/ggml spam (e.g. "CUDA Graph id N reused" on every
