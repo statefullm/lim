@@ -552,12 +552,27 @@ TokenGenerator::Result TokenGenerator::generate() {
                             g_mtp->note_round(1 + spec_committed_verify_ + 1);
                         }
                         spec_in_progress_ = false;
+                        // Defensive (matches the comparison path): the EOG
+                        // feed below must decode; feed_token already cleared
+                        // this at the end of the previous iteration.
+                        spec_no_feed_ = false;
                         spec_verify_row_ = 0;
                         spec_draft_.clear();
                         if (!ok) {
                             early_exit = true;
                             break;
                         }
+                    }
+                } else if (spec_bonus_pending_) {
+                    // The EOG is the round's bonus token: all drafts were
+                    // committed, so close the round here (count it once,
+                    // bonus included) and clear the flag -- otherwise the
+                    // post-loop cleanup would count the round again from the
+                    // stale spec_committed_verify_, without crediting the EOG.
+                    spec_bonus_pending_ = false;
+                    if (g_mtp) {
+                        g_mtp->on_bonus();
+                        g_mtp->note_round(1 + spec_verify_rows_ + 1);
                     }
                 }
 
@@ -576,7 +591,12 @@ TokenGenerator::Result TokenGenerator::generate() {
         // sampling configuration.
         if (spec_bonus_pending_) {
             // Bonus token (all drafts matched): no comparison, fed normally.
+            // Mark the round complete for the post-feed count: for k > 1 the
+            // all-matched branch no longer sets it (counting there would
+            // credit the bonus before it is sampled); for k = 1 the verify
+            // branch already set it, so this is idempotent.
             spec_bonus_pending_ = false;
+            spec_round_complete_pending_ = true;
             if (g_mtp) g_mtp->on_bonus();
         } else if (spec_origin_pending_) {
             spec_origin_pending_ = false;
@@ -617,10 +637,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                 if (g_mtp) g_mtp->on_verify_match();
                 if (spec_verify_row_ >= spec_verify_rows_) {
                     // All drafts matched: the next sample (last verify row)
-                    // is a free bonus token.
+                    // is a free bonus token.  The round-complete count is
+                    // deferred to the bonus feed (the bonus branch above /
+                    // the k=1 verify branch) so a break before the bonus
+                    // sample counts the round without the un-sampled bonus.
                     spec_in_progress_ = false;
                     spec_bonus_pending_ = true;
-                    spec_round_complete_pending_ = true;
                 }
             } else {
                 // Mismatch: roll back the uncommitted draft cells.  The
@@ -1148,6 +1170,10 @@ TokenGenerator::Result TokenGenerator::generate() {
                     // of the tracker: rebuild the committed prefix (the
                     // tracker, already minus the dropped token) from scratch.
                     diag("MTP: abort rollback failed; regenerating KV cache", "\033[31m");
+                    // A failed re-decode (null tracker, or KV exhaustion
+                    // mid-rebuild) can't be healed from here; the turn
+                    // early-exits either way, so the result goes unhandled
+                    // (unlike the in-loop sites that check it).
                     spec_rollback_redecode();
                 }
                 early_exit = true;
