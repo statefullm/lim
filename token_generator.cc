@@ -520,18 +520,45 @@ TokenGenerator::Result TokenGenerator::generate() {
                 // can mirror it.
                 ended_on_eog = true;
 
-                // MTP: if this EOG matched a verify-row draft, its KV cell
-                // already holds the token -- feed without re-decoding (which
-                // would advance the hybrid recurrent state an extra step).
-                // The break skips the comparison block below, so mirror its
-                // match bookkeeping here: this EOG is a committed verify row,
-                // and the post-loop cleanup rolls back / closes the round
-                // based on spec_committed_verify_.
-                if (spec_in_progress_ && spec_verify_row_ < spec_verify_rows_ &&
-                    next_token == spec_draft_[spec_draft_idx_ - 1]) {
-                    spec_no_feed_ = true;
-                    spec_committed_verify_ = spec_verify_row_ + 1;
-                    if (g_mtp) g_mtp->on_verify_match();
+                // MTP: this break skips the comparison block below, so mirror
+                // its bookkeeping here.  If the EOG matched a verify-row
+                // draft, its KV cell already holds the token -- feed without
+                // re-decoding (which would advance the hybrid recurrent state
+                // an extra step); the post-loop cleanup rolls back / closes
+                // the round based on spec_committed_verify_.  If it did NOT
+                // match, the uncommitted draft cells decoded with the verify
+                // batch still occupy the positions this feed would write
+                // (n_past_ .. verify tail): the position check would reject
+                // the batch (KV tail ahead of the batch start), and the
+                // feed-failure sync_n_past would then advance n_past_ PAST
+                // the stale cells -- leaving the tracker 2-3 tokens behind
+                // the KV, the turn's EOG missing from the context, and the
+                // draft tokens occupying its place.  Roll the cells back
+                // first, exactly like the comparison block's mismatch path.
+                if (spec_in_progress_ && spec_verify_row_ < spec_verify_rows_) {
+                    if (next_token == spec_draft_[spec_draft_idx_ - 1]) {
+                        spec_no_feed_ = true;
+                        spec_committed_verify_ = spec_verify_row_ + 1;
+                        if (g_mtp) g_mtp->on_verify_match();
+                    } else {
+                        const int keep_pos = n_past_;
+                        bool ok = llama_memory_seq_rm(llama_get_memory(ctx_), 0, keep_pos, -1);
+                        if (!ok) {
+                            diag("MTP: EOG-break rollback failed; regenerating KV cache", "\033[31m");
+                            ok = spec_rollback_redecode();
+                        }
+                        if (g_mtp) {
+                            g_mtp->on_verify_mismatch(spec_draft_idx_);
+                            g_mtp->note_round(1 + spec_committed_verify_ + 1);
+                        }
+                        spec_in_progress_ = false;
+                        spec_verify_row_ = 0;
+                        spec_draft_.clear();
+                        if (!ok) {
+                            early_exit = true;
+                            break;
+                        }
+                    }
                 }
 
                 if (!feed_token()) early_exit = true;
@@ -1112,8 +1139,17 @@ TokenGenerator::Result TokenGenerator::generate() {
                 // pre-round state (drops a partially written cell if any)
                 // and drop it from the tracker to keep the invariant.
                 n_past_--;
-                llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1);
                 if (out_tokens_) out_tokens_->pop_back();
+                if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1)) {
+                    // The rollback itself failed (hybrid model: the
+                    // recurrent state can't be restored to n_past_ -- the
+                    // per-token snapshot window doesn't cover it).  A
+                    // partially written cell would then stay in the KV ahead
+                    // of the tracker: rebuild the committed prefix (the
+                    // tracker, already minus the dropped token) from scratch.
+                    diag("MTP: abort rollback failed; regenerating KV cache", "\033[31m");
+                    spec_rollback_redecode();
+                }
                 early_exit = true;
             }
             spec_in_progress_ = false;
