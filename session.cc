@@ -771,14 +771,30 @@ private:
         return -1;
     }
 
+    // Progress in the browser status bar (same "t/s | pos (pct)" format as
+    // generation): the position counter is the token progress.  Visible
+    // feedback for long feeds (slow-restore/undo re-decode); no-op when
+    // browser output is off.  start/n_past_start describe the feed this
+    // progress belongs to (restore feeds start at 0, mid-session feeds at
+    // the feed's starting position).
+    void stream_feed_progress(chrono::high_resolution_clock::time_point start, int n_past_start) {
+        if (!should_output_to_browser()) return;
+        double el = chrono::duration<double>(chrono::high_resolution_clock::now() - start).count();
+        int tps = (el > 0) ? round_int((n_past_ - n_past_start) / el) : 0;
+        stream_speed(format_speed_ctx(tps, n_past_, (int)cparams_.n_ctx));
+    }
+
     bool feed_tokens_impl(const vector<llama_token>& toks) {
         batch_.n_tokens = 0;
+        auto feed_start = chrono::high_resolution_clock::now();
+        int n_past_feed_start = n_past_;
         for (size_t i = 0; i < (int)toks.size(); i++) {
             if (stop_generation) return false;
             common_batch_add(batch_, toks[i], n_past_++, {0}, (i == (int)toks.size() - 1));
             if (batch_.n_tokens == (int)cparams_.n_batch && i != (int)toks.size() - 1) {
                 if (!handle_llama_decode_error(ctx_, batch_)) { sync_n_past(ctx_, n_past_); return false; }
                 batch_.n_tokens = 0;
+                stream_feed_progress(feed_start, n_past_feed_start);
             }
         }
         if (batch_.n_tokens > 0) {
@@ -787,6 +803,7 @@ private:
                 return false;
             }
             sync_n_past(ctx_, n_past_);
+            stream_feed_progress(feed_start, n_past_feed_start);
         }
         // Track all tokens fed into context for save/restore
         state_.all_context_tokens.insert(state_.all_context_tokens.end(), toks.begin(), toks.end());
@@ -2363,6 +2380,9 @@ bool ChatSession::run() {
                         !handle_llama_decode_error(ctx_, batch_, "Decode failed during restore.", true)) {
                         sync_n_past(ctx_, n_past_);
                         restore_failed = true;
+                    } else {
+                        // n_past_ counts from 0 over the whole restore.
+                        stream_feed_progress(restore_start, 0);
                     }
                     // Save recurrent checkpoints at prompt boundaries.
                     while (cp_restore_idx < restored_checkpoints.size() &&
