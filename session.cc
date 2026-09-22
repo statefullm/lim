@@ -388,13 +388,70 @@ private:
 
     // Auto-save the current state to log/<N>-clear.save before clearing,
     // undoing, or reincarnating so nothing is truly lost.
-    void autosave_before_clear() {
+    // Returns true on success so the caller can point the user at the file.
+    bool autosave_before_clear() {
         string autosave_path = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
         bool ok = save_session_with_header(state_.all_context_tokens, autosave_path, false, nullptr, &state_.prompt_checkpoints, state_.log_index);
         if (!ok) {
             diag("Auto-save failed: could not write " + autosave_path, "\033[33m");
-        } else {
-            diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
+            return false;
+        }
+        diag("Auto-saved to " + autosave_path + " (" + save_diag(state_.prompt_checkpoints.size(), state_.all_context_tokens.size()) + ")", "\033[35m");
+        return true;
+    }
+
+    // Full post-clear reset, shared by /clear and by recovery paths that must
+    // reset the context to a fresh session (e.g. an interrupted /undo
+    // re-decode): clear the KV cache and re-feed the system prompt, reset the
+    // session state, persist the surviving C history entries and promote them
+    // into A, and bump the session number (reopens the log files, and keeps
+    // this session's <N>-clear.save name from being clobbered by a later
+    // /clear).  Leaves the context in exactly the state /load requires, so a
+    // saved session can be restored straight from the fresh prompt.  The
+    // caller performs the pre-clear auto-save.
+    void clear_session(const char* history_file, const string& cleared_diag,
+                       const char* color = "\033[32m") {
+        clear_context();
+        state_.auto_continue = false;
+        state_.prev_was_interrupted = false;
+        reset_session_state();
+        // Reset checkpoint tracking after full context clear.
+        state_.checkpoint_stack_offset = 0;
+        state_.tool_correction_checkpoint_idx = -1;
+        state_.rs_checkpoint_saved_this_turn = false;
+        state_.last_t_count = 0;
+        state_.last_elapsed = 0.0;
+        state_.last_n_past = n_past_;
+        state_.first_turn_done = true;
+        flush_history(history_file);
+        int new_log_index = bump_session();
+
+        // Update browser: clear the viewer and immediately set the new
+        // context diagnostic in a single pipe write so they arrive together.
+        if (should_output_to_browser()) {
+            double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+            string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+            const char soh = 0x01;
+            pipe_write(&soh, 1);
+            pipe_write(&SEG_SPEED, 1);
+            string speed_msg = "Cleared | " + ctx_str;
+            pipe_write(speed_msg.c_str(), speed_msg.length());
+        }
+
+        diag(cleared_diag, color);
+        announce_new_session(new_log_index);
+        // Remove B (checkpoint prompts) while preserving A (persistent)
+        // and C (user inputs since last restore).  After flush_history above,
+        // the surviving C entries are now on disk, so promote them into A.
+        {
+            vector<string> saved_c = collect_recent_user_inputs();  // oldest first
+            pop_history(history_length - persistent_history_len_);
+            for (const auto& s : saved_c) {
+                add_history(s.c_str());
+            }
+            // Promote C into A: these entries are now persisted on disk.
+            persistent_history_len_ = history_length;
+            c_count_since_restore_ = 0;
         }
     }
 
@@ -1669,50 +1726,7 @@ bool ChatSession::run() {
             // Uses a distinct name (e.g., log/5-clear.save) so it doesn't conflict
             // with the regular save file that /quit or /exit will overwrite.
             autosave_before_clear();
-
-            clear_context();
-            state_.auto_continue = false;
-            state_.prev_was_interrupted = false;
-            reset_session_state();
-            // Reset checkpoint tracking after full context clear.
-            state_.checkpoint_stack_offset = 0;
-            state_.tool_correction_checkpoint_idx = -1;
-            state_.rs_checkpoint_saved_this_turn = false;
-            state_.last_t_count = 0;
-            state_.last_elapsed = 0.0;
-            state_.last_n_past = n_past_;
-            state_.first_turn_done = true;
-            flush_history(history_file);
-            int new_log_index = bump_session();
-
-            // Update browser: clear the viewer and immediately set the new
-            // context diagnostic in a single pipe write so they arrive together.
-            if (should_output_to_browser()) {
-                double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-                string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
-                const char soh = 0x01;
-                pipe_write(&soh, 1);
-                pipe_write(&SEG_SPEED, 1);
-                string speed_msg = "Cleared | " + ctx_str;
-                pipe_write(speed_msg.c_str(), speed_msg.length());
-            }
-
-            diag("Context Cleared Successfully", "\033[32m");
-            announce_new_session(new_log_index);
-            // Remove B (checkpoint prompts) while preserving A (persistent)
-            // and C (user inputs since last restore).  After flush_history above,
-            // the surviving C entries are now on disk, so promote them into A.
-            {
-                vector<string> saved_c = collect_recent_user_inputs();  // oldest first
-                pop_history(history_length - persistent_history_len_);
-                for (const auto& s : saved_c) {
-                    add_history(s.c_str());
-                }
-                // Promote C into A: these entries are now persisted on disk.
-                persistent_history_len_ = history_length;
-                c_count_since_restore_ = 0;
-            }
-
+            clear_session(history_file, "Context Cleared Successfully");
             continue;
         }
 
@@ -1723,7 +1737,8 @@ bool ChatSession::run() {
                 continue;
             }
             // Auto-save before undoing so nothing is truly lost.
-            autosave_before_clear();
+            bool undo_autosave_ok = autosave_before_clear();
+            string pre_undo_save = LIM_LOG_DIR + "/" + to_string(state_.log_index) + "-clear.save";
 
             // Interactive checkpoint selection, modeled on the Restore> prompt.
             size_t num_cps = state_.prompt_checkpoints.size();
@@ -1900,8 +1915,36 @@ bool ChatSession::run() {
 
                     auto start = chrono::high_resolution_clock::now();
                     if (!feed_tokens_impl(undo_prefix)) {
-                        diag("Failed to re-feed tokens after undo. Type '/clear' to reset.", "\033[31m");
+                        bool was_interrupted = stop_generation;
+                        stop_generation = 0;  // proceed with the recovery reset
                         log_rollback("undo", n_past_before, target_pos, false, n_past_);
+                        // The KV holds a partial re-decoded prefix that the
+                        // (empty) token tracker doesn't account for, and the
+                        // R/S checkpoint stack was lost with the memory clear:
+                        // continuing would append the next prompt to a
+                        // mid-system-prompt KV (garbage context), and /save
+                        // would write a corrupted file.  Reset to a fresh
+                        // session exactly as /clear does (clear_session) -- no
+                        // manual /clear needed.  The pre-clear auto-save is
+                        // skipped: the tracker is empty, and the pre-undo state
+                        // is already in the auto-save written when the undo
+                        // started.  Bumping the session keeps that
+                        // <N>-clear.save from being clobbered by a later
+                        // /clear, and leaves the context in exactly the state
+                        // /load requires.
+                        string msg = string("Undo re-decode ") +
+                            (was_interrupted ? "interrupted" : "failed") +
+                            ", context reset to a fresh session";
+                        if (undo_autosave_ok) {
+                            msg += "; the pre-undo state is in " + pre_undo_save +
+                                   " -- /load it to restore.";
+                        } else {
+                            msg += "; the pre-undo auto-save failed, so it could not be preserved.";
+                        }
+                        clear_session(history_file, msg, "\033[31m");
+                        log_entry("SYSTEM", string("Undo re-decode ") +
+                            (was_interrupted ? "interrupted" : "failed") +
+                            ", context reset to a fresh session");
                         continue;
                     }
 

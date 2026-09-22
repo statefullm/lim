@@ -316,7 +316,7 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 /amend=Amend the previous commit.
 /prompt=Follow the system prompt strictly!
 /tools=Use our robust filesystem tools.
-/pairs=Use search_file+edit_file pairs.
+/pairs=Use search_file+edit_file pairs; ensure that OLD is a contiguous substring of the search_file result.
 /rawtags=Raw function opening and closing tags are reserved for executing tool calls. They can appear in tool call content, but obviously you never want to output them in prose: use FUNC_START and FUNC_END instead.
 /closing=Did you forget a closing parameter or function tag in your tool call?
 ```
@@ -475,7 +475,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | Command | Effect |
 |---|---|
 | `/clear` | Auto-save the current state to `$LIM_LOG_DIR/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
-| `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models (Qwen3.5/3.6), instant undo works for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback unless restored via `--checkpoints`. Readline history is updated to reflect the restored session state. |
+| `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models, instant undo works only for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback. If the re-decode fallback is interrupted (Ctrl+C), LIM resets the context to a fresh session. |
 | `/continue` | Resume a live interruption (only). If interrupted mid-tool-call, resumes from the exact point of interruption. At a well-formed boundary, keeps the model generating. After `/undo` to a mid-turn checkpoint it is a silent no-op -- type a prompt (e.g., "continue") to carry the conversation on (the turn is closed automatically) |
 | `/reset` | Reset terminal and web search. Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
