@@ -1948,6 +1948,17 @@ bool ChatSession::run() {
                         continue;
                     }
 
+                    // The re-decode ended exactly at the undo target, so the
+                    // recurrent state is precisely the target's: save it as
+                    // live slot 0 (the stack is empty after the clear) and
+                    // mark exactly this checkpoint live.  A later /undo back
+                    // to this checkpoint then takes the fast path (restore +
+                    // seq_rm) instead of re-decoding the whole prefix a
+                    // second time.  No-op for pure attention models (no
+                    // recurrent state), matching the /load save calls.
+                    llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+                    state_.checkpoint_stack_offset = selected_idx;
+
                     auto end = chrono::high_resolution_clock::now();
                     double elapsed = chrono::duration<double>(end - start).count();
                     int secs = (int)elapsed;

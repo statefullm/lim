@@ -407,6 +407,23 @@ static bool parse_cache_header(const std::string& header,
   return parse_field("main_size=", out_main_size) && parse_field("mtp_size=", out_mtp_size);
 }
 
+// Read the header line (up to the first newline) of a cache file without
+// loading the multi-GB payload.
+static bool read_cache_header_line(const std::string& path, std::string& header) {
+  FILE* fp = fopen(path.c_str(), "rb");
+  if (!fp) return false;
+  char head[512];
+  size_t n = fread(head, 1, sizeof(head), fp);
+  fclose(fp);
+  size_t nl = std::string::npos;
+  for (size_t i = 0; i < n; i++) {
+    if (head[i] == '\n') { nl = i; break; }
+  }
+  if (nl == std::string::npos) return false;
+  header.assign(head, nl);
+  return true;
+}
+
 // Read a whole file into buf.  NOTE: ftell leaves the cursor at EOF, so rewind
 // before fread -- omitting the rewind reads zero bytes and silently rejects
 // every cache entry (which used to skip the fast path entirely).
@@ -433,7 +450,10 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
   // content+model hash, so the first one that loads is valid.
   for (const auto& cache_path : find_cache_files("-" + hash)) {
     std::vector<uint8_t> file;
-    if (!read_file_buf(cache_path, file)) continue;
+    if (!read_file_buf(cache_path, file)) {
+      diag("V1 cache: cannot read " + cache_path + " -- skipping entry", "\033[33m");
+      continue;
+    }
 
     // Split off the header line (short; only the file head is scanned for the
     // terminating newline) from the binary state payload that follows.  Files
@@ -443,16 +463,29 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
     for (size_t i = 0; i < scan; i++) {
       if (file[i] == '\n') { nl = i; break; }
     }
-    if (nl == std::string::npos) continue;
+    if (nl == std::string::npos) {
+      diag("V1 cache: " + cache_path + " has no header line -- not a valid cache entry", "\033[33m");
+      continue;
+    }
     std::string header((const char*)file.data(), nl);
     uint64_t main_size = 0, mtp_size = 0;
-    if (!parse_cache_header(header, &main_size, &mtp_size)) continue;
+    if (!parse_cache_header(header, &main_size, &mtp_size)) {
+      diag("V1 cache: " + cache_path + " has an invalid cache header -- skipping entry", "\033[33m");
+      continue;
+    }
 
     const size_t payload_size = file.size() - (nl + 1);
-    if (main_size > payload_size || mtp_size > payload_size - (size_t)main_size) continue;
+    if (main_size > payload_size || mtp_size > payload_size - (size_t)main_size) {
+      diag("V1 cache: " + cache_path + " header sizes exceed the file payload (truncated?) -- skipping entry", "\033[33m");
+      continue;
+    }
     const uint8_t* payload = file.data() + nl + 1;
 
-    if (llama_state_set_data(ctx, payload, (size_t)main_size) != (size_t)main_size) continue;
+    if (llama_state_set_data(ctx, payload, (size_t)main_size) != (size_t)main_size) {
+      diag("V1 cache: failed to load the main KV from " + cache_path +
+           " (state set failed -- possible device memory pressure; entry kept)", "\033[33m");
+      continue;
+    }
 
     // Verify the loaded main KV covers exactly the token count. A mismatch
     // means a corrupt entry (e.g., a truncated KV cache written by an older
@@ -460,6 +493,9 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
     // to the next candidate or a slow restore.
     llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
     if (max_pos + 1 != (llama_pos)tokens.size()) {
+      diag("V1 cache: " + cache_path + " main KV covers " + std::to_string(max_pos + 1) +
+           " tokens but the save has " + std::to_string(tokens.size()) +
+           " -- deleting corrupt entry, falling back to re-decode", "\033[33m");
       llama_memory_clear(llama_get_memory(ctx), true);
       unlink(cache_path.c_str());
       continue;
@@ -484,12 +520,14 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
         // it: the main restore stays a fast hit, and MTP rebuilds the mirror
         // from scratch like a mirror-less cache hit.
         if (llama_memory_seq_pos_max(llama_get_memory(ctx_mtp), 0) < max_pos) {
+          diag("V1 cache: " + cache_path + " mirror KV covers fewer rows than the main KV -- restoring main only; MTP will rebuild its mirror", "\033[33m");
           mtp_ok = false;
         }
       }
       if (mtp_ok) {
         if (mtp_loaded) *mtp_loaded = true;
       } else {
+        diag("V1 cache: " + cache_path + " mirror KV failed to load -- restoring main only; MTP will rebuild its mirror", "\033[33m");
         llama_memory_clear(llama_get_memory(ctx_mtp), true);
       }
     }
@@ -532,7 +570,23 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   }
 
   // Check if an equivalent cache entry already exists (same content+model).
-  if (!find_cache_files("-" + hash).empty()) return true;
+  // Never downgrade: without a valid mirror (ctx_mtp null), any existing
+  // entry -- mirror or not -- is kept.  Upgrade: when we hold a valid mirror
+  // but every existing entry lacks one, rewrite so future fast restores can
+  // bring MTP back with the KV (a mirror-less entry would otherwise block
+  // the mirror forever).
+  {
+    bool existing_has_mirror = false;
+    for (const auto& cache_path : find_cache_files("-" + hash)) {
+      std::string header;
+      if (read_cache_header_line(cache_path, header)) {
+        uint64_t ms = 0, ts = 0;
+        if (parse_cache_header(header, &ms, &ts) && ts > 0) { existing_has_mirror = true; break; }
+      }
+    }
+    if (existing_has_mirror || !ctx_mtp) return true;
+    for (const auto& cache_path : find_cache_files("-" + hash)) unlink(cache_path.c_str());
+  }
 
   // Write the cache as $LIM_CACHE_DIR/<name>-<hash>: header + main KV state
   // + optional MTP mirror KV state (single file, current format).
