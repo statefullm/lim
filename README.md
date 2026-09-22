@@ -314,7 +314,6 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 /commit=run git commit -a -m "<message>"
 /make=run make
 /amend=Amend the previous commit.
-/remind=Read the system prompt from ~/.config/lim/prompt and follow it strictly!
 /prompt=Follow the system prompt strictly!
 /tools=Use our robust filesystem tools.
 ```
@@ -477,6 +476,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/continue` | Resume a live interruption (only). If interrupted mid-tool-call, resumes from the exact point of interruption. At a well-formed boundary, keeps the model generating. After `/undo` to a mid-turn checkpoint it is a silent no-op -- type a prompt (e.g., "continue") to carry the conversation on (the turn is closed automatically) |
 | `/reset` | Reset terminal and web search. Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
+| `/remind` | Re-send the full system prompt to the LLM, fed directly into the KV-cache as a user turn so it re-anchors its instructions |
 | `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
 | `/quit` or `/exit` | Auto-save the current state to `$LIM_LOG_DIR/<N>.save`, then exit the session |
