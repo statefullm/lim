@@ -1693,6 +1693,18 @@ bool ChatSession::run() {
         state_.cli_restore_path.clear();
     }
 
+    // --- Browser connection at startup ---
+    // Ask for the browser connection before the first prompt so the user can
+    // open the viewer early and watch long decodes (e.g., a CLI-restore
+    // re-decode) in the status bar right away.  Same semantics as the in-turn
+    // prompt: block until the viewer connects, or fall back to stdout-only
+    // output when interrupted (or proceed in combined mode).
+    if (should_output_to_browser() && !g_browser_warning_suppressed && !check_browser_connected()) {
+        if (!prompt_for_browser_connection()) {
+            disable_browser_output();
+        }
+    }
+
     // --- MAIN CHAT TURN LOOP ---
     while (true) {
         stop_generation = 0;
