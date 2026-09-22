@@ -309,13 +309,16 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 # ~/.lim_aliases: one key=value per line; # comments are ignored
 # Keys must start with / to distinguish them from regular messages
 
-/test=Test the filesystem tools and clean up after.
+/test=Test the filesystem tools and clean up any new files you created.
 /message=Show me a 1-sentence concise git commit message relative to HEAD.
 /commit=run git commit -a -m "<message>"
 /make=run make
 /amend=Amend the previous commit.
 /prompt=Follow the system prompt strictly!
 /tools=Use our robust filesystem tools.
+/pairs=Use search_file+edit_file pairs.
+/rawtags=Raw function opening and closing tags are reserved for executing tool calls. They can appear in tool call content, but obviously you never want to output them in prose: use FUNC_START and FUNC_END instead.
+/closing=Did you forget a closing parameter or function tag in your tool call?
 ```
 
 At the `>>>` prompt, typing `/commit` expands to `run git commit -a -m "<message>"` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. Built-in command names (e.g., `/quit`, `/clear`) cannot be used as alias keys. This is loaded fresh each session.
@@ -534,14 +537,7 @@ Press **Ctrl+C** during generation to interrupt. The partial output is preserved
 
 ### Automatic 90% Context Checkpoint
 
-When a turn's generation **crosses 90% of the context window**, LIM transparently force-ends the turn (exactly like a Ctrl+C interrupt) and immediately resumes it, so the LLM never notices the break. The only visible effect is the usual "Context approaching limit" message -- there is no pause and no new output.
-
-Behind the scenes, two `/undo` checkpoints are recorded for such a turn:
-
-- **The 90% point**, labeled with the turn's original prompt. Undoing to it truncates the session back to 90% context, freeing up the last 10% -- useful when you need room for a command the context no longer fits, e.g. `/reincarnate` (which must generate a new prompt) or `/clear`.
-- **The real turn end**, labeled with the `"/continue"` placeholder. It is an `/undo` label only -- it has no connection to the `/continue` command, it just looks like one in the checkpoint list and readline history.
-
-You can then `/undo` to either point. Note that after undoing to the 90% point the session is mid-turn: `/continue` there is a silent no-op, while a new prompt, `/reincarnate`, or `/clear` all close the dangling turn normally. This checkpointing never happens during a `/reincarnate` turn itself; a turn that *starts* at/above 90% (e.g., right after a previous 90% turn ended) only gets the warning and runs to EOG or the exhaustion backstop, as before.
+When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn checkpoint labelled "/continue", along with the real turn end.
 
 ### Browser Output
 

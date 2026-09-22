@@ -28,9 +28,19 @@ public:
     // checkpoint at this position (labeled with this turn's prompt) and
     // auto-resumes the turn without dropping to the prompt, so the user can
     // later /undo to the 90% point (e.g. to free up context for a
-    // /reincarnate).  The resumed turn ends with its own turn-end checkpoint
-    // labeled with the "/continue" placeholder.  The LLM never sees the break.
+    // /reincarnate).  The LLM never sees the break.
+    // Mid-generation crossing: the checkpoint at the 90% position is labeled
+    // with this turn's prompt and the resumed turn ends with its own turn-end
+    // checkpoint labeled with the "/continue" placeholder.
+    // Feed-boundary crossing (ctx_limit_feed_crossing): the force-end is a
+    // 0-token turn end at the prompt boundary; the boundary checkpoint is
+    // labeled with the "/continue" placeholder and the resumed turn's end
+    // checkpoint with this turn's prompt.
     bool ctx_limit_interrupt = false;
+    // True when the force-end above fired at the prompt BOUNDARY (the turn
+    // started at/above the 90% line, the crossing having happened in this
+    // turn's feed or before it): a 0-token turn end before the first sample.
+    bool ctx_limit_feed_crossing = false;
     int token_count = 0;
     bool early_exit = false;  // context exhaustion or decode error (not normal EOG)
     double decode_time = 0.0;  // Sum of per-token decode intervals (seconds)
@@ -59,7 +69,8 @@ public:
                  double feed_time = 0.0,
                  bool is_reincarnating = false,
                  std::function<void(bool lockstep)> on_tool_start = nullptr,
-                 bool was_mid_thinking_block = false);
+                 bool was_mid_thinking_block = false,
+                 bool feed_crossed_90pct = false);
 
   Result generate();
 
@@ -98,6 +109,11 @@ private:
   int last_n_past_;
   bool was_mid_tool_call_;
   bool is_reincarnating_;
+  // True when this turn's prompt feed crossed the 90% threshold: the 90%
+  // force-end fires on the first iteration (before the first token) instead
+  // of waiting for a crossing this generation, which can never happen since
+  // the generation starts at/above the line.
+  bool feed_crossed_90pct_;
   std::vector<llama_token>* out_tokens_;  // If non-null, each sampled token is appended here
 
   // Silent-loop detector: count tokens generated outside parameters while

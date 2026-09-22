@@ -275,11 +275,16 @@ private:
     bool assistant_logged_this_turn_ = false;
     // Last non-empty user input, used as checkpoint label for tool-call turns
     string last_user_input_;
-    // True while the /remind turn is in flight: suppresses the extra 90%
-    // checkpoint -- if the threshold is crossed mid-turn, the force-end
-    // defers the turn's single checkpoint to the turn end instead of pushing
-    // one at the crossing.  Cleared at turn end.
-    bool remind_turn_ = false;
+
+    // True when the current turn's prompt feed crossed the 90% threshold: the
+    // turn starts at/above the line, so TokenGenerator's own crossing check
+    // can never fire (it breaks on a crossing, not a start above the line).
+    // The first generate_response passes it to the generator, which performs
+    // the 90% mid-turn checkpoint housekeeping before generating any tokens
+    // (a 0-token turn end at the prompt boundary, the checkpoint labeled with
+    // the turn's prompt -- "/remind" for the /remind turn, which shares
+    // feed_new_user_turn).  Consumed (cleared) by generate_response.
+    bool feed_crossed_90pct_ = false;
     // Readline history length right after loading .lim_history at startup.
     // Marks the end of A (persistent) entries in readline history.
     int persistent_history_len_ = 0;
@@ -1093,6 +1098,7 @@ bool ChatSession::feed_new_user_turn(const string& input) {
         if (!turn_text.empty()) turn_text += think_block;
     }
 
+    const int n_before = n_past_;
     if (n_past_ + (int)tokens.size() >= (int)cparams_.n_ctx) {
         string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, tokens.size());
         diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type '/clear' to reset.", "\033[31m");
@@ -1111,6 +1117,24 @@ bool ChatSession::feed_new_user_turn(const string& input) {
     // is currently valid -- an empty text is rebuilt from the tracker by the
     // next mode 1/2 turn instead of being appended to stale state).
     if (!turn_text.empty()) state_.conversation_text += turn_text;
+
+    // 90% line crossed by the prompt feed itself: the turn starts at/above
+    // the line, where the generator's crossing check (which breaks on a
+    // crossing, never on a start above the line) would skip this turn's
+    // checkpoint.  Record the crossing; the first generate_response of this
+    // turn performs the checkpoint housekeeping before its first token (a
+    // 0-token turn end at the prompt boundary labeled "/continue"; the
+    // /remind turn shares this path: boundary checkpoint "/continue", end
+    // checkpoint "/remind").  The crossing is recorded ONLY on the actual
+    // below->above transition: a session crosses the line at most once
+    // (context only grows within a session, and /undo below the line
+    // discards the checkpoints above the restore point), so there is never
+    // more than one "/continue" checkpoint.  A feed that continues at/above
+    // an already-crossed line does not re-record: the turn takes the
+    // warn-only path and gets its single turn-end checkpoint as usual.
+    if (n_before < (int)(cparams_.n_ctx * 0.9) && n_past_ >= (int)(cparams_.n_ctx * 0.9)) {
+        feed_crossed_90pct_ = true;
+    }
 
     // Log user input tokens to token_log when debug is enabled
     log_tokens("FEED USER_INPUT", tokens, ctx_);
@@ -1179,6 +1203,11 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     bool was_mid_thinking_block = state_.thinking_block_open;
     state_.thinking_block_open = false;
 
+    // 90% crossed during this turn's prompt feed: the generator performs the
+    // mid-turn checkpoint housekeeping before its first token.
+    bool feed_crossed_90pct = feed_crossed_90pct_;
+    feed_crossed_90pct_ = false;
+
     // The turn's recurrent checkpoint slot is saved lazily by the on_tool_start
     // hook (passed to TokenGenerator below), right after the FUNC_START token is
     // fed -- the only point where "right before the tool-call body" is reachable.
@@ -1241,7 +1270,7 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
                       &state_.all_context_tokens, state_.last_feed_time,
                       state_.reincarnate_mode, on_tool_start,
-                      was_mid_thinking_block);
+                      was_mid_thinking_block, feed_crossed_90pct);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
@@ -1963,11 +1992,11 @@ bool ChatSession::run() {
                 continue;
             }
 
-            // Checkpointed like any turn (labeled with what the user typed);
-            // remind_turn_ only suppresses the extra 90% checkpoint if the
-            // threshold is crossed during the turn (see the turn-end block).
+            // Checkpointed exactly like any turn: the turn-end checkpoint is
+            // labeled "/remind", and a 90% threshold crossing (in the feed or
+            // mid-turn) gets its permanent mid-turn checkpoint at the crossing
+            // too, so a /undo target always exists before the context fills.
             last_user_input_ = "/remind";
-            remind_turn_ = true;
 
             // A new user-initiated turn starts a fresh auto-continue chain:
             // generate_response's reset (only when auto_continue is false) is
@@ -3054,68 +3083,75 @@ bool ChatSession::run() {
         // Only save once per user turn -- clear last_user_input_ after use so that
         // subsequent tool-call iterations within the same turn don't create duplicates.
         if (!last_user_input_.empty()) {
-            // A /remind turn crossing the 90% threshold defers its checkpoint:
-            // no extra 90% checkpoint at the force-end -- the auto-resumed
-            // completion pushes the turn's single checkpoint at the turn end,
-            // so the undo target stays at a clean turn boundary.
-            const bool defer_90pct_checkpoint =
-                remind_turn_ && gen_result.was_interrupted && gen_result.ctx_limit_interrupt;
+            state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
 
-            if (!defer_90pct_checkpoint) {
-                state_.prompt_checkpoints.push_back({n_past_, last_user_input_});
-
-                // Overwrite the tool-correction checkpoint with the post-generation
-                // undo checkpoint in place, keeping the stack at exactly one entry
-                // per prompt_checkpoint.  No pop needed -- same slot is reused.
-                llama_memory_t mem = llama_get_memory(ctx_);
-                if (state_.tool_correction_checkpoint_idx >= 0 &&
-                    state_.rs_checkpoint_saved_this_turn) {
-                    // Tool calls occurred this turn AND the slot was actually
-                    // pushed (lockstep FUNC_START): overwrite it in place with
-                    // the final state after all tool executions.
-                    llama_memory_rs_checkpoint_overwrite(mem, 0,
-                        (uint32_t)state_.tool_correction_checkpoint_idx);
-                    state_.tool_correction_checkpoint_idx = -1;
-                    state_.rs_checkpoint_saved_this_turn = false;
-                } else if (state_.tool_correction_checkpoint_idx >= 0) {
-                    // Tool calls occurred but the slot was never pushed (all
-                    // FUNC_STARTs were non-lockstep): push a fresh checkpoint so
-                    // the "one entry per prompt_checkpoint" invariant holds.
-                    llama_memory_rs_checkpoint_save(mem, 0);
-                    state_.tool_correction_checkpoint_idx = -1;
-                    state_.rs_checkpoint_saved_this_turn = false;
-                } else {
-                    // No tool calls this turn: push a fresh undo checkpoint.
-                    llama_memory_rs_checkpoint_save(mem, 0);
-                }
+            // Overwrite the tool-correction checkpoint with the post-generation
+            // undo checkpoint in place, keeping the stack at exactly one entry
+            // per prompt_checkpoint.  No pop needed -- same slot is reused.
+            llama_memory_t mem = llama_get_memory(ctx_);
+            if (state_.tool_correction_checkpoint_idx >= 0 &&
+                state_.rs_checkpoint_saved_this_turn) {
+                // Tool calls occurred this turn AND the slot was actually
+                // pushed (lockstep FUNC_START): overwrite it in place with
+                // the final state after all tool executions.
+                llama_memory_rs_checkpoint_overwrite(mem, 0,
+                    (uint32_t)state_.tool_correction_checkpoint_idx);
+                state_.tool_correction_checkpoint_idx = -1;
+                state_.rs_checkpoint_saved_this_turn = false;
+            } else if (state_.tool_correction_checkpoint_idx >= 0) {
+                // Tool calls occurred but the slot was never pushed (all
+                // FUNC_STARTs were non-lockstep): push a fresh checkpoint so
+                // the "one entry per prompt_checkpoint" invariant holds.
+                llama_memory_rs_checkpoint_save(mem, 0);
+                state_.tool_correction_checkpoint_idx = -1;
+                state_.rs_checkpoint_saved_this_turn = false;
+            } else {
+                // No tool calls this turn: push a fresh undo checkpoint.
+                llama_memory_rs_checkpoint_save(mem, 0);
             }
 
             if (gen_result.was_interrupted && gen_result.ctx_limit_interrupt) {
                 // 90% context housekeeping: the checkpoint just pushed is
-                // PERMANENT -- a /undo target at the 90% position, labeled with
-                // this turn's prompt -- so it is NOT marked provisional.  The
-                // resumed turn's completion pushes its own turn-end checkpoint;
-                // label it with the "/continue" placeholder (record it in
-                // readline history as a C entry too, like any user input), and
-                // auto-resume the turn without dropping to the prompt: the
+                // PERMANENT -- a /undo target at the 90% position, labeled
+                // with this turn's prompt -- so it is NOT marked provisional.
+                // Auto-resume the turn without dropping to the prompt: the
                 // batch still holds the last row's logits, so the next
                 // generate_response() picks up exactly where this one paused
-                // (as with Ctrl-C + /continue) and the LLM never sees the break.
-                // The user can later /undo to either the 90% point (this turn's
-                // prompt) or the real turn end ("/continue").
-                // A /remind crossing defers its checkpoint to the completion
-                // (no push above, no "/continue" re-label or history entry):
-                // the single turn-end checkpoint keeps the "/remind" label.
-                if (!remind_turn_) {
+                // (as with Ctrl-C + /continue) and the LLM never sees the
+                // break.
+                if (gen_result.ctx_limit_feed_crossing) {
+                    // Feed-boundary crossing: the force-end is a 0-token turn
+                    // end at the prompt boundary, before the LLM produced
+                    // anything.  Label the boundary checkpoint (just pushed)
+                    // with the "/continue" placeholder -- /undo'ing to it
+                    // resumes this turn's response from the boundary -- and
+                    // record it in readline history like any user input.
+                    // Keep last_user_input_ as this turn's prompt so the
+                    // resumed turn's end checkpoint is labeled with it.
+                    state_.prompt_checkpoints.back().prompt = CTX_LIMIT_TURN_END_LABEL;
+                    save_history_safe(".lim_history", CTX_LIMIT_TURN_END_LABEL);
+                    int hist_before = history_length;
+                    add_history(CTX_LIMIT_TURN_END_LABEL);
+                    if (history_length > hist_before) c_count_since_restore_++;
+                    state_.prev_was_interrupted = false;
+                    state_.auto_continue = true;
+                    state_.auto_continue_depth_val = 0;
+                } else {
+                    // Mid-generation crossing: label the resumed turn's
+                    // completion with the "/continue" placeholder (record it
+                    // in readline history as a C entry too, like any user
+                    // input).  The user can later /undo to either the 90%
+                    // point (this turn's prompt) or the real turn end
+                    // ("/continue").
                     save_history_safe(".lim_history", CTX_LIMIT_TURN_END_LABEL);
                     int hist_before = history_length;
                     add_history(CTX_LIMIT_TURN_END_LABEL);
                     if (history_length > hist_before) c_count_since_restore_++;
                     last_user_input_ = CTX_LIMIT_TURN_END_LABEL;
+                    state_.prev_was_interrupted = false;
+                    state_.auto_continue = true;
+                    state_.auto_continue_depth_val = 0;
                 }
-                state_.prev_was_interrupted = false;
-                state_.auto_continue = true;
-                state_.auto_continue_depth_val = 0;
             } else {
                 // An interrupted return leaves the context mid-turn: the checkpoint
                 // just pushed is provisional until the user either /continue-resumes
@@ -3126,7 +3162,6 @@ bool ChatSession::run() {
                 }
 
                 last_user_input_.clear();
-                remind_turn_ = false;
             }
         } else if (state_.interrupted_checkpoint_idx >= 0 &&
                    state_.interrupted_checkpoint_idx < (int)state_.prompt_checkpoints.size() &&
