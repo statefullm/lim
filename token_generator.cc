@@ -189,7 +189,9 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                double feed_time,
                                bool is_reincarnating,
                                std::function<void(bool lockstep)> on_tool_start,
-                               bool was_mid_thinking_block)
+                               bool was_mid_thinking_block,
+                               int canary_max_tokens,
+                               bool canary_silent)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
       last_context_(last_context),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
@@ -220,7 +222,9 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       is_reincarnating_(is_reincarnating),
       out_tokens_(out_tokens),
       tool_call_outside_param_count_(0),
-      eog_recovered_this_token_(false)
+      eog_recovered_this_token_(false),
+      canary_max_tokens_(canary_max_tokens),
+      canary_silent_(canary_silent)
 {
     generated_text_.reserve(32768);
     unprinted_text_.reserve(1024);
@@ -268,6 +272,15 @@ TokenGenerator::Result TokenGenerator::generate() {
 
     while (true) {
         if (stop_generation) {
+            if (canary_silent_) {
+                // Canary probe: a signal arrived during the pre-turn decode --
+                // stop silently.  The caller judges the origin rounds that
+                // did run (or treats an empty probe as clean) and rolls the
+                // probe back to the restore point.
+                stop_generation = 0;
+                g_was_interrupted = 0;
+                break;
+            }
             diag("Task Interrupted by User", "\033[31m");
             stream("\n\n[Task Interrupted by User]\n\n");
             stop_generation = 0;
@@ -277,6 +290,23 @@ TokenGenerator::Result TokenGenerator::generate() {
             break;
         }
 
+        if (canary_max_tokens_ > 0 && t_count_ >= canary_max_tokens_) {
+            // Canary cap: stop silently after N sampled tokens (no diag, no
+            // interrupt flag, no early_exit).  The caller reads the
+            // origin-match stats and rolls the probe back to the restore
+            // point; the post-loop round cleanup below settles any in-flight
+            // MTP round.
+            break;
+        }
+
+        // Pre-turn housekeeping (turn timeout, 90%-context force-end and
+        // warning): skipped for the canary probe.  A force-end or warning
+        // here would leak output, and updating last_context_ would change the
+        // next turn's 90% crossing detection (the probe is rolled back -- the
+        // session never advanced).  The probe's headroom is bounded by the
+        // caller, so the context-exhaustion backstop below is unreachable
+        // too (kept guarded as defense in depth).
+        if (!canary_silent_) {
         {
             auto now = chrono::high_resolution_clock::now();
             double elapsed_turn = chrono::duration<double>(now - start).count();
@@ -334,8 +364,9 @@ TokenGenerator::Result TokenGenerator::generate() {
                 diag("Context approaching limit (" + std::to_string(n_past_) + "/" + std::to_string(cparams_.n_ctx) + "). Type '/reincarnate' to start a fresh session, or '/clear' to reset.", "\033[1;33m");
             }
         }
+        }
 
-        if (n_past_ >= (int)cparams_.n_ctx - 10) {
+        if (!canary_silent_ && n_past_ >= (int)cparams_.n_ctx - 10) {
             string ctx_diag;
             if (n_past_ != last_n_past_) {
                 ostringstream oss;
@@ -433,7 +464,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             if (in_thinking_block_) {
                 think_eog_count++;
                 if (think_eog_count > max_iterations) {
-                    if (is_debug) {
+                    if (is_debug && !canary_silent_) {
                         message("\033[90m[EOG inside thinking block: " + std::to_string(think_eog_count) +
                                 " consecutive -- ending turn]\033[0m\n");
                         cout.flush();
@@ -474,7 +505,7 @@ TokenGenerator::Result TokenGenerator::generate() {
                 total_poll_iters += poll_iter_used;
                 max_poll_iters = std::max(max_poll_iters, poll_iter_used);
                 string recovered_piece = common_token_to_piece(ctx_, next_token);
-                if (is_debug) {
+                if (is_debug && !canary_silent_) {
                     message("\033[90m[EOG recovery: token=" + recovered_piece + " | polls=" + std::to_string(poll_iter_used) + "/" + std::to_string(max_iterations) + "]\033[0m\n");
                     cout.flush();
                     if (eog_event_count - last_printed_eog >= 10) {
@@ -501,7 +532,7 @@ TokenGenerator::Result TokenGenerator::generate() {
 
             if (!recovered && !swallow) {
                 if (inside_unclosed_tool) {
-                    if (is_debug) {
+                    if (is_debug && !canary_silent_) {
                         message("\033[31m[System: Premature End-Of-Turn detected after polling timeout. Auto-recovering tags...]\033[0m\n");
                         cout.flush();
                     }
@@ -607,7 +638,24 @@ TokenGenerator::Result TokenGenerator::generate() {
             if (g_mtp) g_mtp->on_bonus();
         } else if (spec_origin_pending_) {
             spec_origin_pending_ = false;
-            if (next_token == spec_draft_[0]) {
+            const bool origin_matched = (next_token == spec_draft_[0]);
+            if (canary_max_tokens_ > 0) {
+                // Canary round accounting: round 1 is the mirror heal point
+                // (on_mirror_loaded() does not reconstruct the hidden-state
+                // bookkeeping, so the first new mirror row -- and the draft
+                // from it -- is unreliable); judge rounds 2..N only.  EOG-
+                // recovered tokens are excluded too: spurious-EOG models make
+                // the recovery re-sample the same row until non-EOG
+                // (rejection sampling from the EOG-conditional distribution),
+                // and the draft's top-10 argmax systematically disagrees with
+                // those forced samples even in a healthy context -- they
+                // measure EOG-conditional entropy, not the restore's health.
+                if (++canary_round_ >= 2 && !eog_recovered_this_token_) {
+                    canary_origin_total_++;
+                    if (origin_matched) canary_origin_match_++;
+                }
+            }
+            if (origin_matched) {
                 // d1 matched: commit it WITHOUT a decode (spec_no_feed_).
                 // The verify batch below decodes d1..dk in one pass, so d1's
                 // KV cell comes from there -- and its row's logits are what
@@ -691,7 +739,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             GGML_ASSERT(n2 > 0 && "heap-allocated buffer still too small for token piece");
             generated_text_.append(token_heap.data(), n2);
 
-            if (is_debug && token_log.is_open()) {
+            if (is_debug && !canary_silent_ && token_log.is_open()) {
                 token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_heap.substr(0, n2)) << "\"\n";
                 token_log.flush();
             }
@@ -699,7 +747,7 @@ TokenGenerator::Result TokenGenerator::generate() {
             string_view token_sv(token_buf, n_chars);
             generated_text_.append(token_sv.data(), token_sv.size());
 
-            if (is_debug && token_log.is_open()) {
+            if (is_debug && !canary_silent_ && token_log.is_open()) {
                 string token_str(token_sv);
                 token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_str) << "\"\n";
                 token_log.flush();
@@ -797,7 +845,9 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         if (in_tool_call_stream_ && !in_parameter_ && generated_text_.length() >= 4 &&
             generated_text_.compare(generated_text_.length() - 4, 4, DOUBLE_OPEN) == 0) {
-            diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
+            // Canary probe: the recovery (forced close) still runs, but the
+            // probe is invisible -- the break rolls everything back anyway.
+            if (!canary_silent_) diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
             size_t bad_pos = generated_text_.rfind(DOUBLE_OPEN);
             if (bad_pos != string::npos && bad_pos > tool_start_) {
                 generated_text_.erase(bad_pos);
@@ -839,7 +889,12 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
 
         // --- OUTPUT RENDERING ---
-        if (!in_tool_call_stream_ && !in_thinking_block_) {
+        // Canary probe: suppress all output (no stdout, no browser pipe, no
+        // unprinted_text_ growth).  This branch just advances print_pos_ so
+        // the trailing else's flush stays a no-op.
+        if (canary_silent_) {
+            print_pos_ = generated_text_.length();
+        } else if (!in_tool_call_stream_ && !in_thinking_block_) {
             size_t safe_len = generated_text_.length();
             string fstart(FUNC_START);
             string tstart(g_model_tokens.think_start);
@@ -1008,7 +1063,8 @@ TokenGenerator::Result TokenGenerator::generate() {
             // Update every N tokens so progress stays visible at any generation rate.
             // For stdout output (LIM_OUTPUT=1 or 3), skip mid-generation diagnostics;
             // they are printed once at turn end in session.cc before the >>> prompt.
-            if (t_count_ > 5 && t_count_ % speed_update_interval == 0) {
+            // Canary probe: never update the status bar (the probe is silent).
+            if (!canary_silent_ && t_count_ > 5 && t_count_ % speed_update_interval == 0) {
                 auto now = chrono::high_resolution_clock::now();
                 double total_elapsed = chrono::duration<double>(now - start).count() + feed_time_;
                 if (total_elapsed > 0) {
@@ -1272,6 +1328,13 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.ended_on_eog = ended_on_eog;
     result.was_in_thinking_block = in_thinking_block_;
     result.decode_time = gen_wall_time;
+    if (canary_max_tokens_ > 0) {
+        // The probe is a valid verdict only when it ran to its cap or a
+        // normal termination without a decode error / interrupt.
+        result.canary_ran = !early_exit && !was_interrupted && !ctx_limit_interrupt;
+        result.canary_origin_match = canary_origin_match_;
+        result.canary_origin_total = canary_origin_total_;
+    }
 
     return result;
 }

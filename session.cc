@@ -76,6 +76,47 @@ enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, REMIND, CONTINUE, 
 
 enum class ArgType { NONE, PATH };
 
+// Outcome of a /load restore (ChatSession::perform_restore): Ok = restored
+// (fast or slow), Cancelled = the user bailed at the Restore> checkpoint
+// prompt, Failed = the restore could not be performed (bad path/state/file)
+// or the slow re-decode failed (the context was reset to a fresh session).
+enum class RestoreStatus { Ok, Cancelled, Failed };
+
+// --- Canary: pre-turn MTP-mirror validation of V1 fast restores ---
+// After a cache hit that loaded a mirror (MTP active), a short SILENT decode
+// (CANARY_MAX_TOKENS tokens, capped, rolled back) probes the restored main
+// context before the >>> prompt.  The mirror KV is an independent,
+// already-loaded reference -- same payload as the main KV, but pure
+// attention (no R/S state), so it is unaffected by whatever the main R/S
+// plane did on load.  The MTP origin-match ratio (mirror proposals vs the
+// target's samples) is therefore a corrupt/valid verdict on the main
+// context: a corrupted restore goes degenerate and stops matching.
+// Judged rounds are 2..N (round 1 is the mirror heal point: on_mirror_loaded
+// does not reconstruct the hidden-state bookkeeping).  Two spurious-EOG
+// guards (this model class emits frequent spurious EOGs): EOG-recovered
+// origin samples are excluded from the tally (the recovery re-samples until
+// non-EOG -- rejection sampling the EOG-conditional distribution, which the
+// draft's argmax systematically misses even in a healthy context), and a
+// probe with fewer than CANARY_MIN_JUDGED judged rounds is not allowed to
+// call corruption (a truncated probe -- an unrecovered EOG at a natural
+// turn end -- is not enough signal; a desynced context degenerates into
+// long non-EOG spam and fills the cap).  A clean probe rolls the context
+// back to the restore point (the user never sees it); a corrupted one
+// re-runs the fast restore (the fault is intermittent on load/first-decode,
+// not in the file -- the same cache restored cleanly 9x after one failure),
+// bounded to MAX_CANARY_RETRIES, then falls back to the slow re-decode
+// (guaranteed correct).
+static constexpr int CANARY_MAX_TOKENS = 16;
+static constexpr double CANARY_CLEAN_RATIO = 0.25;
+static constexpr int MAX_CANARY_RETRIES = 2;
+// Minimum judged origin comparisons before a low ratio may be called
+// corruption.  Below this the probe had too little reliable signal: it was
+// truncated (an unrecovered EOG at a natural turn end) and/or most
+// comparisons were EOG-recovered -- proceed as with no oracle.  A genuinely
+// desynced context degenerates (long non-EOG spam), fills the cap, and
+// judges ~15 rounds, far above the floor.
+static constexpr int CANARY_MIN_JUDGED = 6;
+
 static const struct CmdInfo {
     const char* name;
     Cmd cmd;
@@ -886,6 +927,18 @@ private:
     bool process_tool_call();
     bool handle_reincarnate_completion();
 
+    // Consolidated /load restore: fast path (V1 cache) + pre-turn canary +
+    // bounded retry + slow re-decode fallback + common tail (git check,
+    // sampler reset, history, browser status).  Extracted from run() so the
+    // canary retry can re-run the fast restore by calling this one function
+    // (no logic duplication, no re-injected /load command).
+    RestoreStatus perform_restore(const string& rpath);
+    // Roll a CLEAN canary back to exactly the restore point: restore the
+    // restore-point R/S checkpoint (saved unconditionally by the fast path),
+    // truncate the attention KV + R/S position, drop the probe tokens from
+    // the tracker, and reset the sampler so the user's turn starts fresh.
+    void roll_back_canary(int restore_point);
+
     // --- Member variables ---
     llama_context* ctx_;
     const llama_vocab* vocab_;
@@ -906,6 +959,12 @@ private:
     map<string, string> aliases_;
     string prev_tty_;
     int g_auto_continue_depth_;
+
+    // Stack index of the restore-point R/S checkpoint saved by the fast
+    // restore path in perform_restore; -1 when the fast path did not run.
+    // The canary rollback (roll_back_canary) restores the recurrent state
+    // from it -- clean-case only, when the checkpoint is clean.
+    int restore_point_ckpt_idx_ = -1;
 
     // Generation result shared between generate_response and process_tool_call
     TokenGenerator::Result gen_result_;
@@ -1637,6 +1696,526 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
     return ok;
 }
 
+// --- roll_back_canary: restore the context to exactly the restore point ---
+// Clean-case only (see the canary notes above): the restore-point R/S
+// checkpoint was saved by the fast path from the just-restored state, so it
+// is clean when the canary verdict is clean.  The in-window seq_rm alone is
+// too small here (n_rs_seq = mtp_draft_len, default 4, < CANARY_MAX_TOKENS);
+// with rs_restored set by the checkpoint restore, the recurrent plane accepts
+// the full rollback distance (llama-memory-recurrent.cpp seq_rm: the
+// rs_restored branch returns true unconditionally).  The mirror is truncated
+// to the restore point too (it is pure attention, so this is a plain
+// truncation that restores the 1:1 mirror invariant -- the probe's mirrored
+// rows and any stale draft rows from the save are dropped; see the body).
+void ChatSession::roll_back_canary(int restore_point) {
+    llama_memory_t mem = llama_get_memory(ctx_);
+    llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)restore_point_ckpt_idx_);
+    if (!llama_memory_seq_rm(mem, 0, (llama_pos)restore_point, -1)) {
+        // Should be unreachable (rs_restored makes the recurrent plane accept
+        // the rollback; the attention plane always truncates).  Leave the
+        // probe tokens in place rather than risk a worse recovery: the KV and
+        // the tracker are still in lockstep, so the user's turn simply
+        // continues from the probe tail (a handful of tokens the model can
+        // recover from).
+        diag("Canary: rollback failed; continuing from the probe tail", "\033[33m");
+        return;
+    }
+    n_past_ = restore_point;
+    // Drop the probe tokens from the tracker (the KV now holds exactly the
+    // restored prefix again).
+    state_.all_context_tokens.resize(restore_point);
+    // Truncate the mirror to the restore point too: the probe's feeds
+    // mirrored probe rows (plus any stale draft rows from the save) past the
+    // main's new max.  Left in place, they would sit mid-mirror as wrong rows
+    // if a backward feed never trims them (e.g. the git-HEAD note is decoded
+    // ahead of the next main feed); the mirror is pure attention, so this is
+    // always a plain truncation.  The 1:1 mirror invariant holds again.
+    if (g_mtp && g_mtp->valid() && g_mtp->draft_ctx()) {
+        llama_memory_seq_rm(llama_get_memory(g_mtp->draft_ctx()), 0, (llama_pos)restore_point, -1);
+    }
+    // The user's first turn starts with a clean sampler (penalties + RNG),
+    // like the between-turn reset (the probe's samples must not poison it).
+    llama_sampler_reset(smpl_);
+}
+
+// --- perform_restore: consolidated /load restore ---
+// Fast path (V1 cache) with the pre-turn canary and bounded retry, slow
+// re-decode fallback, and the common tail (git check, sampler reset, history,
+// browser status).  Extracted verbatim from run()'s Command::RESTORE block so
+// behavior is unchanged except for the canary additions: the restore-point
+// R/S checkpoint is now saved unconditionally (the canary rollback needs it
+// even when the save holds no prompt checkpoints) and a mirror-bearing fast
+// restore runs the silent canary before handing off to the >>> prompt.
+RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
+    // Build restore path: require a non-empty argument (no default path).
+    string rpath = rpath_in;
+    if (rpath.empty()) {
+        diag("/load requires a path argument. Usage: /load <save_file>", "\033[31m");
+        return RestoreStatus::Failed;
+    }
+    // Append .save if not already present (matches /save and CLI behavior),
+    // then prepend LIM_SAVE_DIR to relative paths.
+    rpath = apply_save_dir(append_save_ext(rpath));
+
+    // Validate the save file exists.
+    struct stat st_restore;
+    if (stat(rpath.c_str(), &st_restore) != 0 || !S_ISREG(st_restore.st_mode)) {
+        diag("Restore failed: save file not found: " + rpath, "\033[31m");
+        return RestoreStatus::Failed;
+    }
+
+    // Verify context is in a clean state (only system prompt present).
+    int expected_n_past = (int)system_tokens_.size();
+    if ((int)state_.all_context_tokens.size() != expected_n_past || !state_.prompt_checkpoints.empty()) {
+        diag("Restore failed: context has changed since last /clear. Type '/clear' first, then retry.", "\033[31m");
+        return RestoreStatus::Failed;
+    }
+
+    // Read the save file tokens.
+    vector<llama_token> restored_tokens;
+    if (!read_token_save(rpath, restored_tokens)) {
+        diag("Restore failed: invalid save file format: " + rpath, "\033[31m");
+        return RestoreStatus::Failed;
+    }
+
+    // Fail fast if the session can't fit in the context: the restore
+    // decode needs one KV position per token. Without this check the
+    // decode would exhaust the KV cache mid-restore, the state tracker
+    // would claim a restore that never completed, and a truncated fast
+    // cache entry would be written for it.
+    if ((int)restored_tokens.size() >= (int)cparams_.n_ctx) {
+        diag("Restore failed: session has " + to_string(restored_tokens.size()) +
+             " tokens, which does not fit in the context size (" + to_string(cparams_.n_ctx) +
+             "). Increase LIM_CTX or restore an older checkpoint.", "\033[31m");
+        return RestoreStatus::Failed;
+    }
+
+    // Resolve to absolute path for cache key consistency.
+    char abs_buf[4096];
+    string restore_path_abs;
+    if (realpath(rpath.c_str(), abs_buf)) {
+        restore_path_abs = abs_buf;
+    } else {
+        restore_path_abs = rpath;
+    }
+    int saved_session = read_save_session(rpath);
+
+    // --- Fast path (V1 cache) with the pre-turn canary ---
+    // A corrupted canary re-runs the fast restore (the fault is
+    // intermittent on load/first-decode, not in the file), bounded to
+    // MAX_CANARY_RETRIES, then falls through to the slow path.
+    bool restored_fast = false;
+    for (int attempt = 0; attempt <= MAX_CANARY_RETRIES && !restored_fast; attempt++) {
+        // Try instant restore from V1 cache first (skipped with
+        // --checkpoints).  When MTP is active, the cache's mirror KV state
+        // (if it holds one) is restored into the draft context alongside
+        // the main KV.
+        bool mtp_loaded = false;
+        bool cache_hit = restore_checkpoints_ ? false
+            : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_,
+                                (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr,
+                                &mtp_loaded);
+        if (!cache_hit) break;  // no cache entry: fall through to the slow path
+
+        if (g_mtp && mtp_loaded) {
+            // The mirror KV came from the same save as the main KV, so
+            // it matches the restored context; re-arm the speculator.
+            g_mtp->on_mirror_loaded();
+        } else if (g_mtp) {
+            // The cache holds no usable mirror state (saved without MTP,
+            // or an incompatible mirror KV type): it can only be rebuilt
+            // by a /clear or a re-decode, so drafting stops until then.
+            g_mtp->invalidate("mirror stale after fast restore");
+        }
+        diag_restore(rpath, (int)restored_tokens.size());
+        n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
+
+        // Update session state.
+        state_.all_context_tokens = restored_tokens;
+        // Restored tracker comes from disk, not from a maintained text:
+        // invalidate the canonical conversation text (benchmark modes
+        // 1/2 rebuild it from the tokens on the next turn).
+        state_.conversation_text.clear();
+        state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
+
+        // --- Canary: pre-turn MTP-mirror validation (eligibility) ---
+        // Runs only when MTP is active, the mirror was loaded (it is the
+        // oracle -- the corruption class only exists with MTP, so LIM_MTP=0
+        // runs exactly the pre-canary path), and the probe + a verify-batch
+        // overshoot fit in the remaining context.  No mirror (non-MTP, or a
+        // mirror-less cache with MTP on) -> no oracle: proceed as before.
+        const bool canary_eligible = g_mtp && mtp_loaded && g_mtp->valid() &&
+            n_past_ + CANARY_MAX_TOKENS + 33 < (int)cparams_.n_ctx;
+
+        // Save a boundary checkpoint so instant undo works for the restore
+        // point and subsequent new turns (same logic as CLI fast restore) --
+        // plus, when the canary is eligible, also for saves that hold no
+        // prompt checkpoints: its rollback needs it.  The live R/S checkpoint
+        // stack is empty here: the clean-state precondition follows a /clear
+        // (which clears the stack) or a canary-retry clear, and the cache
+        // state load pushes nothing -- so the new entry is at index 0.
+        // (No-op for pure attention models; skipped entirely when the canary
+        // can't run, keeping non-MTP restores on the original code path.)
+        if (canary_eligible || !state_.prompt_checkpoints.empty()) {
+            llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+            if (canary_eligible) restore_point_ckpt_idx_ = 0;
+        }
+        state_.checkpoint_stack_offset = state_.prompt_checkpoints.empty()
+            ? 0
+            : (int)state_.prompt_checkpoints.size() - 1;
+        state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
+
+        bool canary_corrupt = false;
+        if (canary_eligible) {
+            const int restore_point = n_past_;
+            // The probe is a fresh, silent, N-capped generation over the
+            // session's real tracker: its tokens are appended (and rolled
+            // back by the resize in roll_back_canary), and the MTP origin
+            // comparisons it triggers are the verdict.
+            TokenGenerator canary(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
+                                  /*turn_timeout_sec=*/3600.0,
+                                  /*was_mid_tool_call=*/false,
+                                  state_.last_n_past, last_context_,
+                                  &state_.all_context_tokens,
+                                  /*feed_time=*/0.0,
+                                  /*is_reincarnating=*/false,
+                                  /*on_tool_start=*/nullptr,
+                                  /*was_mid_thinking_block=*/false,
+                                  /*canary_max_tokens=*/CANARY_MAX_TOKENS,
+                                  /*canary_silent=*/true);
+            auto r = canary.generate();
+            // The probe's rounds must not pollute the user's first turn:
+            // reset the per-turn stats (and the adaptive-disable window) so
+            // the turn's .tps line and auto-disable see only real rounds.
+            // (Unconditional: the counters are plain bookkeeping, resettable
+            // even if the speculator self-invalidated during the probe.)
+            if (g_mtp) g_mtp->reset_stats();
+            // Below the judged-round floor there is not enough signal to
+            // call corruption (truncated probe / EOG-forced samples) --
+            // proceed as with no oracle.  Above it, a healthy mirror matches
+            // well above zero even at temperature 1, so the threshold is
+            // very forgiving: ~0 means a desynced main context.
+            const bool clean = (r.canary_origin_total < CANARY_MIN_JUDGED) ||
+                ((double)r.canary_origin_match / (double)r.canary_origin_total > CANARY_CLEAN_RATIO);
+            if (r.canary_ran && clean) {
+                // Clean: roll the probe back so the user starts exactly at
+                // the restore point (the probe never leaks into output,
+                // history, the tracker, or the sampler).
+                roll_back_canary(restore_point);
+                if (is_debug) {
+                    diag("Canary: clean (origin " + to_string(r.canary_origin_match) + "/" +
+                         to_string(r.canary_origin_total) + " over rounds 2.." + to_string(CANARY_MAX_TOKENS) +
+                         (r.ended_on_eog ? " [probe ended on EOG]" : "") +
+                         "); rolled back to the restore point", "\033[32m");
+                }
+            } else {
+                // Corrupted (or a failed probe that judged rounds): do NOT
+                // roll back -- recover by re-loading or re-decoding.
+                canary_corrupt = true;
+                diag("Canary: fast restore looks corrupted (origin " +
+                     to_string(r.canary_origin_match) + "/" + to_string(r.canary_origin_total) +
+                     " over rounds 2.." + to_string(CANARY_MAX_TOKENS) + ")" +
+                     (r.canary_ran ? "" : " [probe failed]"), "\033[33m");
+            }
+        }
+
+        if (canary_corrupt) {
+            if (attempt < MAX_CANARY_RETRIES) {
+                diag("Canary: re-loading from cache (" + to_string(attempt + 1) + "/" +
+                     to_string(MAX_CANARY_RETRIES) + ")", "\033[33m");
+                // Reset to the system prompt (clears the KV, the MTP mirror,
+                // the R/S checkpoint stack, and the tracker), then re-run
+                // ONLY the fast restore + canary (the token-read setup above
+                // is reused).
+                clear_context();
+                reset_session_state();
+                continue;
+            }
+            diag("Canary: fast restore still corrupted after " + to_string(MAX_CANARY_RETRIES) +
+                 " retries; falling back to a full re-decode", "\033[33m");
+            break;  // slow path below (it clears the context first)
+        }
+
+        diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
+        log_entry("SYSTEM", "Restored session from " + rpath);
+        restored_fast = true;
+    }
+
+    // --- Slow path: re-decode through the model (guaranteed correct) ---
+    if (!restored_fast) {
+        restore_point_ckpt_idx_ = -1;  // the canary did not run for this restore
+        diag_restore(rpath, (int)restored_tokens.size());
+
+        vector<PromptCheckpoint> restored_checkpoints = read_checkpoint_offsets(rpath);
+
+        // Slow restore: offer partial restore via readline history
+        // navigation so the user can select a restore point.
+        int restore_limit = (int)restored_tokens.size();
+        int total_restore_tokens = restore_limit;
+        if (!restored_checkpoints.empty()) {
+            // Snapshot the current history (A + B + C) so it can be
+            // restored after the selection prompt.
+            vector<string> saved_hist;  // oldest first
+            // history_get() is 1-based: 1 = oldest, history_length = newest,
+            // so iterate forward to collect oldest-first (add_history appends
+            // at the newest end, so restoring in this order preserves it).
+            for (int i = 1; i <= history_length; i++) {
+                HIST_ENTRY* he = history_get(i);
+                if (he) saved_hist.push_back(he->line);
+            }
+
+            using_history();
+            clear_history();
+
+            diag("Save contains " + to_string(restored_checkpoints.size()) + " prompt checkpoint" + (restored_checkpoints.size() != 1 ? "s" : "") + ".", "\033[35m");
+            diag("Up/down arrows to navigate, Enter to confirm.", "\033[37m");
+
+            // Add checkpoints oldest-to-newest.
+            // Pressing up from empty line shows the most recent checkpoint first.
+            for (const auto& cp : restored_checkpoints) {
+                add_history(checkpoint_label(cp).c_str());
+            }
+
+            char* line = readline("Restore> ");
+            bool cancelled = false;
+            // If Ctrl+C was pressed during readline, stop_generation is set.
+            if (stop_generation) {
+                cancelled = true;
+                stop_generation = 0;
+                if (line) free(line);
+            } else if (!line) {
+                cancelled = true;  // Ctrl+D (EOF)
+            } else {
+                string input = line;
+                free(line);
+                if (input == "/quit" || input == "/exit") {
+                    // Graceful cancel, like the Undo> prompt: return to
+                    // the user prompt without losing the session.
+                    cancelled = true;
+                } else {
+                    // Match by the "(N tokens)" suffix (n_past is unique per
+                    // checkpoint, so this works even for truncated or
+                    // duplicated prompts).
+                    int target_n_past = -1;
+                    if (parse_checkpoint_selection(input, &target_n_past)) {
+                        for (const auto& cp : restored_checkpoints) {
+                            if (cp.n_past == target_n_past) {
+                                restore_limit = cp.n_past;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Restore A + B + C history.
+            clear_history();
+            for (const auto& s : saved_hist) add_history(s.c_str());
+
+            if (cancelled) {
+                diag("Restore cancelled.", "\033[35m");
+                return RestoreStatus::Cancelled;
+            }
+
+            if (restore_limit < (int)restored_tokens.size()) {
+                diag("Restoring to checkpoint: " + to_string(restore_limit) + " tokens", "\033[35m");
+                // Trim to the selected range so the decode and session
+                // state cover exactly the restored prefix.
+                restored_tokens.resize(restore_limit);
+                restored_checkpoints.erase(
+                    std::remove_if(restored_checkpoints.begin(), restored_checkpoints.end(),
+                                   [restore_limit](const PromptCheckpoint& cp) { return cp.n_past > restore_limit; }),
+                    restored_checkpoints.end());
+            }
+        }
+
+        // Clear the KV cache before re-decoding.
+        llama_memory_clear(llama_get_memory(ctx_), true);
+        if (g_mtp) g_mtp->clear();  // re-decode rebuilds the mirror via the hook
+        n_past_ = 0;
+        state_.all_context_tokens.clear();
+        // The old tracker is gone (and the decode below may fail):
+        // invalidate the canonical conversation text now; the success
+        // path re-invalidates after re-feeding, the failure path
+        // re-seeds it with the system prompt.
+        state_.conversation_text.clear();
+
+        size_t cp_restore_idx = 0;
+
+        auto restore_start = chrono::high_resolution_clock::now();
+        bool restore_failed = false;
+        for (int i = 0, chunk = 0; i < (int)restored_tokens.size() && !restore_failed; i += chunk) {
+            // Size the chunk so it ends exactly on the next prompt boundary
+            // when one falls within n_batch: the recurrent checkpoint saved
+            // after the decode must correspond to the exact boundary position
+            // (a checkpoint saved at the chunk end would let instant undo
+            // "remember" up to a batch's worth of the undone turn).
+            chunk = std::min((int)cparams_.n_batch, (int)restored_tokens.size() - i);
+            if (cp_restore_idx < restored_checkpoints.size() &&
+                restored_checkpoints[cp_restore_idx].n_past > i &&
+                restored_checkpoints[cp_restore_idx].n_past < i + chunk) {
+                chunk = restored_checkpoints[cp_restore_idx].n_past - i;
+            }
+            batch_.n_tokens = 0;
+            for (int j = 0; j < chunk; j++) {
+                common_batch_add(batch_, restored_tokens[i + j], n_past_, {0}, (i + j == (int)restored_tokens.size() - 1));
+                n_past_++;
+            }
+            // should_break=true: KV exhaustion (ret 1) and aborts
+            // (ret 2) must count as failures here -- with false they
+            // would slip through and the code below would report a
+            // successful restore of a partially decoded cache.
+            if (stop_generation ||
+                !handle_llama_decode_error(ctx_, batch_, "Decode failed during restore.", true)) {
+                sync_n_past(ctx_, n_past_);
+                restore_failed = true;
+            } else {
+                // n_past_ counts from 0 over the whole restore.
+                stream_feed_progress(restore_start, 0);
+            }
+            // Save recurrent checkpoints at prompt boundaries.
+            while (cp_restore_idx < restored_checkpoints.size() &&
+                   restored_checkpoints[cp_restore_idx].n_past <= n_past_) {
+                llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
+                cp_restore_idx++;
+            }
+        }
+        sync_n_past(ctx_, n_past_);
+
+        if (restore_failed) {
+            // The KV cache holds a partial restored prefix that the
+            // token tracker doesn't account for (all_context_tokens
+            // was cleared before the decode and is still empty).
+            // Continuing would let the model answer from context that
+            // /save and /undo can't see, and a /save would write a
+            // corrupted file. Reset to a clean fresh session instead.
+            bool was_interrupted = stop_generation;
+            stop_generation = 0;  // proceed with the recovery feed
+            llama_memory_clear(llama_get_memory(ctx_), true);
+            n_past_ = 0;
+            state_.all_context_tokens.clear();
+            state_.prompt_checkpoints.clear();
+            state_.file_cache.clear();
+            state_.auto_continue = false;
+            state_.prev_was_interrupted = false;
+            state_.checkpoint_stack_offset = 0;
+            state_.tool_correction_checkpoint_idx = -1;
+            reset_session_state();
+            if (!feed_tokens_impl(system_tokens_)) {
+                diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
+                     " and the context reset also failed. Type '/clear' to recover.", "\033[31m");
+            } else {
+                // Fresh session re-seeded with the system prompt: re-seed
+                // the canonical conversation text the same way
+                // clear_context() does.
+                if (maintains_conversation_text()) {
+                    state_.conversation_text = build_system_turn_text(system_prompt_text_);
+                }
+                llama_sampler_reset(smpl_);
+                diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
+                     ": context reset to a fresh session", "\033[31m");
+                log_entry("SYSTEM", string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
+                          ", context reset to a fresh session");
+            }
+            return RestoreStatus::Failed;
+        }
+
+        auto restore_end = chrono::high_resolution_clock::now();
+        double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
+        double restore_speed = (restore_elapsed > 0) ? restored_tokens.size() / restore_elapsed : 0;
+        diag("KV cache regenerated: " + to_string(restored_tokens.size()) + " tokens at " +
+             std::to_string((int)restore_speed) + " t/s (" +
+             std::to_string((int)restore_elapsed) + "s)", "\033[35m");
+
+        // Update session state.
+        state_.all_context_tokens = restored_tokens;
+        // Restored tracker comes from disk, not from a maintained text:
+        // invalidate the canonical conversation text (benchmark modes
+        // 1/2 rebuild it from the tokens on the next turn).
+        state_.conversation_text.clear();
+        state_.prompt_checkpoints = restored_checkpoints;
+        state_.checkpoint_stack_offset = 0; // all checkpoints are live
+        state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
+
+        // Auto-write V1 cache for instant future restores (full restore only
+        // -- a partial prefix would hash to an entry a later full restore
+        // never matches; skipped with --checkpoints). The n_past_ check
+        // is defense in depth: the cache must cover exactly the tracked
+        // tokens or a future fast restore would desync.  A corrupted
+        // canary that forced this slow path is healed here: the re-decoded
+        // KV (and the hook-fed mirror) overwrites the same-hash cache
+        // entry, so the next fast restore loads a clean payload.
+        if (!restore_checkpoints_ && !restore_path_abs.empty() &&
+            (int)restored_tokens.size() == total_restore_tokens &&
+            n_past_ == (int)restored_tokens.size()) {
+            if (is_debug) {
+                diag("Save to cache.", "\033[35m");
+            }
+            // The slow-restore re-decode fed the mirror via the decode
+            // hook, so it is consistent here: persist it too.
+            write_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_, "",
+                           (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr);
+        }
+
+        diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
+        log_entry("SYSTEM", "Restored session from " + rpath);
+    }
+
+    // --- Common tail (fast and slow) ---
+
+    // Check git HEAD against saved session
+    {
+        string saved_sha;
+        FILE* fp_git = fopen(rpath.c_str(), "rb");
+        if (fp_git) {
+            char hdr_buf[256];
+            if (fgets(hdr_buf, sizeof(hdr_buf), fp_git)) {
+                const char* sha_ptr = strstr(hdr_buf, "git_sha=");
+                if (sha_ptr) {
+                    sha_ptr += 8;
+                    while (*sha_ptr && *sha_ptr != ' ') saved_sha += *sha_ptr++;
+                }
+            }
+            fclose(fp_git);
+        }
+
+        check_git_head_on_restore(rpath, saved_sha, ctx_, batch_, n_past_, state_.all_context_tokens, (int)cparams_.n_batch);
+    }
+
+    // Reset sampler state for a clean generation start.
+    llama_sampler_reset(smpl_);
+    // Save C (user inputs since last restore/clear) before repopulating,
+    // so they survive the restore and appear after the restored prompts.
+    {
+        vector<string> saved_c = collect_recent_user_inputs();  // oldest first
+
+        // Repopulate readline history from restored checkpoints so up-arrow
+        // navigates through the restored session's prompts.
+        repopulate_history();
+
+        // Re-push C entries on top of the restored checkpoint prompts,
+        // in chronological order. Re-count the ones actually added:
+        // repopulate_history() zeroed the counter, and without this
+        // the /quit flush would drop C from disk.
+        for (const auto& s : saved_c) {
+            int before = history_length;
+            add_history(s.c_str());
+            if (history_length > before) c_count_since_restore_++;
+        }
+    }
+
+    // Update browser status bar with restored context position
+    if (should_output_to_browser()) {
+        double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
+        string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+        pipe_write(&SEG_SPEED, 1);
+        string speed_msg = "Loaded | " + ctx_str;
+        pipe_write(speed_msg.c_str(), speed_msg.length());
+    }
+
+    return RestoreStatus::Ok;
+}
+
 // --- run: the main chat turn loop ---
 bool ChatSession::run() {
     const char* history_file = ".lim_history";
@@ -2162,367 +2741,12 @@ bool ChatSession::run() {
         }
 
         if (last_cmd_ == Command::RESTORE) {
-            // Build restore path: require a non-empty argument (no default path).
-            string rpath = restore_path_;
-            if (rpath.empty()) {
-                diag("/load requires a path argument. Usage: /load <save_file>", "\033[31m");
-                continue;
-            }
-            // Append .save if not already present (matches /save and CLI behavior),
-            // then prepend LIM_SAVE_DIR to relative paths.
-            rpath = apply_save_dir(append_save_ext(rpath));
-
-            // Validate the save file exists.
-            struct stat st_restore;
-            if (stat(rpath.c_str(), &st_restore) != 0 || !S_ISREG(st_restore.st_mode)) {
-                diag("Restore failed: save file not found: " + rpath, "\033[31m");
-                continue;
-            }
-
-            // Verify context is in a clean state (only system prompt present).
-            int expected_n_past = (int)system_tokens_.size();
-            if ((int)state_.all_context_tokens.size() != expected_n_past || !state_.prompt_checkpoints.empty()) {
-                diag("Restore failed: context has changed since last /clear. Type '/clear' first, then retry.", "\033[31m");
-                continue;
-            }
-
-            // Read the save file tokens.
-            vector<llama_token> restored_tokens;
-            if (!read_token_save(rpath, restored_tokens)) {
-                diag("Restore failed: invalid save file format: " + rpath, "\033[31m");
-                continue;
-            }
-
-            // Fail fast if the session can't fit in the context: the restore
-            // decode needs one KV position per token. Without this check the
-            // decode would exhaust the KV cache mid-restore, the state tracker
-            // would claim a restore that never completed, and a truncated fast
-            // cache entry would be written for it.
-            if ((int)restored_tokens.size() >= (int)cparams_.n_ctx) {
-                diag("Restore failed: session has " + to_string(restored_tokens.size()) +
-                     " tokens, which does not fit in the context size (" + to_string(cparams_.n_ctx) +
-                     "). Increase LIM_CTX or restore an older checkpoint.", "\033[31m");
-                continue;
-            }
-
-            // Resolve to absolute path for cache key consistency.
-            char abs_buf[4096];
-            string restore_path_abs;
-            if (realpath(rpath.c_str(), abs_buf)) {
-                restore_path_abs = abs_buf;
-            } else {
-                restore_path_abs = rpath;
-            }
-
-            // Try instant restore from V1 cache first (skipped with --checkpoints).
-            // When MTP is active, the cache's mirror KV state (if it holds one)
-            // is restored into the draft context alongside the main KV.
-            bool mtp_loaded = false;
-            bool cache_hit = restore_checkpoints_ ? false
-                : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_,
-                                    (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr,
-                                    &mtp_loaded);
-            int saved_session = read_save_session(rpath);
-            if (cache_hit) {
-                if (g_mtp && mtp_loaded) {
-                    // The mirror KV came from the same save as the main KV, so
-                    // it matches the restored context; re-arm the speculator.
-                    g_mtp->on_mirror_loaded();
-                } else if (g_mtp) {
-                    // The cache holds no usable mirror state (saved without MTP,
-                    // or an incompatible mirror KV type): it can only be rebuilt
-                    // by a /clear or a re-decode, so drafting stops until then.
-                    g_mtp->invalidate("mirror stale after fast restore");
-                }
-                diag_restore(rpath, (int)restored_tokens.size());
-                n_past_ = (int)llama_memory_seq_pos_max(llama_get_memory(ctx_), 0) + 1;
-
-                // Update session state.
-                state_.all_context_tokens = restored_tokens;
-                // Restored tracker comes from disk, not from a maintained text:
-                // invalidate the canonical conversation text (benchmark modes
-                // 1/2 rebuild it from the tokens on the next turn).
-                state_.conversation_text.clear();
-                state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
-                // Save a boundary checkpoint so instant undo works for the restore
-                // point and subsequent new turns (same logic as CLI fast restore).
-                if (!state_.prompt_checkpoints.empty()) {
-                    llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
-                    state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size() - 1;
-                } else {
-                    state_.checkpoint_stack_offset = 0;
-                }
-                state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
-
-                diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
-                log_entry("SYSTEM", "Restored session from " + rpath);
-            } else {
-                // Slow restore: re-decode through the model.
-                diag_restore(rpath, (int)restored_tokens.size());
-
-                vector<PromptCheckpoint> restored_checkpoints = read_checkpoint_offsets(rpath);
-
-                // Slow restore: offer partial restore via readline history
-                // navigation so the user can select a restore point.
-                int restore_limit = (int)restored_tokens.size();
-                int total_restore_tokens = restore_limit;
-                if (!restored_checkpoints.empty()) {
-                    // Snapshot the current history (A + B + C) so it can be
-                    // restored after the selection prompt.
-                    vector<string> saved_hist;  // oldest first
-                    // history_get() is 1-based: 1 = oldest, history_length = newest,
-                    // so iterate forward to collect oldest-first (add_history appends
-                    // at the newest end, so restoring in this order preserves it).
-                    for (int i = 1; i <= history_length; i++) {
-                        HIST_ENTRY* he = history_get(i);
-                        if (he) saved_hist.push_back(he->line);
-                    }
-
-                    using_history();
-                    clear_history();
-
-                    diag("Save contains " + to_string(restored_checkpoints.size()) + " prompt checkpoint" + (restored_checkpoints.size() != 1 ? "s" : "") + ".", "\033[35m");
-                    diag("Up/down arrows to navigate, Enter to confirm.", "\033[37m");
-
-                    // Add checkpoints oldest-to-newest.
-                    // Pressing up from empty line shows the most recent checkpoint first.
-                    for (const auto& cp : restored_checkpoints) {
-                        add_history(checkpoint_label(cp).c_str());
-                    }
-
-                    char* line = readline("Restore> ");
-                    bool cancelled = false;
-                    // If Ctrl+C was pressed during readline, stop_generation is set.
-                    if (stop_generation) {
-                        cancelled = true;
-                        stop_generation = 0;
-                        if (line) free(line);
-                    } else if (!line) {
-                        cancelled = true;  // Ctrl+D (EOF)
-                    } else {
-                        string input = line;
-                        free(line);
-                        if (input == "/quit" || input == "/exit") {
-                            // Graceful cancel, like the Undo> prompt: return to
-                            // the user prompt without losing the session.
-                            cancelled = true;
-                        } else {
-                            // Match by the "(N tokens)" suffix (n_past is unique per
-                            // checkpoint, so this works even for truncated or
-                            // duplicated prompts).
-                            int target_n_past = -1;
-                            if (parse_checkpoint_selection(input, &target_n_past)) {
-                                for (const auto& cp : restored_checkpoints) {
-                                    if (cp.n_past == target_n_past) {
-                                        restore_limit = cp.n_past;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Restore A + B + C history.
-                    clear_history();
-                    for (const auto& s : saved_hist) add_history(s.c_str());
-
-                    if (cancelled) {
-                        diag("Restore cancelled.", "\033[35m");
-                        continue;
-                    }
-
-                    if (restore_limit < (int)restored_tokens.size()) {
-                        diag("Restoring to checkpoint: " + to_string(restore_limit) + " tokens", "\033[35m");
-                        // Trim to the selected range so the decode and session
-                        // state cover exactly the restored prefix.
-                        restored_tokens.resize(restore_limit);
-                        restored_checkpoints.erase(
-                            std::remove_if(restored_checkpoints.begin(), restored_checkpoints.end(),
-                                           [restore_limit](const PromptCheckpoint& cp) { return cp.n_past > restore_limit; }),
-                            restored_checkpoints.end());
-                    }
-                }
-
-                // Clear the KV cache before re-decoding.
-                llama_memory_clear(llama_get_memory(ctx_), true);
-                if (g_mtp) g_mtp->clear();  // re-decode rebuilds the mirror via the hook
-                n_past_ = 0;
-                state_.all_context_tokens.clear();
-                // The old tracker is gone (and the decode below may fail):
-                // invalidate the canonical conversation text now; the success
-                // path re-invalidates after re-feeding, the failure path
-                // re-seeds it with the system prompt.
-                state_.conversation_text.clear();
-
-                size_t cp_restore_idx = 0;
-
-                auto restore_start = chrono::high_resolution_clock::now();
-                bool restore_failed = false;
-                for (int i = 0, chunk = 0; i < (int)restored_tokens.size() && !restore_failed; i += chunk) {
-                    // Size the chunk so it ends exactly on the next prompt boundary
-                    // when one falls within n_batch: the recurrent checkpoint saved
-                    // after the decode must correspond to the exact boundary position
-                    // (a checkpoint saved at the chunk end would let instant undo
-                    // "remember" up to a batch's worth of the undone turn).
-                    chunk = std::min((int)cparams_.n_batch, (int)restored_tokens.size() - i);
-                    if (cp_restore_idx < restored_checkpoints.size() &&
-                        restored_checkpoints[cp_restore_idx].n_past > i &&
-                        restored_checkpoints[cp_restore_idx].n_past < i + chunk) {
-                        chunk = restored_checkpoints[cp_restore_idx].n_past - i;
-                    }
-                    batch_.n_tokens = 0;
-                    for (int j = 0; j < chunk; j++) {
-                        common_batch_add(batch_, restored_tokens[i + j], n_past_, {0}, (i + j == (int)restored_tokens.size() - 1));
-                        n_past_++;
-                    }
-                    // should_break=true: KV exhaustion (ret 1) and aborts
-                    // (ret 2) must count as failures here -- with false they
-                    // would slip through and the code below would report a
-                    // successful restore of a partially decoded cache.
-                    if (stop_generation ||
-                        !handle_llama_decode_error(ctx_, batch_, "Decode failed during restore.", true)) {
-                        sync_n_past(ctx_, n_past_);
-                        restore_failed = true;
-                    } else {
-                        // n_past_ counts from 0 over the whole restore.
-                        stream_feed_progress(restore_start, 0);
-                    }
-                    // Save recurrent checkpoints at prompt boundaries.
-                    while (cp_restore_idx < restored_checkpoints.size() &&
-                           restored_checkpoints[cp_restore_idx].n_past <= n_past_) {
-                        llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
-                        cp_restore_idx++;
-                    }
-                }
-                sync_n_past(ctx_, n_past_);
-
-                if (restore_failed) {
-                    // The KV cache holds a partial restored prefix that the
-                    // token tracker doesn't account for (all_context_tokens
-                    // was cleared before the decode and is still empty).
-                    // Continuing would let the model answer from context that
-                    // /save and /undo can't see, and a /save would write a
-                    // corrupted file. Reset to a clean fresh session instead.
-                    bool was_interrupted = stop_generation;
-                    stop_generation = 0;  // proceed with the recovery feed
-                    llama_memory_clear(llama_get_memory(ctx_), true);
-                    n_past_ = 0;
-                    state_.all_context_tokens.clear();
-                    state_.prompt_checkpoints.clear();
-                    state_.file_cache.clear();
-                    state_.auto_continue = false;
-                    state_.prev_was_interrupted = false;
-                    state_.checkpoint_stack_offset = 0;
-                    state_.tool_correction_checkpoint_idx = -1;
-                    reset_session_state();
-                    if (!feed_tokens_impl(system_tokens_)) {
-                        diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
-                             " and the context reset also failed. Type '/clear' to recover.", "\033[31m");
-                    } else {
-                        // Fresh session re-seeded with the system prompt: re-seed
-                        // the canonical conversation text the same way
-                        // clear_context() does.
-                        if (maintains_conversation_text()) {
-                            state_.conversation_text = build_system_turn_text(system_prompt_text_);
-                        }
-                        llama_sampler_reset(smpl_);
-                        diag(string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
-                             ": context reset to a fresh session", "\033[31m");
-                        log_entry("SYSTEM", string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
-                                  ", context reset to a fresh session");
-                    }
-                    continue;
-                }
-
-                auto restore_end = chrono::high_resolution_clock::now();
-                double restore_elapsed = chrono::duration<double>(restore_end - restore_start).count();
-                double restore_speed = (restore_elapsed > 0) ? restored_tokens.size() / restore_elapsed : 0;
-                diag("KV cache regenerated: " + to_string(restored_tokens.size()) + " tokens at " +
-                     std::to_string((int)restore_speed) + " t/s (" +
-                     std::to_string((int)restore_elapsed) + "s)", "\033[35m");
-
-                // Update session state.
-                state_.all_context_tokens = restored_tokens;
-                // Restored tracker comes from disk, not from a maintained text:
-                // invalidate the canonical conversation text (benchmark modes
-                // 1/2 rebuild it from the tokens on the next turn).
-                state_.conversation_text.clear();
-                state_.prompt_checkpoints = restored_checkpoints;
-                state_.checkpoint_stack_offset = 0; // all checkpoints are live
-                state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
-
-                // Auto-write V1 cache for instant future restores (full restore only
-                // -- a partial prefix would hash to an entry a later full restore
-                // never matches; skipped with --checkpoints). The n_past_ check
-                // is defense in depth: the cache must cover exactly the tracked
-                // tokens or a future fast restore would desync.
-                if (!restore_checkpoints_ && !restore_path_abs.empty() &&
-                    (int)restored_tokens.size() == total_restore_tokens &&
-                    n_past_ == (int)restored_tokens.size()) {
-                    if (is_debug) {
-                        diag("Save to cache.", "\033[35m");
-                    }
-                    // The slow-restore re-decode fed the mirror via the decode
-                    // hook, so it is consistent here: persist it too.
-                    write_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_, "",
-                                   (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr);
-                }
-
-                diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
-                log_entry("SYSTEM", "Restored session from " + rpath);
-            }
-
-
-            // Check git HEAD against saved session
-            {
-                string saved_sha;
-                FILE* fp_git = fopen(rpath.c_str(), "rb");
-                if (fp_git) {
-                    char hdr_buf[256];
-                    if (fgets(hdr_buf, sizeof(hdr_buf), fp_git)) {
-                        const char* sha_ptr = strstr(hdr_buf, "git_sha=");
-                        if (sha_ptr) {
-                            sha_ptr += 8;
-                            while (*sha_ptr && *sha_ptr != ' ') saved_sha += *sha_ptr++;
-                        }
-                    }
-                    fclose(fp_git);
-                }
-
-                check_git_head_on_restore(rpath, saved_sha, ctx_, batch_, n_past_, state_.all_context_tokens, (int)cparams_.n_batch);
-            }
-
-            // Reset sampler state for a clean generation start.
-            llama_sampler_reset(smpl_);
-            // Save C (user inputs since last restore/clear) before repopulating,
-            // so they survive the restore and appear after the restored prompts.
-            {
-                vector<string> saved_c = collect_recent_user_inputs();  // oldest first
-
-                // Repopulate readline history from restored checkpoints so up-arrow
-                // navigates through the restored session's prompts.
-                repopulate_history();
-
-                // Re-push C entries on top of the restored checkpoint prompts,
-                // in chronological order. Re-count the ones actually added:
-                // repopulate_history() zeroed the counter, and without this the
-                // /quit flush would drop C from disk.
-                for (const auto& s : saved_c) {
-                    int before = history_length;
-                    add_history(s.c_str());
-                    if (history_length > before) c_count_since_restore_++;
-                }
-            }
-
-            // Update browser status bar with restored context position
-            if (should_output_to_browser()) {
-                double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-                string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
-                pipe_write(&SEG_SPEED, 1);
-                string speed_msg = "Loaded | " + ctx_str;
-                pipe_write(speed_msg.c_str(), speed_msg.length());
-            }
-
+            // Consolidated restore: fast path (V1 cache) + pre-turn canary +
+            // bounded retry + slow re-decode fallback + common tail (git
+            // check, sampler reset, history, browser status).  The status is
+            // diagnostic only -- all per-outcome diagnostics live inside
+            // perform_restore -- so the loop just continues to the prompt.
+            perform_restore(restore_path_);
             continue;
         }
 

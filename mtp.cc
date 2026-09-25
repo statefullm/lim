@@ -463,9 +463,13 @@ void MtpSpeculator::note_round(int committed) {
     if (avg < ADAPT_MIN) {
       low_streak_++;
       if (low_streak_ >= ADAPT_STREAK) {
-        invalidate("sustained low acceptance (mean " +
-                   std::to_string((int)(avg * 100) / 100) + " tokens/round < " +
-                   std::to_string((int)(ADAPT_MIN * 100) / 100) + ")");
+        // Real 2-decimal format: (int)(avg*100)/100 truncates to 1 for every
+        // value in [1, 2), printing "mean 1 tokens/round < 1".
+        char avg_buf[16], min_buf[16];
+        snprintf(avg_buf, sizeof(avg_buf), "%.2f", avg);
+        snprintf(min_buf, sizeof(min_buf), "%.2f", ADAPT_MIN);
+        invalidate("sustained low acceptance (mean " + std::string(avg_buf) +
+                   " tokens/round < " + std::string(min_buf) + ")");
       }
     } else {
       low_streak_ = 0;

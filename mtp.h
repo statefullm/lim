@@ -133,6 +133,15 @@ public:
   bool stats_line(std::string& out);
   void reset_stats();
 
+  // Ratio of origin matches over origin comparisons since the last reset
+  // (0..1; 0 when no origin comparison ran).  Convenience for verdicts such
+  // as the pre-turn canary (the canary itself tallies judged rounds 2..N in
+  // the generator, since round 1 is the heal point).
+  double origin_ratio() const {
+    const uint64_t total = s_origin_match_ + s_origin_mismatch_;
+    return total > 0 ? (double)s_origin_match_ / (double)total : 0.0;
+  }
+
   // One-line summary (startup, invalidation, turn end) to stderr via diag().
   void log_summary(const std::string& tag);
 

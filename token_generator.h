@@ -47,6 +47,18 @@ public:
     // open.  /continue uses it to resume the generator in thinking mode so
     // the viewer re-enters the thinking display.
     bool was_in_thinking_block = false;
+    // Canary mode: true when the silent capped probe finished without an
+    // early exit (decode error / interrupt) -- the origin counts below are a
+    // valid verdict.  With canary_origin_total below the caller's judged-
+    // round floor there is not enough signal to judge (e.g. the probe was
+    // truncated by an unrecovered EOG at a natural turn end): the caller
+    // treats the probe as clean (no oracle).
+    bool canary_ran = false;
+    // Canary mode: origin-match counts over the judged rounds (2..N; round 1
+    // is the mirror heal point, and EOG-recovered samples are excluded, so
+    // these never count).
+    int canary_origin_match = 0;
+    int canary_origin_total = 0;
   };
 
   TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
@@ -58,7 +70,9 @@ public:
                  double feed_time = 0.0,
                  bool is_reincarnating = false,
                  std::function<void(bool lockstep)> on_tool_start = nullptr,
-                 bool was_mid_thinking_block = false);
+                 bool was_mid_thinking_block = false,
+                 int canary_max_tokens = 0,
+                 bool canary_silent = false);
 
   Result generate();
 
@@ -138,6 +152,20 @@ private:
   int spec_verify_rows_ = 0;            // V row count (k - 1)
   int spec_draft_idx_ = 0;              // 1-based draft idx of current comparison
   int spec_committed_verify_ = 0;       // verify rows committed so far
+
+  // --- Canary mode (pre-turn MTP-mirror validation of a fast restore) ---
+  // canary_max_tokens_ > 0: generation is a silent probe capped at N
+  // sampled tokens.  canary_silent_: suppress all user-visible output
+  // (stdout, browser pipe, token log, speed bar) and the pre-turn
+  // housekeeping checks (timeout, 90%-context force-end) for the probe.
+  int canary_max_tokens_ = 0;
+  bool canary_silent_ = false;
+  // Canary round accounting: 1-based index of the origin comparison within
+  // this generation; the counters tally origin matches over judged rounds
+  // (2..N -- round 1 is the mirror heal point and never counts).
+  int canary_round_ = 0;
+  int canary_origin_match_ = 0;
+  int canary_origin_total_ = 0;
 
   // Fallback for a failed draft rollback: clear the main KV and re-decode
   // the committed prefix (the token tracker) -- the MTP mirror rebuilds via
