@@ -3162,8 +3162,11 @@ bool ChatSession::run() {
         // 8a. Stuck tool call (silent-loop abort): handle identically to an invalid
         // tool call -- consume this call's correction attempt, then run the same
         // correction cycle in step 8b (feed system prompt, regenerate once,
-        // roll back to right after FUNC_START, inject the clean call). The garbage
-        // tokens are simply part of what the rollback removes.
+        // roll back to right after FUNC_START, inject the clean call -- or, in a
+        // fresh context with no prompt checkpoints yet, execute the clean call
+        // in place without rolling back). The garbage tokens are simply part of
+        // what the rollback removes (fresh context: they stay in the LLM's
+        // history with the rest of the correction).
         // The slot may be stale when MTP speculation left the recurrent state
         // ahead of n_past_ at the FUNC_START (uncommitted verify cells: the hook
         // skipped the save) -- the rollback in step 8b handles that by re-decoding
@@ -3182,6 +3185,10 @@ bool ChatSession::run() {
 
         // 8b. Tool-call correction: feed system prompt, wait for valid tool call,
         // roll back, inject into Assistant field, then let process_tool_call execute.
+        // In a fresh context (no prompt checkpoints yet -- first turn) there is
+        // nothing to roll back to: the clean call is executed in place where the
+        // correction regeneration left it (bad call + correction prompt stay in
+        // the LLM's history; it sees its own self-correction).
         if (state_.tool_correction_mode) {
             state_.tool_correction_mode = false;
 
@@ -3253,6 +3260,33 @@ bool ChatSession::run() {
                     }
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
 
+                    if (state_.prompt_checkpoints.empty()) {
+                        // Fresh context (no prompt checkpoints yet -- first turn):
+                        // no rollback anchor exists (and the slot may be stale
+                        // after a non-lockstep MTP FUNC_START), so skip the
+                        // rollback entirely and execute the clean call in place:
+                        // the correction regeneration above already emitted it
+                        // into the context, and gen_result_ points at it -- the
+                        // handoff below runs it directly, like a normal tool
+                        // call.  The bad call and the correction prompt stay in
+                        // the LLM's history; it simply sees its own
+                        // self-correction.  No sampler reset (nothing was rolled
+                        // back: the penalty ring matches the context).  The
+                        // checkpoint slot is left as the hook set it (the
+                        // turn-end block reuses or overwrites it, as on the
+                        // no-rollback eject paths), and MTP is untouched (no
+                        // rollback: the mirror stays in lockstep).
+                        state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
+                        // This call's correction attempt is consumed, and a
+                        // future malformed call in this chain gets a fresh
+                        // attempt.
+                        state_.correction_attempted_this_turn = false;
+
+                        // Hand off to process_tool_call -- it executes normally from here.
+                        if (process_tool_call()) {
+                            continue;
+                        }
+                    } else {
                     // Roll back to the tool-correction checkpoint (removes bad call + system prompt + correction).
                     // rc: 0 = fast seq_rm (the slot holds the R/S state for the
                     // target: the FUNC_START was in lockstep), 2 = prompt-checkpoint
@@ -3330,6 +3364,7 @@ bool ChatSession::run() {
                     // Hand off to process_tool_call -- it executes normally from here.
                     if (process_tool_call()) {
                         continue;
+                    }
                     }                } else {
                     diag("System: Correction failed to produce valid tool call. Ejecting to prompt.", "\033[1;31m");
 
