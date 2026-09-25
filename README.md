@@ -537,7 +537,7 @@ Press **Ctrl+C** during generation to interrupt. The partial output is preserved
 
 ### Automatic 90% Context Checkpoint
 
-When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn checkpoint labelled "/continue", along with the real turn end.
+When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn checkpoint labelled "/continue" before the real turn end.
 
 ### Browser Output
 

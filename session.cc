@@ -152,11 +152,12 @@ static void save_history_safe(const char* filename, const string& input) {
     out << enc << "\n";
 }
 
-// Placeholder label for the turn-end checkpoint of a turn that crossed the 90%
-// context threshold (see the ctx_limit_interrupt housekeeping in run()): the
-// 90% point keeps this turn's original prompt as its label, while the real
-// turn end is labeled with this.  It is an /undo placeholder only -- it has no
-// functional connection to the /continue command, it just looks like one.
+// Placeholder label for the mid-turn (90% crossing) checkpoint of a turn that
+// crossed the 90% context threshold (see the ctx_limit_interrupt housekeeping
+// in run()): the crossing-position checkpoint is labeled with this, while the
+// real turn end keeps this turn's prompt as its label.  It is an /undo
+// placeholder only -- it has no functional connection to the /continue
+// command, it just looks like one.
 static const char* CTX_LIMIT_TURN_END_LABEL = "/continue";
 
 // --- Checkpoint selection prompt helpers (shared by /undo and /load) ---
@@ -276,15 +277,16 @@ private:
     // Last non-empty user input, used as checkpoint label for tool-call turns
     string last_user_input_;
 
-    // True when the current turn's prompt feed crossed the 90% threshold: the
-    // turn starts at/above the line, so TokenGenerator's own crossing check
-    // can never fire (it breaks on a crossing, not a start above the line).
-    // The first generate_response passes it to the generator, which performs
-    // the 90% mid-turn checkpoint housekeeping before generating any tokens
-    // (a 0-token turn end at the prompt boundary, the checkpoint labeled with
-    // the turn's prompt -- "/remind" for the /remind turn, which shares
-    // feed_new_user_turn).  Consumed (cleared) by generate_response.
-    bool feed_crossed_90pct_ = false;
+    // Context position at the last check of the generation loop's 90% test
+    // (the "old" side of the crossing test).  Session-owned so it survives
+    // across the generations of a turn: a feed between generations (this
+    // turn's prompt, a tool result) can cross the line without any check
+    // running, and the next generation's first check then detects the
+    // crossing.  The generator updates it on EVERY check, so an /undo or
+    // /clear that restores below the line resets it on the first check of
+    // the next generation.
+    int last_context_ = 0;
+
     // Readline history length right after loading .lim_history at startup.
     // Marks the end of A (persistent) entries in readline history.
     int persistent_history_len_ = 0;
@@ -1143,8 +1145,9 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
 }
 
 // --- feed_new_user_turn: build and feed the tokens of a new user turn ---
-// Shared by feed_user_message (a typed prompt) and /remind (the re-sent
-// system prompt): optional turn-end close (the previous turn was interrupted)
+// Shared by feed_user_message (a typed prompt) and the /remind turn (run()
+// expands "/remind" to the system prompt text before the feed, so this sees
+// plain text): optional turn-end close (the previous turn was interrupted)
 // + user turn + assistant prefill + dummy thought stub when thinking is
 // suppressed (LIM_THINKING=0).  Keeps the canonical conversation text
 // (benchmark modes 1/2) in lockstep.  Returns false if the turn does not fit
@@ -1172,7 +1175,6 @@ bool ChatSession::feed_new_user_turn(const string& input) {
         if (!turn_text.empty()) turn_text += think_block;
     }
 
-    const int n_before = n_past_;
     if (n_past_ + (int)tokens.size() >= (int)cparams_.n_ctx) {
         string ctx_diag = context_limit_diag(n_past_, state_.last_n_past, tokens.size());
         diag("Context Limit Reached! Cannot process input" + ctx_diag + ". Type '/clear' to reset.", "\033[31m");
@@ -1191,24 +1193,6 @@ bool ChatSession::feed_new_user_turn(const string& input) {
     // is currently valid -- an empty text is rebuilt from the tracker by the
     // next mode 1/2 turn instead of being appended to stale state).
     if (!turn_text.empty()) state_.conversation_text += turn_text;
-
-    // 90% line crossed by the prompt feed itself: the turn starts at/above
-    // the line, where the generator's crossing check (which breaks on a
-    // crossing, never on a start above the line) would skip this turn's
-    // checkpoint.  Record the crossing; the first generate_response of this
-    // turn performs the checkpoint housekeeping before its first token (a
-    // 0-token turn end at the prompt boundary labeled "/continue"; the
-    // /remind turn shares this path: boundary checkpoint "/continue", end
-    // checkpoint "/remind").  The crossing is recorded ONLY on the actual
-    // below->above transition: a session crosses the line at most once
-    // (context only grows within a session, and /undo below the line
-    // discards the checkpoints above the restore point), so there is never
-    // more than one "/continue" checkpoint.  A feed that continues at/above
-    // an already-crossed line does not re-record: the turn takes the
-    // warn-only path and gets its single turn-end checkpoint as usual.
-    if (n_before < (int)(cparams_.n_ctx * 0.9) && n_past_ >= (int)(cparams_.n_ctx * 0.9)) {
-        feed_crossed_90pct_ = true;
-    }
 
     // Log user input tokens to token_log when debug is enabled
     log_tokens("FEED USER_INPUT", tokens, ctx_);
@@ -1277,11 +1261,6 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     bool was_mid_thinking_block = state_.thinking_block_open;
     state_.thinking_block_open = false;
 
-    // 90% crossed during this turn's prompt feed: the generator performs the
-    // mid-turn checkpoint housekeeping before its first token.
-    bool feed_crossed_90pct = feed_crossed_90pct_;
-    feed_crossed_90pct_ = false;
-
     // The turn's recurrent checkpoint slot is saved lazily by the on_tool_start
     // hook (passed to TokenGenerator below), right after the FUNC_START token is
     // fed -- the only point where "right before the tool-call body" is reachable.
@@ -1342,9 +1321,10 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     }
     TokenGenerator tg(ctx_, vocab_, smpl_, batch_, n_past_, cparams_,
                       turn_timeout_sec, was_mid_tool_call_, state_.last_n_past,
+                      last_context_,
                       &state_.all_context_tokens, state_.last_feed_time,
                       state_.reincarnate_mode, on_tool_start,
-                      was_mid_thinking_block, feed_crossed_90pct);
+                      was_mid_thinking_block);
     gen_result_ = tg.generate();
 
     // Signal the viewer that generation is complete so it can render
@@ -2087,52 +2067,21 @@ bool ChatSession::run() {
             continue;
         }
         if (last_cmd_ == Command::REMIND) {
-            // Re-send the full system prompt, unescaped, as a user turn so the
-            // LLM re-anchors to its instructions.  It is sent by LIM rather
-            // than read by the model: routed through a tool result, the prompt
-            // would arrive with PARAM_END (and turn tokens) escaped per the
-            // reserved-token contract, and the model's write-back shortcut
-            // ("use the exact same text you saw") would then corrupt the tool
-            // schema it is being reminded of.
+            // Re-send the full system prompt, unescaped, as an ordinary user
+            // turn so the LLM re-anchors to its instructions.  It is sent by
+            // LIM rather than read by the model: routed through a tool result,
+            // the prompt would arrive with PARAM_END (and turn tokens) escaped
+            // per the reserved-token contract, and the model's write-back
+            // shortcut ("use the exact same text you saw") would then corrupt
+            // the tool schema it is being reminded of.
             if (system_prompt_text_.empty()) {
                 diag("/remind: no system prompt to re-send (the prompt file is empty).", "\033[33m");
                 continue;
             }
-
-            diag("Sending system prompt to LLM...", "\033[35m");
-            log_entry("USER", "[remind] " + system_prompt_text_);
-            prev_was_save_ = false;
-
-            // A fresh user turn: clear pending tool-interrupt state, the same
-            // as feed_user_message does for a new prompt.  The feed prepends
-            // the turn close when mid-turn, so any provisional interrupt
-            // checkpoint is finalized at the interrupt position (a legitimate
-            // mid-turn undo target).
-            state_.tool_interrupt_pending = false;
-            state_.partial_tool_text.clear();
-            state_.thinking_block_open = false;
-            state_.interrupted_checkpoint_idx = -1;
-
-            if (!feed_new_user_turn(system_prompt_text_)) {
-                continue;
-            }
-
-            // Checkpointed exactly like any turn: the turn-end checkpoint is
-            // labeled "/remind", and a 90% threshold crossing (in the feed or
-            // mid-turn) gets its permanent mid-turn checkpoint at the crossing
-            // too, so a /undo target always exists before the context fills.
-            last_user_input_ = "/remind";
-
-            // A new user-initiated turn starts a fresh auto-continue chain:
-            // generate_response's reset (only when auto_continue is false) is
-            // skipped below, since we set auto_continue = true so the loop
-            // reaches generation without re-prompting.  Without this reset, a
-            // deep tool chain from the previous turn would count against this
-            // turn's chain and could trip the max-auto-continue loop eject
-            // early.
-            g_auto_continue_depth_ = 0;
-            state_.auto_continue = true;
-            continue;
+            // Otherwise fall through to the ordinary user-message path: step 6
+            // expands "/remind" to the system prompt text for the feed (the
+            // /undo checkpoint and the readline history keep the typed
+            // "/remind" label).
         }
         if (last_cmd_ == Command::REINCARNATE) {
             // Auto-save before reincarnating so nothing is truly lost.
@@ -2720,6 +2669,10 @@ bool ChatSession::run() {
         // 6. Feed user message (if non-empty)
         if (!user_input.empty()) {
             prev_was_save_ = false;
+            // /remind is an alias for the system prompt: the feed routes below
+            // take the expanded text, while last_user_input_ (the /undo label)
+            // and the readline history keep the typed "/remind".
+            string feed_input = (user_input == "/remind") ? system_prompt_text_ : user_input;
             last_user_input_ = user_input;
             // A new prompt finalizes any provisional interrupt checkpoint: the
             // feed prepends the turn close and the checkpoint stands at the
@@ -2742,7 +2695,7 @@ bool ChatSession::run() {
                 auto feed_start = chrono::high_resolution_clock::now();
 
                 // 1. New turn text (same construction as the mode 2 branch).
-                string new_turn_text = build_new_user_turn_text(user_input);
+                string new_turn_text = build_new_user_turn_text(feed_input);
 
                 // 2. Full conversation text: canonical text + new turn, or the
                 // one-time detokenize reconstruction if the text was discarded.
@@ -2791,8 +2744,8 @@ bool ChatSession::run() {
                 // Perform the logging/browser output that feed_user_message would do,
                 // but skip its token feeding since we already included the input above.
                 if (!state_.auto_continue) {
-                    log_entry("USER", user_input);
-                    stream_user_input_html(user_input);
+                    log_entry("USER", feed_input);
+                    stream_user_input_html(feed_input);
                 }
                 // Skip feed_user_message -- tokens already fed. Fall through to generate_response().
             } else if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {                // Mode 2: cache-aware prefix matching (emulates llama-server behavior).
@@ -2812,7 +2765,7 @@ bool ChatSession::run() {
                 auto feed_start = chrono::high_resolution_clock::now();
 
                 // 1. New turn text (same construction as the mode 1 branch).
-                string new_turn_text = build_new_user_turn_text(user_input);
+                string new_turn_text = build_new_user_turn_text(feed_input);
 
                 // 2. Full conversation text, exactly as the server would receive it:
                 // the canonical conversation text (maintained per turn; see
@@ -2954,8 +2907,8 @@ bool ChatSession::run() {
                 if (!delta.empty()) log_tokens("FEED MODE2_DELTA", delta, ctx_);
                 // Logging
                 if (!state_.auto_continue) {
-                    log_entry("USER", user_input);
-                    stream_user_input_html(user_input);
+                    log_entry("USER", feed_input);
+                    stream_user_input_html(feed_input);
                 }
 
             } else {
@@ -2969,7 +2922,7 @@ bool ChatSession::run() {
                 // Already fed history + new turn tokens above.
             } else if (chatbot_mode == 2 && !state_.all_context_tokens.empty()) {
                 // Already fed delta tokens above.
-            } else if (!feed_user_message(user_input)) {
+            } else if (!feed_user_message(feed_input)) {
                 continue;
             }
         }
@@ -3240,46 +3193,22 @@ bool ChatSession::run() {
 
             if (gen_result.was_interrupted && gen_result.ctx_limit_interrupt) {
                 // 90% context housekeeping: the checkpoint just pushed is
-                // PERMANENT -- a /undo target at the 90% position, labeled
-                // with this turn's prompt -- so it is NOT marked provisional.
-                // Auto-resume the turn without dropping to the prompt: the
-                // batch still holds the last row's logits, so the next
+                // PERMANENT (not provisional) -- a /undo target at the 90%
+                // crossing position -- and is relabeled with the "/continue"
+                // placeholder.  last_user_input_ keeps this turn's prompt so
+                // the resumed turn's real turn-end checkpoint is labeled with
+                // it.  Auto-resume without dropping to the prompt: the batch
+                // still holds the last row's logits, so the next
                 // generate_response() picks up exactly where this one paused
                 // (as with Ctrl-C + /continue) and the LLM never sees the
-                // break.
-                if (gen_result.ctx_limit_feed_crossing) {
-                    // Feed-boundary crossing: the force-end is a 0-token turn
-                    // end at the prompt boundary, before the LLM produced
-                    // anything.  Label the boundary checkpoint (just pushed)
-                    // with the "/continue" placeholder -- /undo'ing to it
-                    // resumes this turn's response from the boundary -- and
-                    // record it in readline history like any user input.
-                    // Keep last_user_input_ as this turn's prompt so the
-                    // resumed turn's end checkpoint is labeled with it.
-                    state_.prompt_checkpoints.back().prompt = CTX_LIMIT_TURN_END_LABEL;
-                    save_history_safe(".lim_history", CTX_LIMIT_TURN_END_LABEL);
-                    int hist_before = history_length;
-                    add_history(CTX_LIMIT_TURN_END_LABEL);
-                    if (history_length > hist_before) c_count_since_restore_++;
-                    state_.prev_was_interrupted = false;
-                    state_.auto_continue = true;
-                    state_.auto_continue_depth_val = 0;
-                } else {
-                    // Mid-generation crossing: label the resumed turn's
-                    // completion with the "/continue" placeholder (record it
-                    // in readline history as a C entry too, like any user
-                    // input).  The user can later /undo to either the 90%
-                    // point (this turn's prompt) or the real turn end
-                    // ("/continue").
-                    save_history_safe(".lim_history", CTX_LIMIT_TURN_END_LABEL);
-                    int hist_before = history_length;
-                    add_history(CTX_LIMIT_TURN_END_LABEL);
-                    if (history_length > hist_before) c_count_since_restore_++;
-                    last_user_input_ = CTX_LIMIT_TURN_END_LABEL;
-                    state_.prev_was_interrupted = false;
-                    state_.auto_continue = true;
-                    state_.auto_continue_depth_val = 0;
-                }
+                // break.  The "/continue" label appears in the /undo list from
+                // the checkpoint itself; after an /undo,
+                // repopulate_history() re-adds checkpoint prompts (including
+                // "/continue") to readline history in checkpoint order.
+                state_.prompt_checkpoints.back().prompt = CTX_LIMIT_TURN_END_LABEL;
+                state_.prev_was_interrupted = false;
+                state_.auto_continue = true;
+                state_.auto_continue_depth_val = 0;
             } else {
                 // An interrupted return leaves the context mid-turn: the checkpoint
                 // just pushed is provisional until the user either /continue-resumes

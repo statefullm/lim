@@ -184,14 +184,14 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
                                llama_sampler* smpl, llama_batch& batch,
                                int& n_past, const llama_context_params& cparams,
                                double turn_timeout_sec, bool was_mid_tool_call,
-                               int last_n_past,
+                               int last_n_past, int& last_context,
                                std::vector<llama_token>* out_tokens,
                                double feed_time,
                                bool is_reincarnating,
                                std::function<void(bool lockstep)> on_tool_start,
-                               bool was_mid_thinking_block,
-                               bool feed_crossed_90pct)
+                               bool was_mid_thinking_block)
     : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
+      last_context_(last_context),
       cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
       print_pos_(0),
       in_tool_call_stream_(was_mid_tool_call),
@@ -218,7 +218,6 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
       last_n_past_(last_n_past),
       was_mid_tool_call_(was_mid_tool_call),
       is_reincarnating_(is_reincarnating),
-      feed_crossed_90pct_(feed_crossed_90pct),
       out_tokens_(out_tokens),
       tool_call_outside_param_count_(0),
       eog_recovered_this_token_(false)
@@ -236,15 +235,6 @@ TokenGenerator::Result TokenGenerator::generate() {
     bool stuck_in_tool_call = false;
     bool ended_on_eog = false;
     bool ctx_limit_interrupt = false;
-    bool ctx_limit_feed_crossing = false;
-    // True if this generation STARTS at/above the 90% context threshold.
-    // Normally such a generation (notably the auto-resume after a 90%
-    // force-end) must not re-trigger the force-end -- it runs to EOG or the
-    // exhaustion backstop below -- but if the crossing happened during this
-    // turn's prompt feed (feed_crossed_90pct_) the force-end still fires, on
-    // the first iteration, before the first token.  The 90% warning still
-    // prints once on the first at/above iteration either way.
-    const bool started_above_90pct = (n_past_ >= (int)(cparams_.n_ctx * 0.9));
     // Swallowed in-block EOG count (EOG block in the token loop below).
     // Resets only on an EOG sampled outside the block, so the cap bounds
     // the TOTAL in-block swallows since the last out-of-block EOG, even
@@ -303,45 +293,45 @@ TokenGenerator::Result TokenGenerator::generate() {
 
         {
             int context_90pct = (int)(cparams_.n_ctx * 0.9);
+            // A crossing since the previous check: last_context_ is the
+            // position at the previous check (updated on EVERY check below),
+            // so it covers a crossing mid-generation or in a feed between
+            // generations (this turn's prompt, a tool result).  The exact
+            // crossing position is not needed -- only that it happened.  The
+            // update is unconditional, so an /undo or /clear that restores
+            // below the line resets last_context_ on the first check of the
+            // next generation; it also runs before the force-end break, or
+            // the resumed generation would see the crossing again.
+            bool crossed = (last_context_ < context_90pct && n_past_ >= context_90pct);
+            last_context_ = n_past_;
             if (n_past_ >= context_90pct && !context_warned_this_turn_ && !is_reincarnating_) {
                 context_warned_this_turn_ = true;
-                if (started_above_90pct && !feed_crossed_90pct_) {
-                    // Already at/above the threshold when this generation
-                    // started, with no feed crossing recorded (e.g., the
-                    // auto-resume after a 90% force-end, or a prompt fed at a
-                    // high context position): warn only, as before.  The turn
-                    // runs to EOG or the exhaustion backstop.
-                    if (!unprinted_text_.empty()) {
-                        console(unprinted_text_.c_str());
-                        consoleFlush();
-                        stream(unprinted_text_);
-                        g_stdout_ended_with_newline = (unprinted_text_.back() == '\n');
-                        unprinted_text_ = "";
-                    }
-                    diag("Context approaching limit (" + std::to_string(n_past_) + "/" + std::to_string(cparams_.n_ctx) + "). Type '/reincarnate' to start a fresh session, or '/clear' to reset.", "\033[1;33m");
-                } else {
-                    // Crossing the threshold -- either during this generation
-                    // (started below, now at/above) or during this turn's
-                    // prompt feed (feed_crossed_90pct_: started at/above the
-                    // line, so a crossing this generation can never happen and
-                    // this fires before the first token, a 0-token turn end at
-                    // the prompt boundary): force the turn end (like Ctrl-C)
-                    // so the session records a /undo checkpoint at this
-                    // position and auto-resumes the turn without dropping to
-                    // the prompt.  The unprinted text is flushed by the
-                    // end-of-generate() flush below, and the warning prints on
-                    // the resumed generation's first iteration (one warning
-                    // total, at this same spot) -- the user sees no pause
-                    // beyond that existing message.
+                if (crossed) {
+                    // Crossing the line: force the turn end (like Ctrl-C) so
+                    // the session records a /undo checkpoint at this position
+                    // and auto-resumes the turn without dropping to the prompt.
+                    // The unprinted text is flushed by the end-of-generate()
+                    // flush below, and the warning prints on the resumed
+                    // generation's first iteration (one warning total, at this
+                    // same spot) -- the user sees no pause beyond that existing
+                    // message.
                     was_interrupted = true;
                     ctx_limit_interrupt = true;
-                    // Feed-boundary crossing (0-token turn end at the prompt
-                    // boundary): the session labels the boundary checkpoint
-                    // "/continue" and the resumed turn's end checkpoint with
-                    // this turn's prompt.
-                    ctx_limit_feed_crossing = feed_crossed_90pct_;
                     break;
                 }
+                // Already at/above the threshold at the previous check (e.g.,
+                // the auto-resume after a 90% force-end, or a turn starting
+                // at/above the line after a previous 90% turn ended): warn
+                // only, as before.  The turn runs to EOG or the exhaustion
+                // backstop.
+                if (!unprinted_text_.empty()) {
+                    console(unprinted_text_.c_str());
+                    consoleFlush();
+                    stream(unprinted_text_);
+                    g_stdout_ended_with_newline = (unprinted_text_.back() == '\n');
+                    unprinted_text_ = "";
+                }
+                diag("Context approaching limit (" + std::to_string(n_past_) + "/" + std::to_string(cparams_.n_ctx) + "). Type '/reincarnate' to start a fresh session, or '/clear' to reset.", "\033[1;33m");
             }
         }
 
@@ -1277,7 +1267,6 @@ TokenGenerator::Result TokenGenerator::generate() {
     result.has_tool_call = trigger_tool_execution_ && tool_start_ != string::npos && tool_end_ != string::npos;
     result.was_interrupted = was_interrupted;
     result.ctx_limit_interrupt = ctx_limit_interrupt;
-    result.ctx_limit_feed_crossing = ctx_limit_feed_crossing;
     result.early_exit = early_exit;
     result.stuck_in_tool_call = stuck_in_tool_call;
     result.ended_on_eog = ended_on_eog;
