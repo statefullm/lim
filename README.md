@@ -40,7 +40,7 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 ```
 
 - **`lim`**: The C++ binary. Handles the REPL, KV-cache management, tool dispatch, and signal handling.
-- **`limServer.py`**: An optional Python WebSocket server that streams output to a browser via `/tmp/lim.fifo`.
+- **`limServer.py`**: An optional Python WebSocket server that streams output to a browser via `/tmp/lim.fifo`. It is a long-lived service: the first lim session that needs it starts it on demand, and it survives across lim sessions (exit or crash) so the browser connection persists.
 
 ---
 
@@ -344,7 +344,7 @@ Set via `LIM_OUTPUT`:
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
 | `LIM_CACHE_DIR` | `.cache` | Directory (relative to CWD) for fast restore KV-cache files. |
-| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary launches `python3 $LIM_CONFIG_DIR/limServer.py` when browser output is enabled. Override to place everything elsewhere. |
+| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory (relative to CWD) for session logs, token traces, and autosave files. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
@@ -477,7 +477,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/clear` | Auto-save the current state to `$LIM_LOG_DIR/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
 | `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models, instant undo works only for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback. If the re-decode fallback is interrupted (Ctrl+C), LIM resets the context to a fresh session. |
 | `/continue` | Resume a live interruption (only). If interrupted mid-tool-call, resumes from the exact point of interruption. At a well-formed boundary, keeps the model generating. After `/undo` to a mid-turn checkpoint it is a silent no-op -- type a prompt (e.g., "continue") to carry the conversation on (the turn is closed automatically) |
-| `/reset` | Reset terminal and web search. Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
+| `/reset` | Reset terminal, web search, and the browser server (replaced only if it has stopped, or is left reading a deleted FIFO node). Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
 | `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
 | `/remind` | Re-send the full system prompt to the LLM, fed directly into the KV-cache as a user turn so it re-anchors its instructions |
 | `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session |
@@ -541,15 +541,17 @@ When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn 
 
 ### Browser Output
 
-By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. Start your LIM session first, then load:
+By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. Load:
 
 ```
 http://<hostname>:8765/viewer.html
 ```
 
-This ensures the server is already running when the browser connects, avoiding any need to reload the page.
+whenever the server is running. Only on the first session after a machine reboot (when the server does not exist yet) must you start lim first and then load the page; on every later restart the server is already running, so the page can be loaded -- or left open -- before lim starts.
 
-The Python server (`limServer.py`) is auto-started by the C++ binary when browser output is enabled. It runs on efficiency cores when a hybrid CPU is detected (unpinned on non-hybrid CPUs). The server reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients.
+When lim starts and the viewer is not connected, lim prints the URL and waits before the first decode; the session proceeds as soon as the viewer loads the page. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables itself if the viewer connects later.
+
+The Python server (`limServer.py`) is a persistent service: it is started on first need by the first lim session (pinned to efficiency cores when a hybrid CPU is detected, unpinned on non-hybrid CPUs) and then outlives lim sessions. It reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients. Because the server survives lim's exit and crashes, the browser tab stays connected across lim restarts -- no reload needed; each new session streams a dashed `-- New Session --` divider. The only reload is after a machine reboot or a closed tab: start lim first, then load the URL (as above). If the server stops -- or is found reading a deleted/replaced FIFO node (lim verifies at startup and on `/reset` that the server's open fds, via `/proc/<pid>/fd`, match the FIFO inode it writes to) -- a fresh server takes its place and the page needs to be reloaded once.
 
 ### VS Code Extension
 
@@ -577,7 +579,9 @@ make uninstall          # removes the binary and config files
 make uninstall-all      # removes installed files and uninstalls the extension
 ```
 
-Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server starts.
+Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server is ready (immediately, if the persistent server is already running).
+
+To reset the browser viewer (close and reopen its tab), press **Ctrl+2** or **Ctrl+Shift+R** -- the extension's `LIM: Reload Browser` command. Useful when the viewer needs a fresh page, e.g. after a machine reboot or a server replacement by `/reset`.
 
 To rebuild both the C++ binary and the extension:
 
@@ -638,7 +642,7 @@ LIM expects the Docling binary at `~/venv/bin/docling-serve` and starts it on po
 
 ### "FIFO not found" or browser output fails
 
-The FIFO at `/tmp/lim.fifo` is created automatically when LIM starts. If it was removed manually, restart your LIM session. Ensure `aiohttp` is installed: `pip3 install aiohttp`.
+The FIFO at `/tmp/lim.fifo` persists across sessions: it is owned by the persistent browser server (started on first use), which keeps the FIFO open for as long as it is running. If the node is removed while the server is alive (manually, or by `/tmp` cleanup), the server keeps reading the old, deleted inode and browser output goes nowhere -- but lim detects this: at startup and on `/reset` it compares the FIFO inode it writes to against the inodes the server holds open (via `/proc/<pid>/fd`), and when they differ it tears the stale server down and starts a fresh one on the current node. Reload the viewer page once afterwards to reconnect. Ensure `aiohttp` is installed: `pip3 install aiohttp`.
 
 ### "SearxNG connection failed"
 
@@ -660,7 +664,7 @@ make GGML_CUDA=off
 
 ### Browser viewer shows nothing / won't connect
 
-1. Start LIM first, then open the viewer URL. The server must be running before the browser connects.
+1. The page is served by the persistent browser server, so it must be running before the page can load. If it is (the common case), just load or reload the viewer page (or press **Ctrl+2** / **Ctrl+Shift+R** in VS Code). If it is not -- only right after a machine reboot -- start lim first; it starts the server on first need and prints the URL.
 2. Check that nothing else is using port 8765 (or your custom `LIM_PORT`).
 3. If behind a firewall or SSH tunnel, set `LIM_VIEWER_URL` to the correct address.
 

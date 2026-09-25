@@ -42,7 +42,11 @@ async def broadcast_llm_stream():
         os.mkfifo(FIFO_PATH)
 
     # Open non-blocking; add_reader will notify us when readable.
-    fd = os.open(FIFO_PATH, os.O_RDONLY | os.O_NONBLOCK)
+    # O_RDWR: the server itself always holds a write end, so the FIFO can never
+    # reach EOF when lim exits -- an at-EOF FIFO is permanently readable and
+    # would spin the reader.  Between lim sessions the fd is simply not
+    # readable; the next lim's first write wakes it with real data.
+    fd = os.open(FIFO_PATH, os.O_RDWR | os.O_NONBLOCK)
     loop = asyncio.get_running_loop()
 
     def _on_fifo_readable():
@@ -78,7 +82,8 @@ async def broadcast_llm_stream():
                     except Exception as e:
                         print(f"[WARNING] Send failed for a client: {e}")
 
-        # Re-arm -- the writer keeps its end open, so we'll be notified again.
+        # Re-arm -- data wakes the reader again as long as any writer (lim, or
+        # the server's own O_RDWR fd) holds the FIFO.
         loop.add_reader(fd, _on_fifo_readable)
 
     loop.add_reader(fd, _on_fifo_readable)

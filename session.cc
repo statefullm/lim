@@ -87,7 +87,7 @@ static const struct CmdInfo {
     { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
     { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
     { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
-    { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, loop detector, and web search" },
+    { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, web search, and browser server (replaced only if it has stopped, or is left reading a deleted FIFO node)" },
     { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/.config/lim/userprompt, then restart (auto-saves first)" },
     { "remind",       Cmd::REMIND,     ArgType::NONE,   "Re-send the full system prompt to the LLM (unescaped) so it re-anchors to its instructions" },
     { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
@@ -1705,6 +1705,19 @@ bool ChatSession::run() {
         }
     }
 
+    // Persistent server: when we attached to a server that survived a previous
+    // session, the viewer may still be showing that session.  Stream the same
+    // dashed divider the reincarnate flow uses so sessions stay visually
+    // separated (no SOH: the previous session's output remains readable).  A
+    // freshly started server has no prior viewer state -- no divider.
+    if (g_lim_server_reused && should_output_to_browser()) {
+        stream_html(
+            "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
+            "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
+            "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session --</span>\n"
+            "</div>\n\n");
+    }
+
     // --- MAIN CHAT TURN LOOP ---
     while (true) {
         stop_generation = 0;
@@ -2040,6 +2053,35 @@ bool ChatSession::run() {
         if (last_cmd_ == Command::RESET) {
             NetworkTools().reset_search();
             system("reset");
+            // (Re)start the browser server when it cannot deliver output: it
+            // died (single-user: a free port means our persistent server is
+            // gone), or it is alive but reading a deleted/replaced FIFO node
+            // (start_lim_server_if_needed detects that via /proc/<pid>/fd and
+            // replaces it).  Also fires when browser output is currently
+            // suppressed -- that is exactly the stuck state this recovers:
+            // step 5 can only lift the suppression after a viewer reconnects,
+            // which is impossible while the server is dead.  The flag is only
+            // ever set on top of a browser-enabled session (disable_browser_
+            // output is only reachable through should_output_to_browser()), so
+            // LIM_OUTPUT=0/1 -- no browser at all -- never triggers a restart,
+            // and a healthy live server is never touched.  The user then
+            // reloads the viewer; the per-turn re-enable (step 5) turns
+            // browser output back on once the connection returns.
+            if ((should_output_to_browser() || g_browser_warning_suppressed) && !is_lim_server_healthy()) {
+                ServerStart ss = start_lim_server_if_needed();
+                if (ss == ServerStart::Started) {
+                    if (wait_for_server_ready()) {
+                        diag("Browser server restarted. Reload the viewer page to reconnect.", "\033[35m");
+                    } else {
+                        diag("Browser server did not become ready. Check the port and retry /reset.", "\033[31m");
+                    }
+                } else if (ss == ServerStart::Reused) {
+                    // Raced a concurrent start between the health check and
+                    // here; the server already serves the current FIFO node.
+                } else if (ss == ServerStart::Error) {
+                    diag("Could not restart the browser server (port in use by another process, or LIM_CONFIG_DIR unset).", "\033[31m");
+                }
+            }
             log_entry("SYSTEM", "Terminal and search reset");
             diag("Terminal Reset Successfully", "\033[32m");
             continue;

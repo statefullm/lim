@@ -55,6 +55,10 @@ bool should_output_think_blocks() {
 }
 
 void init_output_stream() {
+  // The FIFO persists across sessions: it is owned by the persistent limServer
+  // (which keeps its own fd open on this inode), so lim must never unlink it.
+  // mkfifo is idempotent -- it only bootstraps the node on the first run after
+  // a machine reboot, when nothing holds the inode yet.
   mkfifo(FIFO_PATH, 0666);
   pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
 }

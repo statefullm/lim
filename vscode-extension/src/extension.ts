@@ -85,9 +85,10 @@ function startWorkspace() {
 
     if (limHost && limHost !== getHostname()) {
         const aiUser = process.env.LIM_AI_USER || 'ai';
-        terminal.sendText(`ssh -t -a ${aiUser}@${limHost} 'export TERM_PROGRAM=vscode; exec bash -l'`);
+        // Plain interactive SSH: the remote side starts a login shell, which
+        // loads the coder alias and LIM environment from the user's rc files.
+        terminal.sendText(`ssh -t -a ${aiUser}@${limHost}`);
     }
-    // For local terminals, VS Code already sets TERM_PROGRAM=vscode automatically.
 
     terminal.show();
 }

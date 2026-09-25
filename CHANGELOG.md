@@ -1,6 +1,32 @@
 
 # Changelog
 
+## Unreleased
+
+Release notes relative to v0.1.1.
+
+### Highlights
+
+- **Persistent browser server** (`limServer.py`): the server is now a long-lived service started detached (double-forked + `setsid`, reparented to init) by the first lim session that needs it, so it survives lim's clean exit and hard crashes. A relaunching lim attaches to the verified running server, skips the startup browser prompt when the browser is still connected, and streams a dashed `-- New Session --` divider -- the browser tab stays connected across lim restarts and crashes, with no manual reload on the remote laptop. `/reset` replaces the server if it has stopped or is left reading a stale FIFO node.
+
+### Bug Fixes
+
+- **Crash-dance fixed by construction**: after a hard crash (segfault/OOM/SIGKILL), the first lim relaunch now reuses the surviving persistent server immediately -- no degraded session, no launch/exit/relaunch dance. The broken stale-kill path that caused it, including the `TIMER_ABSTIME` bug in `kill_and_reap` that made its "3-second" sleep ~0, is deleted along with the code it patched.
+- Removed the `fuser` external-tool dependency: stale-server detection and teardown now use a PID file plus a `/proc/<pid>/cmdline` check, with a bounded SIGKILL wait (100 ms slices, 3 s cap). A process on the port that is not our `limServer` is never killed -- a clear error is reported instead (kill it or set `LIM_PORT`).
+- **Stale-FIFO detection**: a server left reading a deleted or replaced FIFO node (manual `unlink` or `/tmp` cleanup) previously passed the port check, so browser output silently went nowhere and neither a relaunch nor `/reset` could recover it (the port was still bound). lim now verifies the running server's open fds (`/proc/<pid>/fd`) against the FIFO inode it writes to (`pipe_fd`), and replaces the stale server at startup and on `/reset`.
+- **PID-file fallback**: server identification no longer depends solely on `/tmp/lim.server.pid` -- if the file is gone while the server lives, lim falls back to a `/proc` cmdline scan, so a surviving server is found and reused (or replaced) instead of being misreported as a foreign port occupant.
+- **No more server zombies**: the double fork reparents the server to init, so a server that dies while lim is running is reaped by init instead of lingering as a zombie of lim.
+- Fixed a check-then-watch race in the marker-file waiter: the inotify watch is now armed before the existing-file check, so a marker created in the gap can no longer be missed.
+- The stale-FIFO inode comparison now uses `stat()` on the `/proc/<pid>/fd/N` magic links: `lstat` reports the link itself (always `S_IFLNK`), so it matched no fd of any process and every healthy server looked stale -- replaced, and the browser reloaded, at every restart.
+- Server identification requires `argv[0]` to be a python interpreter in addition to the exact `<path>/limServer.py` cmdline arg, and the port-free stale-teardown only kills a candidate that holds the FIFO node lim writes to: an editor or tool that merely has the script open can no longer become a kill candidate.
+- Removed the `TERM_PROGRAM=vscode` handshake: the extension's SSH terminal no longer exports it (plain `ssh -t -a`), and the startup browser prompt no longer branches on it. The VS Code viewer reset (**Ctrl+2** / **Ctrl+Shift+R**, `LIM: Reload Browser`) is documented in the README instead.
+
+### Behavior Changes & Default Changes
+
+| Change | Old | New |
+|---|---|---|
+| `limServer` lifecycle | Per-session child: killed by atexit on exit; orphaned on crash; browser page had to be reloaded on every lim restart | Persistent service: started detached (double-forked + `setsid`, reparented to init) by the first session that needs it, survives lim exit/crash, browser stays connected across sessions; verified against the live FIFO inode via `/proc/<pid>/fd` (PID file with `/proc` cmdline fallback); `/reset` replaces it if it stops or is on a stale FIFO node; stale server on a changed `LIM_PORT` is torn down with a bounded wait |
+
 ## v0.1.1 -- 2026-09-09
 
 Release notes relative to v0.1.0.

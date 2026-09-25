@@ -13,12 +13,28 @@
 #include <signal.h>
 
 // --- LIM Server Process Management ---
-extern pid_t g_lim_server_pid;
+// The browser server is a persistent service: the first lim session that needs it
+// starts it detached (double-forked + setsid, reparented to init), and it
+// survives lim's exit and crashes so the browser connection never has to be
+// re-established between sessions.  Before reuse, lim verifies the running
+// server is reading the same FIFO inode lim writes to (via /proc/<pid>/fd).
+// lim only ever attaches (reuses) or, for a stale server (previous LIM_PORT,
+// or one left on a deleted FIFO node), performs a bounded teardown.  It never
+// kills a healthy server, and never kills a process it cannot positively
+// identify as limServer.
+enum class ServerStart { Reused, Started, Error };
+// True when start_lim_server_if_needed() attached to an already-running server
+// (the viewer may still be showing a previous session).  Read by session.cc to
+// decide whether to stream the "-- New Session --" divider.
+extern bool g_lim_server_reused;
 
 bool is_lim_server_running();
-void start_lim_server_if_needed();
-bool wait_for_server_ready();
-void cleanup_lim_server();
+// True when a server is listening AND verifiably reading the FIFO inode lim
+// writes to.  /reset uses this: a server that fails it (dead, or alive on a
+// stale FIFO node) is replaced by start_lim_server_if_needed().
+bool is_lim_server_healthy();
+ServerStart start_lim_server_if_needed();
+bool wait_for_server_ready(long timeout_ms = 15000);
 
 // --- Browser Connection ---
 bool check_browser_connected();

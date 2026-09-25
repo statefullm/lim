@@ -126,7 +126,6 @@ int main(int argc, char ** argv) {
   atexit([]() {
     if (isatty(STDOUT_FILENO)) cout << "\033[0m";  // Reset terminal colors on exit
     NetworkTools::cleanup_services();
-    cleanup_lim_server();
   });
 
   setup_signals();
@@ -286,10 +285,17 @@ int main(int argc, char ** argv) {
 
   // Start limServer.py if browser output is enabled
   if (should_output_to_browser()) {
-    start_lim_server_if_needed();
-    // Wait for the server only if we just started it. If it was pre-existing
-    // (g_lim_server_pid == -2), it's already listening -- no marker to wait for.
-    if (g_lim_server_pid > 0 && !wait_for_server_ready()) {
+    ServerStart ss = start_lim_server_if_needed();
+    if (ss == ServerStart::Error) {
+      // Browser output is enabled but no server is listening (e.g. the port is
+      // taken or LIM_CONFIG_DIR is unset).  log_diagnostic alone is invisible in
+      // the default browser-only mode, so report it to the terminal too.
+      diag("Browser server did not start; check the chat log for details. "
+           "At the browser prompt below, Ctrl+C falls back to stdout output.", "\033[31m");
+    }
+    // Wait for the server only if we just started it.  A reused (persistent)
+    // server is already listening -- no marker to wait for.
+    if (ss == ServerStart::Started && !wait_for_server_ready()) {
       log_diagnostic("WARNING: limServer did not become ready. Browser output may fail.", true);
     }
   }
