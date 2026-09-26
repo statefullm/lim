@@ -41,39 +41,55 @@ static const vector<ToolSpec> tool_specs = {
     {"web_search",  {"query"}}
 };
 
+// Look up a tool's spec by name; nullptr if the tool is unknown.
+static const ToolSpec* find_spec(const string& tool_name) {
+    for (const auto& spec : tool_specs) {
+        if (spec.name == tool_name) return &spec;
+    }
+    return nullptr;
+}
+
 static vector<string> find_missing_params(const string& tool_name, const string& tool_call) {
     vector<string> missing;
-    for (const auto& spec : tool_specs) {
+    const ToolSpec* spec = find_spec(tool_name);
+    if (spec == nullptr) return missing;  // unknown tool returns empty
+    for (const auto& param : spec->params) {
+        // Search on PARAM_START only, then extract and compare the name
+        // tolerating stray quotes
+        bool found = false;
+        size_t pos = 0;
+        while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+            size_t after_prefix = pos + strlen(PARAM_START);
+            size_t gt = tool_call.find('>', after_prefix);
+            if (gt == string::npos) break;
 
-        if (spec.name == tool_name) {
-            for (const auto& param : spec.params) {
-                // Search on PARAM_START only, then extract and compare the name
-                // tolerating stray quotes
-                bool found = false;
-                size_t pos = 0;
-                while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
-                    size_t after_prefix = pos + strlen(PARAM_START);
-                    size_t gt = tool_call.find('>', after_prefix);
-                    if (gt == string::npos) break;
-
-                    string raw = tool_call.substr(after_prefix, gt - after_prefix);
-                    if (strip_quotes_from_name(raw) == param) { found = true; break; }
-                    pos++;
-                }
-                if (!found) {
-                    missing.push_back(param);
-                }
-            }
-            return missing;
+            string raw = tool_call.substr(after_prefix, gt - after_prefix);
+            if (strip_quotes_from_name(raw) == param) { found = true; break; }
+            pos++;
         }
-
-
+        if (!found) {
+            missing.push_back(param);
+        }
     }
-    return missing;  // unknown tool returns empty
+    return missing;
 }
 
 static bool check_params(const string& tool_name, const string& tool_call) {
     return find_missing_params(tool_name, tool_call).empty();
+}
+
+// Quoted, comma-separated list of a tool's required parameters
+// (e.g., "\"path\", \"old\", \"new\"").  Used in the missing-parameter
+// error so the LLM sees the tool's full contract, not just what it missed.
+static string required_params_list(const string& tool_name) {
+    const ToolSpec* spec = find_spec(tool_name);
+    if (spec == nullptr) return "";
+    string s;
+    for (size_t i = 0; i < spec->params.size(); i++) {
+        if (i > 0) s += ", ";
+        s += "\"" + spec->params[i] + "\"";
+    }
+    return s;
 }
 
 static string join_paths(const vector<string>& paths) {
@@ -87,10 +103,7 @@ static string join_paths(const vector<string>& paths) {
 }
 
 static bool is_known_tool(const string& name) {
-    for (const auto& spec : tool_specs) {
-        if (spec.name == name) return true;
-    }
-    return false;
+    return find_spec(name) != nullptr;
 }
 
 // Build the standard error message for an unrecognized tool name.
@@ -190,13 +203,22 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   }
   if (!out.params_valid) {
       vector<string> missing = find_missing_params(tool_name, tool_call);
-      out.missing_params = missing;
       string missing_list;
       for (size_t i = 0; i < missing.size(); i++) {
           if (i > 0) missing_list += ", ";
           missing_list += "\"" + missing[i] + "\"";
       }
-      out.content = "System Error: Malformed tool call. Missing required parameter(s): " + missing_list + ".";
+      // Targeted and fed back as an ordinary tool result: the call is
+      // structurally well-formed -- recognized tool, all tags closed -- a
+      // required parameter is simply absent.  This is the model's one quick
+      // self-fix chance (tool_executor feeds the error straight back and
+      // latches it); only a repeat minor error before any non-minor tool
+      // call is routed through the correction cycle.  Naming the tool, the
+      // missing parameter(s), and the tool's full required set leaves no
+      // room for wild theories (escaping, truncation, FS bugs); the model
+      // just re-issues the call complete.
+      out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + ").";
+      out.display = "Missing parameter(s) for " + tool_name + ": " + missing_list;
       out.is_error = true;
       return out;
   }

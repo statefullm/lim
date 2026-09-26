@@ -77,6 +77,14 @@ struct SessionState {
   // consumed.  Cleared on a validated correction injection and at prompt
   // return; a second malformed call with it set ejects to the prompt.
   bool correction_attempted_this_turn = false;
+  // True once a MINOR (non-structural) tool-call validation error --
+  // currently: a missing required parameter -- has been fed back as an
+  // ordinary tool result, giving the model one quick chance to re-issue
+  // the call complete.  Cleared whenever a non-minor tool call is
+  // processed (tool_executor) and at every correction_attempted_this_turn
+  // reset; a repeat minor error while it is set reverts to the correction
+  // cycle.
+  bool minor_tool_error_self_fix_used = false;
 
   // Stack index of the most recent tool-correction checkpoint (for pruning).
   int tool_correction_checkpoint_idx = -1;

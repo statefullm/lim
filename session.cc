@@ -949,6 +949,7 @@ private:
 
     void reset_session_state() {
         state_.correction_attempted_this_turn = false;
+        state_.minor_tool_error_self_fix_used = false;
         NetworkTools().reset_search();
         NetworkTools::reset_context_usage();
         g_browser_warning_suppressed = false;
@@ -1373,6 +1374,7 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     if (!is_correction_gen && state_.tool_correction_checkpoint_idx < 0) {
         state_.has_tool_correction_checkpoint = false;
         state_.correction_attempted_this_turn = false;
+        state_.minor_tool_error_self_fix_used = false;
     }
 
     auto start = chrono::high_resolution_clock::now();
@@ -3260,6 +3262,7 @@ bool ChatSession::run() {
                     state_.conversation_text.clear();
                     state_.auto_continue = false;
                     state_.correction_attempted_this_turn = false;
+                    state_.minor_tool_error_self_fix_used = false;
                     continue;
                 }
                 log_tokens("FEED TOOL_CORRECTION", correction_tokens, ctx_);
@@ -3301,11 +3304,13 @@ bool ChatSession::run() {
                         // in lockstep.
                         state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
-                        // Returning control to the user prompt: the correction latch is
-                        // only meaningful within one auto-continue chain (step 9 clears it
-                        // on a normal prompt return, but this path `continue`s past it).
-                        // Clearing it also lets /continue trigger a fresh correction.
+                        // Returning control to the user prompt: the per-turn failure
+                        // latches are only meaningful within one auto-continue chain
+                        // (step 9 clears them on a normal prompt return, but this path
+                        // `continue`s past it).  Clearing them also lets /continue
+                        // trigger a fresh correction.
                         state_.correction_attempted_this_turn = false;
+                        state_.minor_tool_error_self_fix_used = false;
                         continue;
                     }
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
@@ -3357,6 +3362,7 @@ bool ChatSession::run() {
                         state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
                         state_.correction_attempted_this_turn = false;
+                        state_.minor_tool_error_self_fix_used = false;
                         continue;
                     }
 
@@ -3377,6 +3383,7 @@ bool ChatSession::run() {
                         state_.conversation_text.clear();
                         state_.auto_continue = false;
                         state_.correction_attempted_this_turn = false;
+                        state_.minor_tool_error_self_fix_used = false;
                         continue;
                     }
                     log_tokens("FEED TOOL_CORRECTION_INJECT", inj_tokens, ctx_);
@@ -3445,10 +3452,12 @@ bool ChatSession::run() {
                 // remaining context, so no correction is possible without exceeding the
                 // limit. Eject to the prompt with an explanation rather than failing silently.
                 diag("System: Tool correction aborted: correction prompt does not fit in remaining context (" + std::to_string(correction_tokens.size()) + " tokens needed, " + std::to_string(cparams_.n_ctx - n_past_) + " available). Type '/clear' to reset.", "\033[1;33m");
-                // Returning control to the user prompt: clear the correction latch
-                // (step 9 would do it on a normal prompt return, but this path
-                // `continue`s past it) so the next turn gets a fresh correction attempt.
+                // Returning control to the user prompt: clear the per-turn failure
+                // latches (step 9 would do it on a normal prompt return, but this
+                // path `continue`s past it) so the next turn gets a fresh correction
+                // attempt and a fresh minor self-fix chance.
                 state_.correction_attempted_this_turn = false;
+                state_.minor_tool_error_self_fix_used = false;
             }
             continue;
         }
@@ -3465,6 +3474,7 @@ bool ChatSession::run() {
         // feed_user_message (new prompt) and reset_session_state (/clear,
         // /reincarnate, restore failure).
         state_.correction_attempted_this_turn = false;
+        state_.minor_tool_error_self_fix_used = false;
 
         // 10. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;

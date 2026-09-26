@@ -101,15 +101,35 @@ ToolExecutor::Result ToolExecutor::execute(
     tool_out = execute_tool_call(tool_call, state);
 
     // Handle validation errors reported by the struct.
-    // Policy: every malformed call gets a correction attempt -- the main
-    // loop rolls back via the slot checkpoint (or, when the slot is stale
-    // after a non-lockstep MTP FUNC_START, re-decodes the suffix from the
-    // newest prompt checkpoint -- never a full-context re-decode), feeds
+    // Policy: STRUCTURALLY broken calls (unknown tool, or broken XML such as
+    // a missing PARAM_END causing param bleed) get a correction attempt --
+    // the main loop rolls back via the slot checkpoint (or, when the slot is
+    // stale after a non-lockstep MTP FUNC_START, re-decodes the suffix from
+    // the newest prompt checkpoint -- never a full-context re-decode), feeds
     // the system prompt, lets the LLM generate a fix, then injects the good
     // tool call cleanly.  Feeding the abort message and ejecting to the
     // prompt happens only when this call's correction attempt is already
     // spent, or when the correction itself fails (step 8b in the main loop).
-    if (!tool_out.recognized || !tool_out.params_valid || tool_out.malformed_xml) {
+    // A MINOR validation error -- the call is recognized and structurally
+    // well-formed but missing a required parameter -- first gets one quick
+    // self-fix chance: execute_tool_call set a targeted error (tool name +
+    // missing params + the tool's full required set) and it is fed back as
+    // an ordinary tool result so the model re-issues the call complete.
+    // There is no broken XML to roll back, and a precise message avoids the
+    // theory-spewing a vague "invalid tool call" invites.  Only when the
+    // model's next tool call in this chain is AGAIN a minor validation
+    // error does the call revert to the correction cycle above (or eject to
+    // the prompt when that attempt is already spent).
+    bool structural_failure = !tool_out.recognized || tool_out.malformed_xml;
+    bool minor_failure = !structural_failure && !tool_out.params_valid;
+
+    if (structural_failure || minor_failure) {
+        // A structural failure moves past any pending minor-error self-fix
+        // chance (the model's reply was structurally broken, not a
+        // completed re-issue): clear the latch so a later minor error in
+        // this chain gets a fresh chance.
+        if (structural_failure) state.minor_tool_error_self_fix_used = false;
+
         if (is_debug) {
             // Show the raw tool call for diagnosis.
             diag("  Raw tool_call: " + tool_call, "\033[2;90m");
@@ -117,17 +137,15 @@ ToolExecutor::Result ToolExecutor::execute(
             if (!tool_out.recognized) {
                 diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[2;90m");
             }
-            if (!tool_out.params_valid && !tool_out.missing_params.empty()) {
-                string mp;
-                for (size_t i = 0; i < tool_out.missing_params.size(); i++) {
-                    if (i > 0) mp += ", ";
-                    mp += "\"" + tool_out.missing_params[i] + "\"";
-                }
-                diag("  Missing required parameters: " + mp, "\033[2;90m");
-            }
         }
 
-        if (!state.correction_attempted_this_turn) {
+        if (minor_failure && !state.minor_tool_error_self_fix_used) {
+            // One quick self-fix chance: do NOT correct -- fall through and
+            // feed the targeted error below as an ordinary tool result so
+            // the model re-issues the call complete.
+            state.minor_tool_error_self_fix_used = true;
+            diag("System: Missing required parameter(s); giving the model one chance to re-issue the call.", "\033[1;33m");
+        } else if (!state.correction_attempted_this_turn) {
             // Attempt tool-call correction: the main loop rolls back via the
             // slot checkpoint (or the prompt-anchor suffix re-decode when the
             // slot is stale after a non-lockstep MTP FUNC_START), feeds the
@@ -143,6 +161,10 @@ ToolExecutor::Result ToolExecutor::execute(
             abort_auto = true;
         }
     } else {
+        // No validation error: the model moved on, so any pending
+        // minor-error self-fix chance is resolved and a later minor error
+        // in this chain starts with a fresh chance.
+        state.minor_tool_error_self_fix_used = false;
         if (stop_generation) {
             diag("Tool Interrupted by User", "\033[31m");
             stop_generation = 0;

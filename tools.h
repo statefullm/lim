@@ -20,7 +20,6 @@ struct ToolResult {
   bool malformed_xml = false;  // Structural XML issue (e.g., missing PARAM_END causing param bleed)
   bool path_inferred = false;  // Path was auto-inferred from preceding search_file (never counts as malformed)
   std::string parsed_tool_name; // The tool name as extracted from the XML tag (for diagnostics)
-  std::vector<std::string> missing_params; // List of missing required param names (for diagnostics)
 };
 
 #include "session.h"
