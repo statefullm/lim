@@ -15,10 +15,19 @@ using namespace Tokens;
 extern volatile sig_atomic_t stop_generation;
 extern bool is_debug;
 
-const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter contains newlines, likely because a " + string(PARAM_END) + " closing tag is missing.";
-const string PATHS_NEWLINE_ERROR = "System Error: Invalid tool format. The paths parameter contains newlines, likely because a " + string(PARAM_END) + " closing tag is missing. List multiple paths comma-separated on a single line.";
+const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter contains newlines or a parameter tag, likely because a " + string(PARAM_END) + " closing tag is missing.";
+const string PATHS_NEWLINE_ERROR = "System Error: Invalid tool format. The paths parameter contains newlines or a parameter tag, likely because a " + string(PARAM_END) + " closing tag is missing. List multiple paths comma-separated on a single line.";
 bool param_has_newline(const string& s) {
     return s.find('\n') != string::npos || s.find('\r') != string::npos;
+}
+// A path/paths value containing a parameter tag means its closing PARAM_END
+// was missing and the value bled into following parameter text (with or
+// without newlines).  Paths never legitimately contain PARAM_START, so this
+// is a safe structural signal.  Deliberately NOT applied to content-style
+// values (old/new, content), which may legitimately contain raw parameter
+// tags -- e.g., when editing files that contain XML-like text.
+static bool path_value_malformed(const string& s) {
+    return param_has_newline(s) || s.find(PARAM_START) != string::npos;
 }
 
 // Tool metadata: required parameters per tool.
@@ -96,18 +105,21 @@ static string unknown_tool_error(const string& name) {
 
 
 // Value-level check shared by the correction gate: true when the tool's
-// path/paths parameters contain an INTERNAL newline (a missing PARAM_END
-// closing tag or a non-protocol newline-separated list); leading/trailing
-// newlines are trimmed first, since paths never contain newlines.  Mirrors
-// the checks at execution time so a "corrected" call still carrying a
-// newline in a path is rejected at the gate rather than injected and
-// striking again at execution (validate/execute asymmetry).
-static bool path_params_have_newline(const string& tool_name, const string& tool_call) {
+// path/paths parameters are malformed: either they contain an INTERNAL
+// newline (a non-protocol newline-separated list), or they contain a
+// parameter tag (PARAM_START) because a missing PARAM_END closing tag
+// bled the value into following parameter text, with or without
+// newlines.  Leading/trailing newlines are trimmed first, since paths
+// never contain newlines.  Mirrors the checks at execution time so a
+// "corrected" call still carrying a malformed path is rejected at the
+// gate rather than injected and striking again at execution
+// (validate/execute asymmetry).
+static bool path_params_malformed(const string& tool_name, const string& tool_call) {
     if (tool_name == "read_files") {
-        return param_has_newline(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"));
+        return path_value_malformed(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"));
     }
     if (tool_name == "search_file" || tool_name == "write_file" || tool_name == "edit_file") {
-        return param_has_newline(extract_path_arg(tool_call));
+        return path_value_malformed(extract_path_arg(tool_call));
     }
     return false;
 }
@@ -125,7 +137,7 @@ bool validate_tool_call(const string& tool_call) {
 
     if (!is_known_tool(clean_name)) return false;
     if (!check_params(clean_name, tool_call)) return false;
-    if (path_params_have_newline(clean_name, tool_call)) return false;
+    if (path_params_malformed(clean_name, tool_call)) return false;
     return true;
 }
 
@@ -194,9 +206,10 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     // model placing the value on its own line, and are trimmed.  Any
     // REMAINING (internal) newline means a missing PARAM_END closing tag or
     // a newline-separated list (an LLM habit, not our protocol: multiple
-    // paths are comma-separated on one line).  Route it through the
-    // correction cycle instead of silently splitting it.
-    if (param_has_newline(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"))) {
+    // paths are comma-separated on one line); a parameter tag in the
+    // trimmed value likewise signals a missing closing tag.  Route it
+    // through the correction cycle instead of silently splitting it.
+    if (path_value_malformed(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"))) {
       out.content = PATHS_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out;
     }
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
@@ -275,7 +288,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "search_file") {
     string path = extract_path_arg(tool_call);
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+    if (path_value_malformed(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string text = extract_string_arg_bounded(tool_call, "text");
     // Numeric args: all whitespace is trimmable (strtol would skip it
     // anyway) -- trimming here keeps the diagnostic label tight
@@ -324,7 +337,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "write_file") {
     string path = extract_path_arg(tool_call);
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+    if (path_value_malformed(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
     state.file_cache.erase(path);
     out.is_mutating = true;
@@ -348,7 +361,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "edit_file") {
     string path = extract_path_arg(tool_call);
-    if (param_has_newline(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
+    if (path_value_malformed(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
 
     string old_str = extract_string_arg_bounded(tool_call, "old");
     string new_str = extract_string_arg_bounded(tool_call, "new");

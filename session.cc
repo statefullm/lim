@@ -3246,7 +3246,7 @@ bool ChatSession::run() {
             // message is rolled back later, so it must stay compact.
             string system_prompt = read_prompt_file();
 
-            string correction_msg = "System Error: Invalid tool call. Did you forget a closing parameter or function tag in your tool call?\n\nFollow these instructions strictly:\n\n";
+            string correction_msg = "System Error: Invalid tool call. Either the path(s) parameter contains newlines or you forgot a closing parameter or function tag in your tool call.\n\nFollow these instructions strictly:\n\n";
             correction_msg += system_prompt;
 
             vector<llama_token> correction_tokens = build_tool_result_turn(ctx_, correction_msg);
