@@ -280,10 +280,11 @@ string extract_string_arg_bounded(const string& tool_call, const string& arg_nam
     return strip_quotes(extract_param_block(tool_call, arg_name));
 }
 
-// Linear-time array parser for XML schema (Newline/Comma separated)
-// Handles: newline-separated items, comma-separated items, and square-bracket lists.
-// Brackets can wrap a single line or span multiple lines. Delimiters are newlines
-// and commas. Leading/trailing whitespace is trimmed from each item.
+// Linear-time array parser for XML schema (Comma separated).
+// The read_files newline gate rejects values with internal newlines before
+// this runs, so the value is a single line (possibly with leading/trailing
+// whitespace or newlines), optionally wrapped in square brackets.  Items are
+// comma-separated; each is trimmed and stripped of surrounding quotes.
 vector<string> extract_array_arg_bounded(const string& tool_call, const string& arg_name) {
     vector<string> result;
 
@@ -296,25 +297,22 @@ vector<string> extract_array_arg_bounded(const string& tool_call, const string& 
         val = val.substr(0, bleed_pos);
     }
 
-    // --- Strip outer square brackets if present (handles multi-line bracket lists) ---
+    // --- Strip outer square brackets if present ---
     size_t first_bracket = val.find('[');
     size_t last_bracket  = val.rfind(']');
     if (first_bracket != string::npos && last_bracket != string::npos && last_bracket > first_bracket) {
         val = val.substr(first_bracket + 1, last_bracket - first_bracket - 1);
     }
 
-    // Split the parameter block by newlines. Each non-empty line is a candidate item.
-    stringstream ss(val);
-    string line;
-    while (getline(ss, line)) {
-        stringstream comma_ss(line);
-        string item;
-        while (getline(comma_ss, item, ',')) {
-            size_t first = item.find_first_not_of(" \t\r\n");
-            if (first == string::npos) continue;
-            size_t last = item.find_last_not_of(" \t\r\n");
-            result.push_back(strip_quotes(item.substr(first, last - first + 1)));
-        }
+    // Split by comma.  Each non-empty item is trimmed of whitespace (including
+    // any newlines at the edges) and stripped of surrounding quotes.
+    stringstream comma_ss(val);
+    string item;
+    while (getline(comma_ss, item, ',')) {
+        size_t first = item.find_first_not_of(" \t\r\n");
+        if (first == string::npos) continue;
+        size_t last = item.find_last_not_of(" \t\r\n");
+        result.push_back(strip_quotes(item.substr(first, last - first + 1)));
     }
     return result;
 }
