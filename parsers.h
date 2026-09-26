@@ -22,10 +22,11 @@ std::string strip_quotes_from_name(const std::string& s);
 // Trim leading/trailing characters that appear in 'chars'.
 std::string trim_chars(const std::string& s, const std::string& chars);
 
-// Extract the 'path' parameter value, trimming leading/trailing horizontal
-// whitespace (space, tab, CR).  Newlines are preserved: a newline at the edge
-// means the model placed the value on its own line, and param_has_newline
-// flags that as a malformed call before the handler acts on the path.
+// Extract the 'path' parameter value, trimming leading/trailing whitespace
+// (space, tab, CR, LF).  Paths never contain newlines: edge newlines are just
+// the model placing the value on its own line, while an INTERNAL newline
+// means a missing PARAM_END closing tag, and param_has_newline flags that as
+// a malformed call before the handler acts on the path.
 std::string extract_path_arg(const std::string& tool_call);
 
 // Generic escape: insert one copy of 'esc_char' after the first char of every

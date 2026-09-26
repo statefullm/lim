@@ -96,14 +96,15 @@ static string unknown_tool_error(const string& name) {
 
 
 // Value-level check shared by the correction gate: true when the tool's
-// path/paths parameters contain newlines (a missing PARAM_END closing tag
-// or a non-protocol newline-separated list).  Mirrors the checks at
-// execution time so a "corrected" call still carrying a newline in a path
-// is rejected at the gate rather than injected and striking again at
-// execution (validate/execute asymmetry).
+// path/paths parameters contain an INTERNAL newline (a missing PARAM_END
+// closing tag or a non-protocol newline-separated list); leading/trailing
+// newlines are trimmed first, since paths never contain newlines.  Mirrors
+// the checks at execution time so a "corrected" call still carrying a
+// newline in a path is rejected at the gate rather than injected and
+// striking again at execution (validate/execute asymmetry).
 static bool path_params_have_newline(const string& tool_name, const string& tool_call) {
     if (tool_name == "read_files") {
-        return param_has_newline(extract_raw_arg_bounded(tool_call, "paths"));
+        return param_has_newline(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"));
     }
     if (tool_name == "search_file" || tool_name == "write_file" || tool_name == "edit_file") {
         return param_has_newline(extract_path_arg(tool_call));
@@ -189,11 +190,13 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   }
 
   if (tool_name == "read_files") {
-    // A newline in the paths value means a missing PARAM_END closing tag or
+    // Paths never contain newlines: leading/trailing newlines are just the
+    // model placing the value on its own line, and are trimmed.  Any
+    // REMAINING (internal) newline means a missing PARAM_END closing tag or
     // a newline-separated list (an LLM habit, not our protocol: multiple
     // paths are comma-separated on one line).  Route it through the
     // correction cycle instead of silently splitting it.
-    if (param_has_newline(extract_raw_arg_bounded(tool_call, "paths"))) {
+    if (param_has_newline(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"))) {
       out.content = PATHS_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out;
     }
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");

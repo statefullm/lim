@@ -192,12 +192,14 @@ string trim_chars(const string& s, const string& chars) {
     return s.substr(first, last - first + 1);
 }
 
-// Extract the 'path' parameter value, trimming leading/trailing horizontal
-// whitespace (space, tab, CR).  Newlines are preserved: a newline at the edge
-// means the model placed the value on its own line, and param_has_newline
-// flags that as a malformed call before the handler acts on the path.
+// Extract the 'path' parameter value, trimming leading/trailing whitespace
+// (space, tab, CR, LF).  Paths never contain newlines, so edge newlines are
+// just the model placing the value on its own line.  An INTERNAL newline
+// means a missing PARAM_END closing tag (the value bled into following
+// parameter text), and param_has_newline flags that as a malformed call
+// before the handler acts on the path.
 string extract_path_arg(const string& tool_call) {
-    return trim_chars(extract_string_arg_bounded(tool_call, "path"), " \t\r");
+    return trim_chars(extract_string_arg_bounded(tool_call, "path"), " \t\r\n");
 }
 
 // Extract the raw param name from a PARAM_START tag, stripping stray quotes.
@@ -268,13 +270,13 @@ string extract_raw_arg_bounded(const string& tool_call, const string& arg_name) 
 
 // Linear-time string parser for XML schema
 string extract_string_arg_bounded(const string& tool_call, const string& arg_name) {
-    // Note: newlines inside "path" are intentionally NOT truncated here.
-    // A newline in a path almost always means the model forgot the closing
-    // PARAM_END tag -- that is a malformed call the handler must route
-    // through the correction cycle (param_has_newline checks), not a value
-    // to silently truncate.  When PARAM_END is genuinely missing the value
-    // extends to the next parameter's PARAM_END; harmless, since handlers
-    // return a malformed-XML error before executing anything.
+    // Note: newlines are intentionally NOT truncated here (old/new, content,
+    // command, and query values must keep exact whitespace).  For "path",
+    // leading/trailing newlines are stripped by extract_path_arg (paths never
+    // contain newlines); an INTERNAL newline in a path means the model forgot
+    // the closing PARAM_END tag -- the value extends to the next parameter's
+    // PARAM_END -- and the handler routes it through the correction cycle
+    // (param_has_newline checks) before executing anything.
     return strip_quotes(extract_param_block(tool_call, arg_name));
 }
 
