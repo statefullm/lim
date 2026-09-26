@@ -588,6 +588,23 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
     for (const auto& cache_path : find_cache_files("-" + hash)) unlink(cache_path.c_str());
   }
 
+  // Refuse to cache a KV that doesn't match the save's tokens exactly: a
+  // mismatch (the live KV ahead of or behind the token tracker, e.g. a feed
+  // interrupted mid-decode by a future regression) would poison every fast
+  // restore of this save -- the loader rejects the entry, but only after
+  // loading a multi-GB blob.  feed_tokens_impl maintains the
+  // tracker == KV == n_past_ invariant; this keeps a violation from being
+  // persisted into a cache file.  The save file itself is unaffected (the
+  // caller treats a cache write as best-effort); the next restore simply
+  // re-decodes.
+  llama_pos kv_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
+  if ((size_t)(kv_max + 1) != tokens.size()) {
+      diag("V1 cache: live KV covers " + std::to_string((long)(kv_max + 1)) +
+           " tokens but the save has " + std::to_string(tokens.size()) +
+           " -- skipping cache write (tracker/KV desync); restore will re-decode", "\033[33m");
+      return false;
+  }
+
   // Write the cache as $LIM_CACHE_DIR/<name>-<hash>: header + main KV state
   // + optional MTP mirror KV state (single file, current format).
   std::string cache_path = dir + "/" + cache_filename(save_path, tokens, model_path);

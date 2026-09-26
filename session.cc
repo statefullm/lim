@@ -791,15 +791,14 @@ private:
                     log_rollback("correction", n_past_before, target_pos, false, n_past_);
                     return 2;
                 }
-                // Suffix feed failed (interrupt or decode error): n_past_ was
-                // synced to the partial KV, which holds [0, anchor) plus the
-                // partially fed suffix tokens.  Re-attach exactly those
-                // partial tokens to the tracker (keeping tracker == KV), then
-                // fall through to the abort below -- repairing further would
-                // require a full-context re-decode, which this path never
-                // does.  /clear recovers.
-                state_.all_context_tokens.insert(state_.all_context_tokens.end(),
-                    suffix.begin(), suffix.begin() + (size_t)(n_past_ - anchor_pos));
+                // Suffix feed failed (interrupt, decode error, or truncated
+                // batch): feed_tokens_impl already restored the invariant --
+                // n_past_ synced to the partial KV ([0, anchor) plus the fully
+                // decoded suffix rows) and the decoded prefix re-attached to
+                // the tracker.  The context is a consistent truncated state;
+                // fall through to the abort below.  The user can carry on
+                // with a prompt (the LLM sees the truncated history) or
+                // /clear recovers fully.
             }
         }
 
@@ -827,26 +826,69 @@ private:
         stream_speed(format_speed_ctx(tps, n_past_, (int)cparams_.n_ctx));
     }
 
+    // Feed a token vector into the KV cache in n_batch chunks.  On success
+    // the tracker gains exactly toks, so the invariant tracker == KV ==
+    // n_past_ holds.  On any failure -- a user interrupt, a mid-feed decode
+    // error, or a truncated final batch (KV exhaustion) -- the feed is
+    // PARTIALLY APPLIED: the KV holds the fully decoded prefix rows.  Before
+    // returning false this function restores the invariant: n_past_ is
+    // synced to the KV (on the interrupt path it still counts the
+    // queued-but-undecoded batch rows) and the decoded prefix tokens are
+    // re-attached to the tracker.  Callers can therefore treat a failed
+    // feed as "applied up to the decoded boundary" (the undecoded tail is
+    // dropped) and the state stays save/restore/undo-consistent no matter
+    // which feed was interrupted (user prompt, correction prompt, tool
+    // result, injected call, re-decode).  The decoded tokens become
+    // official context -- the model sees them -- which is the only repair
+    // available on hybrid models (their recurrent state cannot be rolled
+    // back beyond the n_rs_seq window without a checkpoint).
     bool feed_tokens_impl(const vector<llama_token>& toks) {
         batch_.n_tokens = 0;
         auto feed_start = chrono::high_resolution_clock::now();
         int n_past_feed_start = n_past_;
-        for (size_t i = 0; i < (int)toks.size(); i++) {
-            if (stop_generation) return false;
+        bool failed = false;
+        for (size_t i = 0; i < (int)toks.size() && !failed; i++) {
+            if (stop_generation) {
+                failed = true;
+                break;
+            }
             common_batch_add(batch_, toks[i], n_past_++, {0}, (i == (int)toks.size() - 1));
             if (batch_.n_tokens == (int)cparams_.n_batch && i != (int)toks.size() - 1) {
-                if (!handle_llama_decode_error(ctx_, batch_)) { sync_n_past(ctx_, n_past_); return false; }
+                if (!handle_llama_decode_error(ctx_, batch_)) {
+                    failed = true;
+                    break;
+                }
                 batch_.n_tokens = 0;
                 stream_feed_progress(feed_start, n_past_feed_start);
             }
         }
-        if (batch_.n_tokens > 0) {
+        if (!failed && batch_.n_tokens > 0) {
             if (!handle_llama_decode_error(ctx_, batch_, "KV Cache Exhausted. Type '/clear' to reset.", false)) {
+                failed = true;
+            } else {
                 sync_n_past(ctx_, n_past_);
-                return false;
+                stream_feed_progress(feed_start, n_past_feed_start);
             }
+        }
+        if (!failed && n_past_ != n_past_feed_start + (int)toks.size()) {
+            // A "successful" final batch can still be truncated (KV
+            // exhaustion: should_break=false reports the error but returns
+            // true): the KV holds fewer rows than the feed queued.  Treat
+            // it as a partial feed (the sync below finds the true KV max).
             sync_n_past(ctx_, n_past_);
-            stream_feed_progress(feed_start, n_past_feed_start);
+            failed = true;
+        }
+        if (failed) {
+            // Re-attach the decoded prefix to the tracker, keeping
+            // tracker == KV == n_past_.  The undecoded tail is simply
+            // dropped -- the caller may retry the feed or eject to the
+            // prompt, and the state is consistent either way.
+            int decoded = n_past_ - n_past_feed_start;
+            if (decoded > 0) {
+                state_.all_context_tokens.insert(state_.all_context_tokens.end(),
+                    toks.begin(), toks.begin() + decoded);
+            }
+            return false;
         }
         // Track all tokens fed into context for save/restore
         state_.all_context_tokens.insert(state_.all_context_tokens.end(), toks.begin(), toks.end());
