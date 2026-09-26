@@ -1604,7 +1604,8 @@
         function coalesceSegments() {
             let i = 1;
             while (i < segments.length) {
-                if (segments[i].type === segments[i - 1].type && segments[i].content.length > 0) {
+                if (segments[i].type !== SEG_SPEED &&
+                    segments[i].type === segments[i - 1].type && segments[i].content.length > 0) {
                     segments[i - 1].content += segments[i].content;
                     segments.splice(i, 1);
                 } else {
