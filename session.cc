@@ -2205,6 +2205,14 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
 
     // --- Common tail (fast and slow) ---
 
+    // The restored context has had no generation checks run on it yet: the
+    // crossing test's "old" side is the restore point itself, so a session
+    // restored at/above the line gets the warn-only path on its next turn
+    // (no phantom /continue checkpoint for a crossing that happened before
+    // the save), while one restored below the line still gets the checkpoint
+    // when a later turn crosses.
+    last_context_ = n_past_;
+
     // Check git HEAD against saved session
     {
         string saved_sha;
