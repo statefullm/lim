@@ -1027,7 +1027,7 @@ string ChatSession::get_user_input() {
     // Empty lines are skipped; EOF returns "/quit" to exit cleanly.
     if (!isatty(STDIN_FILENO)) {
         if (state_.first_turn_done && state_.last_t_count > 0) {
-            diag_speed(state_.last_n_past, cparams_.n_ctx, state_.last_t_count,
+            diag_speed(n_past_, cparams_.n_ctx, state_.last_t_count,
                        state_.last_elapsed, state_.last_decode_time);
         }
         string line;
@@ -1043,7 +1043,7 @@ string ChatSession::get_user_input() {
         if (state_.first_turn_done && state_.last_t_count > 0) {
             // Ensure the diagnostic appears on its own line.
             consoleEnsureNewline();
-            diag_speed(state_.last_n_past, (int)cparams_.n_ctx, state_.last_t_count,
+            diag_speed(n_past_, (int)cparams_.n_ctx, state_.last_t_count,
                        state_.last_elapsed, state_.last_decode_time, true);
         } else if (!state_.first_turn_done && should_output_to_browser()) {
             // First turn: show context position while user types their prompt.
