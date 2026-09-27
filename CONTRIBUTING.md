@@ -8,7 +8,7 @@ Thank you for your interest in contributing! Here's how to get started.
 git clone https://github.com/statefullm/lim.git
 cd lim
 make
-./lim --help
+./lim --version
 ```
 
 See [README.md](README.md) for full build and user setup instructions.

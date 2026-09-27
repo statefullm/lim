@@ -45,7 +45,4 @@ int get_server_port();
 void disable_browser_output();
 bool prompt_for_browser_connection();
 
-// Forward declaration
-extern volatile sig_atomic_t stop_generation;
-
 #endif // SERVER_H

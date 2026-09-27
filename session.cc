@@ -616,9 +616,10 @@ private:
         return detokenize_tracker_to_text(tracker) + new_turn_text;
     }
 
-    // --- Rollback instrumentation (correction.md 4) -----------------------
-    // Written to BOTH stderr and chat_log so the record survives a context
-    // clobber. Gated on is_debug (LIM_DEBUG=1). `path` is "correction" or "undo".
+    // --- Rollback instrumentation ------------------------------------------
+    // Rollback + tool-correction n_past logging: written to BOTH stderr and
+    // chat_log so the record survives a context clobber. Gated on is_debug
+    // (LIM_DEBUG=1). `path` is "correction" or "undo".
     void log_rollback(const char* path, int n_past_before, long target_pos,
                       bool seq_rm_ok, int n_past_after) {
         if (!is_debug) return;
@@ -641,8 +642,8 @@ private:
     }
 
     // Log a tool_correction_n_past assignment so we can see when it was last
-    // set and to what value (correction.md 4). idx_was is the checkpoint index
-    // at the moment of assignment.
+    // set and to what value. Gated on is_debug (LIM_DEBUG=1). idx_was is the
+    // checkpoint index at the moment of assignment.
     void log_tc_npast_set() {
         if (!is_debug) return;
         ostringstream oss;
@@ -1018,7 +1019,6 @@ private:
     TokenGenerator::Result gen_result_;
     string generated_text_;
     int t_count_;
-    double elapsed_;
     bool was_mid_tool_call_;
     int max_auto_continue_;
 
@@ -1194,7 +1194,8 @@ string ChatSession::get_user_input() {
 }
 
 // --- handle_command: detect which command the input represents ---
-// Commands must be prefixed with '/'.  /save, /load, and /undo accept optional arguments.
+// Commands must be prefixed with '/'.  /undo takes no argument; /save, /load,
+// /delete, and /quit take an optional path argument.
 
 // Match 'rest' (input after '/') against the command table: the exact command
 // name, or the name followed by whitespace separating it from its argument.
@@ -1503,14 +1504,14 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     }
 
     auto end = chrono::high_resolution_clock::now();
-    elapsed_ = chrono::duration<double>(end - start).count();
+    const double gen_elapsed = chrono::duration<double>(end - start).count();
 
     // TokenGenerator::generate() already flushes remaining unprinted text to
     // stdout with a trailing newline, so the speed diagnostic in get_user_input()
     // will naturally appear on its own line.
 
     state_.last_t_count = t_count_;
-    state_.last_elapsed = elapsed_ + state_.last_feed_time;
+    state_.last_elapsed = gen_elapsed + state_.last_feed_time;
     state_.last_decode_time = gen_result_.decode_time;
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
@@ -2880,13 +2881,11 @@ bool ChatSession::run() {
                 state_.prev_was_interrupted = false;
                 diag("Resuming after tool interruption...", "\033[1;33m");
                 state_.auto_continue = true;
-                state_.auto_continue_depth_val = 0;
                 user_input = "";
             } else if (state_.prev_was_interrupted) {
                 state_.prev_was_interrupted = false;
                 diag("Resuming generation...", "\033[1;33m");
                 state_.auto_continue = true;
-                state_.auto_continue_depth_val = 0;
                 user_input = "";
             } else if (state_.first_turn_done) {
                 // Mid-turn position (only reachable after /undo to a mid-turn
@@ -2898,7 +2897,6 @@ bool ChatSession::run() {
                 // so we need to feed an assistant prefill for the LLM to sample from.
                 diag("Continuing generation...", "\033[1;33m");
                 state_.auto_continue = true;
-                state_.auto_continue_depth_val = 0;
                 // Feed a minimal assistant prefill so the batch isn't empty.
                 vector<llama_token> ass_prefill = common_tokenize(ctx_, g_model_tokens.assistant_turn_start.text, false, true);
                 if (!ass_prefill.empty() && n_past_ + (int)ass_prefill.size() < (int)cparams_.n_ctx) {
@@ -3280,8 +3278,6 @@ bool ChatSession::run() {
                 // Generate once -- LLM produces corrected tool call.
                 gen_result_ = generate_response(/*is_correction_gen=*/true);
                 generated_text_ = gen_result_.text;
-                t_count_ = gen_result_.token_count;
-                elapsed_ = gen_result_.decode_time;
 
                 // If valid, roll back to checkpoint, inject good call, hand off to process_tool_call.
                 if (gen_result_.has_tool_call && gen_result_.tool_start != string::npos && gen_result_.tool_end != string::npos) {
@@ -3537,7 +3533,6 @@ bool ChatSession::run() {
                 state_.prompt_checkpoints.back().prompt = CTX_LIMIT_TURN_END_LABEL;
                 state_.prev_was_interrupted = false;
                 state_.auto_continue = true;
-                state_.auto_continue_depth_val = 0;
             } else {
                 // An interrupted return leaves the context mid-turn: the checkpoint
                 // just pushed is provisional until the user either /continue-resumes

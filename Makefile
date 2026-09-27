@@ -175,7 +175,7 @@ distclean: clean llama-clean
 	@echo Creating $@; \
 	rm -f $@; \
 	${CXX} $(MAKEDEPEND) $< > $@.$$$$ 2>/dev/null && \
-	sed 's,\($*\)\.o[ :]*,\1.o \1.pic.o $@ : ,g' < $@.$$$$ > $@; \
+	sed 's,\($*\)\.o[ :]*,\1.o $@ : ,g' < $@.$$$$ > $@; \
 	rm -f $@.$$$$
 
 ifneq ($(filter clean install,${MAKECMDGOALS}),)

@@ -4,7 +4,6 @@
 #include "llama.h"
 #include "common.h"
 
-#define STR(name, ...) { name, (int)(sizeof(name) - 1), __VA_ARGS__ }
 #include <string>
 #include <vector>
 #include <set>
@@ -30,7 +29,6 @@ struct SessionState {
   int last_n_past = 0;
   std::map<std::string, std::string> file_cache;  // path -> content hash (for cache validation)
   // Internal state (was static inside the function)
-  int auto_continue_depth_val = 0;
   bool tool_interrupt_pending = false;
   std::string partial_tool_text;
   // True when the last generation was interrupted inside an open thinking

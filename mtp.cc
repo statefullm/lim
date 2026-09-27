@@ -511,10 +511,3 @@ void MtpSpeculator::reset_stats() {
   low_streak_ = 0;
 }
 
-void MtpSpeculator::log_summary(const std::string& tag) {
-  std::string line;
-  if (stats_line(line)) {
-    diag("MTP " + tag + ": " + std::string(line), "\033[90m");
-  }
-}
-

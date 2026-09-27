@@ -48,6 +48,7 @@ string file_fingerprint(const string& path) {
 
 // --- Save file header keys ---
 // Each string appears once; len is derived at compile time via STR.
+#define STR(name, ...) { name, (int)(sizeof(name) - 1), __VA_ARGS__ }
 static const struct HeaderKey {
   const char* name;
   int len;
@@ -57,6 +58,7 @@ static const struct HeaderKey {
   STR("n_checkpoints="),     // 2
   STR("session="),           // 3
 };
+#undef STR
 
 static constexpr int HDR_MAGIC         = 0;
 static constexpr int HDR_N_TOKENS      = 1;
@@ -720,22 +722,10 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
 
   if (!logOnly) {
     if (!debugOnly || is_debug) {
-      if (should_output_to_browser()) {
-        // Output to browser via FIFO pipe
-        if (pipe_fd < 0) {
-          pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
-        }
-        if (pipe_fd >= 0) {
-          string browser_msg = final_message + "\n";
-          ssize_t res = write(pipe_fd, browser_msg.c_str(), browser_msg.length());
-
-          // If write fails with EAGAIN or EWOULDBLOCK, the pipe buffer is full
-          if (res < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            close(pipe_fd);
-            pipe_fd = -1;
-          }
-        }
-      }
+      // Stream as a tagged HTML segment (stream_html checks
+      // should_output_to_browser() itself and goes through pipe_write);
+      // raw untagged text would render in the browser as LLM output.
+      stream_html(final_message + "\n");
       if (should_output_to_stdout()) {
         // Output to stdout (when browser mode is off, or in combined mode 3)
         cout << final_message << endl;
@@ -881,6 +871,30 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   // Signal that streaming is about to begin.
   if (on_open) on_open();
 
+  // Forward a chunk to the consumers (LLM result, browser stream, chat_log),
+  // honoring the output limit: data past the limit is drained but not
+  // forwarded, and the first over-limit chunk marks the output truncated.
+  auto forward_chunk = [&](const char* buf, size_t n) {
+    if (truncated) return;
+    size_t remaining = max_output - result.size();
+    if (n > remaining) {
+      // This chunk would exceed the limit - clip it.
+      result += std::string(buf, remaining);
+      if (on_chunk) on_chunk(std::string(buf, remaining));
+      if (chat_log.is_open()) { chat_log << std::string(buf, remaining); chat_log.flush(); }
+
+      // Mark truncation; actual message will be appended after exit code is known.
+      // Show visual ellipsis to browser and chat_log only (not to LLM result).
+      if (on_chunk) on_chunk("\n...");
+      if (chat_log.is_open()) { chat_log << "\n..."; chat_log.flush(); }
+      truncated = true;
+    } else {
+      result += buf;
+      if (on_chunk) on_chunk(buf);
+      if (chat_log.is_open()) { chat_log << buf; chat_log.flush(); }
+    }
+  };
+
   struct pollfd pfd;
   pfd.fd = pipefd[0];
   pfd.events = POLLIN;
@@ -910,29 +924,9 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
       if (n > 0) {
         buffer[n] = '\0';
-
         // Keep draining the child pipe to prevent EPIPE, but only
         // forward data to consumers until we hit the limit.
-        if (!truncated) {
-          size_t remaining = max_output - result.size();
-          if (static_cast<size_t>(n) > remaining) {
-            // This chunk would exceed the limit - clip it.
-            result += std::string(buffer, remaining);
-            if (on_chunk) on_chunk(std::string(buffer, remaining));
-            if (chat_log.is_open()) { chat_log << std::string(buffer, remaining); chat_log.flush(); }
-
-            // Mark truncation; actual message will be appended after exit code is known.
-            // Show visual ellipsis to browser and chat_log only (not to LLM result).
-            if (on_chunk) on_chunk("\n...");
-            if (chat_log.is_open()) { chat_log << "\n..."; chat_log.flush(); }
-            truncated = true;
-          } else {
-            result += buffer;
-            if (on_chunk) on_chunk(buffer);
-            if (chat_log.is_open()) { chat_log << buffer; chat_log.flush(); }
-          }
-        }
-        // If already truncated, just discard - child is still being drained.
+        forward_chunk(buffer, (size_t)n);
       } else {
         // n == 0 or n < 0: EOF / pipe closed.
         break;
@@ -943,11 +937,15 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     int wstatus = 0;
     pid_t waited = waitpid(pid, &wstatus, WNOHANG);
     if (waited > 0) {
-      // Drain any remaining data in the pipe (prevent EPIPE).
-      if (pfd.revents & (POLLIN | POLLHUP)) {
-        char buffer[65536];
-        ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
-        // Discard - child is exiting, just drain.
+      // Child exited: drain the rest of the pipe to EOF and forward it
+      // through the same limit/truncation logic as the main read path
+      // (a single read here would silently drop the tail of a bursty
+      // output past the last forwarded chunk).
+      char buffer[65536];
+      ssize_t n;
+      while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+        buffer[n] = '\0';
+        forward_chunk(buffer, (size_t)n);
       }
       break;
     }
@@ -1197,84 +1195,44 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
     net.start_docling_if_needed();
   }
 
-  // Fetch a remote URL via NetworkTools, copy content/error into 'result',
-  // and log the outcome to cerr with branch-specific success/failure messages.
-  auto fetch_url = [](map<string, string>& result, const string& path,
-                      const string& ok_msg, const string& fail_msg) {
-    NetworkTools url_net;
-    vector<map<string, string>> network_results = url_net.fetch_urls({path});
-
-    if (!network_results.empty()) {
-      result["content"] = network_results[0]["content"];
-      result["error"] = network_results[0]["error"];
-
-      if (result["error"].empty() && !result["content"].empty()) {
-        cerr << ok_msg + " (" + to_string(result["content"].length()) + " bytes)" << endl;
-      } else {
-        cerr << fail_msg << endl;
-      }
-    } else {
-      result["error"] = "[No results from network fetch]";
-      cerr << "Network fetch returned empty results" << endl;
-    }
-  };
-
   for (const auto& path : paths) {
     map<string, string> result;
     result["path"] = path;
     result["content"] = "";
     result["error"] = "";
 
-    // Check if this is a URL
-    bool is_url = (path.find("http://") == 0 || path.find("https://") == 0);
-
     // Check if this is a PDF file
     bool is_pdf = (_file_ext(path) == ".pdf");
 
     if (is_pdf) {
-      // Unified PDF handling - local files read directly, URLs use NetworkTools
+      // Local PDF file - read directly and process with Docling
       cerr << "Processing PDF: " + path << endl;
 
-      if (is_url) {
-        // Remote URL - use NetworkTools fetch mechanism
-        fetch_url(result, path,
-                  "Successfully processed PDF: " + path,
-                  "PDF processing failed: " + path);
-      } else {
-        // Local PDF file - read directly and process with Docling
-        ifstream in_file(_get_fullpath(path));
-        if (!in_file.is_open()) {
-          result["error"] = "Failed to open local PDF file for reading: " + path;
-          cerr << "Error: Failed to open local PDF file" << endl;
-          results.push_back(result);
-          continue;
-        }
-
-        stringstream buffer;
-        buffer << in_file.rdbuf();
-        string pdf_binary = buffer.str();
-        in_file.close();
-
-        // Process with Docling using existing NetworkTools member function
-        NetworkTools net;
-        string content = net.process_pdf_with_docling(pdf_binary);
-
-        if (content.find("[Docling Error") != string::npos ||
-            content.find("[Curl Init Failed]") != string::npos) {
-          result["error"] = content;
-          cerr << "PDF processing failed: " + path << endl;
-        } else {
-          result["content"] = NetworkTools::limit_context_size(content);
-          cerr << "Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
-        }
+      ifstream in_file(_get_fullpath(path));
+      if (!in_file.is_open()) {
+        result["error"] = "Failed to open local PDF file for reading: " + path;
+        cerr << "Error: Failed to open local PDF file" << endl;
+        results.push_back(result);
+        continue;
       }
-    } else if (is_url) {
-      // Remote non-PDF URL - use NetworkTools fetch_urls mechanism
-      log_diagnostic("Fetching remote URL: " + path, true /* logOnly */);
 
-      fetch_url(result, path,
-                "Successfully fetched remote URL: " + path,
-                "Remote URL fetch failed: " + path);
+      stringstream buffer;
+      buffer << in_file.rdbuf();
+      string pdf_binary = buffer.str();
+      in_file.close();
+
+      // Process with Docling using existing NetworkTools member function
+      NetworkTools net;
+      string content = net.process_pdf_with_docling(pdf_binary);
+
+      if (content.find("[Docling Error") != string::npos ||
+          content.find("[Curl Init Failed]") != string::npos) {
+        result["error"] = content;
+        cerr << "PDF processing failed: " + path << endl;
+      } else {
+        result["content"] = NetworkTools::limit_context_size(content);
+        cerr << "Successfully processed PDF: " + path + " (" + to_string(result["content"].length()) + " bytes)" << endl;
+      }
     } else {
       // Regular local text file handling
       ifstream in_file(_get_fullpath(path));

@@ -43,7 +43,7 @@ bool is_debug = false;
 // Deterministic (greedy) mode: temperature 0.  Set in main() after env
 // parsing.  In this mode load_system_prompt_text() omits the wall-clock
 // timestamp (the only session-varying prompt piece) so greedy runs are
-// byte-reproducible -- required for Gate 1 token-identity testing.
+// byte-reproducible for token-identity testing.
 bool g_deterministic_mode = false;
 ofstream chat_log;
 ofstream token_log;
@@ -266,7 +266,8 @@ int main(int argc, char ** argv) {
   }
 
   mkdir(LIM_LOG_DIR.c_str(), 0775);
-  mkdir(LIM_CACHE_DIR.c_str(), 0775);  int log_index = 1;
+  mkdir(LIM_CACHE_DIR.c_str(), 0775);
+  int log_index = 1;
   string log_file_name;
   while (true) {
     log_file_name = LIM_LOG_DIR + "/" + to_string(log_index);
@@ -409,12 +410,10 @@ int main(int argc, char ** argv) {
 
   auto cparams = llama_context_default_params();
   // Allow overriding context params with LIM_* environment variables
-  bool ctx_explicit = false;
   {
     const char* env;
     if ((env = getenv("LIM_CTX")) != nullptr) {
       cparams.n_ctx = atoi(env);
-      ctx_explicit = true;
     } else {
       cparams.n_ctx = LIM_DEFAULT_CTX;
     }

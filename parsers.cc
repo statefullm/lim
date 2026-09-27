@@ -131,10 +131,9 @@ void unescape_turn_tags(string& str) {
     _escape_turn_tokens_impl(str, false);
 }
 
-// Find the next unescaped PARAM_END starting from 'from'.
-// Skips over backslash-escaped forms (ESCAPE_CHAR after first char).
-// Returns string::npos if no unescaped PARAM_END is found.
-static size_t find_unescaped_param_end(const string& text, size_t from) {
+// Find the next PARAM_END starting from 'from'.
+// Returns string::npos if no PARAM_END is found.
+static size_t find_param_end(const string& text, size_t from) {
     // The escaped form has an ESCAPE_CHAR after the first character, so str.find(PARAM_END)
     // naturally skips escaped occurrences. Just find the raw token.
     return text.find(PARAM_END, from);
@@ -255,7 +254,7 @@ static string extract_param_block(const string& tool_call, const string& arg_nam
     if (!find_param_tag(tool_call, arg_name, content_begin)) {
         return "";
     }
-    size_t end = find_unescaped_param_end(tool_call, content_begin);
+    size_t end = find_param_end(tool_call, content_begin);
     if (end == string::npos) end = tool_call.length();
     return tool_call.substr(content_begin, end - content_begin);
 }

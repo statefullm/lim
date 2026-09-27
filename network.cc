@@ -305,7 +305,7 @@ static void start_service(const string& name, const string& probe_url,
     freopen(log_path.c_str(), "w", stderr);
 
     execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
-    exit(1);
+    _exit(1);  // NOT exit(): would run lim's atexit handlers in the child.
   } else if (child > 0) {
     pid = child;
 
@@ -468,7 +468,7 @@ string NetworkTools::limit_context_size(const string& text, size_t per_file_max)
 
   // If memory budget is exhausted, forcefully stop the LLM from loading more
   if (remaining_budget < 5000) {
-    return "[SYSTEM NOTIFICATION: Context memory budget is full. Cannot load more documents. Please rely on existing memory or ask the user to type 'clear' to reset the chat.]";
+    return "[SYSTEM NOTIFICATION: Context memory budget is full. Cannot load more documents. Please rely on existing memory or ask the user to type '/clear' to reset the chat.]";
   }
 
   // The limit for this specific file is whichever is smaller
@@ -1319,7 +1319,7 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
         cerr << "\033[0mPDF fetch failed for: " + url + " - HTTP " << http_code << endl;
 
         if (state.exceeded_limit) {
-          result["error"] = "[Failed to fetch PDF: file too large (exceeds 50MB)]";
+          result["error"] = "[Failed to fetch PDF: file too large (exceeds " + to_string(g_web_pdf_max_bytes) + " bytes)]";
         } else if (res != CURLE_OK) {
           result["error"] = "[Failed to fetch PDF: curl error " + to_string(res) + "]";
         } else if (http_code >= 400) {
