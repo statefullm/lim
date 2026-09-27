@@ -28,6 +28,12 @@ log/
 .lim_history
 userprompt
 localprompt
+# Written into $LIM_CONFIG_DIR (only appears in-tree in dev setups where
+# LIM_CONFIG_DIR points at the repository)
+searchCache/
+combined-ca.crt
+cloudflare-chain.pem
+ca-bundle-temp.crt
 
 # OS files
 .DS_Store
