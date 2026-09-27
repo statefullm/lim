@@ -14,6 +14,7 @@
 #include "token_generator.h"
 #include "session.h"
 #include "taskset.h"
+#include "version.h"
 #include <readline/readline.h>
 #include <readline/history.h>
 #include <iostream>
@@ -30,11 +31,6 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
-
-// Version is passed from the Makefile via -DLIM_VERSION="x.y.z"
-#ifndef LIM_VERSION
-#define LIM_VERSION "0.1.0"
-#endif
 
 using namespace std;
 

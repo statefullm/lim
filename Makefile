@@ -57,7 +57,7 @@ ifeq ($(GGML_HIPBLAS),on)
   GGML_HIPBLAS_FLAG := -DGGML_HIPBLAS=ON
 endif
 
-CXXFLAGS = -std=c++17 -O3 -DLIM_VERSION=\"$(VERSION)\" \
+CXXFLAGS = -std=c++17 -O3 \
 	-I$(LLAMA_DIR)/include \
 	-I$(LLAMA_DIR)/common \
 	-I$(LLAMA_DIR)/ggml/include \
@@ -108,7 +108,10 @@ $(TARGET): $(FILES:=.o)
 	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 endif
 
-VERSION := $(shell cat VERSION 2>/dev/null || echo 0.1.0)
+VERSION := $(shell sed -n 's/.*define LIM_VERSION "\([^"]*\)".*/\1/p' version.h)
+ifeq ($(strip $(VERSION)),)
+$(error version.h: could not extract LIM_VERSION -- check the '#define LIM_VERSION "x.y.z"' line)
+endif
 VSIX = vscode-extension/vscode-extension-$(VERSION).vsix
 
 vscode: $(VSIX)
