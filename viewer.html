@@ -434,14 +434,15 @@
         // Render the raw tail of a single segment.  Called by progressiveRender()
         // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
         // Only parses the new delta -- never re-parses already-rendered content.
-        function renderRawTail(wrapperDiv, segIndex, finish) {
+        function renderRawTail(wrapperDiv, segIndex, finish, commitEnd) {
             if (finish === undefined) finish = true;
             var fullText = segments[segIndex].content;
             var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
 
-            var tail = fullText.substring(renderedPrefixLen);
+            var end = (commitEnd === undefined) ? fullText.length : commitEnd;
+            var tail = fullText.substring(renderedPrefixLen, end);
             if (tail.length === 0) {
-                wrapperDiv.removeAttribute('data-raw');
+                if (finish) wrapperDiv.removeAttribute('data-raw');
                 return;
             }
 
@@ -462,7 +463,9 @@
             } else {
                 // Mid-stream force-render: keep streaming so the next delta renders
                 // incrementally instead of triggering a full O(n) re-render.
-                wrapperDiv.setAttribute('data-rendered-len', String(fullText.length));
+                // commitEnd trims a pending would-be-fence-opener run off the
+                // tail (progressiveRender passes it); the full length otherwise.
+                wrapperDiv.setAttribute('data-rendered-len', String(end));
             }
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
@@ -574,6 +577,34 @@
         //                     'p' none seen yet, 'd' in \d+, 'a' after [.)] waiting
         //                     \s, 'n' after \d+- waiting \s, 't' in a # run,
         //                     'l' list item, 'h' header, 'r' ordinary text.
+        //
+        // A force-commit (no break to split at) renders the WHOLE unrendered
+        // tail, so its end sits at the live end of the text -- where a
+        // would-be fence-opener run may still be growing.  If the text ends in
+        // a LINE-START backtick run of length 1-2 (up to 3 leading spaces, the
+        // fence rule), the run may complete to 3+ -- a fence -- with the next
+        // delta.  Committing the partial run now would render it as literal
+        // prose; the next delta's remaining backticks (1-2) can never open the
+        // fence, so the fence content escapes as prose and later fence lines
+        // misalign (an empty box between two prose chunks).  Return the safe
+        // commit end (exclusive): the run's start when it is a pending
+        // would-be opener, else the full text length.  A complete run of 3+
+        // is a real fence (the continuation protocol handles it); a mid-line
+        // run can never become a fence; a run followed by a non-backtick next
+        // delta is judged literal when that delta renders it.
+        function forceCommitEnd(fullText, from) {
+            var L2 = fullText.length;
+            if (L2 <= from) return L2;
+            var p = L2 - 1, n = 0;
+            while (p >= 0 && fullText[p] === '`') { n++; p--; }
+            if (n < 1 || n > 2) return L2;
+            if (p + 1 < from) return L2;   // run crosses the render boundary (shouldn't)
+            var q = p, sp = 0;
+            while (q >= 0 && fullText[q] === ' ' && sp < 3) { sp++; q--; }
+            if (sp === 3 && q >= 0 && fullText[q] === ' ') return L2;  // 4+ leading spaces
+            if (q >= 0 && fullText[q] !== '\n') return L2;             // mid-line run
+            return p + 1;   // the run's start
+        }
         function progressiveRender(wrapperDiv, segIndex) {
             var fullText = segments[segIndex].content;
             var L = fullText.length;
@@ -781,7 +812,20 @@
                     // existing <pre><code>, so a long code block stays a single
                     // block.  The turn-end finishAllRawSegments() sweep
                     // force-finishes the segment, as for think blocks today.
-                    renderRawTail(wrapperDiv, segIndex, false);
+                    // Never end the commit mid would-be-fence-opener run
+                    // (see forceCommitEnd): a trailing line-start backtick
+                    // run of 1-2 may complete to a fence with the next
+                    // delta; committing it now would render it as prose and
+                    // the fence could never form.  data-scan-hwm is already
+                    // parked at the run, so the next call re-judges the
+                    // COMPLETED run at the same position (bounded re-scan).
+                    var forceEnd = forceCommitEnd(fullText, renderedPrefixLen);
+                    if (forceEnd === renderedPrefixLen) {
+                        // The whole unrendered tail is the pending run (and/or
+                        // its leading spaces): wait for the deciding character.
+                        return;
+                    }
+                    renderRawTail(wrapperDiv, segIndex, false, forceEnd);
                 }
                 return;
             }
@@ -1514,8 +1558,23 @@
                 var runLen = scanIntAttr(wrapperDiv, 'data-fence-runlen', 3);
                 var partial = wrapperDiv.getAttribute('data-fence-midline') === '1';
                 var hasContent = wrapperDiv.getAttribute('data-fence-content') === '1';
-                var plan = fenceContinuationCommit(deltaText, runLen, partial,
-                    wrapperDiv.__fencePending || '', wrapperDiv.__fenceHeldLine || '');
+                var heldNow = wrapperDiv.__fenceHeldLine || '';
+                var pendNow = wrapperDiv.__fencePending || '';
+                // An empty stashed fence (no content line committed yet) whose
+                // opener line was committed WITHOUT its newline: the mask's
+                // fenceBuf is empty, so endMidLine was false even though the
+                // text ended mid-line on the opener run.  The next delta then
+                // starts with the opener's missing terminator \n -- not
+                // content: consume it, or the box gains a spurious leading
+                // blank line.  With content already present (or a held/pending
+                // line to judge first) a leading \n is a genuine terminator.
+                var contDelta = deltaText;
+                if (!hasContent && heldNow === '' && pendNow === '' &&
+                    deltaText.charAt(0) === '\n') {
+                    contDelta = deltaText.substring(1);
+                }
+                var plan = fenceContinuationCommit(contDelta, runLen, partial,
+                    pendNow, heldNow);
                 if (plan.appendText !== null) {
                     var prefix = (!partial && hasContent) ? '\n' : '';
                     wrapperDiv.__openFenceCode.appendChild(
