@@ -147,11 +147,21 @@ uninstall-vscode: FORCE
 # Alias: install now includes the VS Code extension.
 install-all: install
 
+# Safety guard: dev setups point LIM_CONFIG_DIR at the repository root, where
+# the "config files" are tracked sources.  In that case (and when it is an
+# ancestor of the repo) the config cleanup is skipped; the installed binary
+# and the VS Code extension still uninstall.  An unset/empty LIM_CONFIG_DIR
+# resolves to the default location, matching the runtime in network.cc.
 uninstall: FORCE
-	-cd $(LIM_CONFIG_DIR) && rm -f $(CONFIG_FILES) userprompt && rmdir searchCache 2>/dev/null || true
-	-cd $(LIM_CONFIG_DIR)/libs && rm -f $(LIBS_FILES) && rm -rf fonts
-	rmdir $(LIM_CONFIG_DIR)/libs 2>/dev/null || true
-	rmdir $(LIM_CONFIG_DIR) 2>/dev/null || true
+	@cfg="$$(realpath -- '$(LIM_CONFIG_DIR)' 2>/dev/null || echo '$(HOME)/.config/lim')"; \
+	root="$$(pwd)"; \
+	case "$$root" in "$$cfg"|"$$cfg"/*) :;; \
+	*) \
+		cd "$$cfg" && rm -f $(CONFIG_FILES) userprompt combined-ca.crt cloudflare-chain.pem ca-bundle-temp.crt && rmdir searchCache 2>/dev/null || true; \
+		cd "$$cfg"/libs && rm -f $(LIBS_FILES) && rm -rf fonts || true; \
+		rmdir "$$cfg"/libs 2>/dev/null || true; \
+		rmdir "$$cfg" 2>/dev/null || true;; \
+	esac; \
 	rm -f ~/bin/lim
 
 uninstall-all: uninstall uninstall-vscode
