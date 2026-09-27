@@ -916,6 +916,7 @@
             var i = 0, L = text.length;
             var inFence = !!startInFence;
             var fenceRunLen = 3;          // opener run length (unknown if startInFence)
+            var fenceIndent = 0;          // opener's leading spaces (sentinel alignment)
             var fenceBuf = '';            // pending fence content lines
             var heldLine = '';            // final candidate closer line, held for next delta
             var lineStart = 0;            // start of the current line
@@ -933,7 +934,13 @@
             function flushFence(withNewline) {
                 if (fenceBuf !== '') {
                     codeContents.push(fenceBuf);
-                    out.push(HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
+                    // Emit the sentinel at the fence opener's indent: a
+                    // column-0 sentinel is shallower than an indented fence's
+                    // enclosing list item, which would make marked close the
+                    // fence empty and demote the sentinel to prose (the fence
+                    // content leaking out below the box as a paragraph).
+                    out.push(' '.repeat(fenceIndent) +
+                             HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
                              HTML_SENTINEL_CHAR + (withNewline ? '\n' : ''));
                 }
                 fenceBuf = '';
@@ -1073,6 +1080,7 @@
                     i = nl2 === -1 ? L : nl2 + 1;
                     inFence = true;
                     fenceRunLen = n;
+                    fenceIndent = sp;
                     lineStart = i;
                     continue;
                 }
