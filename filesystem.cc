@@ -177,13 +177,22 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
     if (written != tokens.size()) { fclose(fp); return false; }
   }
   // Append checkpoint entries: <n_past as int32><prompt_len as uint16><prompt_bytes>
+  static const string PROMPT_TRUNC_MARKER = "...[truncated]";
   for (const auto& cp : checkpoints) {
     int32_t pos = static_cast<int32_t>(cp.n_past);
     if (fwrite(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return false; }
-    uint16_t plen = static_cast<uint16_t>(cp.prompt.size());
+    // The uint16 length field caps labels at 65,535 bytes: truncate beyond
+    // that with a visible marker rather than silently cutting.  Labels are
+    // display-only (the /undo list caps at 120 chars, so only the full-text
+    // readline history shows the marker).
+    string prompt = cp.prompt;
+    if (prompt.size() > UINT16_MAX) {
+      prompt.replace(UINT16_MAX - PROMPT_TRUNC_MARKER.size(), string::npos, PROMPT_TRUNC_MARKER);
+    }
+    uint16_t plen = static_cast<uint16_t>(prompt.size());
     if (fwrite(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return false; }
     if (plen > 0) {
-      size_t written = fwrite(cp.prompt.data(), 1, plen, fp);
+      size_t written = fwrite(prompt.data(), 1, plen, fp);
       if (written != plen) { fclose(fp); return false; }
     }
   }
