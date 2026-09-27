@@ -1697,6 +1697,7 @@
             }
         }
 
+
         function renderMathInDiv(parentDiv) {
             if (typeof renderMathInElement === 'function') {
                 renderMathInElement(parentDiv, {
@@ -1709,6 +1710,10 @@
                         { left: '\\(', right: '\\)', display: false },
                         { left: '\\[', right: '\\]', display: true  }
                     ],
+                    // Tool labels (e.g. exec_shell("find ... \( -type f ...\)"))
+                    // are raw diagnostic text, never intended math: skip them
+                    // entirely so shell commands are never typeset as KaTeX.
+                    ignoredClasses: ['tool-label'],
                     throwOnError: false
                 });
             }
