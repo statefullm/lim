@@ -25,7 +25,7 @@
 enum class ServerStart { Reused, Started, Error };
 // True when start_lim_server_if_needed() attached to an already-running server
 // (the viewer may still be showing a previous session).  Read by session.cc to
-// decide whether to stream the "-- New Session --" divider.
+// decide whether to stream the "-- Session N --" divider.
 extern bool g_lim_server_reused;
 
 bool is_lim_server_running();

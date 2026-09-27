@@ -272,6 +272,11 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
                                      bool write_v1, llama_context* ctx,
                                      const vector<PromptCheckpoint>* checkpoints, int session_num);
 
+// Forward declaration for the browser session divider (defined after the
+// class): dashed rule + "Session N" label, with "(Reincarnated)" when the
+// previous session ended via /reincarnate rather than /quit.
+static string session_divider(int session_num, bool reincarnated);
+
 // ============================================================================
 // ChatSession class: orchestrates the main chat turn loop
 // ============================================================================
@@ -1641,12 +1646,7 @@ bool ChatSession::handle_reincarnate_completion() {
     announce_new_session(new_log_index);
 
     if (should_output_to_browser()) {
-        string divider =
-            "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
-            "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
-            "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session (Reincarnated) --</span>\n"
-            "</div>\n\n";
-        stream_html(divider);
+        stream_html(session_divider(new_log_index, true));
     }
 
     string follow_prompt = "Follow the prompt in " + LIM_CONFIG_DIR + "/userprompt";
@@ -1698,6 +1698,19 @@ bool ChatSession::handle_reincarnate_completion() {
 static string save_diag(size_t n_checkpoints, size_t n_tokens) {
     return to_string(n_checkpoints) + " checkpoint" + (n_checkpoints != 1 ? "s" : "")
          + ", " + to_string(n_tokens) + " token" + (n_tokens != 1 ? "s" : "");
+}
+
+// Helper: browser divider separating two sessions in a persistent viewer
+// (limServer outlives lim).  Shows the new session's number so the viewer
+// can tell which session it is watching.
+static string session_divider(int session_num, bool reincarnated) {
+    return "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
+           "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
+           "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- Session "
+           + to_string(session_num)
+           + (reincarnated ? " (Reincarnated)" : "")
+           + " --</span>\n"
+           "</div>\n\n";
 }
 
 // Helper: compact save -- write only the token sequence (not the raw KV cache).
@@ -2317,16 +2330,13 @@ bool ChatSession::run() {
     }
 
     // Persistent server: when we attached to a server that survived a previous
-    // session, the viewer may still be showing that session.  Stream the same
-    // dashed divider the reincarnate flow uses so sessions stay visually
-    // separated (no SOH: the previous session's output remains readable).  A
-    // freshly started server has no prior viewer state -- no divider.
+    // session, the viewer may still be showing that session.  Stream the
+    // dashed "Session N" divider the reincarnate flow uses so sessions stay
+    // visually separated (no SOH: the previous session's output remains
+    // readable).  A freshly started server has no prior viewer state -- no
+    // divider.
     if (g_lim_server_reused && should_output_to_browser()) {
-        stream_html(
-            "\n\n<div style=\"text-align:center;margin:24px 0;\">\n"
-            "  <hr style=\"border:none;border-top:2px dashed #555;width:80%;margin:0 auto;padding:0;\">\n"
-            "  <span style=\"color:#aaa;font-size:13px;font-weight:bold;margin-top:6px;display:inline-block;\">-- New Session --</span>\n"
-            "</div>\n\n");
+        stream_html(session_divider(state_.log_index, false));
     }
 
     // --- MAIN CHAT TURN LOOP ---
