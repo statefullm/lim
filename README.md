@@ -12,7 +12,7 @@
 
 ![Cumulative time vs context length](cumulative.svg)
 
-*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. Mode 0 (LIM) adds only O(input tokens) per turn. At 222041 context tokens, Mode 2 (CACHED), which emulates llama-server, is only 1.8% slower than Mode 0 since it uses prefix matching to avoid re-decoding the entire history: every turn pays the O(history) re-tokenize + prefix-compare cost, and when the re-tokenization drifts from the sampled tokens it re-decodes from the last prompt checkpoint. Mode 1 (CHATBOT) re-tokenizes the full conversation text and re-decodes the entire history at each turn, growing quadratically: at the same context it has used 73% more time than Mode 0. That is, LIM is 1.73x faster than a standard chatbot.*
+*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. At 222041 context tokens, Mode 2 (CACHED) is 1.8% slower than the default Mode 0 (LIM), while Mode 1 (CHATBOT) used 73% more time: LIM is 1.73x faster than a standard chatbot. See **Benchmarking** for how each mode works.*
 
 ## How It Works
 
@@ -52,11 +52,7 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
 4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search and [Docling](https://github.com/DS4SD/docling) for PDF reading. LIM auto-starts them on demand; override the commands with `LIM_SEARXNG_CMD` / `LIM_DOCLING_CMD` (see **Web Search & PDF Setup** below).
 
-> **Note:** llama.cpp is bundled as a git subrepo with four patches applied in-tree (the patched code is committed and built directly by the Makefile; the matching `*.patch` files are kept as records so a future `git subrepo pull` can re-derive them):
-> - `llama-checkpoint.patch` (LIM-authored) -- recurrent state checkpointing, required for instant `/undo` on hybrid models. Pending PR upstream.
-> - `llama-utf8.patch` (LIM-authored) -- rejects out-of-range 4-byte UTF-8 sequences so malformed output can't terminate the process. Pending PR upstream.
-> - `llama-pr28243.patch` (upstream [PR #28243](https://github.com/ggml-org/llama.cpp/pull/28243), not authored by LIM) -- qwen4exp MTP draft graph, required for `LIM_MTP` on the `qwen4exp` architecture (Qwen3.8-Flash-Next). Two hunks were hand-merged against the current upstream base (the `TENSOR_ALLOW_RESHAPE` hyper-connection refactor).
-> - `llama-fattn-q80.patch` (LIM-authored) -- native Q8_0 K/V dequantization in the CUDA MMA_F16 flash-attention kernel (Q8_0 tiles dequantize to F16 in shared memory at tile load), so a Q8_0 KV cache runs at full flash-attention speed with no F16 pre-conversion pass and no `f16_extra` staging buffer that would scale with the context. This is what makes the always-Q8_0 MTP draft mirror affordable at 262144 context on 32 GB VRAM. Pending PR upstream.
+> **Note:** llama.cpp is bundled as a git subrepo with four patches applied in-tree: recurrent state checkpointing for instant `/undo` on hybrid models, UTF-8 robustness, MTP support (`LIM_MTP` on `qwen4exp`), and Q8_0 KV flash-attention. The matching `*.patch` files are kept as records so a future `git subrepo pull` can re-derive them.
 
 ---
 
@@ -352,12 +348,12 @@ Set via `LIM_OUTPUT`:
 | `LIM_OUTPUT` | `2` | Output mode: `0` = none, `1` = stdout only, `2` = browser only (default), `3` = both |
 | `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
 | `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget. Set between `0.0` and `1.0` (0.0 means the default value of `0.75`). |
-| `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget (`LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4`). Set explicitly to override. |
+| `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget. Set explicitly to override. |
 | `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
 | `LIM_WEB_TIMEOUT` | `600` | HTTP request timeout in seconds for fetches and searches |
 | `LIM_BRAVE_API_KEY` | *(empty)* | Brave Search API key. When set, LIM falls back to the [Brave Search API](https://api.search.brave.com/app) if SearXNG fails or returns no results. |
-| `GH_TOKEN` | *(empty)* | Optional GitHub personal access token for higher API rate limits when cloning repos or fetching from GitHub. |
+| `GH_TOKEN` | *(empty)* | Optional GitHub personal access token for higher API rate limits when read_files fetches GitHub URLs (issues, PRs, discussions, files). |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
 | `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && exec python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
@@ -372,8 +368,8 @@ Set via `LIM_OUTPUT`:
 | `LIM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
 | `LIM_BATCH` | `2048` | Batch size for token feeding |
 | `LIM_CTX` | `262144` | Context window size (KV-cache token capacity) |
-| `LIM_MTP` | `0` | Set to `1` to enable MTP (multi-token-prediction) speculative decoding. A second context mirroring the main KV cache proposes up to `LIM_MTP_DRAFT` tokens per round, and the main model verifies all of them in a single batch decode; each committed token is a fresh sample from the full target sampler chain at its own verify position, so the output is distribution-exact under any sampling configuration. The draft mirror's KV cache is always Q8_0 (independent of `LIM_CACHE_TYPE_K`/`LIM_CACHE_TYPE_V`): Q8_0 is the most compact type the CUDA MMA_F16 flash-attention kernel dequantizes natively (other quant types would force an F16 pre-conversion whose `f16_extra` staging buffer scales with the context), and because the main model verifies every proposal, mirror quantization costs acceptance rate only, never output correctness. It is not token-identical to a non-MTP run, but two MTP runs at `LIM_TEMPERATURE=0` are token-identical to each other. Speculation pauses only when the mirror can't be healed in place, due to a main decode truncated by KV exhaustion, a fast-restore from a cache saved without MTP, or sustained low acceptance. It auto-disables itself when committed tokens/round stays below 1.25 for two consecutive 32-round windows; `/clear` re-enables it. MTP is not implemented for benchmark chatbot modes 1 and 2. |
-| `LIM_MTP_BATCH` | `128` | Cap on the MTP draft context's batch size (1-512, only with `LIM_MTP=1`). The draft context's scheduler work buffers scale with this; nothing ever decodes more rows than this at once (the draft chain is single-row, the mirror prefill simply runs in more chunks), so lowering it saves VRAM at the cost of a slightly slower one-time prefill mirror. The actual draft-context memory is printed at startup with `LIM_DEBUG=1`. |
+| `LIM_MTP` | `0` | Set to `1` to enable MTP (multi-token-prediction) speculative decoding: a second context mirroring the main KV cache proposes up to `LIM_MTP_DRAFT` tokens per round, and the main model verifies them all in a single batch decode, so the mirror's quantization costs acceptance rate only, never output correctness. Speculation pauses when the mirror can't be kept in sync (a main decode truncated by KV exhaustion, or a fast-restore from a cache saved without MTP) or after sustained low acceptance (it auto-disables itself; `/clear` re-enables it). MTP is not implemented for benchmark chatbot modes 1 and 2. |
+| `LIM_MTP_BATCH` | `128` | Cap on the MTP draft context's batch size (1-512, only with `LIM_MTP=1`). Lowering it saves VRAM at the cost of a slightly slower one-time prefill mirror. The actual draft-context memory is printed at startup with `LIM_DEBUG=1`. |
 | `LIM_MTP_DRAFT` | `4` | Number of tokens proposed per MTP round (1-32, only with `LIM_MTP=1`); must not exceed the model's recurrent rollback window. The default was found to be the speed sweet spot for the Qwen3.8-27B class -- longer drafts cost more memory for diminishing acceptance gains. |
 | `LIM_MTP_SIDECAR` | *(empty)* | Path to a separate MTP-only GGUF file (only with `LIM_MTP=1`). When set, the MTP draft head is loaded from this file instead of the main model. Use this for models whose GGUF quantization omits the nextn tensors (e.g. some Qwen3.8-Flash-Next builds). The sidecar is a small GGUF containing only the MTP layer weights (~2 GB) with `nextn_predict_layers` in its metadata. |
 | `LIM_THREADS` | *(auto)* | Threads for inference: physical P-core count on hybrid CPUs (E-cores excluded), physical core count on non-hybrid CPUs, logical core count if the CPU topology can't be read |
@@ -383,7 +379,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_FREQUENCY_PENALTY` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency. Legacy name `LIM_PENALTY_FREQ` still accepted (new name wins if both set) |
 | `LIM_PRESENCE_PENALTY` | `1.5` | Presence penalty: discourages repeating previously used tokens. Legacy name `LIM_PENALTY_PRESENT` still accepted (new name wins if both set) |
 | `LIM_REPETITION_PENALTY` | `1.0` | Repetition penalty multiplier (1.0 = no penalty). Legacy name `LIM_PENALTY_REPEAT` still accepted (new name wins if both set) |
-| `LIM_SEED` | *(auto)* | Random seed for reproducibility (default is time-based) |
+| `LIM_SEED` | *(auto)* | Random seed for reproducibility (default: random) |
 | `LIM_TEMPERATURE` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding). At `0` LIM also omits the wall-clock timestamp from the system prompt (the only session-varying prompt content), making runs byte-reproducible; the model does not know the current date/time in this mode -- pass it explicitly in the prompt if needed. Legacy name `LIM_TEMP` still accepted (new name wins if both set) |
 | `LIM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
 | `LIM_DUMMY_THOUGHT` | *(built-in)* | Pre-filled stub used when `LIM_THINKING=0`. Leave unset to use the built-in default, set to an empty string to emit an empty thinking block (Qwen 3.8's "no thinking" signal), or set to any other string. |
@@ -402,7 +398,7 @@ Set via `LIM_OUTPUT`:
 
 ### Sampling Behavior
 
-Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG seed). This means repetition penalties apply only to tokens generated *during the current turn*, not to stale tokens from previous responses, and not to the user's input. llama-cli also penalizes only generated tokens, but it never resets the sampler chain between turns, so its penalty ring (64 tokens by default) can still carry tokens from the previous response into the next one. During auto-continue (tool-call chains, `/continue`), the sampler state is preserved so generation continues seamlessly.
+Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG seed). This means repetition penalties apply only to tokens generated *during the current turn*, not to stale tokens from previous responses, and not to the user's input. During auto-continue (tool-call chains, `/continue`), the sampler state is preserved so generation continues seamlessly.
 
 ---
 
@@ -527,7 +523,7 @@ coder cats --checkpoints
 >>> /load cats --checkpoints
 ```
 
-**Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that /undo works instantly for hybrid models right after restore. The rebuilt cache is then automatically written to `$LIM_CACHE_DIR` so all subsequent restores from the same save file are fast; when MTP is enabled, the draft mirror KV is also stored in the cache file, so a fast restore keeps MTP active. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for faster future restores. The name prefix in the cache filename is purely informational; LIM identifies cache files by their content hash, not their name. If you run `/save cats` followed by `/save dogs` with identical session content, only one cache file is written since both resolve to the same hash. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For fast cache restores, recurrent checkpoints build up naturally as new conversation turns complete, supporting instant /undo for each new turn. The `$LIM_CACHE_DIR/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
+**Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that /undo works instantly for hybrid models right after restore. The rebuilt cache is then automatically written to `$LIM_CACHE_DIR` so all subsequent restores from the same save file are fast; when MTP is enabled, the draft mirror KV is also stored in the cache file, so a fast restore keeps MTP active. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for faster future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For fast cache restores, recurrent checkpoints build up naturally as new conversation turns complete, supporting instant /undo for each new turn. The `$LIM_CACHE_DIR/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
 
 **Auto-save on clear and quit:** Before clearing the context, LIM automatically saves the current state to `$LIM_LOG_DIR/<N>-clear.save`. Before exiting, it saves to `$LIM_LOG_DIR/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 
@@ -551,14 +547,14 @@ whenever the server is running. Only on the first session after a machine reboot
 
 When lim starts and the viewer is not connected, lim prints the URL and waits before the first decode; the session proceeds as soon as the viewer loads the page. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables itself if the viewer connects later.
 
-The Python server (`limServer.py`) is a persistent service: it is started on first need by the first lim session (pinned to efficiency cores when a hybrid CPU is detected, unpinned on non-hybrid CPUs) and then outlives lim sessions. It reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients. Because the server survives lim's exit and crashes, the browser tab stays connected across lim restarts -- no reload needed; each new session streams a dashed `-- New Session --` divider. The only reload is after a machine reboot or a closed tab: start lim first, then load the URL (as above). If the server stops -- or is found reading a deleted/replaced FIFO node (lim verifies at startup and on `/reset` that the server's open fds, via `/proc/<pid>/fd`, match the FIFO inode it writes to) -- a fresh server takes its place and the page needs to be reloaded once.
+The Python server (`limServer.py`) is a persistent service: it is started on first need by the first lim session (pinned to efficiency cores when a hybrid CPU is detected, unpinned on non-hybrid CPUs) and then outlives lim sessions. It reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients. Because the server survives lim's exit and crashes, the browser tab stays connected across lim restarts -- no reload needed; each new session streams a dashed `-- Session N --` divider. The only reload is after a machine reboot or a closed tab: start lim first, then load the URL (as above). If the server stops -- or is left reading a deleted/replaced FIFO node -- a fresh server takes its place and the page needs to be reloaded once.
 
 ### VS Code Extension
 
 The LIM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
 
 The extension does two things:
-- **Opens a browser** pointing to `$LIM_HOST` (or localhost) on the configured port, after waiting for the server to respond.
+- **Opens a browser** pointing to `$LIM_HOST` (or the local hostname) on the configured port, after waiting for the server to respond.
 - **Creates a terminal** at `$HOME`. If `$LIM_HOST` is set and remote, it SSHs into that host as user `$LIM_AI_USER`; otherwise it opens a local shell.
 
 You then run your `coder` alias in that terminal as usual.
@@ -599,7 +595,7 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 |---|---|---|
 | `0` (default) | LIM normal | KV-cache persists across turns. Each token is decoded once and never re-decoded. Same approach as llama-cli interactive mode. |
 | `1` | Standard chatbot | Emulates a plain text-based chatbot: the conversation is held as text, so each turn re-tokenizes the full conversation text and re-decodes everything from scratch (no KV reuse). TPS includes re-tokenize + re-decode + generation. |
-| `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding. |
+| `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding; if the re-tokenization drifts from the sampled tokens, it re-decodes from the last prompt checkpoint. |
 
 **Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
 
