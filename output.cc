@@ -113,7 +113,9 @@ void pipe_write(const char* data, size_t len) {
 }
 
 // --- HTML Escape Contract (uses the shared escape_tag from parsers.cc) ---
-static string html_escape(const string& input) {
+// Sentinel-based escape: unlike the plain html_escape in session_utils.cc,
+// this converts < > & into the sentinel tokens the viewer un-escapes.
+static string html_escape_sentinel(const string& input) {
   string result = input;
   // Step 1: Recursively escape pre-existing sentinel tokens.
   { string sentinel_lt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_lt += "lt"; sentinel_lt += Tokens::HTML_SENTINEL_CHAR; escape_tag(result, sentinel_lt, Tokens::HTML_ESCAPE_CHAR); }
@@ -137,7 +139,7 @@ void stream(const string& raw_token) {
 
   // HTML-escape <, >, & so they render as text in the browser.
   // Uses sentinel-based recursive escape contract (mirrors parsers.cc).
-  string escaped = html_escape(filtered);
+  string escaped = html_escape_sentinel(filtered);
 
   // Combine prefix + content into a single pipe_write to prevent the
   // Python FIFO reader from splitting them across separate WebSocket
@@ -162,7 +164,7 @@ void stream_speed(const string& speed_text) {
 
 void stream_think(const string& text) {
   if (!should_output_to_browser() || text.empty()) return;
-  string escaped = html_escape(text);
+  string escaped = html_escape_sentinel(text);
   string payload(1, SEG_THINK);
   payload += escaped;
   pipe_write(payload.c_str(), payload.length());

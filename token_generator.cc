@@ -25,7 +25,6 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
-extern bool honest_speed;
 extern int speed_update_interval;
 
 // --- Helper to escape token piece strings for token log ---
@@ -1068,11 +1067,12 @@ TokenGenerator::Result TokenGenerator::generate() {
                 auto now = chrono::high_resolution_clock::now();
                 double total_elapsed = chrono::duration<double>(now - start).count() + feed_time_;
                 if (total_elapsed > 0) {
-                    // Pick denominator based on honest_speed global
-                    double denom = total_elapsed;  // default: wall clock ("honest")
-                    if (!honest_speed && t_count_ >= 1) {
-                        denom = chrono::duration<double>(now - t_gen_start).count();
-                    }
+                    // Denominator shared with diag_speed: the sample+sync
+                    // window (first to last token) in benchmark mode, else
+                    // the full wall clock.
+                    double window = (t_count_ >= 1)
+                        ? chrono::duration<double>(now - t_gen_start).count() : 0.0;
+                    double denom = speed_denominator(total_elapsed, window);
                     if (denom > 0) {
                         // Browser status bar only: the TPS log line is written
                         // once per turn in diag_speed() at turn end.

@@ -27,12 +27,28 @@ bool open_session_logs(int idx);
 // Strip all occurrences of given tags from a string
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
 
+extern bool honest_speed;
+
+// Pick the speed-diagnostic denominator, shared by the turn-end diagnostic
+// (diag_speed) and the mid-generation status bar update: the sample window
+// (first to last token, matching llama-cli's "Generation: X t/s") in
+// benchmark mode, or the full wall-clock span when honest_speed.
+inline double speed_denominator(double wall, double window) {
+  return (!honest_speed && window > 0.0) ? window : wall;
+}
+
+// Format the context-position string: "45678 (51%)". Shared by the status-bar
+// speed string and the first-turn / clear / restore / undo diagnostics.
+inline std::string context_pos(size_t n_tokens, int n_ctx) {
+  int pct = (n_ctx > 0) ? (int)((n_tokens / (double)n_ctx) * 100.0) : 0;
+  return std::to_string(n_tokens) + " (" + std::to_string(pct) + "%)";
+}
+
 // Format the compact speed + context string shown in the browser status bar:
 // "123 t/s | 45678 (51%)". Shared by the turn-end diagnostic and the
 // mid-generation status update.
 inline std::string format_speed_ctx(int speed_tps, int n_past, int n_ctx) {
-  int pct = (n_ctx > 0) ? (int)((n_past / (double)n_ctx) * 100.0) : 0;
-  return std::to_string(speed_tps) + " t/s | " + std::to_string(n_past) + " (" + std::to_string(pct) + "%)";
+  return std::to_string(speed_tps) + " t/s | " + context_pos(n_past, n_ctx);
 }
 
 // Speed/context diagnostic. Always writes the TPS log line and (when browser

@@ -172,6 +172,20 @@ ToolExecutor::Result ToolExecutor::execute(
         }
     }
 
+    // Feed the malformed-call abort message as a tool result (shared by the
+    // mid-chain abort and the final no-continue abort paths).
+    auto feed_abort = [&]() {
+        string abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
+        vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
+        // build_tool_result_turn wraps: user_start + "[Tool Result]\n" + msg + turn_end + "\n" + assistant_start
+        if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
+            feed_tokens(abort_tokens);
+
+            // Log abort tool result tokens to token_log when debug is enabled
+            log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
+        }
+    };
+
     if (!abort_auto) {
         // If correction is needed, return immediately without feeding any tool
         // result tokens.  The main loop will handle the correction cycle: feed
@@ -297,28 +311,13 @@ ToolExecutor::Result ToolExecutor::execute(
             state.auto_continue = false;
             generated_text = "";
 
-            string abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
-            vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
-            // build_tool_result_turn wraps: user_start + "[Tool Result]\n" + msg + turn_end + "\n" + assistant_start
-            if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
-                feed_tokens(abort_tokens);
-
-                // Log abort tool result tokens to token_log when debug is enabled
-                log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
-            }
+            feed_abort();
         }
     } else {
         state.auto_continue = false;
         generated_text = "";
 
-        string abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
-        vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
-        if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
-            feed_tokens(abort_tokens);
-
-            // Log abort tool result tokens to token_log when debug is enabled
-            log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
-        }
+        feed_abort();
     }
 
     return result;

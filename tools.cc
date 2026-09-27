@@ -442,9 +442,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       bool box_opened = false;
       result = fs.exec_shell(
           command,
-          [&box_opened]() {
-              // Opening callback -- don't send HTML yet; wait for first chunk.
-          },
+          nullptr,  // no on_open: the result box opens on the first chunk
           [&box_opened](const string& chunk) {
               // On first chunk, open the green tool-result box before streaming content.
               if (!box_opened) {

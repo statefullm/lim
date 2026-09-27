@@ -56,20 +56,11 @@ extern void diag(const string& msg, const char* color);
 extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
-extern bool honest_speed;
 extern int chatbot_mode;
 extern std::ofstream tps_log;
 extern std::string g_dummy_thought_text;
 
 // HOME is declared as extern std::string HOME in network.h
-
-// --- Helper to trim leading/trailing whitespace ---
-static string trim(const string& s) {
-    size_t start = s.find_first_not_of(" \t\r\n");
-    if (start == string::npos) return "";
-    size_t end = s.find_last_not_of(" \t\r\n");
-    return s.substr(start, end - start + 1);
-}
 
 // --- Command table: single source of truth for dispatch, alias blocking, and help ---
 enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, REMIND, CONTINUE, SAVE, RESTORE, DELETE, HELP, UNDO };
@@ -155,12 +146,12 @@ static map<string, string> load_aliases() {
     string line;
     while (getline(in, line)) {
         // Skip comments and blank lines
-        string trimmed = trim(line);
+        string trimmed = trim_chars(line, " \t\r\n");
         if (trimmed.empty() || trimmed[0] == '#') continue;
         size_t eq = trimmed.find('=');
         if (eq == string::npos) continue;
-        string key = trim(trimmed.substr(0, eq));
-        string value = trim(trimmed.substr(eq + 1));
+        string key = trim_chars(trimmed.substr(0, eq), " \t\r\n");
+        string value = trim_chars(trimmed.substr(eq + 1), " \t\r\n");
         if (!key.empty() && key[0] == '/') {
             // Strip leading '/' to get the command name
             string cmd = key.substr(1);
@@ -477,8 +468,7 @@ private:
         // Update browser: clear the viewer and immediately set the new
         // context diagnostic in a single pipe write so they arrive together.
         if (should_output_to_browser()) {
-            double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-            string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+            string ctx_str = context_pos(n_past_, (int)cparams_.n_ctx);
             const char soh = 0x01;
             pipe_write(&soh, 1);
             pipe_write(&SEG_SPEED, 1);
@@ -967,6 +957,16 @@ private:
         state_.rs_checkpoint_saved_this_turn = false;
     }
 
+    // Clear the per-turn failure latches: they are only meaningful within one
+    // auto-continue chain, so they must start fresh once the user gets control
+    // back.  Step 9 (normal prompt return) clears them on the fall-through;
+    // the eject paths that `continue` past it clear them explicitly.  Clearing
+    // also lets /continue trigger a fresh correction / minor self-fix.
+    void reset_turn_failure_latches() {
+        state_.correction_attempted_this_turn = false;
+        state_.minor_tool_error_self_fix_used = false;
+    }
+
     // --- Main loop methods ---
     string get_user_input();
     Command handle_command(const string& input);
@@ -1053,10 +1053,7 @@ string ChatSession::get_user_input() {
                        state_.last_elapsed, state_.last_decode_time, true);
         } else if (!state_.first_turn_done && should_output_to_browser()) {
             // First turn: show context position while user types their prompt.
-            double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-            ostringstream oss;
-            oss << n_past_ << " (" << (int)context_percent << "%)";
-            stream_speed(oss.str());
+            stream_speed(context_pos(n_past_, (int)cparams_.n_ctx));
         }
 
         const char* main_p = "\001\033[1;96m\002>>> \001\033[96m\002";
@@ -1223,7 +1220,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
     if (!c) return Command::NONE;
 
     // Parse optional argument.
-    string arg = trim(rest.substr((int)strlen(c->name)));
+    string arg = trim_chars(rest.substr((int)strlen(c->name)), " \t\r\n");
     switch (c->arg) {
         case ArgType::PATH:
             save_prefix_.clear();
@@ -2272,8 +2269,7 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
 
     // Update browser status bar with restored context position
     if (should_output_to_browser()) {
-        double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-        string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+        string ctx_str = context_pos(n_past_, (int)cparams_.n_ctx);
         pipe_write(&SEG_SPEED, 1);
         string speed_msg = "Loaded | " + ctx_str;
         pipe_write(speed_msg.c_str(), speed_msg.length());
@@ -2660,8 +2656,7 @@ bool ChatSession::run() {
             log_entry("SYSTEM", "Restored to checkpoint: \"" + target.prompt.substr(0, min((int)target.prompt.size(), 60)) + "\"");
 
             if (should_output_to_browser()) {
-                double context_percent = (n_past_ / (double)cparams_.n_ctx) * 100.0;
-                string ctx_str = std::to_string(n_past_) + " (" + std::to_string((int)context_percent) + "%)";
+                string ctx_str = context_pos(n_past_, (int)cparams_.n_ctx);
                 pipe_write(&SEG_SPEED, 1);
                 string speed_msg = "Undid " + to_string(turns_back) + " | " + ctx_str;
                 pipe_write(speed_msg.c_str(), speed_msg.length());
@@ -3269,8 +3264,7 @@ bool ChatSession::run() {
                     diag("System: Tool correction aborted: failed to feed correction prompt. Type '/clear' to reset.", "\033[1;31m");
                     state_.conversation_text.clear();
                     state_.auto_continue = false;
-                    state_.correction_attempted_this_turn = false;
-                    state_.minor_tool_error_self_fix_used = false;
+                    reset_turn_failure_latches();
                     continue;
                 }
                 log_tokens("FEED TOOL_CORRECTION", correction_tokens, ctx_);
@@ -3310,13 +3304,7 @@ bool ChatSession::run() {
                         // in lockstep.
                         state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
-                        // Returning control to the user prompt: the per-turn failure
-                        // latches are only meaningful within one auto-continue chain
-                        // (step 9 clears them on a normal prompt return, but this path
-                        // `continue`s past it).  Clearing them also lets /continue
-                        // trigger a fresh correction.
-                        state_.correction_attempted_this_turn = false;
-                        state_.minor_tool_error_self_fix_used = false;
+                        reset_turn_failure_latches();
                         continue;
                     }
                     diag("System: Tool correction successful, injecting clean tool call.", "\033[35m");
@@ -3367,8 +3355,7 @@ bool ChatSession::run() {
                         // recovers fully.
                         state_.conversation_text.clear();  // fed correction prompt is not in it; rebuild from tracker
                         state_.auto_continue = false;
-                        state_.correction_attempted_this_turn = false;
-                        state_.minor_tool_error_self_fix_used = false;
+                        reset_turn_failure_latches();
                         continue;
                     }
 
@@ -3388,8 +3375,7 @@ bool ChatSession::run() {
                         diag("System: Tool correction aborted: failed to feed injected tool call. Type '/clear' to reset.", "\033[1;31m");
                         state_.conversation_text.clear();
                         state_.auto_continue = false;
-                        state_.correction_attempted_this_turn = false;
-                        state_.minor_tool_error_self_fix_used = false;
+                        reset_turn_failure_latches();
                         continue;
                     }
                     log_tokens("FEED TOOL_CORRECTION_INJECT", inj_tokens, ctx_);
@@ -3458,12 +3444,7 @@ bool ChatSession::run() {
                 // remaining context, so no correction is possible without exceeding the
                 // limit. Eject to the prompt with an explanation rather than failing silently.
                 diag("System: Tool correction aborted: correction prompt does not fit in remaining context (" + std::to_string(correction_tokens.size()) + " tokens needed, " + std::to_string(cparams_.n_ctx - n_past_) + " available). Type '/clear' to reset.", "\033[1;33m");
-                // Returning control to the user prompt: clear the per-turn failure
-                // latches (step 9 would do it on a normal prompt return, but this
-                // path `continue`s past it) so the next turn gets a fresh correction
-                // attempt and a fresh minor self-fix chance.
-                state_.correction_attempted_this_turn = false;
-                state_.minor_tool_error_self_fix_used = false;
+                reset_turn_failure_latches();
             }
             continue;
         }
@@ -3479,8 +3460,7 @@ bool ChatSession::run() {
         // was_mid_tool_call_).  Staleness is covered by the clears in
         // feed_user_message (new prompt) and reset_session_state (/clear,
         // /reincarnate, restore failure).
-        state_.correction_attempted_this_turn = false;
-        state_.minor_tool_error_self_fix_used = false;
+        reset_turn_failure_latches();
 
         // 10. Handle reincarnate completion
         if (handle_reincarnate_completion()) continue;

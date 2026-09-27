@@ -19,7 +19,6 @@ extern bool is_debug;
 extern std::ofstream chat_log;
 extern std::ofstream token_log;
 extern std::ofstream tps_log;
-extern bool honest_speed;
 
 vector<llama_token> build_user_assistant_turn(llama_context* ctx, const string& input);
 
@@ -90,14 +89,9 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags) {
 void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time, bool to_stdout) {
     if (t_count <= 0 || elapsed <= 0.0) return;
 
-    // Pick denominator based on honest_speed global:
-    //   false (default): sample+sync window (first to last token),
-    //                     matching llama-cli's "Generation: X t/s"
-    //   true: full wall-clock elapsed time including pre/post overhead
-    double denom = elapsed;
-    if (!honest_speed && decode_time > 0.0) {
-        denom = decode_time;
-    }
+    // Denominator shared with the mid-generation status bar: the sample+sync
+    // window (first to last token) in benchmark mode, else the full wall clock.
+    double denom = speed_denominator(elapsed, decode_time);
     double speed = t_count / denom;
 
     string msg = format_speed_ctx(round_int(speed), n_past, n_ctx);

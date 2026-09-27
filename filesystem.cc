@@ -697,16 +697,12 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
     chat_log << final_message << "\n";
     chat_log.flush();
 
-    // Styled HTML to browser pipe (uses .tool-label colors from viewer.html)
+    // Styled HTML to browser pipe (uses .tool-label colors from viewer.html);
+    // pipe_write reopens the FIFO itself and no-ops when it can't open it.
     if (should_output_to_browser()) {
-      if (pipe_fd < 0) {
-        pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
-      }
-      if (pipe_fd >= 0) {
-        string html = "<div class='tool-label'>" + html_escape(final_message) + "</div>";
-        pipe_write(&SEG_HTML, 1);
-        pipe_write(html.c_str(), html.length());
-      }
+      string html = "<div class='tool-label'>" + html_escape(final_message) + "</div>";
+      pipe_write(&SEG_HTML, 1);
+      pipe_write(html.c_str(), html.length());
     }
 
     // Plain text to stdout
