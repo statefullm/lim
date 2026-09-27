@@ -349,6 +349,14 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           out.is_error = true;
       } else if (r_content.empty()) {
           result = path+" contains 0 matches of this exact byte sequence (pay attention to whitespace!): \"" + text + "\"";
+          // The common 0-match cause is a spurious trailing newline (Rule 2:
+          // the value must abut the closing tag). Point at the exact byte
+          // difference so the LLM can retry without it.
+          if (text.size() > 1 && text.back() == '\n') {
+              string tail = text.substr(0, text.size() - 1);
+              if (tail.size() > 40) tail = "..." + tail.substr(tail.size() - 40);
+              result += "\nDid you mean to end TEXT with \"" + tail + "\" rather than \"" + tail + "\n\"? If so, retry with the trailing newline removed.";
+          }
       } else {
           result = r_content;
       }

@@ -11,6 +11,7 @@ CRITICAL TOOL CALLING RULES:
 7. The strings <function= and </function> are reserved for executing tool calls. They can appear in tool call content, but obviously you never want to output them in prose: use FUNC_START and FUNC_END instead.
 8. The tool calls can handle *arbitrary content* of any length *without any escaping* (with one exception so rare that we won't discuss it here).
 9. The path or paths parameter must not contain newlines.
+10. The only newlines allowed in a tool call are ones that appear in actual content.
 
 Always use these tools for any filesystem or shell operation:
 
