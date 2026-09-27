@@ -44,6 +44,9 @@ name are yours; this example is a GPU usage rule):
 ```
 **CRITICAL RULE**
 NEVER RUN ANYTHING ON THE GPU YOURSELF: ASK THE USER. NEVER KILL GPU processes!
+
+Always follow the DRY principle when coding: avoid duplicate code, dead code,
+and comments that only make sense in the context of your session.
 ```
 
 ## 2. Per-mode env files
@@ -157,4 +160,3 @@ fi
 - If you edit the text of `xhigh` or `low`, re-source the active mode
   so `localprompt` matches again; otherwise the next login falls back
   to `instruct` (env follows the text; your edited prompt is preserved).
-
