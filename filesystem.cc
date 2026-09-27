@@ -610,10 +610,10 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   // re-decodes.
   llama_pos kv_max = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
   if ((size_t)(kv_max + 1) != tokens.size()) {
-      diag("V1 cache: live KV covers " + std::to_string((long)(kv_max + 1)) +
-           " tokens but the save has " + std::to_string(tokens.size()) +
-           " -- skipping cache write (tracker/KV desync); restore will re-decode", "\033[33m");
-      return false;
+    diag("V1 cache: live KV covers " + std::to_string((long)(kv_max + 1)) +
+         " tokens but the save has " + std::to_string(tokens.size()) +
+         " -- skipping cache write (tracker/KV desync); restore will re-decode", "\033[33m");
+    return false;
   }
 
   // Write the cache as $LIM_CACHE_DIR/<name>-<hash>: header + main KV state
@@ -641,7 +641,7 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   }
 
   std::string header = std::string(CACHE_MAGIC) + "main_size=" + std::to_string(n_written) +
-                       " mtp_size=" + std::to_string(mtp_buf.size()) + "\n";
+    " mtp_size=" + std::to_string(mtp_buf.size()) + "\n";
   std::vector<uint8_t> file;
   file.reserve(header.size() + n_written + mtp_buf.size());
   file.insert(file.end(), header.begin(), header.end());

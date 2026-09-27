@@ -1361,11 +1361,11 @@ vector<map<string, string>> NetworkTools::fetch_urls(const vector<string>& urls)
 // than real content (fetch failure, SPA detection, empty extraction, etc.).
 static bool is_fetch_diagnostic(const string& text) {
   return text.find("[Failed to fetch") != string::npos ||
-         text.find("[Skipped") != string::npos ||
-         text.find("[Failed to process") != string::npos ||
-         text.find("[This page appears to be JavaScript-rendered") != string::npos ||
-         text.find("[No content extracted") != string::npos ||
-         text.find("[No body content extracted") != string::npos;
+    text.find("[Skipped") != string::npos ||
+    text.find("[Failed to process") != string::npos ||
+    text.find("[This page appears to be JavaScript-rendered") != string::npos ||
+    text.find("[No content extracted") != string::npos ||
+    text.find("[No body content extracted") != string::npos;
 }
 
 // Append up to 3 results from a search engine's JSON array to llm_result.

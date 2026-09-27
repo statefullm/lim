@@ -119,7 +119,7 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
           if (k.size() <= n || k.compare(k.size() - n, n, suffix) != 0) return -1;
           char vbuf[32];
           return llama_model_meta_val_str_by_index(model, i, vbuf, sizeof(vbuf)) > 0
-                 ? atoi(vbuf) : -1;
+            ? atoi(vbuf) : -1;
         };
         if (head_k < 0) head_k = suffix_val(".attention.key_length");
         if (head_v < 0) head_v = suffix_val(".attention.value_length");
@@ -139,7 +139,7 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
       const double bpp_k = ggml_row_size(mc.type_k, 32) / 32.0;
       const double bpp_v = ggml_row_size(mc.type_v, 32) / 32.0;
       est_kv_bytes = (double)mc.n_ctx * (double)n_head_kv *
-                     ((double)head_k * bpp_k + (double)head_v * bpp_v);
+        ((double)head_k * bpp_k + (double)head_v * bpp_v);
     }
   }
   auto kv_hint = [](double bytes, int n_ctx) {
@@ -155,9 +155,9 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
     std::string msg = "MTP: failed to create MTP draft context (out of memory?) -- MTP disabled";
     if (est_kv_bytes > 0) {
       msg += "; estimated mirror KV: " + kv_hint(est_kv_bytes, mc.n_ctx) +
-             "; total also includes compute buffers (scale with the draft batch, " +
-             std::to_string(mc.n_batch) + " rows) -- lower LIM_CTX and/or "
-             "LIM_MTP_BATCH to make room";
+        "; total also includes compute buffers (scale with the draft batch, " +
+        std::to_string(mc.n_batch) + " rows) -- lower LIM_CTX and/or "
+        "LIM_MTP_BATCH to make room";
     }
     diag(msg, "\033[33m");
     delete self;
@@ -281,7 +281,7 @@ void MtpSpeculator::process(const llama_batch& batch) {
     }
   }
 
-  origin_has_logits_ = false;
+    origin_has_logits_ = false;
   for (int start = 0; start < n; start += n_batch_mtp_) {
     const int chunk = std::min(n_batch_mtp_, n - start);
     common_batch_clear(mtp_batch_);
@@ -372,7 +372,7 @@ void MtpSpeculator::invalidate(const std::string& reason) {
 
 bool MtpSpeculator::can_draft() const {
   return valid_ && origin_has_logits_ && mirror_pos_ >= 0 &&
-         (int)pending_h_.size() == n_embd_ && (int)mtp_h_last_.size() == n_embd_;
+    (int)pending_h_.size() == n_embd_ && (int)mtp_h_last_.size() == n_embd_;
 }
 
 std::vector<llama_token> MtpSpeculator::draft() {

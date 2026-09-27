@@ -18,7 +18,7 @@ extern bool is_debug;
 const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter contains newlines or a parameter tag, likely because a " + string(PARAM_END) + " closing tag is missing.";
 const string PATHS_NEWLINE_ERROR = "System Error: Invalid tool format. The paths parameter contains newlines or a parameter tag, likely because a " + string(PARAM_END) + " closing tag is missing. List multiple paths comma-separated on a single line.";
 bool param_has_newline(const string& s) {
-    return s.find('\n') != string::npos || s.find('\r') != string::npos;
+  return s.find('\n') != string::npos || s.find('\r') != string::npos;
 }
 // A path/paths value containing a parameter tag means its closing PARAM_END
 // was missing and the value bled into following parameter text (with or
@@ -27,93 +27,93 @@ bool param_has_newline(const string& s) {
 // values (old/new, content), which may legitimately contain raw parameter
 // tags -- e.g., when editing files that contain XML-like text.
 static bool path_value_malformed(const string& s) {
-    return param_has_newline(s) || s.find(PARAM_START) != string::npos;
+  return param_has_newline(s) || s.find(PARAM_START) != string::npos;
 }
 
 // Tool metadata: required parameters per tool.
 struct ToolSpec { string name; vector<string> params; };
 static const vector<ToolSpec> tool_specs = {
-    {"read_files",  {"paths"}},
-    {"search_file", {"path"}},
-    {"write_file",  {"path", "content"}},
-    {"edit_file",   {"path", "old", "new"}},
-    {"exec_shell",  {"command"}},
-    {"web_search",  {"query"}}
+  {"read_files",  {"paths"}},
+  {"search_file", {"path"}},
+  {"write_file",  {"path", "content"}},
+  {"edit_file",   {"path", "old", "new"}},
+  {"exec_shell",  {"command"}},
+  {"web_search",  {"query"}}
 };
 
 // Look up a tool's spec by name; nullptr if the tool is unknown.
 static const ToolSpec* find_spec(const string& tool_name) {
-    for (const auto& spec : tool_specs) {
-        if (spec.name == tool_name) return &spec;
-    }
-    return nullptr;
+  for (const auto& spec : tool_specs) {
+    if (spec.name == tool_name) return &spec;
+  }
+  return nullptr;
 }
 
 static vector<string> find_missing_params(const string& tool_name, const string& tool_call) {
-    vector<string> missing;
-    const ToolSpec* spec = find_spec(tool_name);
-    if (spec == nullptr) return missing;  // unknown tool returns empty
-    for (const auto& param : spec->params) {
-        // Search on PARAM_START only, then extract and compare the name
-        // tolerating stray quotes
-        bool found = false;
-        size_t pos = 0;
-        while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
-            size_t after_prefix = pos + strlen(PARAM_START);
-            size_t gt = tool_call.find('>', after_prefix);
-            if (gt == string::npos) break;
+  vector<string> missing;
+  const ToolSpec* spec = find_spec(tool_name);
+  if (spec == nullptr) return missing;  // unknown tool returns empty
+  for (const auto& param : spec->params) {
+    // Search on PARAM_START only, then extract and compare the name
+    // tolerating stray quotes
+    bool found = false;
+    size_t pos = 0;
+    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
+      size_t after_prefix = pos + strlen(PARAM_START);
+      size_t gt = tool_call.find('>', after_prefix);
+      if (gt == string::npos) break;
 
-            string raw = tool_call.substr(after_prefix, gt - after_prefix);
-            if (strip_quotes_from_name(raw) == param) { found = true; break; }
-            pos++;
-        }
-        if (!found) {
-            missing.push_back(param);
-        }
+      string raw = tool_call.substr(after_prefix, gt - after_prefix);
+      if (strip_quotes_from_name(raw) == param) { found = true; break; }
+      pos++;
     }
-    return missing;
+    if (!found) {
+      missing.push_back(param);
+    }
+  }
+  return missing;
 }
 
 static bool check_params(const string& tool_name, const string& tool_call) {
-    return find_missing_params(tool_name, tool_call).empty();
+  return find_missing_params(tool_name, tool_call).empty();
 }
 
 // Quoted, comma-separated list of a tool's required parameters
 // (e.g., "\"path\", \"old\", \"new\"").  Used in the missing-parameter
 // error so the LLM sees the tool's full contract, not just what it missed.
 static string required_params_list(const string& tool_name) {
-    const ToolSpec* spec = find_spec(tool_name);
-    if (spec == nullptr) return "";
-    string s;
-    for (size_t i = 0; i < spec->params.size(); i++) {
-        if (i > 0) s += ", ";
-        s += "\"" + spec->params[i] + "\"";
-    }
-    return s;
+  const ToolSpec* spec = find_spec(tool_name);
+  if (spec == nullptr) return "";
+  string s;
+  for (size_t i = 0; i < spec->params.size(); i++) {
+    if (i > 0) s += ", ";
+    s += "\"" + spec->params[i] + "\"";
+  }
+  return s;
 }
 
 static string join_paths(const vector<string>& paths) {
-    string s = "\"";
-    for (size_t i = 0; i < paths.size(); i++) {
-        if (i > 0) s += "\", \"";
-        s += paths[i];
-    }
-    s += "\"";
-    return s;
+  string s = "\"";
+  for (size_t i = 0; i < paths.size(); i++) {
+    if (i > 0) s += "\", \"";
+    s += paths[i];
+  }
+  s += "\"";
+  return s;
 }
 
 static bool is_known_tool(const string& name) {
-    return find_spec(name) != nullptr;
+  return find_spec(name) != nullptr;
 }
 
 // Build the standard error message for an unrecognized tool name.
 static string unknown_tool_error(const string& name) {
-    string avail;
-    for (const auto& spec : tool_specs) {
-        if (!avail.empty()) avail += ", ";
-        avail += spec.name;
-    }
-    return "Error: Unknown tool '" + name + "'. Available tools: " + avail + ".";
+  string avail;
+  for (const auto& spec : tool_specs) {
+    if (!avail.empty()) avail += ", ";
+    avail += spec.name;
+  }
+  return "Error: Unknown tool '" + name + "'. Available tools: " + avail + ".";
 }
 
 
@@ -128,30 +128,30 @@ static string unknown_tool_error(const string& name) {
 // gate rather than injected and striking again at execution
 // (validate/execute asymmetry).
 static bool path_params_malformed(const string& tool_name, const string& tool_call) {
-    if (tool_name == "read_files") {
-        return path_value_malformed(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"));
-    }
-    if (tool_name == "search_file" || tool_name == "write_file" || tool_name == "edit_file") {
-        return path_value_malformed(extract_path_arg(tool_call));
-    }
-    return false;
+  if (tool_name == "read_files") {
+    return path_value_malformed(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"));
+  }
+  if (tool_name == "search_file" || tool_name == "write_file" || tool_name == "edit_file") {
+    return path_value_malformed(extract_path_arg(tool_call));
+  }
+  return false;
 }
 
 bool validate_tool_call(const string& tool_call) {
-    size_t ns = tool_call.find(FUNC_START);
-    if (ns == string::npos) return false;
-    ns += string(FUNC_START).length();
-    size_t ne = tool_call.find('>', ns);
-    if (ne == string::npos) return false;
+  size_t ns = tool_call.find(FUNC_START);
+  if (ns == string::npos) return false;
+  ns += string(FUNC_START).length();
+  size_t ne = tool_call.find('>', ns);
+  if (ne == string::npos) return false;
 
-    string raw_name = tool_call.substr(ns, ne - ns);
-    // Strip stray quotes from the name.
-    string clean_name = strip_quotes_from_name(raw_name);
+  string raw_name = tool_call.substr(ns, ne - ns);
+  // Strip stray quotes from the name.
+  string clean_name = strip_quotes_from_name(raw_name);
 
-    if (!is_known_tool(clean_name)) return false;
-    if (!check_params(clean_name, tool_call)) return false;
-    if (path_params_malformed(clean_name, tool_call)) return false;
-    return true;
+  if (!is_known_tool(clean_name)) return false;
+  if (!check_params(clean_name, tool_call)) return false;
+  if (path_params_malformed(clean_name, tool_call)) return false;
+  return true;
 }
 
 ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
@@ -163,11 +163,11 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   string tool_call = tool_call_in;
   size_t ns = tool_call.find(FUNC_START);
   if (ns != string::npos) {
-      ns += string(FUNC_START).length();
-      size_t ne = tool_call.find('>', ns);
-      if (ne != string::npos) {
-          tool_name = tool_call.substr(ns, ne - ns);
-      }
+    ns += string(FUNC_START).length();
+    size_t ne = tool_call.find('>', ns);
+    if (ne != string::npos) {
+      tool_name = tool_call.substr(ns, ne - ns);
+    }
   }
 
   // Strip stray quotes from the tool name (e.g., "exec_shell" -> exec_shell).
@@ -180,15 +180,15 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   // inject the inferred path into the XML before validation so check_params passes.
   bool path_inferred = false;
   if (tool_name == "edit_file" && !state.last_search_path.empty()) {
-      size_t path_tag_pos = tool_call.find(string(PARAM_START) + "path>");
-      if (path_tag_pos == string::npos) {
-          size_t inject_at = tool_call.find('>', ns);
-          if (inject_at != string::npos) {
-              string injection = string(PARAM_START) + "path>" + state.last_search_path + PARAM_END;
-              tool_call = tool_call.substr(0, inject_at + 1) + injection + tool_call.substr(inject_at + 1);
-              path_inferred = true;
-          }
+    size_t path_tag_pos = tool_call.find(string(PARAM_START) + "path>");
+    if (path_tag_pos == string::npos) {
+      size_t inject_at = tool_call.find('>', ns);
+      if (inject_at != string::npos) {
+        string injection = string(PARAM_START) + "path>" + state.last_search_path + PARAM_END;
+        tool_call = tool_call.substr(0, inject_at + 1) + injection + tool_call.substr(inject_at + 1);
+        path_inferred = true;
       }
+    }
   }
 
   // Validate: is this a recognized tool with required parameters?
@@ -197,30 +197,30 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   out.parsed_tool_name = tool_name;
 
   if (!out.recognized) {
-      out.content = unknown_tool_error(tool_name);
-      out.is_error = true;
-      return out;
+    out.content = unknown_tool_error(tool_name);
+    out.is_error = true;
+    return out;
   }
   if (!out.params_valid) {
-      vector<string> missing = find_missing_params(tool_name, tool_call);
-      string missing_list;
-      for (size_t i = 0; i < missing.size(); i++) {
-          if (i > 0) missing_list += ", ";
-          missing_list += "\"" + missing[i] + "\"";
-      }
-      // Targeted and fed back as an ordinary tool result: the call is
-      // structurally well-formed -- recognized tool, all tags closed -- a
-      // required parameter is simply absent.  This is the model's one quick
-      // self-fix chance (tool_executor feeds the error straight back and
-      // latches it); only a repeat minor error before any non-minor tool
-      // call is routed through the correction cycle.  Naming the tool, the
-      // missing parameter(s), and the tool's full required set leaves no
-      // room for wild theories (escaping, truncation, FS bugs); the model
-      // just re-issues the call complete.
-      out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + ").";
-      out.display = "Missing parameter(s) for " + tool_name + ": " + missing_list;
-      out.is_error = true;
-      return out;
+    vector<string> missing = find_missing_params(tool_name, tool_call);
+    string missing_list;
+    for (size_t i = 0; i < missing.size(); i++) {
+      if (i > 0) missing_list += ", ";
+      missing_list += "\"" + missing[i] + "\"";
+    }
+    // Targeted and fed back as an ordinary tool result: the call is
+    // structurally well-formed -- recognized tool, all tags closed -- a
+    // required parameter is simply absent.  This is the model's one quick
+    // self-fix chance (tool_executor feeds the error straight back and
+    // latches it); only a repeat minor error before any non-minor tool
+    // call is routed through the correction cycle.  Naming the tool, the
+    // missing parameter(s), and the tool's full required set leaves no
+    // room for wild theories (escaping, truncation, FS bugs); the model
+    // just re-issues the call complete.
+    out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + ").";
+    out.display = "Missing parameter(s) for " + tool_name + ": " + missing_list;
+    out.is_error = true;
+    return out;
   }
 
   if (tool_name == "read_files") {
@@ -320,15 +320,15 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     if (!path.empty()) {
       string search_label = "search_file(\"" + path + "\"";
       if (!begin_str.empty() && !end_str.empty()) {
-          search_label += ", lines " + begin_str + "-" + end_str;
+        search_label += ", lines " + begin_str + "-" + end_str;
       } else if (!begin_str.empty()) {
-          search_label += ", line " + begin_str;
+        search_label += ", line " + begin_str;
       } else if (!end_str.empty()) {
-          search_label += ", lines 1-" + end_str;
+        search_label += ", lines 1-" + end_str;
       } else if (!text.empty()) {
-          // Truncate long search text for the diagnostic label.
-          string short_text = text.length() > 60 ? text.substr(0, 57) + "..." : text;
-          search_label += ", \"" + short_text + "\"";
+        // Truncate long search text for the diagnostic label.
+        string short_text = text.length() > 60 ? text.substr(0, 57) + "..." : text;
+        search_label += ", \"" + short_text + "\"";
       }
       search_label += ")";
       log_tool_diagnostic(search_label);
@@ -345,20 +345,20 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
 
       // Build the LLM-facing result string
       if (!r_error.empty()) {
-          result = "Error: " + r_error;
-          out.is_error = true;
+        result = "Error: " + r_error;
+        out.is_error = true;
       } else if (r_content.empty()) {
-          result = path+" contains 0 matches of this exact byte sequence (pay attention to whitespace!): \"" + text + "\"";
-          // The common 0-match cause is a spurious trailing newline (Rule 2:
-          // the value must abut the closing tag). Point at the exact byte
-          // difference so the LLM can retry without it.
-          if (text.size() > 1 && text.back() == '\n') {
-              string tail = text.substr(0, text.size() - 1);
-              if (tail.size() > 40) tail = "..." + tail.substr(tail.size() - 40);
-              result += "\nDid you mean to end TEXT with \"" + tail + "\" rather than \"" + tail + "\n\"? If so, retry with the trailing newline removed.";
-          }
+        result = path+" contains 0 matches of this exact byte sequence (pay attention to whitespace!): \"" + text + "\"";
+        // The common 0-match cause is a spurious trailing newline (Rule 2:
+        // the value must abut the closing tag). Point at the exact byte
+        // difference so the LLM can retry without it.
+        if (text.size() > 1 && text.back() == '\n') {
+          string tail = text.substr(0, text.size() - 1);
+          if (tail.size() > 40) tail = "..." + tail.substr(tail.size() - 40);
+          result += "\nDid you mean to end TEXT with \"" + tail + "\" rather than \"" + tail + "\n\"? If so, retry with the trailing newline removed.";
+        }
       } else {
-          result = r_content;
+        result = r_content;
       }
 
       display_result = r_display;
@@ -380,11 +380,11 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
       if (!r_error.empty()) {
-          result += ", Error: " + r_error;
-          out.is_error = true;
-          display_result = "Write file: " + path + ": " + r_error;
+        result += ", Error: " + r_error;
+        out.is_error = true;
+        display_result = "Write file: " + path + ": " + r_error;
       } else {
-          display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
+        display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
       }
     } else {
       result = "Error: No path provided to write_file";
@@ -400,7 +400,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     if (!path.empty()) {
       log_tool_diagnostic("edit_file(\"" + path + "\")");
       if (path_inferred && is_debug) {
-          diag("System: edit_file path " + path + " inferred from preceding search_file.", "\033[2;90m");
+        diag("System: edit_file path " + path + " inferred from preceding search_file.", "\033[2;90m");
       }
 
       FileSystemTools fs;
@@ -411,20 +411,20 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       if (result_map.count("error")) r_error = result_map.at("error");
       result = "Status: " + r_status;
       if (!r_changes.empty()) {
-          int n = atoi(r_changes.c_str());
-          result += ", " + to_string(n) + (n == 1 ? " change" : " changes");
-          display_result = "Edit file: " + path + ": " + to_string(n) + (n == 1 ? " change" : " changes");
+        int n = atoi(r_changes.c_str());
+        result += ", " + to_string(n) + (n == 1 ? " change" : " changes");
+        display_result = "Edit file: " + path + ": " + to_string(n) + (n == 1 ? " change" : " changes");
       } else {
-          display_result = "Edit file: " + path;
+        display_result = "Edit file: " + path;
       }
       if (!r_error.empty()) {
-          result += ", Error: " + r_error;
-          out.is_error = true;
-          // Check for expected edit errors (mismatch)
-          if (r_error.find("not found") != string::npos ||
-              r_error.find("exact match") != string::npos) {
-              out.is_expected_error = true;
-          }
+        result += ", Error: " + r_error;
+        out.is_error = true;
+        // Check for expected edit errors (mismatch)
+        if (r_error.find("not found") != string::npos ||
+            r_error.find("exact match") != string::npos) {
+          out.is_expected_error = true;
+        }
       }
     } else {
       result = "Error: No path provided to edit_file";
@@ -441,26 +441,26 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       // Defer opening the box until the first chunk arrives so empty results are hidden.
       bool box_opened = false;
       result = fs.exec_shell(
-          command,
-          nullptr,  // no on_open: the result box opens on the first chunk
-          [&box_opened](const string& chunk) {
-              // On first chunk, open the green tool-result box before streaming content.
-              if (!box_opened) {
-                  stream_html("\n\n<div class='tool-result'><pre><code>");
-                  box_opened = true;
-              }
-              // Stream raw command output inside the green box as HTML-escaped text.
-              // All SEG_HTML segments coalesce, so this builds up incrementally
-              // within the same <pre><code> block.
-              stream_html(html_escape(chunk));
-          },
-          [&box_opened](const string&) {
-              // Close the code fence and tool-result div only if we opened it.
-              if (box_opened) {
-                  stream_html("</code></pre></div>\n\n");
-              }
+        command,
+        nullptr,  // no on_open: the result box opens on the first chunk
+        [&box_opened](const string& chunk) {
+          // On first chunk, open the green tool-result box before streaming content.
+          if (!box_opened) {
+            stream_html("\n\n<div class='tool-result'><pre><code>");
+            box_opened = true;
           }
-      );
+          // Stream raw command output inside the green box as HTML-escaped text.
+          // All SEG_HTML segments coalesce, so this builds up incrementally
+          // within the same <pre><code> block.
+          stream_html(html_escape(chunk));
+        },
+        [&box_opened](const string&) {
+          // Close the code fence and tool-result div only if we opened it.
+          if (box_opened) {
+            stream_html("</code></pre></div>\n\n");
+          }
+        }
+        );
       // Don't show a separate summary box -- output is already streamed inside the green box above.
       display_result = "";
     } else {
@@ -477,8 +477,8 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       int n_results = 0;
       size_t wp = 0;
       while ((wp = result.find("Title:", wp)) != string::npos) {
-          n_results++;
-          wp += 6;
+        n_results++;
+        wp += 6;
       }
       display_result += ": " + to_string(n_results) + (n_results == 1 ? " result" : " results");
     } else {
@@ -493,7 +493,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   if (out.is_error) return out;
   // Detect error from content string as fallback for tools that set result but not is_error
   if (result.find("Error:") != string::npos) {
-      out.is_error = true;
+    out.is_error = true;
   }
 
   // Propagate path_inferred to the result so tool_executor can skip malformed handling.
@@ -502,7 +502,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   // Clear last_search_path after any non-search_file tool, so path inference
   // only applies when edit_file immediately follows search_file.
   if (tool_name != "search_file") {
-      state.last_search_path.clear();
+    state.last_search_path.clear();
   }
 
   return out;

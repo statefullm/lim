@@ -22,303 +22,303 @@ extern bool is_debug;
 extern ofstream chat_log;
 extern ofstream token_log;
 ToolExecutor::Result ToolExecutor::execute(
-    SessionState& state,
-    string& generated_text,
-    const string& full_generated,
-    size_t tool_start,
-    size_t tool_end,
-    bool was_mid_tool_call,
-    function<vector<llama_token>(string)> tokenize,
-    function<bool(const vector<llama_token>&)> feed_tokens,
-    llama_context* ctx,
-    int& n_past,
-    const llama_context_params& cparams,
-    int& g_auto_continue_depth,
-    int max_auto_continue
-) {
-    Result result;
+  SessionState& state,
+  string& generated_text,
+  const string& full_generated,
+  size_t tool_start,
+  size_t tool_end,
+  bool was_mid_tool_call,
+  function<vector<llama_token>(string)> tokenize,
+  function<bool(const vector<llama_token>&)> feed_tokens,
+  llama_context* ctx,
+  int& n_past,
+  const llama_context_params& cparams,
+  int& g_auto_continue_depth,
+  int max_auto_continue
+  ) {
+  Result result;
 
-    // When resuming from a mid-tool-call interrupt, prepend the saved partial text
-    // so the extracted tool_call contains the complete XML including FUNC_START.
-    string full_gen = full_generated;
-    if (!state.partial_tool_text.empty()) {
-        full_gen = state.partial_tool_text + full_gen;
-        state.partial_tool_text.clear();
-        // tool_end was found within generated_text, but full_gen now has
-        // state.partial_tool_text prepended. Adjust tool_end to be relative to full_gen.
-        // Re-search for FUNC_END in full_gen starting from tool_start to get the correct offset.
-        // On resume (tool_start==0), search from the actual FUNC_START position inside
-        // state.partial_tool_text to avoid double-counting it (depth would go 1->2 and never return).
-        size_t resume_search_from = was_mid_tool_call
-            ? full_gen.find(FUNC_START)
-            : tool_start;
-        tool_end = find_tool_end_robust(full_gen, resume_search_from);
-        if (tool_end != string::npos) {
-            size_t exact_pos = full_gen.find(FUNC_END, resume_search_from);
-            if (exact_pos == string::npos) {
-                repair_malformed_tool_end(full_gen, tool_end);
-                tool_end = full_gen.find(FUNC_END, resume_search_from);
-            }
-        }
+  // When resuming from a mid-tool-call interrupt, prepend the saved partial text
+  // so the extracted tool_call contains the complete XML including FUNC_START.
+  string full_gen = full_generated;
+  if (!state.partial_tool_text.empty()) {
+    full_gen = state.partial_tool_text + full_gen;
+    state.partial_tool_text.clear();
+    // tool_end was found within generated_text, but full_gen now has
+    // state.partial_tool_text prepended. Adjust tool_end to be relative to full_gen.
+    // Re-search for FUNC_END in full_gen starting from tool_start to get the correct offset.
+    // On resume (tool_start==0), search from the actual FUNC_START position inside
+    // state.partial_tool_text to avoid double-counting it (depth would go 1->2 and never return).
+    size_t resume_search_from = was_mid_tool_call
+      ? full_gen.find(FUNC_START)
+      : tool_start;
+    tool_end = find_tool_end_robust(full_gen, resume_search_from);
+    if (tool_end != string::npos) {
+      size_t exact_pos = full_gen.find(FUNC_END, resume_search_from);
+      if (exact_pos == string::npos) {
+        repair_malformed_tool_end(full_gen, tool_end);
+        tool_end = full_gen.find(FUNC_END, resume_search_from);
+      }
+    }
+  }
+
+  string tool_call = full_gen.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
+
+  string preamble = "";
+  if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
+
+  vector<string> strip_tags_vec;
+  // Strip full turn markers (user_start, assistant_start, turn_end).
+  if (!g_model_tokens.user_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.user_turn_start.text);
+  if (!g_model_tokens.assistant_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.assistant_turn_start.text);
+  if (!g_model_tokens.turn_end.text.empty()) strip_tags_vec.push_back(g_model_tokens.turn_end.text);
+  // Also strip individual base tokens (<|im_end|>, <|eot_id|>, etc.) that can
+  // appear as spurious EOGs embedded inside XML tags and attributes.
+  collect_base_turn_tokens(strip_tags_vec);
+  strip_tags(tool_call, strip_tags_vec);
+
+  // Strip thinking blocks (think_start...think_end) that can leak into tool calls.
+  // The LLM sometimes emits thinking tags mid-tool-call, corrupting params.
+  if (!g_model_tokens.think_start.empty() && !g_model_tokens.think_end.empty()) {
+    size_t ts;
+    while ((ts = tool_call.find(g_model_tokens.think_start)) != string::npos) {
+      size_t te = tool_call.find(g_model_tokens.think_end, ts);
+      if (te != string::npos) {
+        tool_call.erase(ts, te + g_model_tokens.think_end.length() - ts);
+      } else {
+        // Unclosed think tag -- strip from marker to end of tool call.
+        tool_call.erase(ts);
+        break;
+      }
+    }
+  }
+
+
+  ToolResult tool_out;
+  bool abort_auto = false;
+
+  // Execute the tool.
+  tool_out = execute_tool_call(tool_call, state);
+
+  // Handle validation errors reported by the struct.
+  // Policy: STRUCTURALLY broken calls (unknown tool, or broken XML such as
+  // a missing PARAM_END causing param bleed) get a correction attempt --
+  // the main loop rolls back via the slot checkpoint (or, when the slot is
+  // stale after a non-lockstep MTP FUNC_START, re-decodes the suffix from
+  // the newest prompt checkpoint -- never a full-context re-decode), feeds
+  // the system prompt, lets the LLM generate a fix, then injects the good
+  // tool call cleanly.  Feeding the abort message and ejecting to the
+  // prompt happens only when this call's correction attempt is already
+  // spent, or when the correction itself fails (step 8b in the main loop).
+  // A MINOR validation error -- the call is recognized and structurally
+  // well-formed but missing a required parameter -- first gets one quick
+  // self-fix chance: execute_tool_call set a targeted error (tool name +
+  // missing params + the tool's full required set) and it is fed back as
+  // an ordinary tool result so the model re-issues the call complete.
+  // There is no broken XML to roll back, and a precise message avoids the
+  // theory-spewing a vague "invalid tool call" invites.  Only when the
+  // model's next tool call in this chain is AGAIN a minor validation
+  // error does the call revert to the correction cycle above (or eject to
+  // the prompt when that attempt is already spent).
+  bool structural_failure = !tool_out.recognized || tool_out.malformed_xml;
+  bool minor_failure = !structural_failure && !tool_out.params_valid;
+
+  if (structural_failure || minor_failure) {
+    // A structural failure moves past any pending minor-error self-fix
+    // chance (the model's reply was structurally broken, not a
+    // completed re-issue): clear the latch so a later minor error in
+    // this chain gets a fresh chance.
+    if (structural_failure) state.minor_tool_error_self_fix_used = false;
+
+    if (is_debug) {
+      // Show the raw tool call for diagnosis.
+      diag("  Raw tool_call: " + tool_call, "\033[2;90m");
+      diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[2;90m");
+      if (!tool_out.recognized) {
+        diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[2;90m");
+      }
     }
 
-    string tool_call = full_gen.substr(tool_start, tool_end - tool_start + string(FUNC_END).length());
-
-    string preamble = "";
-    if (tool_start > 0) preamble = generated_text.substr(0, tool_start);
-
-    vector<string> strip_tags_vec;
-    // Strip full turn markers (user_start, assistant_start, turn_end).
-    if (!g_model_tokens.user_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.user_turn_start.text);
-    if (!g_model_tokens.assistant_turn_start.text.empty()) strip_tags_vec.push_back(g_model_tokens.assistant_turn_start.text);
-    if (!g_model_tokens.turn_end.text.empty()) strip_tags_vec.push_back(g_model_tokens.turn_end.text);
-    // Also strip individual base tokens (<|im_end|>, <|eot_id|>, etc.) that can
-    // appear as spurious EOGs embedded inside XML tags and attributes.
-    collect_base_turn_tokens(strip_tags_vec);
-    strip_tags(tool_call, strip_tags_vec);
-
-    // Strip thinking blocks (think_start...think_end) that can leak into tool calls.
-    // The LLM sometimes emits thinking tags mid-tool-call, corrupting params.
-    if (!g_model_tokens.think_start.empty() && !g_model_tokens.think_end.empty()) {
-        size_t ts;
-        while ((ts = tool_call.find(g_model_tokens.think_start)) != string::npos) {
-            size_t te = tool_call.find(g_model_tokens.think_end, ts);
-            if (te != string::npos) {
-                tool_call.erase(ts, te + g_model_tokens.think_end.length() - ts);
-            } else {
-                // Unclosed think tag -- strip from marker to end of tool call.
-                tool_call.erase(ts);
-                break;
-            }
-        }
-    }
-
-
-    ToolResult tool_out;
-    bool abort_auto = false;
-
-    // Execute the tool.
-    tool_out = execute_tool_call(tool_call, state);
-
-    // Handle validation errors reported by the struct.
-    // Policy: STRUCTURALLY broken calls (unknown tool, or broken XML such as
-    // a missing PARAM_END causing param bleed) get a correction attempt --
-    // the main loop rolls back via the slot checkpoint (or, when the slot is
-    // stale after a non-lockstep MTP FUNC_START, re-decodes the suffix from
-    // the newest prompt checkpoint -- never a full-context re-decode), feeds
-    // the system prompt, lets the LLM generate a fix, then injects the good
-    // tool call cleanly.  Feeding the abort message and ejecting to the
-    // prompt happens only when this call's correction attempt is already
-    // spent, or when the correction itself fails (step 8b in the main loop).
-    // A MINOR validation error -- the call is recognized and structurally
-    // well-formed but missing a required parameter -- first gets one quick
-    // self-fix chance: execute_tool_call set a targeted error (tool name +
-    // missing params + the tool's full required set) and it is fed back as
-    // an ordinary tool result so the model re-issues the call complete.
-    // There is no broken XML to roll back, and a precise message avoids the
-    // theory-spewing a vague "invalid tool call" invites.  Only when the
-    // model's next tool call in this chain is AGAIN a minor validation
-    // error does the call revert to the correction cycle above (or eject to
-    // the prompt when that attempt is already spent).
-    bool structural_failure = !tool_out.recognized || tool_out.malformed_xml;
-    bool minor_failure = !structural_failure && !tool_out.params_valid;
-
-    if (structural_failure || minor_failure) {
-        // A structural failure moves past any pending minor-error self-fix
-        // chance (the model's reply was structurally broken, not a
-        // completed re-issue): clear the latch so a later minor error in
-        // this chain gets a fresh chance.
-        if (structural_failure) state.minor_tool_error_self_fix_used = false;
-
-        if (is_debug) {
-            // Show the raw tool call for diagnosis.
-            diag("  Raw tool_call: " + tool_call, "\033[2;90m");
-            diag("  Parsed tool name: \"" + tool_out.parsed_tool_name + "\"", "\033[2;90m");
-            if (!tool_out.recognized) {
-                diag("  Reason: Unknown tool name. Known tools: read_files, search_file, write_file, edit_file, exec_shell, web_search.", "\033[2;90m");
-            }
-        }
-
-        if (minor_failure && !state.minor_tool_error_self_fix_used) {
-            // One quick self-fix chance: do NOT correct -- fall through and
-            // feed the targeted error below as an ordinary tool result so
-            // the model re-issues the call complete.
-            state.minor_tool_error_self_fix_used = true;
-            diag("System: Missing required parameter(s); giving the model one chance to re-issue the call.", "\033[1;33m");
-        } else if (!state.correction_attempted_this_turn) {
-            // Attempt tool-call correction: the main loop rolls back via the
-            // slot checkpoint (or the prompt-anchor suffix re-decode when the
-            // slot is stale after a non-lockstep MTP FUNC_START), feeds the
-            // full system prompt, lets the LLM generate a fix, then injects
-            // the good tool call cleanly.
-            diag("System: Invalid tool call. Attempting correction.", "\033[1;33m");
-            state.correction_attempted_this_turn = true;
-            result.needs_correction = true;
-        } else {
-            // A correction was already attempted for this call: feed the
-            // abort message and eject to the prompt.
-            diag("System: Invalid tool call. Ejecting to prompt.", "\033[1;31m");
-            abort_auto = true;
-        }
+    if (minor_failure && !state.minor_tool_error_self_fix_used) {
+      // One quick self-fix chance: do NOT correct -- fall through and
+      // feed the targeted error below as an ordinary tool result so
+      // the model re-issues the call complete.
+      state.minor_tool_error_self_fix_used = true;
+      diag("System: Missing required parameter(s); giving the model one chance to re-issue the call.", "\033[1;33m");
+    } else if (!state.correction_attempted_this_turn) {
+      // Attempt tool-call correction: the main loop rolls back via the
+      // slot checkpoint (or the prompt-anchor suffix re-decode when the
+      // slot is stale after a non-lockstep MTP FUNC_START), feeds the
+      // full system prompt, lets the LLM generate a fix, then injects
+      // the good tool call cleanly.
+      diag("System: Invalid tool call. Attempting correction.", "\033[1;33m");
+      state.correction_attempted_this_turn = true;
+      result.needs_correction = true;
     } else {
-        // No validation error: the model moved on, so any pending
-        // minor-error self-fix chance is resolved and a later minor error
-        // in this chain starts with a fresh chance.
-        state.minor_tool_error_self_fix_used = false;
-        if (stop_generation) {
-            diag("Tool Interrupted by User", "\033[31m");
-            stop_generation = 0;
-            state.reincarnate_mode = false;
-        }
+      // A correction was already attempted for this call: feed the
+      // abort message and eject to the prompt.
+      diag("System: Invalid tool call. Ejecting to prompt.", "\033[1;31m");
+      abort_auto = true;
+    }
+  } else {
+    // No validation error: the model moved on, so any pending
+    // minor-error self-fix chance is resolved and a later minor error
+    // in this chain starts with a fresh chance.
+    state.minor_tool_error_self_fix_used = false;
+    if (stop_generation) {
+      diag("Tool Interrupted by User", "\033[31m");
+      stop_generation = 0;
+      state.reincarnate_mode = false;
+    }
+  }
+
+  // Feed the malformed-call abort message as a tool result (shared by the
+  // mid-chain abort and the final no-continue abort paths).
+  auto feed_abort = [&]() {
+    string abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
+    vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
+    // build_tool_result_turn wraps: user_start + "[Tool Result]\n" + msg + turn_end + "\n" + assistant_start
+    if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
+      feed_tokens(abort_tokens);
+
+      // Log abort tool result tokens to token_log when debug is enabled
+      log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
+    }
+  };
+
+  if (!abort_auto) {
+    // If correction is needed, return immediately without feeding any tool
+    // result tokens.  The main loop will handle the correction cycle: feed
+    // the system prompt reminder, generate once, parse for a valid tool call,
+    // then roll back and inject cleanly.
+    if (result.needs_correction) {
+      state.auto_continue = false;
+      return result;
+    }
+    if (is_debug) {
+      console("\n\033[92m[Tool Result]\033[0m\n");
+      string result_to_print = tool_out.display;
+      static constexpr size_t STDOUT_TRUNCATE_LIMIT = 500;
+      if (should_output_to_stdout() && result_to_print.length() > STDOUT_TRUNCATE_LIMIT) {
+        size_t original_len = result_to_print.length();
+        result_to_print = result_to_print.substr(0, STDOUT_TRUNCATE_LIMIT) + "\n  ... (truncated, " + std::to_string(original_len) + " chars total -- see browser for full output)\n";
+      }
+      size_t p = 0;
+      while ((p = result_to_print.find('\n')) != string::npos) {
+        console("  ", result_to_print.c_str(), "\n");
+        result_to_print.erase(0, p + 1);
+      }
+      if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
     }
 
-    // Feed the malformed-call abort message as a tool result (shared by the
-    // mid-chain abort and the final no-continue abort paths).
-    auto feed_abort = [&]() {
-        string abort_msg = "System Error: You are generating malformed tool calls. Your XML schema is incorrect. Stop and carefully review the required format. Do NOT wrap tool calls in markdown code blocks or other formatting.";
-        vector<llama_token> abort_tokens = build_tool_result_turn(ctx, abort_msg);
-        // build_tool_result_turn wraps: user_start + "[Tool Result]\n" + msg + turn_end + "\n" + assistant_start
-        if (n_past + (int)abort_tokens.size() < (int)cparams.n_ctx) {
-            feed_tokens(abort_tokens);
+    string display_for_browser = tool_out.display;
 
-            // Log abort tool result tokens to token_log when debug is enabled
-            log_tokens("FEED TOOL_RESULT", abort_tokens, ctx);
-        }
-    };
+    if (!display_for_browser.empty()) {
+      string safe_result = html_escape(display_for_browser);
+      string result_html = "\n\n<div class='tool-result'><pre><code>" + safe_result + "</code></pre></div>\n\n";
+      stream_html(result_html);
+    }
+    consoleFlush();
 
-    if (!abort_auto) {
-        // If correction is needed, return immediately without feeding any tool
-        // result tokens.  The main loop will handle the correction cycle: feed
-        // the system prompt reminder, generate once, parse for a valid tool call,
-        // then roll back and inject cleanly.
-        if (result.needs_correction) {
-            state.auto_continue = false;
-            return result;
-        }
-        if (is_debug) {
-            console("\n\033[92m[Tool Result]\033[0m\n");
-            string result_to_print = tool_out.display;
-            static constexpr size_t STDOUT_TRUNCATE_LIMIT = 500;
-            if (should_output_to_stdout() && result_to_print.length() > STDOUT_TRUNCATE_LIMIT) {
-                size_t original_len = result_to_print.length();
-                result_to_print = result_to_print.substr(0, STDOUT_TRUNCATE_LIMIT) + "\n  ... (truncated, " + std::to_string(original_len) + " chars total -- see browser for full output)\n";
+    // Log tool result to chat_log with structured label.
+    // exec_shell already streams its output incrementally to chat_log in
+    // filesystem.cc, so skip it here to avoid duplication.
+    if (tool_out.parsed_tool_name != "exec_shell") {
+      string logged = tool_out.content;
+      // For web_search, log query + snippets but skip full page content
+      if (logged.find("Search Results for:") == 0) {
+        string filtered;
+        size_t i = 0;
+        while (i < logged.size()) {
+          size_t page_content = logged.find("Page Content: ", i);
+          if (page_content != string::npos && page_content + 14 < logged.size()) {
+            filtered += logged.substr(i, page_content - i);
+            size_t j = page_content + 14;
+            bool past_blank = false;
+            while (j < logged.size()) {
+              if (logged[j] == '\n') {
+                if (past_blank) break;
+                past_blank = true;
+              } else {
+                past_blank = false;
+              }
+              j++;
             }
-            size_t p = 0;
-            while ((p = result_to_print.find('\n')) != string::npos) {
-                console("  ", result_to_print.c_str(), "\n");
-                result_to_print.erase(0, p + 1);
-            }
-            if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
+            filtered += "[Page Content omitted from log]\n";
+            i = j;
+          } else {
+            filtered += logged.substr(i);
+            break;
+          }
         }
+        logged = filtered;
+      }
+      if (!logged.empty()) {
+        chat_log << "=== TOOL_RESULT ===\n" << logged << "\n\n";
+        chat_log.flush();
+      }
+    }
+    generated_text = "";
 
-        string display_for_browser = tool_out.display;
+    // Build tool result message as a string, then tokenize in one pass.
+    vector<llama_token> t_tokens;
+    {
+      // User turn + assistant prefill.
+      string tool_content = "[Tool Result]\n" + tool_out.content;
 
-        if (!display_for_browser.empty()) {
-            string safe_result = html_escape(display_for_browser);
-            string result_html = "\n\n<div class='tool-result'><pre><code>" + safe_result + "</code></pre></div>\n\n";
-            stream_html(result_html);
-        }
-        consoleFlush();
+      // Escape PARAM_END and model turn tokens in the content so they
+      // don't get misinterpreted as structural boundaries during tokenization.
+      escape_parameter_tags(tool_content);
+      escape_turn_tags(tool_content);
 
-        // Log tool result to chat_log with structured label.
-        // exec_shell already streams its output incrementally to chat_log in
-        // filesystem.cc, so skip it here to avoid duplication.
-        if (tool_out.parsed_tool_name != "exec_shell") {
-            string logged = tool_out.content;
-            // For web_search, log query + snippets but skip full page content
-            if (logged.find("Search Results for:") == 0) {
-                string filtered;
-                size_t i = 0;
-                while (i < logged.size()) {
-                    size_t page_content = logged.find("Page Content: ", i);
-                    if (page_content != string::npos && page_content + 14 < logged.size()) {
-                        filtered += logged.substr(i, page_content - i);
-                        size_t j = page_content + 14;
-                        bool past_blank = false;
-                        while (j < logged.size()) {
-                            if (logged[j] == '\n') {
-                                if (past_blank) break;
-                                past_blank = true;
-                            } else {
-                                past_blank = false;
-                            }
-                            j++;
-                        }
-                        filtered += "[Page Content omitted from log]\n";
-                        i = j;
-                    } else {
-                        filtered += logged.substr(i);
-                        break;
-                    }
-                }
-                logged = filtered;
-            }
-            if (!logged.empty()) {
-                chat_log << "=== TOOL_RESULT ===\n" << logged << "\n\n";
-                chat_log.flush();
-            }
-        }
-        generated_text = "";
+      t_tokens = tokenize(build_tool_result_turn_text(tool_content));
+    }
+    // If the result doesn't fit in the remaining context, replace it with a
+    // compact error so the LLM can adapt (narrow the request, paginate, or
+    // proceed without it) instead of ejecting to prompt.  Nothing has been fed
+    // yet, so the KV cache is clean and no rollback is needed.  The full output
+    // was already shown to the user in the browser/chat log above.
+    if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
+      double pct = (double)n_past / cparams.n_ctx * 100.0;
+      char buf[32];
+      snprintf(buf, sizeof(buf), "%.1f%%", pct);
+      diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ". Reporting error to LLM.", "\033[1;33m");
 
-        // Build tool result message as a string, then tokenize in one pass.
-        vector<llama_token> t_tokens;
-        {
-            // User turn + assistant prefill.
-            string tool_content = "[Tool Result]\n" + tool_out.content;
-
-            // Escape PARAM_END and model turn tokens in the content so they
-            // don't get misinterpreted as structural boundaries during tokenization.
-            escape_parameter_tags(tool_content);
-            escape_turn_tags(tool_content);
-
-            t_tokens = tokenize(build_tool_result_turn_text(tool_content));
-        }
-        // If the result doesn't fit in the remaining context, replace it with a
-        // compact error so the LLM can adapt (narrow the request, paginate, or
-        // proceed without it) instead of ejecting to prompt.  Nothing has been fed
-        // yet, so the KV cache is clean and no rollback is needed.  The full output
-        // was already shown to the user in the browser/chat log above.
-        if (n_past + (int)t_tokens.size() >= (int)cparams.n_ctx) {
-            double pct = (double)n_past / cparams.n_ctx * 100.0;
-            char buf[32];
-            snprintf(buf, sizeof(buf), "%.1f%%", pct);
-            diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ". Reporting error to LLM.", "\033[1;33m");
-
-            string too_large_content = "[Tool Result]\nSystem Error: Tool output too large to fit in remaining context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). It was discarded. Request a smaller output (e.g., a line range, head/tail, or a narrower query) or proceed without it.";
-            escape_parameter_tags(too_large_content);
-            escape_turn_tags(too_large_content);
-            t_tokens = tokenize(build_tool_result_turn_text(too_large_content));
-        }
-        if (!feed_tokens(t_tokens)) {
-            abort_auto = true;
-        } else {
-            // Log tool result tokens to token_log when debug is enabled
-            log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
-
-            g_auto_continue_depth++;
-            if (g_auto_continue_depth > max_auto_continue) {
-                diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
-                state.auto_continue = false;
-            } else {
-                diag_speed(n_past, cparams.n_ctx, state.last_t_count, state.last_elapsed, state.last_decode_time);
-                state.auto_continue = true;
-                result.should_auto_continue = true;
-                return result;
-            }
-        }
-
-        if (abort_auto) {
-            state.auto_continue = false;
-            generated_text = "";
-
-            feed_abort();
-        }
+      string too_large_content = "[Tool Result]\nSystem Error: Tool output too large to fit in remaining context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). It was discarded. Request a smaller output (e.g., a line range, head/tail, or a narrower query) or proceed without it.";
+      escape_parameter_tags(too_large_content);
+      escape_turn_tags(too_large_content);
+      t_tokens = tokenize(build_tool_result_turn_text(too_large_content));
+    }
+    if (!feed_tokens(t_tokens)) {
+      abort_auto = true;
     } else {
+      // Log tool result tokens to token_log when debug is enabled
+      log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
+
+      g_auto_continue_depth++;
+      if (g_auto_continue_depth > max_auto_continue) {
+        diag("System: Max auto-continue depth reached (" + std::to_string(g_auto_continue_depth) + "/" + std::to_string(max_auto_continue) + "). LLM may be stuck in a loop. Ejecting to prompt.", "\033[1;31m");
         state.auto_continue = false;
-        generated_text = "";
-
-        feed_abort();
+      } else {
+        diag_speed(n_past, cparams.n_ctx, state.last_t_count, state.last_elapsed, state.last_decode_time);
+        state.auto_continue = true;
+        result.should_auto_continue = true;
+        return result;
+      }
     }
 
-    return result;
+    if (abort_auto) {
+      state.auto_continue = false;
+      generated_text = "";
+
+      feed_abort();
+    }
+  } else {
+    state.auto_continue = false;
+    generated_text = "";
+
+    feed_abort();
+  }
+
+  return result;
 }

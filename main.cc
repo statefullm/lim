@@ -522,10 +522,10 @@ int main(int argc, char ** argv) {
         if (!mtp_use_sidecar) {
           // Embedded MTP: same model file, draft shares weights. Measure as extra.
           const common_fit_extra_model extra_mtp = {
-              /*.path_model   =*/ argv[1],
-              /*.mparams      =*/ &mparams_mtp,
-              /*.cparams      =*/ &cparams_mtp,
-              /*.shares_model =*/ true,
+            /*.path_model   =*/ argv[1],
+            /*.mparams      =*/ &mparams_mtp,
+            /*.cparams      =*/ &cparams_mtp,
+            /*.shares_model =*/ true,
           };
           extra_ptr = const_cast<common_fit_extra_model*>(&extra_mtp);
         } else {
@@ -600,10 +600,10 @@ int main(int argc, char ** argv) {
     tps_log << "# Frequency penalty: " << frequency_penalty << "\n";
     tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
     tps_log << "# MTP: " << (mtp_enabled
-                       ? std::string("enabled (draft=") + std::to_string(mtp_draft_len) +
-                         ", batch=" + std::to_string(mtp_draft_batch) +
-                         (mtp_use_sidecar ? ", sidecar)" : ")")
-                       : "disabled") << "\n";
+                             ? std::string("enabled (draft=") + std::to_string(mtp_draft_len) +
+                             ", batch=" + std::to_string(mtp_draft_batch) +
+                             (mtp_use_sidecar ? ", sidecar)" : ")")
+                             : "disabled") << "\n";
     tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
   }
 
