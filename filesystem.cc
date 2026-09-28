@@ -395,10 +395,11 @@ static std::vector<std::string> find_cache_files_by_prefix(const std::string& pr
 //   <main KV state, N bytes><mtp mirror KV state, M bytes>
 // The main KV is always present; the mirror is present only when the session
 // had MTP enabled and its mirror was consistent at save time (mtp_size == 0
-// otherwise, e.g. a non-MTP save).  Files without the magic are rejected: the
-// cache is disposable and header-less entries carry no mirror state -- a
-// header-less hit would silently drop MTP, so fall back to a slow re-decode
-// that rebuilds the mirror.
+// otherwise, e.g. a non-MTP save).  Files without the magic are old format
+// (pre-header raw blobs): this binary can never load them, so they are
+// deleted on encounter.  The cache is disposable and header-less entries
+// carry no mirror state -- a header-less hit would silently drop MTP, so the
+// restore falls back to a slow re-decode that rebuilds the mirror.
 static constexpr const char* CACHE_MAGIC = "LIM_CACHE_V1 ";
 
 // Parse the cache header line; false when the magic or a size field is absent.
@@ -475,19 +476,34 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
       if (file[i] == '\n') { nl = i; break; }
     }
     if (nl == std::string::npos) {
-      diag("V1 cache: " + cache_path + " has no header line -- not a valid cache entry", "\033[33m");
+      diag("V1 cache: " + cache_path + " has no header line -- deleting old-format entry", "\033[33m");
+      unlink(cache_path.c_str());
       continue;
     }
     std::string header((const char*)file.data(), nl);
     uint64_t main_size = 0, mtp_size = 0;
     if (!parse_cache_header(header, &main_size, &mtp_size)) {
-      diag("V1 cache: " + cache_path + " has an invalid cache header -- skipping entry", "\033[33m");
+      diag("V1 cache: " + cache_path + " has an invalid cache header -- deleting and skipping entry", "\033[33m");
+      unlink(cache_path.c_str());
       continue;
     }
 
+    // The writer emits exactly header + main_size + mtp_size bytes, so any
+    // other payload size is a corrupt entry (a write killed mid-fwrite, a
+    // power loss).  An in-flight write can't exist -- one lim at a time -- so
+    // the entry is unloadable garbage: delete it instead of re-reading and
+    // skipping it on every restore.  Each field is bounded against the
+    // payload before the sum: the sizes come from an untrusted header, and
+    // a value near 2^64 would wrap main_size + mtp_size into a value that
+    // could coincidentally equal the payload size.
     const size_t payload_size = file.size() - (nl + 1);
-    if (main_size > payload_size || mtp_size > payload_size - (size_t)main_size) {
-      diag("V1 cache: " + cache_path + " header sizes exceed the file payload (truncated?) -- skipping entry", "\033[33m");
+    if (main_size > payload_size ||
+        mtp_size > payload_size - (size_t)main_size ||
+        payload_size != (size_t)(main_size + mtp_size)) {
+      diag("V1 cache: " + cache_path + " payload is " + std::to_string(payload_size) +
+           " bytes but the header claims " + std::to_string(main_size + mtp_size) +
+           " -- deleting corrupt entry", "\033[33m");
+      unlink(cache_path.c_str());
       continue;
     }
     const uint8_t* payload = file.data() + nl + 1;
@@ -574,28 +590,54 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   }
 
   // Delete the stale cache entry from the previous save (if we know its hash).
+  // When old_hash == hash (a re-save with unchanged content) this also clears
+  // the current entry, so the save rewrites the cache in this session's form:
+  // a manual non-MTP save deliberately replaces a mirror-bearing entry with a
+  // mirror-less one (the user asked to cache the current state); the
+  // slow-restore auto-write passes an empty old_hash and never does this.
   if (!old_hash.empty()) {
     for (const auto& cache_path : find_cache_files("-" + old_hash)) {
       unlink(cache_path.c_str());
     }
   }
 
-  // Check if an equivalent cache entry already exists (same content+model).
-  // Never downgrade: without a valid mirror (ctx_mtp null), any existing
-  // entry -- mirror or not -- is kept.  Upgrade: when we hold a valid mirror
-  // but every existing entry lacks one, rewrite so future fast restores can
-  // bring MTP back with the KV (a mirror-less entry would otherwise block
-  // the mirror forever).
+  // Sweep same-hash entries: any without a valid current-format header (old
+  // format, pre-header raw blob) or whose file size doesn't match the header
+  // (a corrupt/truncated write -- the writer emits exactly header + main +
+  // mtp bytes, and one lim at a time rules out an in-flight write) is
+  // unloadable: delete it so it can't block the write or set the mirror flag
+  // (a kept dead entry would force every restore of this save onto the slow
+  // re-decode path until manual deletion).
+  // Over the surviving (loadable) entries: never downgrade -- a
+  // mirror-bearing entry is always kept; without our own mirror, a
+  // mirror-less entry is kept too (identical content, no rewrite); a
+  // first-time non-MTP save still writes a mirror-less entry (mtp_size=0),
+  // matching pre-MTP behavior.  With our own valid mirror, a surviving
+  // mirror-less entry is deleted below and replaced, so future fast restores
+  // bring MTP back with the KV.
   {
     bool existing_has_mirror = false;
+    bool existing_valid = false;
     for (const auto& cache_path : find_cache_files("-" + hash)) {
       std::string header;
-      if (read_cache_header_line(cache_path, header)) {
-        uint64_t ms = 0, ts = 0;
-        if (parse_cache_header(header, &ms, &ts) && ts > 0) { existing_has_mirror = true; break; }
+      uint64_t ms = 0, ts = 0;
+      struct stat st;
+      // ms/ts are bounded against the file size before the sum (same
+      // untrusted-header wraparound hazard as the loader's check).
+      if (!read_cache_header_line(cache_path, header) ||
+          !parse_cache_header(header, &ms, &ts) ||
+          stat(cache_path.c_str(), &st) != 0 ||
+          ms > (uint64_t)st.st_size ||
+          ts > (uint64_t)st.st_size - ms ||
+          (uint64_t)st.st_size != header.size() + 1 + ms + ts) {
+        diag("V1 cache: " + cache_path + " has no valid header or wrong size -- deleting corrupt entry", "\033[33m");
+        unlink(cache_path.c_str());
+        continue;
       }
+      existing_valid = true;
+      if (ts > 0) existing_has_mirror = true;
     }
-    if (existing_has_mirror || !ctx_mtp) return true;
+    if (existing_has_mirror || (!ctx_mtp && existing_valid)) return true;
     for (const auto& cache_path : find_cache_files("-" + hash)) unlink(cache_path.c_str());
   }
 

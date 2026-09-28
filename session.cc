@@ -2192,15 +2192,19 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     state_.checkpoint_stack_offset = 0; // all checkpoints are live
     state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
 
-    // Auto-write V1 cache for instant future restores (full restore only
-    // -- a partial prefix would hash to an entry a later full restore
-    // never matches; skipped with --checkpoints). The n_past_ check
-    // is defense in depth: the cache must cover exactly the tracked
-    // tokens or a future fast restore would desync.  A corrupted
-    // canary that forced this slow path is healed here: the re-decoded
-    // KV (and the hook-fed mirror) overwrites the same-hash cache
-    // entry, so the next fast restore loads a clean payload.
-    if (!restore_checkpoints_ && !restore_path_abs.empty() &&
+    // Auto-write V1 cache for instant future restores (full restore only).
+    // Partial restores -- the user picked an earlier checkpoint at the
+    // Restore> prompt, with or without --checkpoints -- are excluded by the
+    // size checks below: a prefix KV must never be cached under the
+    // full-sequence hash, or a later full restore would fast-load a short
+    // KV and desync.  A user who wants to cache a truncated state can /save
+    // (save file and entry stay consistent).  A full --checkpoints restore
+    // writes exactly like any other slow restore: it heals a suspect
+    // entry -- the usual reason for the re-decode -- and pre-populates
+    // the entry so the next plain restore is instant.  The n_past_ check
+    // is defense in depth; write_v1_cache re-checks the KV/token match
+    // before writing.
+    if (!restore_path_abs.empty() &&
         (int)restored_tokens.size() == total_restore_tokens &&
         n_past_ == (int)restored_tokens.size()) {
       if (is_debug) {
