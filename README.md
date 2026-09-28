@@ -12,7 +12,7 @@
 
 ![Cumulative time vs context length](cumulative.svg)
 
-*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. At 222041 context tokens, Mode 2 (CACHED) is 1.8% slower than the default Mode 0 (LIM), while Mode 1 (CHATBOT) used 73% more time: LIM is 1.73x faster than a standard chatbot. See **Benchmarking** for how each mode works.*
+*Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. At 222041 context tokens, the default Mode 0 (LIM) is 1.8% faster than Mode 2 (CACHED) and 73% faster than Mode 1 (CHATBOT). See **Benchmarking** for how each mode works.*
 
 ## How It Works
 

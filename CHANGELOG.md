@@ -1,31 +1,104 @@
-
 # Changelog
 
-## Unreleased
+## v0.1.2 -- 2026-09-27
 
 Release notes relative to v0.1.1.
 
 ### Highlights
 
-- **Persistent browser server** (`limServer.py`): the server is now a long-lived service started detached (double-forked + `setsid`, reparented to init) by the first lim session that needs it, so it survives lim's clean exit and hard crashes. A relaunching lim attaches to the verified running server, skips the startup browser prompt when the browser is still connected, and streams a dashed `-- New Session --` divider -- the browser tab stays connected across lim restarts and crashes, with no manual reload on the remote laptop. `/reset` replaces the server if it has stopped or is left reading a stale FIFO node.
+- **MTP speculative decoding** (`LIM_MTP=1`): faster generation from draft-then-verify.
+- **Automatic 90% context checkpoint**: adds an extra `/undo` target for launching a `/reincarnate` command.
+- **Persistent browser server**: the viewer tab stays connected across lim restarts and crashes -- no reload.
+- **New `/remind` command**: re-anchors the LLM to its full system prompt in one command.
+- **Improved benchmark**: mode 2 (CACHED) re-tokenizes the full conversation each turn like a server with persistent caching and is now seen to be noticeably slower than LIM's incremental decoding.
+
+### New Features
+
+- MTP (multi-token-prediction) speculative decoding behind `LIM_MTP=1`: a second context mirroring the main KV cache proposes up to `LIM_MTP_DRAFT` tokens per round, and the main model verifies them all in a single batch decode, so the mirror's quantization costs acceptance rate only, never output correctness. Speculation pauses when the mirror can't be kept in sync (a main decode truncated by KV exhaustion, or a fast-restore from a cache saved without MTP) or after sustained low acceptance (it auto-disables itself; `/clear` re-enables it). MTP is not implemented for benchmark chatbot modes 1 and 2.
+- `LIM_MTP_DRAFT` (default `4`, 1-32): number of tokens proposed per MTP round; must not exceed the model's recurrent rollback window.
+- `LIM_MTP_BATCH` (default `128`, 1-512): cap on the MTP draft context's batch size; lowering it saves VRAM at the cost of a slightly slower one-time prefill mirror.
+- `LIM_MTP_SIDECAR`: path to a separate MTP-only GGUF (only with `LIM_MTP=1`); the MTP draft head is loaded from this file instead of the main model, for models whose GGUF quantization omits the nextn tensors. The fitter reserves the sidecar's VRAM via a margin instead of loading the draft head standalone for measurement.
+- MTP mirror KV cache is set to Q8_0 regardless of the main cache type -- the most compact type the MMA_F16 flash-attention kernel dequantizes natively, so no F16 pre-conversion / `f16_extra` cost -- and the fitter's VRAM estimate uses that.
+- The draft mirror KV is stored in the fast-restore cache file, so a fast restore keeps MTP active; a pre-turn canary (silent 16-token probe with bounded re-load retries, a slow re-decode fallback, and EOG-truncation guards) validates the mirror before trusting a V1 cache restore.
+- An extra mid-turn checkpoint labelled `/continue` is generated when the 90% context threshold is crossed.
+- `/remind`: re-sends the full system prompt to the LLM.
+- Persistent browser server: the Python server is a long-lived service started on first need by the first lim session that outlives lim sessions; lim attaches to the verified running server and tears down only stale ones -- dead, or left reading a deleted/replaced FIFO node, detected by comparing the FIFO inode lim writes to against the inodes the server holds open (`/proc/<pid>/fd`).
+- Browser session dividers: each new session streams a dashed "Session N" rule.
+- Browser status bar: both prefill and generation progress are now shown (t/s and position).
+- Startup browser-connection prompt: when the viewer is not connected, lim prints the URL and waits before the first decode; the session proceeds as soon as the viewer loads the page. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables itself if the viewer connects later.
+- `/undo` saves the re-decode's R/S checkpoint, so a later undo to the same point is instant.
+- Inline KaTeX hardening under `LIM_INLINE_LATEX` (default `1`): code regions are masked from inline math and `$...$` candidates are validated before KaTeX rendering (a math delimiter never abuts whitespace, backticks never appear in math, and the candidate must parse as KaTeX), so env vars stay literal and code blocks are LaTeX-free; tool labels are excluded from auto-render; block-level `$$...$$` math always renders; set to `0` to disable.
+- `LIM_TEMPERATURE=0` now omits the wall-clock timestamp from the system prompt (the only session-varying prompt content), making runs byte-reproducible; the model does not know the current date/time in this mode.
+- Prompt: new rule 10 and a 0-match nudge against spurious trailing newlines in tool calls; the tool-call protocol is clarified -- the reserved tags may appear in tool call content (the parser ignores them inside parameter values) but never in prose (use `FUNC_START`/`FUNC_END` placeholders in prose, rule 7), and the raw-text / no-escaping / any-length guarantee is promoted to rule 8.
+- `LIM_SEARXNG_CMD` override is now actually implemented.
+- `LIM_LLAMA_DEBUG_LOG` (default `0`) is now documented in the README env-var table: with `LIM_DEBUG=1`, set it to `1` to also print DEBUG-level llama.cpp/ggml log lines (e.g. "CUDA Graph id N reused" on every decode); default keeps INFO and above.
+- Mode 2 (CACHED) benchmarking improved: each turn now re-tokenizes the full canonical conversation text before the prefix match, like llama-server. At 222041 context tokens, the default Mode 0 (LIM) is 1.8% faster than Mode 2 (CACHED) and 73% faster than Mode 1 (CHATBOT).
 
 ### Bug Fixes
 
-- **Crash-dance fixed by construction**: after a hard crash (segfault/OOM/SIGKILL), the first lim relaunch now reuses the surviving persistent server immediately -- no degraded session, no launch/exit/relaunch dance. The broken stale-kill path that caused it, including the `TIMER_ABSTIME` bug in `kill_and_reap` that made its "3-second" sleep ~0, is deleted along with the code it patched.
-- Removed the `fuser` external-tool dependency: stale-server detection and teardown now use a PID file plus a `/proc/<pid>/cmdline` check, with a bounded SIGKILL wait (100 ms slices, 3 s cap). A process on the port that is not our `limServer` is never killed -- a clear error is reported instead (kill it or set `LIM_PORT`).
-- **Stale-FIFO detection**: a server left reading a deleted or replaced FIFO node (manual `unlink` or `/tmp` cleanup) previously passed the port check, so browser output silently went nowhere and neither a relaunch nor `/reset` could recover it (the port was still bound). lim now verifies the running server's open fds (`/proc/<pid>/fd`) against the FIFO inode it writes to (`pipe_fd`), and replaces the stale server at startup and on `/reset`.
-- **PID-file fallback**: server identification no longer depends solely on `/tmp/lim.server.pid` -- if the file is gone while the server lives, lim falls back to a `/proc` cmdline scan, so a surviving server is found and reused (or replaced) instead of being misreported as a foreign port occupant.
-- **No more server zombies**: the double fork reparents the server to init, so a server that dies while lim is running is reaped by init instead of lingering as a zombie of lim.
-- Fixed a check-then-watch race in the marker-file waiter: the inotify watch is now armed before the existing-file check, so a marker created in the gap can no longer be missed.
-- The stale-FIFO inode comparison now uses `stat()` on the `/proc/<pid>/fd/N` magic links: `lstat` reports the link itself (always `S_IFLNK`), so it matched no fd of any process and every healthy server looked stale -- replaced, and the browser reloaded, at every restart.
-- Server identification requires `argv[0]` to be a python interpreter in addition to the exact `<path>/limServer.py` cmdline arg, and the port-free stale-teardown only kills a candidate that holds the FIFO node lim writes to: an editor or tool that merely has the script open can no longer become a kill candidate.
-- Removed the `TERM_PROGRAM=vscode` handshake: the extension's SSH terminal no longer exports it (plain `ssh -t -a`), and the startup browser prompt no longer branches on it. The VS Code viewer reset (**Ctrl+2** / **Ctrl+Shift+R**, `LIM: Reload Browser`) is documented in the README instead.
+**Crashes & corruption**
+
+- Token tracker restored on any failed feed (interrupt, decode error, or truncated final batch: sync `n_past_` to the KV and re-attach the decoded prefix) so ghost KV rows can no longer poison V1 cache writes; the cache write is skipped when the live KV doesn't exactly match the save's tokens.
+- GGML `LOG_ERROR` lines are emitted in `dummy_log_callback` instead of swallowed, so fatal conditions (e.g. the CUDA error string printed just before `GGML_ABORT`) are visible before the abort line; WARN/INFO/DEBUG/CONT still suppressed in normal mode.
+
+**Undo / restore / checkpoints**
+
+- `/undo` auto-resets the session via the shared `clear_session()` when the slow-path re-decode fails or is interrupted, and the reset is documented in the README.
+- The `/undo` re-decode's R/S checkpoint is saved, so a later undo to the same point is instant.
+- Every V1 cache rejection is now diagnosed instead of failing silently.
+- Save-file checkpoint prompts are capped at the uint16 limit with a visible `...[truncated]` marker instead of a silent cut.
+- Fixed the post-`/undo` turn-close and `/continue` state machine: position-based mid-turn detection, `/continue` is a no-op mid-turn, `tool_interrupt_pending` no longer cleared at turn end, interrupt checkpoint overwritten in place at turn end.
+- Corrupt or truncated fast-cache entries are now detected and deleted on encounter (the payload must exactly match the header sizes, checked in both loader and writer) instead of being re-read and rejected on every restore.
+
+**Tool calling & session robustness**
+
+- One self-fix retry for tool calls missing required parameters before reverting to the correction cycle; failed tool correction ejects to the prompt without rollback.
+- A missing closing tag in a `path` parameter is detected via parameter-tag bleed and routed through the correction cycle.
+- Newlines in `path`/`paths` parameters route through the existing tool-correction cycle; leading/trailing newlines are stripped from `path` values so line-isolated paths execute instead of failing, while internal newlines still trigger the missing-`PARAM_END` correction.
+- Tool-call arg-name matching is whitespace-tolerant and leading/trailing whitespace is trimmed from `path` values (newlines are still flagged as malformed).
+- `search_file` `begin`/`end` args are trimmed of whitespace (shared `trim_chars` helper).
+- EOG tokens inside an open thinking block are swallowed (capped) so reasoning no longer ends the turn early; the parser treats raw function tags inside thinking blocks as prose.
+- `/continue` after a mid-think interrupt resumes in thinking mode so the viewer re-enters the thinking display.
+
+**Browser viewer**
+
+- Inline-math validation: the redundant all-uppercase env-var check is dropped so clean pairs like `$N$` and `$H_0$` typeset, while spaced env-var pairings like "$HOME $PATH" stay literal via the whitespace rule; code blocks stream as a single `<pre>`.
+
+**Build & environment**
+
+- Fixed the `log_diagnostic` browser leak, a forked-child `atexit` bug, and the `exec_shell` output tail drop; removed dead code, stale comments, and the phantom `.pic.o` dep target.
+- VS Code extension: reads `LIM_AI_USER` (was `AI_USER`); `export TERM_PROGRAM` is no longer needed.
+- llama.cpp subrepo updated: checkpoint and UTF-8 patches updated and new patches `llama-pr28243.patch` (qwen4exp MTP graph support, upstream PR #28243) and `llama-fattn-q80.patch` (native Q8_0 K/V dequant in the CUDA fattn MMA_F16 kernel) applied.
+- `make install` now also builds and installs the VS Code extension; `install-all` is now an alias for `install`.
+- Uninstall: removes cached SSL certs (`combined-ca.crt`, `cloudflare-chain.pem`, `ca-bundle-temp.crt`) and skips config cleanup when `LIM_CONFIG_DIR` is the repo root or an ancestor (dev-setup safety guard); `.gitignore` now ignores the config-dir runtime data (search cache, cert caches) that lands in-tree in dev setups.
 
 ### Behavior Changes & Default Changes
 
 | Change | Old | New |
 |---|---|---|
-| `limServer` lifecycle | Per-session child: killed by atexit on exit; orphaned on crash; browser page had to be reloaded on every lim restart | Persistent service: started detached (double-forked + `setsid`, reparented to init) by the first session that needs it, survives lim exit/crash, browser stays connected across sessions; verified against the live FIFO inode via `/proc/<pid>/fd` (PID file with `/proc` cmdline fallback); `/reset` replaces it if it stops or is on a stale FIFO node; stale server on a changed `LIM_PORT` is torn down with a bounded wait |
+| Browser server lifetime | Per-session child process (died with lim) | Long-lived service surviving lim's exit and crashes; lim attaches to the verified running server; `/reset` replaces it only when dead or left on a stale FIFO node |
+| 90% context crossing | Warn only: "Context approaching limit -- Type '/reincarnate' ... or '/clear'" | Turn is force-ended transparently at the crossing and auto-resumed (LLM-unaware, no pause), with a permanent `/continue`-labelled checkpoint at the crossing and the prompt-labelled checkpoint at the real turn end |
+| Instruction re-anchoring | User had to prompt the LLM to re-read the system prompt | Built-in `/remind` re-sends the full system prompt unescaped directly into the KV-cache |
+| `/undo` slow-path failure/interrupt | Session left in an inconsistent state | Session auto-resets to a fresh one via the shared `clear_session()` |
+| System-prompt timestamp | Always included | Omitted at `LIM_TEMPERATURE=0` (byte-reproducible runs) |
+| `make install` | Binary + config files | Binary + config files + VS Code extension (`install-all` now an alias for `install`) |
+| Version source of truth | `VERSION` file + per-file `-DLIM_VERSION` define | `version.h` (`LIM_VERSION`); the Makefile extracts it and errors if the line is missing |
+| Prompt tool-call rules | Rule 5: one tool call per response | Multiple tool calls may be invoked in sequence; new rules 6-10 (closing tags, reserved FUNC tags in prose, raw-text guarantee, no newlines in paths) |
+| Benchmark modes 1 & 2 | Both modes worked on saved tokens (no re-tokenization): mode 1 re-fed them and re-decoded; mode 2 paid only the prefix comparison | Reworked around a maintained canonical conversation text: mode 1 re-tokenizes and re-decodes the full text each turn like a plain chatbot; mode 2 re-tokenizes, prefix-matches, and decodes only the delta like llama-server (one-time detokenize fallback, EOG turn-boundary drift fix) |
+| Fast-restore cache format | Header-less raw KV blob | `LIM_CACHE_V1` header + main KV + optional MTP mirror KV; 0.1.1-era entries can't be loaded and are deleted on encounter -- the affected save pays one slow re-decode, after which a current-format entry is written |
+| `--checkpoints` restore | Skipped the automatic fast-cache write after the re-decode | A full `--checkpoints` restore auto-writes the fast cache like any other slow restore; a partial (checkpoint-selected) restore does not |
+
+### Internals
+
+- New `mtp.cc`/`mtp.h` module: MTP draft context, verify loop, mirror sync and self-healing, acceptance tracking, and sidecar loading with shard-safe MTP detection.
+- Large DRY cleanup: duplicated trim, context-position, speed-denominator, abort-feed, latch-reset, and pipe-reopen logic consolidated into shared helpers; duplicated log-opening, system-prompt loading, speed-diagnostic, git-SHA, command-matching, and checkpoint-prompt logic unified; the unreachable newline-splitting path in `extract_array_arg_bounded` removed (the read_files gate forbids internal newlines, so comma-split is the full contract).
+- The `LIM_ESCAPE_CONTRACT` append moved into `load_system_prompt_text` so `/clear` re-feeds the contract along with startup, and it is always skipped when the base prompt file is empty.
+- Version moved into `version.h` as the single source of truth; the per-file `-DLIM_VERSION` define and the `VERSION` file are dropped.
+- `make` also builds the VS Code extension (requires Node.js and npm); `make lim` builds only the binary.
+- README inconsistencies with the code fixed and implementation details that users don't need trimmed; `REASONING.md` updated.
+- All C++ sources indented to 2 spaces.
+
+---
 
 ## v0.1.1 -- 2026-09-09
 
@@ -124,4 +197,3 @@ Release notes relative to v0.1.0.
 - All C++ sources reindented from 4-space to 2-space indentation.
 - CLI restore injects `/load` verbatim, so CLI and in-session restore share one code path; `--checkpoints` is trailing-only everywhere (shared `strip_checkpoints_flag()` parser).
 - New shared `LIM_DEFAULT_CTX` constant for the default context size.
-
