@@ -1074,7 +1074,7 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
     // missing PARAM_END (bleeding the next tag) or trailing whitespace still
     // recovers the intended line number.
     if (endptr == begin_str.c_str() || val < 1) {
-      out["error"] = "Error: 'begin' must be a positive integer.";
+      out["error"] = "'begin' must be a positive integer.";
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
@@ -1085,12 +1085,21 @@ map<string, string> FileSystemTools::search_file(const string& path, const strin
     long val = strtol(end_str.c_str(), &endptr, 10);
     // Same forgiveness as begin: a leading non-negative integer prefix wins.
     if (endptr == end_str.c_str() || val < 0) {
-      out["error"] = "Error: 'end' must be a positive integer.";
+      out["error"] = "'end' must be a positive integer.";
       out["display"] = "Search file: " + path + ": " + out["error"];
       return out;
     }
     end_line = static_cast<int>(val);
     if (end_line < 1) end_line = begin_line;
+  }
+
+  // A path-only call has neither a pattern nor a range: the defaults would
+  // degenerate into "show line 1", a single misleading line.  Reject it
+  // explicitly instead, nudging the model toward the two documented forms.
+  if (text.empty() && begin_str.empty()) {
+    out["error"] = "search_file needs a 'text' pattern or a 'begin'/'end' line range.";
+    out["display"] = "Search file: " + path + ": " + out["error"];
+    return out;
   }
 
   // If end was not provided, default it to begin (show that single line).

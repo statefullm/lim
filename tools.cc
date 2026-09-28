@@ -78,18 +78,26 @@ static bool check_params(const string& tool_name, const string& tool_call) {
   return find_missing_params(tool_name, tool_call).empty();
 }
 
-// Quoted, comma-separated list of a tool's required parameters
-// (e.g., "\"path\", \"old\", \"new\"").  Used in the missing-parameter
-// error so the LLM sees the tool's full contract, not just what it missed.
+// Comma-separated list of parameter names in exact tag form
+// (e.g., "<parameter=path>, <parameter=old>, <parameter=new>").  Showing the
+// actual tags -- not bare quoted names -- pins the <parameter=...> format the
+// model must reproduce, so the missing-parameter error leaves no room for
+// the model to invent a bare <new>-style tag.
+static string format_param_list(const vector<string>& params) {
+  string s;
+  for (size_t i = 0; i < params.size(); i++) {
+    if (i > 0) s += ", ";
+    s += string(PARAM_START) + params[i] + '>';
+  }
+  return s;
+}
+
+// A tool's required parameters in exact tag form; used in the
+// missing-parameter error so the LLM sees the tool's full contract.
 static string required_params_list(const string& tool_name) {
   const ToolSpec* spec = find_spec(tool_name);
   if (spec == nullptr) return "";
-  string s;
-  for (size_t i = 0; i < spec->params.size(); i++) {
-    if (i > 0) s += ", ";
-    s += "\"" + spec->params[i] + "\"";
-  }
-  return s;
+  return format_param_list(spec->params);
 }
 
 static string join_paths(const vector<string>& paths) {
@@ -203,11 +211,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   }
   if (!out.params_valid) {
     vector<string> missing = find_missing_params(tool_name, tool_call);
-    string missing_list;
-    for (size_t i = 0; i < missing.size(); i++) {
-      if (i > 0) missing_list += ", ";
-      missing_list += "\"" + missing[i] + "\"";
-    }
+    string missing_list = format_param_list(missing);
     // Targeted and fed back as an ordinary tool result: the call is
     // structurally well-formed -- recognized tool, all tags closed -- a
     // required parameter is simply absent.  This is the model's one quick
