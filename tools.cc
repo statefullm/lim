@@ -30,6 +30,32 @@ static bool path_value_malformed(const string& s) {
   return param_has_newline(s) || s.find(PARAM_START) != string::npos;
 }
 
+// Spurious edge newlines are the common 0-match / mismatch cause (Rule 2:
+// the value must abut its tags). State the defect plainly, give the fix as
+// the primary imperative, and show the verbatim edge anchored to the
+// parameter tag so the model can verify it against its own output. Returns
+// true if any hint was appended.
+static bool append_edge_newline_hints(string& result, const string& value, const char* param_name) {
+  bool leading_nl = value.size() > 1 && value.front() == '\n';
+  bool trailing_nl = value.size() > 1 && value.back() == '\n';
+  if (leading_nl) {
+    string head = value.substr(1);
+    if (head.size() > 10) head = head.substr(0, 10);
+    string open_tag = string(PARAM_START) + param_name + ">";
+    result += "\nYour " + string(param_name) + " value begins with a leading newline: " + open_tag + " was on a separate line, so the newline is part of the value.";
+    result += "\nPut the value on the same line as " + open_tag + " and retry.";
+    result += "\nYour call began with: \"" + open_tag + "\n" + head + "\"";
+  }
+  if (trailing_nl) {
+    string tail = value.substr(0, value.size() - 1);
+    if (tail.size() > 10) tail = tail.substr(tail.size() - 10);
+    result += "\nYour " + string(param_name) + " value ends with a trailing newline: " + PARAM_END + " was on a separate line, so the newline is part of the value.";
+    result += string("\nPut ") + PARAM_END + " immediately after the last character of the value and retry.";
+    result += "\nYour call ended with: \"" + tail + "\n" + PARAM_END + "\"";
+  }
+  return leading_nl || trailing_nl;
+}
+
 // Tool metadata: required parameters per tool.
 struct ToolSpec { string name; vector<string> params; };
 static const vector<ToolSpec> tool_specs = {
@@ -352,15 +378,15 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         result = "Error: " + r_error;
         out.is_error = true;
       } else if (r_content.empty()) {
-        result = path+" contains 0 matches of this exact byte sequence (pay attention to whitespace!): \"" + text + "\"";
-        // The common 0-match cause is a spurious trailing newline (Rule 2:
-        // the value must abut the closing tag). Point at the exact byte
-        // difference so the LLM can retry without it.
-        if (text.size() > 1 && text.back() == '\n') {
-          string tail = text.substr(0, text.size() - 1);
-          if (tail.size() > 40) tail = "..." + tail.substr(tail.size() - 40);
-          result += "\nDid you mean to end TEXT with \"" + tail + "\" rather than \"" + tail + "\n\"? If so, retry with the trailing newline removed.";
+        // A 0-match is a rejection of the attempt, not information: the
+        // protocol is verbatim, so transforming the attempt to conform is
+        // the LLM's job. Name the exact delta when we can, and instruct a
+        // resend either way.
+        result = "Error: "+path+" has 0 matches for that exact TEXT.";
+        if (!append_edge_newline_hints(result, text, "text")) {
+          result += "\nRe-verify TEXT matches the file byte-for-byte (no stray whitespace at either end).";
         }
+        out.is_error = true;
       } else {
         result = r_content;
       }
@@ -425,9 +451,11 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         result += ", Error: " + r_error;
         out.is_error = true;
         // Check for expected edit errors (mismatch)
-        if (r_error.find("not found") != string::npos ||
-            r_error.find("exact match") != string::npos) {
+        bool mismatch = r_error.find("not found") != string::npos ||
+                        r_error.find("exact match") != string::npos;
+        if (mismatch) {
           out.is_expected_error = true;
+          append_edge_newline_hints(result, old_str, "old");
         }
       }
     } else {
