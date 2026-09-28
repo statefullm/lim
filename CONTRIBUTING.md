@@ -13,6 +13,10 @@ make
 
 See [README.md](README.md) for full build and user setup instructions.
 
+## Versioning
+
+- The binary's version lives in `version.h` (`LIM_VERSION`) and the VS Code extension's version in `vscode-extension/package.json` -- bump the extension version only when the extension itself changes, and `make` never rewrites either file.
+
 ## Pull Requests
 
 1. Fork the repository and create your branch from `main`.

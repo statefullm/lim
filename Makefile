@@ -108,11 +108,14 @@ $(TARGET): $(FILES:=.o)
 	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 endif
 
-VERSION := $(shell sed -n 's/.*define LIM_VERSION "\([^"]*\)".*/\1/p' version.h)
-ifeq ($(strip $(VERSION)),)
-$(error version.h: could not extract LIM_VERSION -- check the '#define LIM_VERSION "x.y.z"' line)
+# The extension's version is owned by vscode-extension/package.json and is
+# bumped only when the extension itself changes, not on every LIM release.
+# The vsix is named after it.
+EXT_VERSION := $(shell sed -n 's/^[[:space:]]*"version": "\([^"]*\)".*/\1/p' vscode-extension/package.json | head -1)
+ifeq ($(strip $(EXT_VERSION)),)
+$(error vscode-extension/package.json: could not extract "version")
 endif
-VSIX = vscode-extension/vscode-extension-$(VERSION).vsix
+VSIX = vscode-extension/vscode-extension-$(EXT_VERSION).vsix
 
 vscode: $(VSIX)
 
@@ -120,7 +123,6 @@ $(VSIX): vscode-extension/src/extension.ts \
 		 vscode-extension/package.json \
 		 vscode-extension/tsconfig.json \
 		 vscode-extension/resources/lim.png
-	sed -i 's/"version": "[^"]*"/"version": "$(VERSION)"/' vscode-extension/package.json
 	cd vscode-extension && NODE_NO_WARNINGS=1 npm install --no-bin-links && node_modules/typescript/bin/tsc -p ./ && NODE_NO_WARNINGS=1 npx @vscode/vsce package
 
 
