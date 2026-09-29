@@ -467,8 +467,14 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "exec_shell") {
     string command = extract_string_arg_bounded(tool_call, "command");
-    out.is_mutating = true;
-    if (!command.empty()) {
+    // The shell tolerates edge newlines, so executing would silently
+    // reinforce the protocol violation Rule 2 forbids. Reject instead.
+    string warning = edge_newline_warning(command, "command");
+    if (!warning.empty()) {
+      result = warning + "\nError: command not executed.";
+      out.is_error = true;
+    } else if (!command.empty()) {
+      out.is_mutating = true;
       log_tool_diagnostic("exec_shell(\"" + command + "\")");
       FileSystemTools fs;
       // Stream output to browser in real-time as the command produces it.
@@ -504,7 +510,13 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "web_search") {
     string query = extract_string_arg_bounded(tool_call, "query");
-    if (!query.empty()) {
+    // A query with edge newlines would search fine: reject instead of
+    // silently reinforcing the protocol violation (see exec_shell).
+    string warning = edge_newline_warning(query, "query");
+    if (!warning.empty()) {
+      result = warning + "\nError: search not executed.";
+      out.is_error = true;
+    } else if (!query.empty()) {
       log_tool_diagnostic("web_search(\"" + query + "\")");
       NetworkTools net;
       result = net.web_search(query);
