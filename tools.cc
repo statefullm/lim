@@ -34,26 +34,29 @@ static bool path_value_malformed(const string& s) {
 // the value must abut its tags). State the defect plainly, give the fix as
 // the primary imperative, and show the verbatim edge anchored to the
 // parameter tag so the model can verify it against its own output. Returns
-// true if any hint was appended.
-static bool append_edge_newline_hints(string& result, const string& value, const char* param_name) {
+// the warning block, or an empty string if neither edge has a newline.
+static string edge_newline_warning(const string& value, const char* param_name) {
+  string warning;
   bool leading_nl = value.size() > 1 && value.front() == '\n';
   bool trailing_nl = value.size() > 1 && value.back() == '\n';
   if (leading_nl) {
     string head = value.substr(1);
     if (head.size() > 10) head = head.substr(0, 10);
     string open_tag = string(PARAM_START) + param_name + ">";
-    result += "\nYour " + string(param_name) + " value begins with a leading newline: " + open_tag + " was on a separate line, so the newline is part of the value.";
-    result += "\nPut the value on the same line as " + open_tag + " and retry.";
-    result += "\nYour call began with: \"" + open_tag + "\n" + head + "\"";
+    if (!warning.empty()) warning += "\n";
+    warning += "Your " + string(param_name) + " value begins with a leading newline: " + open_tag + " was on a separate line, so the newline is part of the value.\n";
+    warning += "Put the value on the same line as " + open_tag + " and retry.\n";
+    warning += "Your call began with: \"" + open_tag + "\n" + head + "\"";
   }
   if (trailing_nl) {
     string tail = value.substr(0, value.size() - 1);
     if (tail.size() > 10) tail = tail.substr(tail.size() - 10);
-    result += "\nYour " + string(param_name) + " value ends with a trailing newline: " + PARAM_END + " was on a separate line, so the newline is part of the value.";
-    result += string("\nPut ") + PARAM_END + " immediately after the last character of the value and retry.";
-    result += "\nYour call ended with: \"" + tail + "\n" + PARAM_END + "\"";
+    if (!warning.empty()) warning += "\n";
+    warning += "Your " + string(param_name) + " value ends with a trailing newline: " + PARAM_END + " was on a separate line, so the newline is part of the value.\n";
+    warning += string("Put ") + PARAM_END + " immediately after the last character of the value and retry.\n";
+    warning += "Your call ended with: \"" + tail + "\n" + PARAM_END + "\"";
   }
-  return leading_nl || trailing_nl;
+  return warning;
 }
 
 // Tool metadata: required parameters per tool.
@@ -378,15 +381,13 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         result = "Error: " + r_error;
         out.is_error = true;
       } else if (r_content.empty()) {
-        // A 0-match is a rejection of the attempt, not information: the
-        // protocol is verbatim, so transforming the attempt to conform is
-        // the LLM's job. Name the exact delta when we can, and instruct a
-        // resend either way.
-        result = "Error: "+path+" has 0 matches for that exact TEXT.";
-        if (!append_edge_newline_hints(result, text, "text")) {
-          result += "\nRe-verify TEXT matches the file byte-for-byte (no stray whitespace at either end).";
-        }
-        out.is_error = true;
+        // A 0-match is a legitimate negative answer, not an error. The
+        // guidance goes before the rejection line: a model certain the text
+        // exists stops reading at it and suspects the tool or the file.
+        result = edge_newline_warning(text, "text");
+        if (result.empty())
+          result = "Re-verify TEXT matches the file byte-for-byte (no stray whitespace at either end).";
+        result += "\n"+path+" has 0 matches for that exact TEXT.";
       } else {
         result = r_content;
       }
@@ -448,15 +449,17 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         display_result = "Edit file: " + path;
       }
       if (!r_error.empty()) {
-        result += ", Error: " + r_error;
-        out.is_error = true;
         // Check for expected edit errors (mismatch)
         bool mismatch = r_error.find("not found") != string::npos ||
                         r_error.find("exact match") != string::npos;
+        out.is_error = true;
+        out.is_expected_error = mismatch;
+        string error_line = result + ", Error: " + r_error;
         if (mismatch) {
-          out.is_expected_error = true;
-          append_edge_newline_hints(result, old_str, "old");
+          string warning = edge_newline_warning(old_str, "old");
+          if (!warning.empty()) error_line = warning + "\n" + error_line;
         }
+        result = error_line;
       }
     } else {
       result = "Error: No path provided to edit_file";
