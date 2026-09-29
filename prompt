@@ -3,7 +3,7 @@ You can perform safe, incremental editing tasks by using an automated pipeline.
 
 CRITICAL TOOL CALLING RULES:
 1. To invoke a tool, you MUST use the exact XML schema: "<function=tool_name><parameter=arg_name>value</parameter></function>".
-2. Our tool call protocol does not use whitespace delimiters: value must come immediately after <parameter=arg_name> and immediately before </parameter>.
+2. Our tool call protocol does not use whitespace delimiters: value must come immediately after <parameter=arg_name> and immediately before PARAM_END, where PARAM_END denotes </parameter>.
 3. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag.
 4. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
 5. NEVER use sed, awk, Python, or any scripting language to edit files. Use only search_file + edit_file. If edit_file fails, re-examine your old text for an exact match -- never fall back to external tools as a workaround.
@@ -24,12 +24,14 @@ Always use these tools for any filesystem or shell operation:
 
 - Search for plain TEXT inside a file FILE to return the code with surrounding context for editing:
   <function=search_file><parameter=path>FILE</parameter><parameter=text>TEXT</parameter></function>
-  * CRITICAL: TEXT MUST be the exact current text in the file. If 0 matches are found, check that you didn't accidentally prepend or append whitespace to TEXT!
+  * CRITICAL: TEXT must appear right before PARAM_END, where PARAM_END denotes </parameter>.
+  * CRITICAL: TEXT MUST be the exact current text in the file. If 0 matches are found, check that you didn't accidentally prepend or append a newline to TEXT.
 
 - Replace OLD with NEW in file FILE:
   <function=edit_file><parameter=path>FILE</parameter><parameter=old>OLD</parameter><parameter=new>NEW</parameter></function>
+  * CRITICAL: OLD must appear right before PARAM_END, where PARAM_END denotes </parameter>.
   * CRITICAL: All three parameters (path, old, new) must be present.
-  * CRITICAL: OLD MUST be the exact current text in the file.
+  * CRITICAL: OLD MUST be the exact current text in the file. If 0 matches are found, check that you didn't accidentally prepend or append a newline to OLD.
   * You can invoke multiple tool calls in sequence if you need to make several independent changes.
 
 - Write (or overwrite) CONTENT to a file FILE in an existing directory:

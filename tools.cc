@@ -32,16 +32,17 @@ static bool path_value_malformed(const string& s) {
 
 // Spurious edge newlines are the common 0-match / mismatch cause (Rule 2:
 // the value must abut its tags). State the defect plainly, give the fix as
-// the primary imperative, and show the verbatim edge anchored to the
-// parameter tag so the model can verify it against its own output. Returns
-// the warning block, or an empty string if neither edge has a newline.
+// the primary imperative, and show the edge anchored to the parameter tag
+// (the closing tag denoted PARAM_END, which the system prompt defines) so
+// the model can verify it against its own output. Returns the warning
+// block, or an empty string if neither edge has a newline.
 static string edge_newline_warning(const string& value, const char* param_name) {
   string warning;
   bool leading_nl = value.size() > 1 && value.front() == '\n';
   bool trailing_nl = value.size() > 1 && value.back() == '\n';
   if (leading_nl) {
     string head = value.substr(1);
-    if (head.size() > 10) head = head.substr(0, 10);
+    if (head.size() > 10) head = head.substr(0, 10) + "...";
     string open_tag = string(PARAM_START) + param_name + ">";
     if (!warning.empty()) warning += "\n";
     warning += "Your " + string(param_name) + " value begins with a leading newline: " + open_tag + " was on a separate line, so the newline is part of the value.\n";
@@ -50,11 +51,11 @@ static string edge_newline_warning(const string& value, const char* param_name) 
   }
   if (trailing_nl) {
     string tail = value.substr(0, value.size() - 1);
-    if (tail.size() > 10) tail = tail.substr(tail.size() - 10);
+    if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value ends with a trailing newline: " + PARAM_END + " was on a separate line, so the newline is part of the value.\n";
-    warning += string("Put ") + PARAM_END + " immediately after the last character of the value and retry.\n";
-    warning += "Your call ended with: \"" + tail + "\n" + PARAM_END + "\"";
+    warning += "Your " + string(param_name) + " value ends with a trailing newline: PARAM_END was on a separate line, so the newline is part of the value.\n";
+    warning += "Put PARAM_END immediately after the last character of the value and retry.\n";
+    warning += "Your call ended with: \"" + tail + "\nPARAM_END\"";
   }
   return warning;
 }
