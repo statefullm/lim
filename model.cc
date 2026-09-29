@@ -590,6 +590,8 @@ void dummy_log_callback(enum ggml_log_level level, const char * text, void * use
   // hunt. Only the final "file:line: msg" abort line would otherwise print
   // (ggml_abort() bypasses the logger). WARN/INFO/DEBUG/CONT stay suppressed in
   // normal mode -- LIM_DEBUG=1 installs custom_log_callback for the full feed.
+  // One exception: model_load_quiet_guard replaces this callback around model
+  // load attempts, whose expected OOM failures would otherwise print here.
   static bool in_error = false;
   if (level == GGML_LOG_LEVEL_ERROR) {
     cerr << text;
@@ -621,5 +623,11 @@ void custom_log_callback(enum ggml_log_level level, const char * text, void * us
   }
   in_suppressed_debug = false;
   cerr << text;
+}
+
+void quiet_log_callback(enum ggml_log_level level, const char * text, void * user_data) {
+  (void) level;
+  (void) text;
+  (void) user_data;
 }
 

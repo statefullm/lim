@@ -124,5 +124,25 @@ void sync_n_past(llama_context *ctx, int &n_past);
 void dummy_log_callback(enum ggml_log_level level, const char * text, void * user_data);
 void custom_log_callback(enum ggml_log_level level, const char * text, void * user_data);
 
+// Swallows all ggml/llama output while installed. A model load attempt that
+// doesn't fit in VRAM fails with per-allocation ERROR lines that are expected
+// noise, not faults -- lim reports the actual outcome itself -- so
+// model_load_quiet_guard installs this over the real callback (dummy or
+// custom, per LIM_DEBUG) around each load attempt and restores it afterwards.
+void quiet_log_callback(enum ggml_log_level level, const char * text, void * user_data);
+
+struct model_load_quiet_guard {
+  ggml_log_callback prev_cb = nullptr;
+  void * prev_ud = nullptr;
+  explicit model_load_quiet_guard(bool enable) {
+    if (!enable) return;
+    llama_log_get(&prev_cb, &prev_ud);
+    llama_log_set(quiet_log_callback, nullptr);
+  }
+  ~model_load_quiet_guard() {
+    if (prev_cb) llama_log_set(prev_cb, prev_ud);
+  }
+};
+
 #endif // MODEL_H
 

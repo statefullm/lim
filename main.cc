@@ -475,7 +475,10 @@ int main(int argc, char ** argv) {
 
   if (!gpu_layers_explicit && mparams.n_gpu_layers < 0) {
     // Step 1: attempt full GPU offload with zero margin.
-    model = llama_model_load_from_file(argv[1], mparams);
+    {
+      model_load_quiet_guard load_quiet(!is_debug);
+      model = llama_model_load_from_file(argv[1], mparams);
+    }
 
     if (!model) {
       used_fitter = true;
@@ -563,9 +566,11 @@ int main(int argc, char ** argv) {
         diag("Error during model fitting, proceeding with default parameters", "\033[31m");
       }
 
+      model_load_quiet_guard load_quiet(!is_debug);
       model = llama_model_load_from_file(argv[1], mparams);
     }
   } else {
+    model_load_quiet_guard load_quiet(!is_debug);
     model = llama_model_load_from_file(argv[1], mparams);
   }
 
@@ -661,6 +666,7 @@ int main(int argc, char ** argv) {
       scparams.n_gpu_layers = -1;    // tiny model, all on GPU
       scparams.load_mtp = true;
       scparams.load_mode = LLAMA_LOAD_MODE_NONE;  // tiny model, no need for mmap
+      model_load_quiet_guard load_quiet(!is_debug);
       model_mtp = llama_model_load_from_file(sidecar_path, scparams);
       if (!model_mtp) {
         diag("MTP: failed to load sidecar '" + std::string(sidecar_path) + "' -- MTP disabled", "\033[33m");
