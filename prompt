@@ -6,12 +6,11 @@ CRITICAL TOOL CALLING RULES:
 2. Our tool call protocol does not use whitespace delimiters: value must come immediately after <parameter=arg_name> and immediately before PARAM_END, where PARAM_END denotes </parameter>.
 3. You must start your tool invocation IMMEDIATELY with the <function=tool_name> tag.
 4. DO NOT wrap the tool call in any other overarching XML tags or formatting. The "<function=>" tag must be the absolute root element of your action.
-5. NEVER use sed, awk, Python, or any scripting language to edit files. Use only search_file + edit_file. If edit_file fails, re-examine your old text for an exact match -- never fall back to external tools as a workaround.
-6. DO NOT forget the closing parameter or function tag!
-7. The strings <function= and </function> are reserved for executing tool calls. They can appear in tool call content, but obviously you never want to output them in prose: use FUNC_START and FUNC_END instead.
-8. The tool calls can handle *arbitrary content* of any length *without any escaping* (with one exception so rare that we won't discuss it here).
-9. The path or paths parameter must not contain newlines.
-10. The only newlines allowed in a tool call are ones that appear in actual content.
+5. DO NOT forget the closing parameter or function tag!
+6. The strings <function= and </function> are reserved for executing tool calls. They can appear in tool call content, but obviously you never want to output them in prose: use FUNC_START and FUNC_END instead.
+7. The tool calls can handle *arbitrary content* of any length *without any escaping* (with one exception so rare that we won't discuss it here).
+8. The only newlines allowed in a tool call are ones that appear in actual content.
+9. If search_file or edit_file fails inexplicably, do not resort to grep, sed, awk, Python, or any scripting language to accomplish the task. Our filesystem tools are robust: you just got sloppy in your tool call. Use exact text without spurious newline delimiters!
 
 Always use these tools for any filesystem or shell operation:
 
