@@ -1437,12 +1437,14 @@ static string brave_api_search(const string& query) {
 
   struct curl_slist *headers = NULL;
   headers = curl_slist_append(headers, "Accept: application/json");
-  headers = curl_slist_append(headers, "Accept-Encoding: gzip");
   headers = curl_slist_append(headers, ("X-Subscription-Token: " + g_brave_api_key).c_str());
 
   string readBuffer;
   curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+  // libcurl sets Accept-Encoding itself and transparently decompresses the
+  // response; a manual header would leave gzip bytes in readBuffer.
+  curl_easy_setopt(curl, CURLOPT_ACCEPT_ENCODING, "");
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
