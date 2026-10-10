@@ -45,8 +45,9 @@ name are yours; this example is a GPU usage rule):
 **CRITICAL RULE**
 NEVER RUN ANYTHING ON THE GPU YOURSELF: ASK THE USER. NEVER KILL GPU processes!
 
-Always follow the DRY principle when coding: avoid duplicate code, dead code,
-and comments that only make sense in the context of your session.
+Always follow the DRY principle when coding: avoid duplicate code.
+Clean up dead code.
+Avoid comments that only make sense in the context of your session.
 ```
 
 ## 2. Per-mode env files
