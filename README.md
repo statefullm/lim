@@ -278,11 +278,21 @@ git() {
     command git "$@"
 }
 
+# Reattach a detached lim (terminal disconnected, session still alive).
+relim() {
+    local p
+    p=$(pgrep -u "$USER" -x lim | head -1)
+    if [ -z "$p" ]; then echo "relim: no lim process found"; return 1; fi
+    reptyr -s "$p"
+}
+
 # Optional: add custom paths
 export PATH="$HOME/bin:$PATH"
 ```
 
 The `cd` override writes the current directory to `$HOME/.cwd`. LIM writes it at startup from its own working directory and reads it to resolve relative paths in the file tools and to set the working directory for `exec_shell` commands. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
+
+Note: `relim` needs a patched `reptyr`: vanilla 0.10.0 can hang silently while attaching a multithreaded target, because it sends SIGCONT before reaping the attach stop, which can cancel that stop so the unbounded wait never returns. `reptyr-attach-retry.patch` (this repository) sends the SIGCONT only after the attach stop is reaped and bounds the wait (a real failure reports `Connection timed out` instead of hanging), making reattach reliable. Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
 ### 6. The System Prompt
 
@@ -530,6 +540,12 @@ coder cats --checkpoints
 ### Interrupting Generation
 
 Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `/continue` to resume seamlessly: the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
+
+### Terminal Disconnection (detached operation)
+
+LIM survives terminal disconnection. When your SSH connection drops, the pty sends SIGHUP to the session, which LIM ignores. The session, KV-cache, and any in-flight generation continue; the browser keeps streaming (default `LIM_OUTPUT=2`).
+
+To reconnect, open a new terminal on the host and run `relim`. If lim does not respond as soon as reptyr takes the terminal, press Ctrl+C: it is forwarded to lim and wakes it, and the terminal reinitializes automatically on the first input. A detached lim auto-saves when stopped with `kill`.
 
 ### Automatic 90% Context Checkpoint
 

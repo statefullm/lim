@@ -881,7 +881,11 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   }
 
   if (pid == 0) {
-    // Child process: redirect stdout/stderr to the pipe, then exec.
+    // Own process group so lim's group holds only lim; lets relim reattach
+    // mid tool-call (reptyr won't attach a target with other group members).
+    setpgid(0, 0);
+
+    // Redirect stdout/stderr to the pipe, then exec.
     close(pipefd[0]); // Close read end
 
     // Reset SIGPIPE to default so pipelines like `find | head` behave as they
@@ -953,8 +957,10 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
       // Interrupted by signal (e.g., Ctrl+C).
       if (errno == EINTR) {
         if (stop_generation) {
-          // User pressed Ctrl+C: kill the child and abort.
-          kill(pid, SIGTERM);
+          // Ctrl+C: kill the whole tool tree (child is a group leader); fall
+          // back to the direct child if it is not.
+          if (kill(-pid, SIGTERM) != 0)
+            kill(pid, SIGTERM);
           // Drain remaining pipe data to prevent zombie/EPIPE.
           char drain[65536];
           while (read(pipefd[0], drain, sizeof(drain)) > 0) {}

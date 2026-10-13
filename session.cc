@@ -24,6 +24,7 @@ extern std::string g_model_path;
 #include <cstdlib>
 #include <chrono>
 #include <signal.h>
+#include <pthread.h>
 #include <cctype>
 #include <set>
 #include <functional>
@@ -291,8 +292,10 @@ public:
         use_dummy_thought_(use_dummy_thought), state_(state),
         g_auto_continue_depth_(0)
   {
-    const char* cur_tty = ttyname(STDIN_FILENO);
-    prev_tty_ = cur_tty ? string(cur_tty) : "";
+    // Fixed for the session's lifetime: a process started from a pipe stays a
+    // pipe process (pipe-EOF ends the session), while a process started from
+    // a tty that later loses it (SSH disconnect) must persist, not quit.
+    stdin_was_tty_ = isatty(STDIN_FILENO);
   }
 
   bool run();
@@ -969,6 +972,10 @@ private:
 
   // --- Main loop methods ---
   string get_user_input();
+  // Terminal is gone (SSH disconnect): block (zero CPU) until a terminal is
+  // reattached (the user's Ctrl+C wakes the wait) or SIGTERM asks to quit.
+  // Returns true when the terminal is back, false on graceful quit.
+  bool wait_for_terminal_reattach();
   Command handle_command(const string& input);
   bool feed_new_user_turn(const string& input);
   bool feed_user_message(const string& input);
@@ -1006,7 +1013,7 @@ private:
   SessionState& state_;
 
   map<string, string> aliases_;
-  string prev_tty_;
+  bool stdin_was_tty_ = false;  // stdin was a tty at session start (see constructor)
   int g_auto_continue_depth_;
 
   // Stack index of the restore-point R/S checkpoint saved by the fast
@@ -1029,9 +1036,20 @@ private:
 string ChatSession::get_user_input() {
   string user_input = "";
 
-  // If stdin is not a terminal (piped input), read lines directly.
+  // USR1/SIGTERM are blocked process-wide (setup_signals) so no worker thread
+  // can steal a poke or a `kill lim`; re-unblock them on the main thread now,
+  // before it blocks for input.
+  {
+    sigset_t main_thread_only{};
+    sigemptyset(&main_thread_only);
+    sigaddset(&main_thread_only, SIGUSR1);
+    sigaddset(&main_thread_only, SIGTERM);
+    pthread_sigmask(SIG_UNBLOCK, &main_thread_only, nullptr);
+  }
+
+  // If stdin was a pipe from session start, read lines directly.
   // Empty lines are skipped; EOF returns "/quit" to exit cleanly.
-  if (!isatty(STDIN_FILENO)) {
+  if (!stdin_was_tty_) {
     if (state_.first_turn_done && state_.last_t_count > 0) {
       diag_speed(n_past_, cparams_.n_ctx, state_.last_t_count,
                  state_.last_elapsed, state_.last_decode_time);
@@ -1044,6 +1062,18 @@ string ChatSession::get_user_input() {
   }
 
   if (!state_.auto_continue) {
+    // stdin was a tty but is now gone (e.g. the SSH connection dropped):
+    // this is not pipe-EOF (that would /quit the session) -- idle-wait
+    // instead, until relim reattaches a pty or SIGTERM asks to quit.
+    // (Inside the auto-continue guard so a tool-call chain still running
+    // when the terminal dies runs to completion first.)
+    if (stdin_was_tty_ && !isatty(STDIN_FILENO)) {
+      if (!wait_for_terminal_reattach()) {
+        return "";  // quit requested; the main loop turns it into /quit
+      }
+      // Terminal is back: fall through to the readline prompt below.
+    }
+
     // Print Speed from previous generation right before >>> (skip first turn).
     // Deferred here so we have all the information we need.
     if (state_.first_turn_done && state_.last_t_count > 0) {
@@ -1106,7 +1136,7 @@ string ChatSession::get_user_input() {
 
     // Event loop: poll for input with select(), check for interrupts
     while (!input_complete) {
-      if (g_was_interrupted) {
+      if (g_was_interrupted || g_quit_requested) {
         break;
       }
 
@@ -1188,6 +1218,51 @@ string ChatSession::get_user_input() {
   }
 
   return user_input;
+}
+
+// --- wait_for_terminal_reattach: the terminal is gone, keep the session alive ---
+bool ChatSession::wait_for_terminal_reattach() {
+  const string pid = to_string(getpid());
+  diag("Terminal disconnected -- lim stays alive (pid " + pid
+       + "). Reconnect from a new terminal with: relim", "\033[35m");
+  log_entry("SYSTEM", "Terminal disconnected; waiting for reattach (relim)");
+  if (should_output_to_browser()) {
+    stream_html("\n\n<div style=\"text-align:center;margin:12px 0;\">"
+                "<span style=\"color:#d0a030;font-size:14px;font-weight:bold;\">"
+                "Terminal disconnected &mdash; lim stays alive. Reconnect: "
+                "<code>relim</code></span>"
+                "</div>\n");
+  }
+
+  // Wait for the new pty, blocked in the kernel at zero CPU.  Nothing about
+  // the reattach reaches lim on its own: `relim` runs `reptyr -s` (without
+  // -s, reptyr's tty-fd scan finds nothing to move on a detached lim and it
+  // waits forever in its proxy loop), then the user presses Ctrl+C, which
+  // reptyr forwards to lim as SIGINT and interrupts this wait.  (Reptyr's
+  // own closing SIGCONT occasionally wakes the wait with no input; USR1/
+  // SIGTERM are blocked process-wide and unblocked only in the main thread,
+  // so a manual poke or `kill lim` always reaches THIS thread.)
+  // Never wait on fd 0 itself: a dead pty slave makes select()/poll() report
+  // readable (persistent EOF) on every call, spinning at 100% CPU.
+  while (!isatty(STDIN_FILENO)) {
+    if (g_quit_requested) return false;
+    select(0, nullptr, nullptr, nullptr, nullptr);  // wake on SIGINT, SIGUSR1, or SIGTERM
+  }
+
+  // A terminal is back (reptyr attached a new pty).  Writes to the dead tty
+  // may have left the iostreams in fail state -- clear it so terminal
+  // output resumes (the browser was unaffected: it uses the FIFO).
+  cout.clear();
+  cin.clear();
+  diag("Terminal reattached", "\033[32m");
+  log_entry("SYSTEM", "Terminal reattached");
+  if (should_output_to_browser()) {
+    stream_html("\n\n<div style=\"text-align:center;margin:12px 0;\">"
+                "<span style=\"color:#7ec87e;font-size:14px;font-weight:bold;\">"
+                "Terminal reattached</span>"
+                "</div>\n");
+  }
+  return true;
 }
 
 // --- handle_command: detect which command the input represents ---
@@ -2355,6 +2430,13 @@ bool ChatSession::run() {
       user_input = get_user_input();
     }
 
+    // A graceful-quit request (SIGTERM, or an interrupt while detached)
+    // routes through the normal /quit path (history flush + auto-save).
+    if (g_quit_requested) {
+      g_quit_requested = 0;
+      user_input = "/quit";
+    }
+
     // 2. Parse and dispatch commands (all require '/' prefix)
     last_cmd_ = handle_command(user_input);
 
@@ -2929,12 +3011,6 @@ bool ChatSession::run() {
 
     // 5. Browser/TTY setup
     bool browser_connected = check_browser_connected();
-
-    const char* cur_tty = ttyname(STDIN_FILENO);
-    if (cur_tty && !prev_tty_.empty() && prev_tty_ != cur_tty) {
-      system("reset");
-    }
-    if (cur_tty) prev_tty_ = cur_tty;
 
     if (browser_connected && g_browser_warning_suppressed) {
       g_browser_warning_suppressed = false;

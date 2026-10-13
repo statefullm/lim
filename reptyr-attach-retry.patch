@@ -1,0 +1,67 @@
+--- a/platform/linux/linux_ptrace.c
++++ b/platform/linux/linux_ptrace.c
+@@ -117,14 +117,62 @@
+     return ptrace_finish_attach(child, pid);
+ }
+ 
++/*
++ * Wait for the PTRACE_ATTACH stop, bounded to 10 s (1 s alarm per iteration).
++ * A running leader consumes the attach's SIGSTOP at its next signal point, so
++ * the stop may merely be delayed -- on each timeout, just wait again.  Do NOT
++ * detach+re-attach on timeout: the pending first attach makes PTRACE_DETACH
++ * return ESRCH and the re-PTRACE_ATTACH return EPERM.  On give-up the target
++ * is SIGCONT'd, so it is never left stopped.
++ */
++static void attach_stop_alarm(int sig) {
++    (void) sig;
++}
++
++static int wait_attach_stop(struct ptrace_child *child, pid_t pid) {
++    struct sigaction sa, old;
++    int i;
++
++    sa.sa_handler = attach_stop_alarm;
++    sa.sa_flags = 0;
++    sigemptyset(&sa.sa_mask);
++    sigaction(SIGALRM, &sa, &old);
++
++    for (i = 0; i < 10; i++) {
++        alarm(1);
++        if (ptrace_wait(child) == 0) {
++            alarm(0);
++            sigaction(SIGALRM, &old, NULL);
++            return 0;
++        }
++        /*
++         * Timed out: the stop is merely delayed -- wait again (do NOT
++         * detach+re-attach; see above).
++         */
++    }
++
++    alarm(0);
++    sigaction(SIGALRM, &old, NULL);
++    ptrace(PTRACE_DETACH, child->pid, 0, 0);
++    kill(pid, SIGCONT);
++    child->error = ETIMEDOUT;
++    return -1;
++}
++
+ int ptrace_finish_attach(struct ptrace_child *child, pid_t pid) {
+     memset(child, 0, sizeof * child);
+     child->pid = pid;
+ 
+-    kill(pid, SIGCONT);
+-    if (ptrace_wait(child) < 0)
++    if (wait_attach_stop(child, pid) < 0)
+         goto detach;
+ 
++    /*
++     * SIGCONT only after the stop is reaped: sent earlier it would flush the
++     * queued attach SIGSTOP before the leader consumes it, so the stop would
++     * never come.  Now it just clears any pending group stop.
++     */
++    kill(pid, SIGCONT);
++
+     if (arch_get_personality(child))
+         goto detach;
+ 
