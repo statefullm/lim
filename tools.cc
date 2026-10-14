@@ -68,12 +68,12 @@ static string edge_newline_warning(const string& value, const char* param_name, 
   return warning;
 }
 
-// Note-on-success for a path/paths edge newline that was losslessly trimmed:
-// the call already succeeded, so this is informational, not a retry
-// imperative. Prepend it to 'result' (LLM-facing only, not the browser
-// display, matching the text/old warnings). No-op if the emitted value had
-// no edge newline.
-static void prepend_path_note(string& result, const string& tool_call, const char* param_name) {
+// Note-on-success for a param whose edge newline was losslessly trimmed
+// (path/paths/command/query): the call already ran, so this is
+// informational, not a retry imperative. Prepend it to 'result' (LLM-facing
+// only, not the browser display, matching the text/old warnings). No-op if
+// the emitted value had no edge newline.
+static void prepend_edge_newline_note(string& result, const string& tool_call, const char* param_name) {
   string note = edge_newline_warning(extract_string_arg_bounded(tool_call, param_name), param_name, /*note_mode=*/true);
   if (!note.empty()) result = note + "\n\n" + result;
 }
@@ -292,7 +292,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       FileSystemTools fs;
       NetworkTools net;
       result = "Files content:\n";
-      prepend_path_note(result, tool_call, "paths");
+      prepend_edge_newline_note(result, tool_call, "paths");
 
       vector<string> local_paths_to_read;
 
@@ -420,7 +420,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       }
 
       display_result = r_display;
-      prepend_path_note(result, tool_call, "path");
+      prepend_edge_newline_note(result, tool_call, "path");
     } else {
       result = "Error: path is required for search_file";
     }
@@ -445,7 +445,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       } else {
         display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
       }
-      prepend_path_note(result, tool_call, "path");
+      prepend_edge_newline_note(result, tool_call, "path");
     } else {
       result = "Error: No path provided to write_file";
     }
@@ -493,23 +493,19 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         }
         result = error_line;
       }
-      prepend_path_note(result, tool_call, "path");
+      prepend_edge_newline_note(result, tool_call, "path");
     } else {
       result = "Error: No path provided to edit_file";
     }
   } else if (tool_name == "exec_shell") {
-    string command = extract_string_arg_bounded(tool_call, "command");
-    // Label every call (rejects included), matching the other tools.
+    // Edge newlines are lossless for the shell (it ignores them), so trim
+    // and execute rather than reject; a spurious edge newline gets an
+    // informational note, not a failure. Matches path/paths: complain, but
+    // still execute.
+    string command = trim_chars(extract_string_arg_bounded(tool_call, "command"), " \t\r\n");
+    // Label every call, matching the other tools.
     if (!command.empty()) log_tool_diagnostic("exec_shell(\"" + command + "\")");
-    // The shell tolerates edge newlines, so executing would silently
-    // reinforce the protocol violation Rule 2 forbids. Reject instead.
-    string warning = edge_newline_warning(command, "command");
-    if (!warning.empty()) {
-      result = "Your exec_shell call was malformed, so the command was not executed:\n" + warning;
-      out.is_error = true;
-      out.high_attention = true;
-      display_result = "Exec shell: command not executed";
-    } else if (!command.empty()) {
+    if (!command.empty()) {
       out.is_mutating = true;
       FileSystemTools fs;
       // Stream output to browser in real-time as the command produces it.
@@ -538,26 +534,28 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           }
         }
         );
+      // Complain (informational note) if a spurious edge newline was trimmed;
+      // the command still ran. LLM-facing only, like path/paths.
+      prepend_edge_newline_note(result, tool_call, "command");
       // Don't show a separate summary box -- output is already streamed inside the green box above.
       display_result = "";
     } else {
       result = "Error: No command provided to exec_shell";
     }
   } else if (tool_name == "web_search") {
-    string query = extract_string_arg_bounded(tool_call, "query");
-    // Label every call (rejects included), matching the other tools.
+    // Edge newlines are lossless for a search (the engine trims them), so
+    // trim and search rather than reject; a spurious edge newline gets an
+    // informational note, not a failure. Matches path/paths: complain, but
+    // still execute.
+    string query = trim_chars(extract_string_arg_bounded(tool_call, "query"), " \t\r\n");
+    // Label every call, matching the other tools.
     if (!query.empty()) log_tool_diagnostic("web_search(\"" + query + "\")");
-    // A query with edge newlines would search fine: reject instead of
-    // silently reinforcing the protocol violation (see exec_shell).
-    string warning = edge_newline_warning(query, "query");
-    if (!warning.empty()) {
-      result = "Your web_search call was malformed, so the search was not executed:\n" + warning;
-      out.is_error = true;
-      out.high_attention = true;
-      display_result = "Web search: search not executed";
-    } else if (!query.empty()) {
+    if (!query.empty()) {
       NetworkTools net;
       result = net.web_search(query);
+      // Complain (informational note) if a spurious edge newline was trimmed;
+      // the search still ran. LLM-facing only, like path/paths.
+      prepend_edge_newline_note(result, tool_call, "query");
       display_result = "Web search: \"" + query + "\"";
       // Count results
       int n_results = 0;
