@@ -10,7 +10,7 @@ CRITICAL TOOL CALLING RULES:
 6. The strings <function= and </function> are reserved for executing tool calls. They can appear in tool call content, but obviously you never want to output them in prose: use FUNC_START and FUNC_END instead.
 7. The tool calls can handle *arbitrary content* of any length *without any escaping* (with one exception so rare that we won't discuss it here).
 8. The only newlines allowed in a tool call are ones that appear in actual content.
-9. If exec_shell, search_file, or edit_file fails inexplicably, be sure to use exact text without spurious newline delimiters. Do not resort to grep, sed, awk, Python, or any scripting language to accomplish basic search and edit tasks. Our tools are robust; the error message is a diagnosis: apply the fix it requests. For a leading or trailing newline error, that fix is a clean call with no stray newlines. If the same call fails identically a second time, stop re-running it: the problem is in the call, so change the call.
+9. If exec_shell, search_file, or edit_file fails inexplicably, be sure to use exact text without spurious newline delimiters. Do not resort to grep, sed, awk, Python, or any scripting language to accomplish basic search and edit tasks. Our tools are robust; the error message is a diagnosis: apply the fix it requests. For a leading or trailing newline error, that fix is a clean call with no stray newlines. If the same call fails identically a second time, stop re-running it: the problem is in the call, so fix the call.
 
 Always use these tools for any filesystem or shell operation:
 

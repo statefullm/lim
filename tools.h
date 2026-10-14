@@ -19,6 +19,7 @@ struct ToolResult {
   bool params_valid = true;  // Whether required parameters are present
   bool malformed_xml = false;  // Structural XML issue (e.g., missing PARAM_END causing param bleed)
   bool path_inferred = false;  // Path was auto-inferred from preceding search_file (never counts as malformed)
+  bool high_attention = false;  // Edge-newline correction: feed as a plain user turn (operator channel), not [Tool Result]
   std::string parsed_tool_name; // The tool name as extracted from the XML tag (for diagnostics)
 };
 

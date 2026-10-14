@@ -405,8 +405,15 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         // guidance goes before the rejection line: a model certain the text
         // exists stops reading at it and suspects the tool or the file.
         result = edge_newline_warning(text, "text");
-        if (result.empty())
+        if (result.empty()) {
           result = "Re-verify TEXT matches the file byte-for-byte (no stray whitespace at either end).";
+        } else {
+          // The edge newline explains the 0 matches: frame it as an
+          // operator correction (plain user turn, high_attention) so the
+          // cause lands with scolding-level attention.
+          result = "Your search_file call was malformed, so it searched the wrong bytes:\n" + result;
+          out.high_attention = true;
+        }
         result += "\n"+path+" has 0 matches for that exact TEXT.";
       } else {
         result = r_content;
@@ -479,7 +486,10 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         string error_line = result + ", Error: " + r_error;
         if (mismatch) {
           string warning = edge_newline_warning(old_str, "old");
-          if (!warning.empty()) error_line = warning + "\n" + error_line;
+          if (!warning.empty()) {
+            error_line = "Your edit_file call was malformed, so it could not match the file:\n" + warning + "\n" + error_line;
+            out.high_attention = true;
+          }
         }
         result = error_line;
       }
@@ -489,15 +499,18 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "exec_shell") {
     string command = extract_string_arg_bounded(tool_call, "command");
+    // Label every call (rejects included), matching the other tools.
+    if (!command.empty()) log_tool_diagnostic("exec_shell(\"" + command + "\")");
     // The shell tolerates edge newlines, so executing would silently
     // reinforce the protocol violation Rule 2 forbids. Reject instead.
     string warning = edge_newline_warning(command, "command");
     if (!warning.empty()) {
-      result = warning + "\nError: command not executed.";
+      result = "Your exec_shell call was malformed, so the command was not executed:\n" + warning;
       out.is_error = true;
+      out.high_attention = true;
+      display_result = "Exec shell: command not executed";
     } else if (!command.empty()) {
       out.is_mutating = true;
-      log_tool_diagnostic("exec_shell(\"" + command + "\")");
       FileSystemTools fs;
       // Stream output to browser in real-time as the command produces it.
       // Output is wrapped in a green .tool-result box and streamed incrementally
@@ -532,14 +545,17 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     }
   } else if (tool_name == "web_search") {
     string query = extract_string_arg_bounded(tool_call, "query");
+    // Label every call (rejects included), matching the other tools.
+    if (!query.empty()) log_tool_diagnostic("web_search(\"" + query + "\")");
     // A query with edge newlines would search fine: reject instead of
     // silently reinforcing the protocol violation (see exec_shell).
     string warning = edge_newline_warning(query, "query");
     if (!warning.empty()) {
-      result = warning + "\nError: search not executed.";
+      result = "Your web_search call was malformed, so the search was not executed:\n" + warning;
       out.is_error = true;
+      out.high_attention = true;
+      display_result = "Web search: search not executed";
     } else if (!query.empty()) {
-      log_tool_diagnostic("web_search(\"" + query + "\")");
       NetworkTools net;
       result = net.web_search(query);
       display_result = "Web search: \"" + query + "\"";

@@ -195,9 +195,14 @@ ToolExecutor::Result ToolExecutor::execute(
       state.auto_continue = false;
       return result;
     }
+    // Edge-newline corrections (high_attention) are fed as a plain user
+    // turn -- the operator channel, which converges in ~1 retry vs 2-3 for
+    // the [Tool Result] channel (toolCallAnalysis.md decision 4).
+    bool operator_turn = tool_out.high_attention;
+
     if (is_debug) {
-      console("\n\033[92m[Tool Result]\033[0m\n");
-      string result_to_print = tool_out.display;
+      console(operator_turn ? "\n\033[91m[Operator]\033[0m\n" : "\n\033[92m[Tool Result]\033[0m\n");
+      string result_to_print = operator_turn ? tool_out.content : tool_out.display;
       static constexpr size_t STDOUT_TRUNCATE_LIMIT = 500;
       if (should_output_to_stdout() && result_to_print.length() > STDOUT_TRUNCATE_LIMIT) {
         size_t original_len = result_to_print.length();
@@ -205,10 +210,11 @@ ToolExecutor::Result ToolExecutor::execute(
       }
       size_t p = 0;
       while ((p = result_to_print.find('\n')) != string::npos) {
-        console("  ", result_to_print.c_str(), "\n");
+        string line = result_to_print.substr(0, p);
         result_to_print.erase(0, p + 1);
+        console("  ", line.c_str(), "\n");
       }
-      if (!result_to_print.empty()) console("  ", result_to_print.c_str(),"\n");
+      if (!result_to_print.empty()) console("  ", result_to_print.c_str(), "\n");
     }
 
     string display_for_browser = tool_out.display;
@@ -220,10 +226,16 @@ ToolExecutor::Result ToolExecutor::execute(
     }
     consoleFlush();
 
-    // Log tool result to chat_log with structured label.
-    // exec_shell already streams its output incrementally to chat_log in
-    // filesystem.cc, so skip it here to avoid duplication.
-    if (tool_out.parsed_tool_name != "exec_shell") {
+    // Log to chat_log with structured label.
+    // Operator corrections are always logged -- including exec_shell, whose
+    // normal results stream to chat_log in filesystem.cc and are skipped
+    // here to avoid duplication (a rejected command streamed nothing).
+    if (operator_turn) {
+      if (!tool_out.content.empty()) {
+        chat_log << "=== OPERATOR ===\n" << tool_out.content << "\n\n";
+        chat_log.flush();
+      }
+    } else if (tool_out.parsed_tool_name != "exec_shell") {
       string logged = tool_out.content;
       // For web_search, log query + snippets but skip full page content
       if (logged.find("Search Results for:") == 0) {
@@ -260,18 +272,22 @@ ToolExecutor::Result ToolExecutor::execute(
     }
     generated_text = "";
 
-    // Build tool result message as a string, then tokenize in one pass.
+    // Build the feedback turn as a string, then tokenize in one pass.
+    // Operator corrections skip the [Tool Result] prefix: a plain user turn
+    // commands scolding-level attention (decision 4). build_user_assistant
+    // _turn_text and build_tool_result_turn_text differ only by that prefix,
+    // so the non-operator path is byte-identical to before.
     vector<llama_token> t_tokens;
     {
       // User turn + assistant prefill.
-      string tool_content = "[Tool Result]\n" + tool_out.content;
+      string turn_content = operator_turn ? tool_out.content : "[Tool Result]\n" + tool_out.content;
 
       // Escape PARAM_END and model turn tokens in the content so they
       // don't get misinterpreted as structural boundaries during tokenization.
-      escape_parameter_tags(tool_content);
-      escape_turn_tags(tool_content);
+      escape_parameter_tags(turn_content);
+      escape_turn_tags(turn_content);
 
-      t_tokens = tokenize(build_tool_result_turn_text(tool_content));
+      t_tokens = tokenize(build_user_assistant_turn_text(turn_content));
     }
     // If the result doesn't fit in the remaining context, replace it with a
     // compact error so the LLM can adapt (narrow the request, paginate, or
@@ -293,7 +309,7 @@ ToolExecutor::Result ToolExecutor::execute(
       abort_auto = true;
     } else {
       // Log tool result tokens to token_log when debug is enabled
-      log_tokens("FEED TOOL_RESULT", t_tokens, ctx);
+      log_tokens(operator_turn ? "FEED OPERATOR" : "FEED TOOL_RESULT", t_tokens, ctx);
 
       g_auto_continue_depth++;
       if (g_auto_continue_depth > max_auto_continue) {
