@@ -36,7 +36,11 @@ static bool path_value_malformed(const string& s) {
 // (the closing tag denoted PARAM_END, which the system prompt defines) so
 // the model can verify it against its own output. Returns the warning
 // block, or an empty string if neither edge has a newline.
-static string edge_newline_warning(const string& value, const char* param_name) {
+//
+// note_mode: when the edge newline was losslessly trimmed and the call
+// already SUCCEEDED (path/paths), the note is informational -- past tense,
+// "I removed it. Keep ... on the same line." -- with no retry imperative.
+static string edge_newline_warning(const string& value, const char* param_name, bool note_mode = false) {
   string warning;
   bool leading_nl = value.size() > 1 && value.front() == '\n';
   bool trailing_nl = value.size() > 1 && value.back() == '\n';
@@ -45,19 +49,33 @@ static string edge_newline_warning(const string& value, const char* param_name) 
     if (head.size() > 10) head = head.substr(0, 10) + "...";
     string open_tag = string(PARAM_START) + param_name + ">";
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value begins with a leading newline: " + open_tag + " was on a separate line, so the newline is part of the value.\n";
-    warning += "Put the value on the same line as " + open_tag + " and retry.\n";
+    warning += "Your " + string(param_name) + " value " + (note_mode ? "began" : "begins") + " with a leading newline: " + open_tag + " was on a separate line, so the newline " + (note_mode ? "was" : "is") + " part of the value.\n";
+    warning += note_mode
+      ? "I removed it. Keep the value on the same line as " + open_tag + ".\n"
+      : "Put the value on the same line as " + open_tag + " and retry.\n";
     warning += "Your call began with: \"" + open_tag + "\n" + head + "\"";
   }
   if (trailing_nl) {
     string tail = value.substr(0, value.size() - 1);
     if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value ends with a trailing newline: PARAM_END was on a separate line, so the newline is part of the value.\n";
-    warning += "Put PARAM_END immediately after the last character of the value and retry.\n";
+    warning += "Your " + string(param_name) + " value " + (note_mode ? "ended" : "ends") + " with a trailing newline: PARAM_END was on a separate line, so the newline " + (note_mode ? "was" : "is") + " part of the value.\n";
+    warning += note_mode
+      ? "I removed it. Keep PARAM_END immediately after the last character of the value.\n"
+      : "Put PARAM_END immediately after the last character of the value and retry.\n";
     warning += "Your call ended with: \"" + tail + "\nPARAM_END\"";
   }
   return warning;
+}
+
+// Note-on-success for a path/paths edge newline that was losslessly trimmed:
+// the call already succeeded, so this is informational, not a retry
+// imperative. Prepend it to 'result' (LLM-facing only, not the browser
+// display, matching the text/old warnings). No-op if the emitted value had
+// no edge newline.
+static void prepend_path_note(string& result, const string& tool_call, const char* param_name) {
+  string note = edge_newline_warning(extract_string_arg_bounded(tool_call, param_name), param_name, /*note_mode=*/true);
+  if (!note.empty()) result = note + "\n\n" + result;
 }
 
 // Tool metadata: required parameters per tool.
@@ -274,6 +292,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       FileSystemTools fs;
       NetworkTools net;
       result = "Files content:\n";
+      prepend_path_note(result, tool_call, "paths");
 
       vector<string> local_paths_to_read;
 
@@ -394,6 +413,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       }
 
       display_result = r_display;
+      prepend_path_note(result, tool_call, "path");
     } else {
       result = "Error: path is required for search_file";
     }
@@ -418,6 +438,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       } else {
         display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
       }
+      prepend_path_note(result, tool_call, "path");
     } else {
       result = "Error: No path provided to write_file";
     }
@@ -462,6 +483,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         }
         result = error_line;
       }
+      prepend_path_note(result, tool_call, "path");
     } else {
       result = "Error: No path provided to edit_file";
     }
