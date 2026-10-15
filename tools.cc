@@ -15,7 +15,14 @@ using namespace Tokens;
 extern volatile sig_atomic_t stop_generation;
 extern bool is_debug;
 
+
 const string PATH_NEWLINE_ERROR = "System Error: Invalid tool format. The path parameter contains newlines or a parameter tag, likely because a " + string(PARAM_END) + " closing tag is missing.";
+// Policy note attached when a spurious edge newline was losslessly trimmed
+// (EdgeHandling::Trimmed): the trimming applies ONLY to path-style values,
+// never to actual content (old/new/content/text), where a newline is a real
+// character.  Stated in the note so the model does not generalize the
+// trimming to content it emits.
+static const string EDGE_TRIM_NOTE = "I remove spurious newlines ONLY in paths, never in actual content.";
 const string PATHS_NEWLINE_ERROR = "System Error: Invalid tool format. The paths parameter contains newlines or a parameter tag, likely because a " + string(PARAM_END) + " closing tag is missing. List multiple paths comma-separated on a single line.";
 bool param_has_newline(const string& s) {
   return s.find('\n') != string::npos || s.find('\r') != string::npos;
@@ -36,45 +43,58 @@ static bool path_value_malformed(const string& s) {
 // (the closing tag denoted PARAM_END, which the system prompt defines) so
 // the model can verify it against its own output. Returns the warning
 // block, or an empty string if neither edge has a newline.
-//
-// note_mode: when the edge newline was losslessly trimmed and the call
-// already SUCCEEDED (path/paths), the note is informational -- past tense,
-// "I removed it. Keep ... on the same line." -- with no retry imperative.
-static string edge_newline_warning(const string& value, const char* param_name, bool note_mode = false) {
+// handling selects the corrective sentence to match how the value was
+// actually treated:
+//   Retry   -- value used as-is and the call FAILED (content params:
+//              old/new/text): imperative to fix the call and re-issue.
+//   Trimmed -- spurious edge newline removed before use, call succeeded
+//              (path/paths): EDGE_TRIM_NOTE + "Keep ...".
+//   Passed  -- value used as-is, newline included, call succeeded
+//              (command/query: the shell / search engine tolerates it):
+//              warns to teach the model, without claiming any removal.
+enum class EdgeHandling { Retry, Trimmed, Passed };
+static string edge_newline_warning(const string& value, const char* param_name, EdgeHandling handling = EdgeHandling::Retry) {
+  auto remedy = [&](const string& core) {
+    switch (handling) {
+      case EdgeHandling::Retry:   return "Put " + core + " and retry.\n";
+      case EdgeHandling::Trimmed: return EDGE_TRIM_NOTE + " Keep " + core + ".\n";
+      case EdgeHandling::Passed:  return "It was used as-is, newline included. Keep " + core + ".\n";
+    }
+    return string();
+  };
   string warning;
+  bool past = handling != EdgeHandling::Retry;
   bool leading_nl = value.size() > 1 && value.front() == '\n';
   bool trailing_nl = value.size() > 1 && value.back() == '\n';
   if (leading_nl) {
     string head = value.substr(1);
     if (head.size() > 10) head = head.substr(0, 10) + "...";
     string open_tag = string(PARAM_START) + param_name + ">";
+    string core = "the value on the same line as " + open_tag;
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value " + (note_mode ? "began" : "begins") + " with a leading newline: " + open_tag + " was on a separate line, so the newline " + (note_mode ? "was" : "is") + " part of the value.\n";
-    warning += note_mode
-      ? "I removed it. Keep the value on the same line as " + open_tag + ".\n"
-      : "Put the value on the same line as " + open_tag + " and retry.\n";
+    warning += "Your " + string(param_name) + " value " + (past ? "began" : "begins") + " with a leading newline: " + open_tag + " was on a separate line, so the newline " + (past ? "was" : "is") + " part of the value.\n";
+    warning += remedy(core);
     warning += "Your call began with: \"" + open_tag + "\n" + head + "\"";
   }
   if (trailing_nl) {
     string tail = value.substr(0, value.size() - 1);
     if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
+    string core = "PARAM_END immediately after the last character of the value";
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value " + (note_mode ? "ended" : "ends") + " with a trailing newline: PARAM_END was on a separate line, so the newline " + (note_mode ? "was" : "is") + " part of the value.\n";
-    warning += note_mode
-      ? "I removed it. Keep PARAM_END immediately after the last character of the value.\n"
-      : "Put PARAM_END immediately after the last character of the value and retry.\n";
+    warning += "Your " + string(param_name) + " value " + (past ? "ended" : "ends") + " with a trailing newline: PARAM_END was on a separate line, so the newline " + (past ? "was" : "is") + " part of the value.\n";
+    warning += remedy(core);
     warning += "Your call ended with: \"" + tail + "\nPARAM_END\"";
   }
   return warning;
 }
 
-// Note-on-success for a param whose edge newline was losslessly trimmed
-// (path/paths/command/query): the call already ran, so this is
+// Note-on-success for a param whose edge newline was trimmed (path/paths)
+// or passed through as-is (command/query): the call already ran, so this is
 // informational, not a retry imperative. Prepend it to 'result' (LLM-facing
 // only, not the browser display, matching the text/old warnings). No-op if
 // the emitted value had no edge newline.
-static void prepend_edge_newline_note(string& result, const string& tool_call, const char* param_name) {
-  string note = edge_newline_warning(extract_string_arg_bounded(tool_call, param_name), param_name, /*note_mode=*/true);
+static void prepend_edge_newline_note(string& result, const string& tool_call, const char* param_name, EdgeHandling handling) {
+  string note = edge_newline_warning(extract_string_arg_bounded(tool_call, param_name), param_name, handling);
   if (!note.empty()) result = note + "\n\n" + result;
 }
 
@@ -292,7 +312,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       FileSystemTools fs;
       NetworkTools net;
       result = "Files content:\n";
-      prepend_edge_newline_note(result, tool_call, "paths");
+      prepend_edge_newline_note(result, tool_call, "paths", EdgeHandling::Trimmed);
 
       vector<string> local_paths_to_read;
 
@@ -420,7 +440,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       }
 
       display_result = r_display;
-      prepend_edge_newline_note(result, tool_call, "path");
+      prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
     } else {
       result = "Error: path is required for search_file";
     }
@@ -445,7 +465,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       } else {
         display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
       }
-      prepend_edge_newline_note(result, tool_call, "path");
+      prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
     } else {
       result = "Error: No path provided to write_file";
     }
@@ -493,16 +513,16 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         }
         result = error_line;
       }
-      prepend_edge_newline_note(result, tool_call, "path");
+      prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
     } else {
       result = "Error: No path provided to edit_file";
     }
   } else if (tool_name == "exec_shell") {
-    // Edge newlines are lossless for the shell (it ignores them), so trim
-    // and execute rather than reject; a spurious edge newline gets an
-    // informational note, not a failure. Matches path/paths: complain, but
-    // still execute.
-    string command = trim_chars(extract_string_arg_bounded(tool_call, "command"), " \t\r\n");
+    // The command is passed to the shell as-is, edge newline included: the
+    // shell tolerates it, so altering the value would tamper with what the
+    // model emitted.  A spurious edge newline gets a warning note (Passed)
+    // to teach the model to keep the value on one line, not a failure.
+    string command = extract_string_arg_bounded(tool_call, "command");
     // Label every call, matching the other tools.
     if (!command.empty()) log_tool_diagnostic("exec_shell(\"" + command + "\")");
     if (!command.empty()) {
@@ -534,28 +554,31 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           }
         }
         );
-      // Complain (informational note) if a spurious edge newline was trimmed;
-      // the command still ran. LLM-facing only, like path/paths.
-      prepend_edge_newline_note(result, tool_call, "command");
+      // Warn (informational note) if a spurious edge newline was passed
+      // through as-is; the command still ran. LLM-facing only, like
+      // path/paths.
+      prepend_edge_newline_note(result, tool_call, "command", EdgeHandling::Passed);
       // Don't show a separate summary box -- output is already streamed inside the green box above.
       display_result = "";
     } else {
       result = "Error: No command provided to exec_shell";
     }
   } else if (tool_name == "web_search") {
-    // Edge newlines are lossless for a search (the engine trims them), so
-    // trim and search rather than reject; a spurious edge newline gets an
-    // informational note, not a failure. Matches path/paths: complain, but
-    // still execute.
-    string query = trim_chars(extract_string_arg_bounded(tool_call, "query"), " \t\r\n");
+    // The query is URL-encoded before it goes on the wire and search
+    // engines ignore edge whitespace, so an edge newline is harmless: pass
+    // it through as-is rather than alter the value.  A spurious edge
+    // newline gets a warning note (Passed) to teach the model to keep the
+    // value on one line, not a failure.
+    string query = extract_string_arg_bounded(tool_call, "query");
     // Label every call, matching the other tools.
     if (!query.empty()) log_tool_diagnostic("web_search(\"" + query + "\")");
     if (!query.empty()) {
       NetworkTools net;
       result = net.web_search(query);
-      // Complain (informational note) if a spurious edge newline was trimmed;
-      // the search still ran. LLM-facing only, like path/paths.
-      prepend_edge_newline_note(result, tool_call, "query");
+      // Warn (informational note) if a spurious edge newline was passed
+      // through as-is; the search still ran. LLM-facing only, like
+      // path/paths.
+      prepend_edge_newline_note(result, tool_call, "query", EdgeHandling::Passed);
       display_result = "Web search: \"" + query + "\"";
       // Count results
       int n_results = 0;
