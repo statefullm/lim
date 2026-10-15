@@ -1509,8 +1509,15 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
   gen_result_ = tg.generate();
 
   // Signal the viewer that generation is complete so it can render
-  // remaining raw tails (no arbitrary timeout needed).
-  pipe_write(&SEG_TURN_END, 1);
+  // remaining raw tails (no arbitrary timeout needed).  Skipped on the
+  // 90% force-end: the mid-turn checkpoint must be totally transparent
+  // to the browser, as it is to the LLM and the console.  A
+  // SEG_TURN_END here would prematurely collapse an open thinking
+  // block that the auto-resumed generation continues into, and a
+  // collapsed incomplete block cannot be reopened until completion.
+  if (!gen_result_.ctx_limit_interrupt) {
+    pipe_write(&SEG_TURN_END, 1);
+  }
 
   generated_text_ = gen_result_.text;
   t_count_ = gen_result_.token_count;

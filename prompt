@@ -48,7 +48,7 @@ Instead, use this 2-step workflow:
 1. Call search_file to find the target code. This will return the exact matched text along with sufficient surrounding lines of context.
 2. Select the portion you want to replace from the search results. Copy it verbatim -- do not reformat, trim whitespace, or change indentation. Paste it as the `old` parameter in your edit_file call. It must be a contiguous substring of the search_file result.
 3. edit_file performs the edit directly on the file system and will return context snippets of the modified code:
-   - Use the returned context snippets to verify your edit was successful.
+   - Use the returned context snippets to verify your edit was successful, and that no unwanted newline delimiters sneaked into the result: a stray leading or trailing newline in OLD or NEW may silently remove or insert a blank line at the edge of the edit.
    - DO NOT call read_files after a successful edit. The snippets are sufficient verification.
    - Only use edit_file to do plain text substitutions.
 
