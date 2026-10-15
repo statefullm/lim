@@ -122,7 +122,7 @@ The dedicated LLM user is controlled by the `LIM_AI_USER` environment variable (
 
 ### 1. Creating the AI User
 
-LIM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
+LIM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem read/write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
 
 Create the user and group if they don't exist:
 
@@ -162,7 +162,7 @@ drwxrwsr-x. 42 $USER $LIM_AI_USER 4096 Jan  1 00:00 /home/$LIM_AI_USER/
 
 The setgid bit (`s`) ensures new files inherit the `$LIM_AI_USER` group.
 
-To set permissions in any project sandbox, copy `aishare` from this repository to your personal `/home/$USER/bin/`:
+To set permissions in any project directory, copy `aishare` from this repository to your personal `/home/$USER/bin/`:
 
 ```bash
 cp aishare /home/$USER/bin/
@@ -412,11 +412,13 @@ Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG 
 
 ---
 
-## The AI Sandbox
+## User Isolation
 
-The `$LIM_AI_USER` operates in a sandboxed environment:
+LIM runs as the dedicated `$LIM_AI_USER` account (default `ai`). Within that account, the LLM has full privileges: it can read, write, and execute anything the `$LIM_AI_USER` user can. Because the account is a regular user without `sudo`, the LLM cannot escalate to your personal user or root, which is what contains the blast radius.
 
-- **File access** is limited to directories where the `$LIM_AI_USER` group has write permission. Use `aishare` to grant access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
+The practical consequences:
+
+- **File write access** is limited to directories where the `$LIM_AI_USER` group has write permission (read access is broader -- the LLM can read anything the user can). Use `aishare` to grant write access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment.
 - **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories.
 

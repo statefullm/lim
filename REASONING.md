@@ -43,7 +43,7 @@ name are yours; this example is a GPU usage rule):
 
 ```
 **CRITICAL RULE**
-NEVER RUN ANYTHING ON THE GPU YOURSELF: ASK THE USER. NEVER KILL GPU processes!
+NEVER LAUNCH A TASK ON THE DISCRETE GPU, WHICH IS DEDICATED TO YOUR SESSION: ASK THE USER. NEVER KILL GPU processes!
 
 Always follow the DRY principle when coding: avoid duplicate code.
 Clean up dead code.
