@@ -562,7 +562,7 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
     // was truncated, so the mirror rows past the truncation point are gone.
     // An abort (ret 2) leaves the KV at the last complete row: the mirror is
     // still consistent up to there and can continue after /continue.
-    if (ret == 1 && g_mtp && g_mtp->owns(ctx)) g_mtp->invalidate("main decode truncated (KV exhausted)");
+    if (ret == 1 && g_mtp && g_mtp->owns(ctx)) g_mtp->invalidate_kv_exhausted();
     if (should_break) return false;
     return true;
   }

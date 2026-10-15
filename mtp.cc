@@ -333,6 +333,7 @@ void MtpSpeculator::clear() {
   mtp_last_embd_.assign((size_t)n_embd_, 0.0f);
   valid_ = true;
   warned_ = false;
+  kv_exhausted_ = false;
   // Visible confirmation: the invalidation notice says speculation is off,
   // and this is the path that turns it back on (/clear, re-decode fallbacks,
   // slow restore).  The mirror rebuilds via the mirror hook as the context
@@ -358,16 +359,32 @@ void MtpSpeculator::on_mirror_loaded() {
   origin_row_idx_ = 0;
   valid_ = true;
   warned_ = false;
+  kv_exhausted_ = false;
   diag("MTP: mirror restored from cache -- speculative decoding enabled", "\033[32m");
 }
 
-void MtpSpeculator::invalidate(const std::string& reason) {
+void MtpSpeculator::invalidate(const std::string& reason, const char* reenable) {
   if (!valid_) return;
   valid_ = false;
   if (!warned_) {
     warned_ = true;
-    diag("MTP: " + reason + " -- speculative decoding off (normal decoding continues; /clear or a re-decode restore re-enables it)", "\033[33m");
+    diag("MTP: " + reason + " -- speculative decoding off (normal decoding continues; " + reenable + " re-enables it)", "\033[33m");
   }
+}
+
+void MtpSpeculator::invalidate_kv_exhausted() {
+  if (!valid_) return;
+  kv_exhausted_ = true;
+  invalidate("main decode truncated (KV exhausted)", "/clear or /undo");
+}
+
+bool MtpSpeculator::rearm_if_kv_exhausted(llama_pos undo_n_past) {
+  if (valid_ || !kv_exhausted_ || undo_n_past > mirror_pos_ + 1) return false;
+  kv_exhausted_ = false;
+  valid_ = true;
+  warned_ = false;
+  diag("MTP: mirror covers the undo point -- speculative decoding re-enabled", "\033[32m");
+  return true;
 }
 
 bool MtpSpeculator::can_draft() const {

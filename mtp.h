@@ -103,7 +103,22 @@ public:
   // healed by the process() position guard (e.g. a KV-exhausted truncation, or
   // a fast restore whose cache held no mirror state).  Drafting stops until the
   // next clear() or a full re-decode re-mirrors the context.
-  void invalidate(const std::string& reason);
+  void invalidate(const std::string& reason,
+                  const char* reenable = "/clear or a re-decode restore");
+
+  // Invalidate after a KV-exhausted truncation of the main decode.  The
+  // truncated batch was never mirrored, so the mirror's rows up to
+  // mirrorPos() are still valid: a /undo whose target stays within that range
+  // re-arms the speculator via rearm_if_kv_exhausted() without a re-decode.
+  void invalidate_kv_exhausted();
+
+  // Re-arm after a /undo that followed a KV-exhaustion invalidation, when the
+  // undo target (undo_n_past, the post-undo n_past) stays within the mirrored
+  // range (undo_n_past <= mirrorPos() + 1).  The mirror is left as-is (ahead of
+  // the truncated main context): the position guard in process() trims the
+  // stale forward rows on the next decode, the same self-heal as the valid
+  // instant-undo path.  Returns true when re-armed.
+  bool rearm_if_kv_exhausted(llama_pos undo_n_past);
 
   // Draft up to draft_len tokens for the positions right after the last main
   // row (which must have been mirrored by process() and carry MTP logits).
@@ -161,6 +176,10 @@ private:
 
   bool valid_ = false;
   bool warned_ = false;                 // invalidation warning printed once
+  bool kv_exhausted_ = false;           // last invalidation was a KV-exhausted
+                                        // truncation: the mirror's rows up to
+                                        // mirror_pos_ are still valid, so /undo
+                                        // can re-arm via rearm_if_kv_exhausted
 
   // --- stats (per turn) ---
   uint64_t s_rounds_ = 0;               // rounds started (drafts produced)
