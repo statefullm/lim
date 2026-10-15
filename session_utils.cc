@@ -87,7 +87,9 @@ void strip_tags(std::string& str, const std::vector<std::string>& tags) {
 }
 
 void diag_speed(int n_past, int n_ctx, int t_count, double elapsed, double decode_time, bool to_stdout) {
-  if (t_count <= 0 || elapsed <= 0.0) return;
+  // t_count <= 1: the sample+sync window contains no decode cycles (it
+  // degenerates to clock granularity), so the speed would be meaningless.
+  if (t_count <= 1 || elapsed <= 0.0) return;
 
   // Denominator shared with the mid-generation status bar: the sample+sync
   // window (first to last token) in benchmark mode, else the full wall clock.
