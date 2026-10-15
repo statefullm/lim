@@ -329,11 +329,7 @@ bool is_lim_server_healthy() {
   return pid_serves_our_fifo(pid);
 }
 
-bool g_lim_server_reused = false;
-
 ServerStart start_lim_server_if_needed() {
-  g_lim_server_reused = false;
-
   if (is_lim_server_running()) {
     pid_t pid = resolve_our_server_pid();
     if (pid > 1) {
@@ -341,7 +337,6 @@ ServerStart start_lim_server_if_needed() {
         // The normal path: the persistent server survived the previous
         // session.  Quiet on purpose -- the exceptional branches below
         // are the ones that log.
-        g_lim_server_reused = true;
         return ServerStart::Reused;
       }
       // Alive and ours, but reading a different FIFO inode (the node was

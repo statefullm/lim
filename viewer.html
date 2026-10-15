@@ -2037,18 +2037,6 @@
                 try {
                 let data = event.data;
 
-                // Clear command (SOH control char 0x01): resets segments but does
-                // NOT discard the rest of the frame (e.g., a speed diagnostic sent
-                // immediately after clear).  Strip the marker and continue parsing.
-                if (data.includes('\x01')) {
-                    segments = [];
-                    segRenderedContent = [];
-                    outputDiv.innerHTML = '';
-                    userScrolledAway = false;
-                    data = data.replace(/\x01/g, '');
-                    if (data.length === 0) return;
-                }
-
                 let lastIdx = 0;
                 // Track a prefix that appeared at the end of the data with no content
                 // after it.  The next message's plain text (or the next prefix's

@@ -468,12 +468,12 @@ private:
     flush_history(history_file);
     int new_log_index = bump_session();
 
-    // Update browser: clear the viewer and immediately set the new
-    // context diagnostic in a single pipe write so they arrive together.
+    // Update browser: mark the new session with a dashed divider (the
+    // previous session's output stays readable, as with a lim restart),
+    // then set the context diagnostic.
     if (should_output_to_browser()) {
+      stream_html(session_divider(new_log_index, false));
       string ctx_str = context_pos(n_past_, (int)cparams_.n_ctx);
-      const char soh = 0x01;
-      pipe_write(&soh, 1);
       pipe_write(&SEG_SPEED, 1);
       string speed_msg = "Cleared | " + ctx_str;
       pipe_write(speed_msg.c_str(), speed_msg.length());
@@ -2405,13 +2405,11 @@ bool ChatSession::run() {
     }
   }
 
-  // Persistent server: when we attached to a server that survived a previous
-  // session, the viewer may still be showing that session.  Stream the
-  // dashed "Session N" divider the reincarnate flow uses so sessions stay
-  // visually separated (no SOH: the previous session's output remains
-  // readable).  A freshly started server has no prior viewer state -- no
-  // divider.
-  if (g_lim_server_reused && should_output_to_browser()) {
+  // Stream the dashed "Session N" divider the reincarnate flow uses so the
+  // viewer always shows the current session number -- and, when a persistent
+  // server's viewer is still showing a previous session, so the sessions stay
+  // visually separated (the previous session's output remains readable).
+  if (should_output_to_browser()) {
     stream_html(session_divider(state_.log_index, false));
   }
 
