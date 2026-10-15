@@ -14,6 +14,10 @@
 
 *Cumulative decode time vs context length for Qwen3.6-35B-A3B-UD-Q4_K_XL on an NVIDIA RTX 5090 / Intel i9-12900K. At 222041 context tokens, the default Mode 0 (LIM) is 1.8% faster than Mode 2 (CACHED) and 73% faster than Mode 1 (CHATBOT). See **Benchmarking** for how each mode works.*
 
+![Median TPS vs context length](tps.svg)
+
+*Median decode speed vs context length for Qwen3.8-27B-Q6_K on an NVIDIA RTX 5090 / Intel i9-12900K, with MTP enabled (draft=4). Aggregated per 10k context tokens over 294 sessions (~20.8k speed samples). The median falls from ~70 t/s at low context to ~46 t/s at the full 262144 context. MTP improves decode speed by ~25% over non-speculative decoding at all context lengths.*
+
 ## How It Works
 
 Every mainstream chatbot (and most local LLM frontends using server APIs) follows the *reprocess-every-turn* model: each time you send a message, the **entire conversation history** is re-transmitted in full and re-tokenized from scratch. The per-turn decode cost grows linearly with context length, making long conversations progressively slower.
