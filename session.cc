@@ -59,6 +59,7 @@ extern ofstream chat_log;
 extern ofstream token_log;
 extern int chatbot_mode;
 extern std::ofstream tps_log;
+extern void write_tps_header();
 extern std::string g_dummy_thought_text;
 
 // HOME is declared as extern std::string HOME in network.h
@@ -398,7 +399,8 @@ private:
 
   // Increment the session number and reopen all log files for the new
   // session (same layout/headers as startup: see open_session_logs in
-  // session_utils.cc). Returns the new session number.
+  // session_utils.cc and write_tps_header in main.cc). Returns the new
+  // session number.
   int bump_session() {
     state_.log_index++;
     int idx = state_.log_index;
@@ -410,6 +412,7 @@ private:
     if (!open_session_logs(idx)) {
       diag("Failed to open log files for session #" + to_string(idx), "\033[31m");
     }
+    write_tps_header();
     return idx;
   }
 

@@ -90,6 +90,48 @@ std::string g_model_path;
 static const char* DEFAULT_DUMMY_THOUGHT = "The user wants a direct answer. I will output the requested data immediately without preamble.";
 std::string g_dummy_thought_text;
 
+// Values recorded in the .tps header block. Set once in main() after model
+// load; write_tps_header() re-emits the block for every new session
+// (startup, /clear, /reincarnate) so that all .tps files carry the full
+// header for later analysis.
+struct TpsHeaderParams {
+  int n_ctx = 0;
+  int n_gpu_layers = 0;
+  float temperature = 0.0f;
+  float top_p = 0.0f;
+  int top_k = 0;
+  float min_p = 0.0f;
+  float presence_penalty = 0.0f;
+  float repetition_penalty = 0.0f;
+  float frequency_penalty = 0.0f;
+  bool mtp_enabled = false;
+  int mtp_draft_len = 0;
+  int mtp_draft_batch = 0;
+  bool mtp_use_sidecar = false;
+};
+static TpsHeaderParams g_tps_header;
+
+void write_tps_header() {
+  if (!tps_log.is_open()) return;
+  tps_log << "# Model: " << g_model_path << "\n";
+  tps_log << "# Context limit: " << g_tps_header.n_ctx << "\n";
+  tps_log << "# GPU layers: " << g_tps_header.n_gpu_layers << "\n";
+  tps_log << "# Temperature: " << g_tps_header.temperature << "\n";
+  tps_log << "# Top_p: " << g_tps_header.top_p << "\n";
+  tps_log << "# Top_k: " << g_tps_header.top_k << "\n";
+  tps_log << "# Min_p: " << g_tps_header.min_p << "\n";
+  tps_log << "# Presence penalty: " << g_tps_header.presence_penalty << "\n";
+  tps_log << "# Repetition penalty: " << g_tps_header.repetition_penalty << "\n";
+  tps_log << "# Frequency penalty: " << g_tps_header.frequency_penalty << "\n";
+  tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
+  tps_log << "# MTP: " << (g_tps_header.mtp_enabled
+                           ? std::string("enabled (draft=") + std::to_string(g_tps_header.mtp_draft_len) +
+                           ", batch=" + std::to_string(g_tps_header.mtp_draft_batch) +
+                           (g_tps_header.mtp_use_sidecar ? ", sidecar)" : ")")
+                           : "disabled") << "\n";
+  tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
+}
+
 int main(int argc, char ** argv) {
   setlocale(LC_ALL, "");
 
@@ -591,26 +633,22 @@ int main(int argc, char ** argv) {
 
   const llama_vocab * vocab = llama_model_get_vocab(model);
 
-  // Write model metadata to TPS log header
-  if (tps_log.is_open()) {
-    tps_log << "# Model: " << argv[1] << "\n";
-    tps_log << "# Context limit: " << cparams.n_ctx << "\n";
-    tps_log << "# GPU layers: " << mparams.n_gpu_layers << "\n";
-    tps_log << "# Temperature: " << temperature << "\n";
-    tps_log << "# Top_p: " << top_p << "\n";
-    tps_log << "# Top_k: " << top_k << "\n";
-    tps_log << "# Min_p: " << min_p << "\n";
-    tps_log << "# Presence penalty: " << presence_penalty << "\n";
-    tps_log << "# Repetition penalty: " << repetition_penalty << "\n";
-    tps_log << "# Frequency penalty: " << frequency_penalty << "\n";
-    tps_log << "# Chatbot mode: " << chatbot_mode << "\n";
-    tps_log << "# MTP: " << (mtp_enabled
-                             ? std::string("enabled (draft=") + std::to_string(mtp_draft_len) +
-                             ", batch=" + std::to_string(mtp_draft_batch) +
-                             (mtp_use_sidecar ? ", sidecar)" : ")")
-                             : "disabled") << "\n";
-    tps_log << "# Format: <context_tokens> <tokens_per_second>\n";
-  }
+  // Model metadata for the TPS header, also re-emitted by write_tps_header()
+  // for every new session (startup, /clear, /reincarnate).
+  g_tps_header.n_ctx = cparams.n_ctx;
+  g_tps_header.n_gpu_layers = mparams.n_gpu_layers;
+  g_tps_header.temperature = temperature;
+  g_tps_header.top_p = top_p;
+  g_tps_header.top_k = top_k;
+  g_tps_header.min_p = min_p;
+  g_tps_header.presence_penalty = presence_penalty;
+  g_tps_header.repetition_penalty = repetition_penalty;
+  g_tps_header.frequency_penalty = frequency_penalty;
+  g_tps_header.mtp_enabled = mtp_enabled;
+  g_tps_header.mtp_draft_len = mtp_draft_len;
+  g_tps_header.mtp_draft_batch = mtp_draft_batch;
+  g_tps_header.mtp_use_sidecar = mtp_use_sidecar;
+  write_tps_header();
 
   // Report GPU layer offload with total layer count.
   if (mparams.n_gpu_layers >= 0) {
