@@ -554,7 +554,21 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
     diag(error_msg, "\033[31m");
     return false;
   } else if (ret == -1) {
-    diag("Invalid input batch: " + std::string(error_msg), "\033[31m");
+    // Not a resource failure: the batch itself is invalid -- e.g. a
+    // starting position the KV cache already holds (an M-RoPE model
+    // requires the batch to advance: X < Y).  A rejected batch is
+    // dropped in batch init, before any row is written: the KV cache
+    // and recurrent state are untouched.  The failure handlers roll
+    // the bookkeeping back to the synced position, so the session
+    // ejects to the prompt in an exactly-interrupted state -- a new
+    // prompt, /save, or /undo all work.  /clear is only needed if
+    // the error repeats (a desync the roll-back can't repair).  The
+    // user-facing message states the desync interpretation; the
+    // upstream detail is appended under LIM_DEBUG for any other
+    // invalid-batch cause this message would mislabel.
+    string msg = "Invalid input batch: KV position desync (internal error). The session continues from the last committed token; if the error repeats, type '/clear'.";
+    if (is_debug) msg += " [" + std::string(error_msg) + "]";
+    diag(msg, "\033[31m");
     return false;
   } else if (ret == 1 || ret == 2) {
     diag(ret == 1 ? error_msg : "Aborted", "\033[31m");
@@ -576,9 +590,13 @@ bool handle_llama_decode_error(llama_context *ctx, llama_batch batch, const char
 
 void sync_n_past(llama_context *ctx, int &n_past) {
   llama_pos max_pos = llama_memory_seq_pos_max(llama_get_memory(ctx), 0);
-  if (max_pos >= 0) {
-    n_past = (int)(max_pos + 1);
-  }
+  // An empty sequence means ZERO rows, so n_past must land at 0 -- not be
+  // left alone.  A failure handler that queued-but-never-decoded tokens
+  // (an interrupt before the first decode) would otherwise keep n_past
+  // ahead of the empty KV: the next feed would start at a phantom position,
+  // and the re-attach at the call sites would count tokens the KV never
+  // held.
+  n_past = (int)(max_pos >= 0 ? max_pos + 1 : 0);
 }
 
 // --- Log Callbacks ---

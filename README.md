@@ -321,7 +321,7 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 
 /test=Test the filesystem tools and clean up any new files you created.
 /message=Show me a 1-sentence concise git commit message relative to HEAD.
-/commit=run git commit -a -m "<message>"
+/commit=commit
 /make=run make
 /amend=Amend the previous commit.
 /prompt=Follow the system prompt strictly!
@@ -546,6 +546,12 @@ coder cats --checkpoints
 ### Interrupting Generation
 
 Press **Ctrl+C** during generation to interrupt. The partial output is preserved in the KV-cache. Type `/continue` to resume seamlessly: the LLM doesn't even know it was interrupted. This works because the KV-cache still holds all generated tokens up to the interruption point.
+
+### Thinking-Simulation Recovery
+
+If the model starts *simulating* the conversation inside its thinking block -- emitting a second open think tag within its still-open thinking block, along with tool calls and fabricated tool results as literal text -- LIM aborts generation a few tokens into the simulation and automatically feeds a fresh "continue" user turn. The model reliably re-trips if the turn is resumed in place, but recovers from a fresh user turn. The aborted tokens stay in the context (the model already conditioned on them), retries are bounded by `LIM_MAX_AUTO_CONTINUE`, and the session ejects to the prompt when the budget is exhausted.
+
+Note that the tripwire fires on any nested open think tag it sees: if the model does emit one as deliberate content, the turn aborts a few tokens in and recovers via the "continue" turn -- wasteful, but never corrupting.
 
 ### Terminal Disconnection (detached operation)
 

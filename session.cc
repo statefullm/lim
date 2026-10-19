@@ -884,8 +884,16 @@ private:
       // Re-attach the decoded prefix to the tracker, keeping
       // tracker == KV == n_past_.  The undecoded tail is simply
       // dropped -- the caller may retry the feed or eject to the
-      // prompt, and the state is consistent either way.
-      int decoded = n_past_ - n_past_feed_start;
+      // prompt, and the state is consistent either way.  Sync FIRST:
+      // on the interrupt path and the mid-feed decode failure,
+      // n_past_ still counts queued-but-undecoded batch tokens (a
+      // rejected or never-decoded batch wrote no rows).  Leaving it
+      // ahead of the KV would open a position gap the next feed
+      // can't fill (batches must start exactly at KVmax+1) -- the
+      // next prompt would then die on the same "inconsistent
+      // sequence positions" error and look fatal until /clear.
+      sync_n_past(ctx_, n_past_);
+      int decoded = std::min(n_past_ - n_past_feed_start, (int)toks.size());
       if (decoded > 0) {
         state_.all_context_tokens.insert(state_.all_context_tokens.end(),
                                          toks.begin(), toks.begin() + decoded);
@@ -1539,6 +1547,14 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
   // for free.
   if (maintains_conversation_text() && !state_.conversation_text.empty()) {
     string turn_text = gen_result_.text;
+    // The tripwire break (and its racing-interrupt resolution) leaves the
+    // break token's piece in `text` without feeding it: truncate it so the
+    // canonical text mirrors the fed tokens exactly -- the next mode 1/2
+    // re-tokenization then matches the tracker with no drift re-decode, and
+    // the model never conditions on the unfed tail (as in mode 0).
+    if (gen_result_.unfed_tail_len > 0) {
+      turn_text.erase(turn_text.length() - gen_result_.unfed_tail_len);
+    }
     if (gen_result_.ended_on_eog) {
       turn_text += common_token_to_piece(vocab_, llama_vocab_eot(vocab_), true);
     }
@@ -3300,6 +3316,70 @@ bool ChatSession::run() {
     // 7. Generate response
     auto gen_result = generate_response();
 
+    // 7b. Thinking-simulation tripwire: the generation aborted because the
+    // model emitted a nested think opener inside its still-open thinking
+    // block -- the signature of a model that has started simulating the
+    // conversation (tool calls + fabricated tool results) as literal text
+    // inside its thinking.  The aborted tokens stay in the context (the model
+    // already conditioned on them and the tracker/KV/mirror remain in
+    // lockstep -- no rollback).  Resuming the turn in place reliably re-trips;
+    // what recovers the model is a fresh user turn, so we feed a short
+    // "continue" user turn and auto-continue.  No verbose correction is sent
+    // to the model (it wasted context without helping) and nothing is
+    // streamed to the browser.  last_user_input_ keeps the real prompt, so the
+    // turn-end checkpoint is labeled correctly (no extra checkpoint for the
+    // recovery).  The auto-continue depth cap (LIM_MAX_AUTO_CONTINUE) bounds
+    // the retries.
+    while (gen_result.thinking_sim_abort) {
+      if (g_auto_continue_depth_ >= max_auto_continue_) {
+        diag("System: Model kept re-triggering the thinking simulation (nested " + g_model_tokens.think_start + " tag); auto-continue budget exhausted. Aborting to prompt.", "\033[1;31m");
+        state_.auto_continue = false;
+        break;
+      }
+      g_auto_continue_depth_++;
+      diag("System: Model began simulating the conversation inside its thinking block (nested " + g_model_tokens.think_start + " tag); sending 'continue' to recover.", "\033[1;33m");
+
+      // Log the aborted segment -- the record of exactly where the simulation
+      // began; the resumed segment is logged by step 9 (or process_tool_call)
+      // as usual.
+      if (!gen_result.text.empty()) {
+        log_entry("ASSISTANT", gen_result.text);
+      }
+
+      // build_new_user_turn_tokens prepends the ChatML turn-end close (the
+      // aborted turn is mid-turn, so position_ends_mid_turn() is true) and
+      // wraps "continue" as a fresh user turn -- the same tokens a user's own
+      // "continue" produces, which is what reliably recovers the model.  A
+      // fresh generation starts with the model's own think opener, so
+      // thinking_block_open is left false (a mid-think resume would re-trip).
+      // The close decision is captured BEFORE the token build consumes
+      // prev_was_interrupted: the canonical conversation text (benchmark
+      // modes 1/2) must mirror the fed tokens, close included -- without
+      // this turn the next mode 1/2 re-tokenization drifts from the KV.
+      const bool cont_close = state_.prev_was_interrupted || position_ends_mid_turn();
+      vector<llama_token> cont_tokens = build_new_user_turn_tokens("continue");
+
+      if (n_past_ + (int)cont_tokens.size() >= (int)cparams_.n_ctx || !feed_tokens_impl(cont_tokens)) {
+        diag("System: Thinking-simulation recovery aborted: could not feed 'continue' (" + std::to_string(cont_tokens.size()) + " tokens needed, " + std::to_string(cparams_.n_ctx - n_past_) + " available). Type '/clear' to reset.", "\033[1;31m");
+        state_.auto_continue = false;
+        break;
+      }
+      log_tokens("FEED THINKING_SIM_CONTINUE", cont_tokens, ctx_);
+      log_entry("USER", "continue");
+      // The feed succeeded: keep the canonical text in lockstep (only when
+      // it is currently valid -- an empty text is rebuilt from the tracker
+      // by the next mode 1/2 turn instead of being appended to stale state).
+      if (maintains_conversation_text() && !state_.conversation_text.empty()) {
+        state_.conversation_text += new_user_turn_text(cont_close, "continue");
+      }
+
+      state_.auto_continue = true;
+      gen_result = generate_response();
+      // Loop top: a repeat trip feeds another "continue" (bounded by the
+      // auto-continue cap); a clean resume falls through to step 8 (tool
+      // call) or the turn end.
+    }
+
     // 8. Process tool call
     if (process_tool_call()) {
       continue;
@@ -3506,7 +3586,16 @@ bool ChatSession::run() {
               continue;
             }
           }                } else {
-          diag("System: Correction failed to produce valid tool call. Ejecting to prompt.", "\033[1;31m");
+          // A thinking-simulation tripwire during the correction
+          // regeneration is a distinct failure (the model simulated the
+          // conversation instead of re-issuing the call); say so.  The
+          // main-loop recovery flow does not apply here -- this is the
+          // one-shot correction generation -- so the turn simply ejects
+          // with the aborted text left in the context (state is
+          // self-consistent: the tripwire token was never fed).
+          diag(std::string("System: Correction failed to produce valid tool call") +
+               (gen_result_.thinking_sim_abort ? " (thinking-simulation tripwire tripped)" : "") +
+               ". Ejecting to prompt.", "\033[1;31m");
 
           // Eject WITHOUT rolling back: a rollback would leave the
           // context at a weird place (right after FUNC_START, mid

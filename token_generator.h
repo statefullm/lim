@@ -37,6 +37,26 @@ public:
     // (FUNC_START present, FUNC_END never completed). The caller should run the
     // standard tool-correction cycle instead of ejecting to prompt.
     bool stuck_in_tool_call = false;
+    // True when the thinking-simulation tripwire aborted generation: the model
+    // emitted a nested OPEN think tag inside its still-open thinking block.
+    // A raw think opener is a reserved structural token the model does not
+    // emit as deliberate content, so its appearance mid-thinking is the
+    // signature of a model that has started simulating the conversation
+    // (tool calls and fabricated results) as literal text inside its
+    // thinking.  The aborted
+    // tokens stay in the context (the model already conditioned on them and
+    // the tracker/KV/mirror remain in lockstep -- no rollback); the session
+    // feeds a fresh "continue" user turn to recover, bounded by the
+    // auto-continue depth cap.
+    bool thinking_sim_abort = false;
+    // The trailing characters of `text` that were never fed to the KV: set
+    // when a break lands after the detokenize but before the feed (the
+    // thinking-simulation tripwire, including its racing-interrupt
+    // resolution) -- the break token's piece is in `text`, but the
+    // tracker/KV end at the fed prefix.  The canonical conversation text
+    // (benchmark modes 1/2) mirrors the fed tokens, so the session
+    // truncates `text` to length - unfed_tail_len when appending it.
+    size_t unfed_tail_len = 0;
     // True when generation ended on a non-recovered EOG: the EOG token WAS
     // fed (decoded + appended to the out_tokens tracker) but its piece was NOT
     // appended to `text` (the break precedes the detokenize block).  Callers

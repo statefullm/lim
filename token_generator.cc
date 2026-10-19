@@ -237,6 +237,13 @@ TokenGenerator::Result TokenGenerator::generate() {
   bool early_exit = false;
   bool stuck_in_tool_call = false;
   bool ended_on_eog = false;
+  // Thinking-simulation tripwire: set when the depth-matching scan finds a
+  // nested OPEN think tag inside the still-open block (see the scan below).
+  bool thinking_sim_abort = false;
+  // Set when the loop exits with the last appended piece unfed (the
+  // tripwire break, below): the trailing unfed_tail_len characters of
+  // `text` are not in the tracker/KV.
+  size_t unfed_tail_len = 0;
   bool ctx_limit_interrupt = false;
   // Swallowed in-block EOG count (EOG block in the token loop below).
   // Resets only on an EOG sampled outside the block, so the cap bounds
@@ -420,8 +427,10 @@ TokenGenerator::Result TokenGenerator::generate() {
         // which decodes this exact token.  Advance the tracker and
         // n_past in lockstep without a decode.  The tracker/KV
         // consistency invariant holds at every turn exit: a break
-        // between an origin commit and the verify decode is healed
-        // by the post-loop cleanup (single-row cell fill).
+        // that lands before this commit (the tripwire) leaves the
+        // matched-but-uncommitted round to the post-loop cleanup,
+        // which discards it -- the context stays at the committed
+        // prefix either way.
         if (out_tokens_) out_tokens_->push_back(next_token);
         n_past_++;
         spec_no_feed_ = false;
@@ -431,7 +440,20 @@ TokenGenerator::Result TokenGenerator::generate() {
       batch_.n_tokens = 0;
       common_batch_add(batch_, next_token, n_past_++, {0}, true);
       if (!handle_llama_decode_error(ctx_, batch_)) {
+        // The rejected batch wrote no rows: the KV (and the hybrid
+        // recurrent state) are unchanged, so the synced n_past_ is
+        // the last committed position.  The failed token was pushed
+        // to the tracker before the decode -- shrink it back so
+        // tracker == KV == n_past_ holds and the session ejects to
+        // the prompt in an exactly-interrupted state (a new prompt,
+        // /save, or /undo all work; a later /save is exact rather
+        // than one phantom token long).  Shrink only: if the sync
+        // instead found the KV ahead of the tracker, the desync
+        // runs the other way and /clear is the recovery.
         sync_n_past(ctx_, n_past_);
+        if (out_tokens_ && (int)out_tokens_->size() > n_past_) {
+          out_tokens_->resize(n_past_);
+        }
         return false;
       }
       return true;
@@ -729,6 +751,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     static constexpr int TOKEN_BUF_SIZE = 128;
     char token_buf[TOKEN_BUF_SIZE];
     const int n_chars = llama_token_to_piece(vocab_, next_token, token_buf, TOKEN_BUF_SIZE, 0, true);
+    int n_appended = 0;  // this token's piece length (0: nothing appended)
     if (n_chars < 0) {
       // Buffer too small: fall back to heap allocation.
       // n_chars is negative and indicates the required size.
@@ -737,6 +760,7 @@ TokenGenerator::Result TokenGenerator::generate() {
       const int n2 = llama_token_to_piece(vocab_, next_token, &token_heap[0], needed + 1, 0, true);
       GGML_ASSERT(n2 > 0 && "heap-allocated buffer still too small for token piece");
       generated_text_.append(token_heap.data(), n2);
+      n_appended = n2;
 
       if (is_debug && !canary_silent_ && token_log.is_open()) {
         token_log << t_count_ << " " << next_token << " \"" << escape_token_piece(token_heap.substr(0, n2)) << "\"\n";
@@ -745,6 +769,7 @@ TokenGenerator::Result TokenGenerator::generate() {
     } else if (n_chars > 0) {
       string_view token_sv(token_buf, n_chars);
       generated_text_.append(token_sv.data(), token_sv.size());
+      n_appended = n_chars;
 
       if (is_debug && !canary_silent_ && token_log.is_open()) {
         string token_str(token_sv);
@@ -770,11 +795,13 @@ TokenGenerator::Result TokenGenerator::generate() {
         }
       }
       if (think_start_ != string::npos && think_end_ == string::npos) {
-        // Depth-match the closing tag that pairs with the OUTER opening tag.
-        // The model sometimes emits spurious think tags inside its reasoning;
-        // nested pairs are ignored so an inner </think> can't terminate the
-        // block early (which would leak the rest of the reasoning into the
-        // visible response and prematurely collapse the browser's thinking box).
+        // Depth-match the closing tag that pairs with the OUTER opening tag:
+        // a spurious inner </think> can't terminate the block early (which
+        // would leak the rest of the reasoning into the visible response and
+        // prematurely collapse the browser's thinking box).  A spurious
+        // inner OPEN tag is not tolerated on the normal path -- it trips the
+        // thinking-simulation wire below; only the canary probe (where the
+        // wire is suppressed) still depth-counts open tags as before.
         // Incremental scan: each character is examined at most once -> O(N).
         size_t scan = think_scan_pos_;
         if (scan > generated_text_.length()) scan = generated_text_.length();
@@ -784,6 +811,22 @@ TokenGenerator::Result TokenGenerator::generate() {
           if (p_open == string::npos && p_close == string::npos) break;
           bool is_open = (p_open != string::npos && (p_close == string::npos || p_open < p_close));
           size_t p = is_open ? p_open : p_close;
+          if (is_open && !canary_silent_) {
+            // Thinking-simulation tripwire: a nested OPEN think tag inside
+            // the still-open block.  A raw think opener is a structural
+            // marker the model emits to open its thinking block, not as
+            // content, so a second raw opener while the block is still
+            // open is the signature of a model that has started simulating
+            // the conversation -- tool calls and fabricated results as
+            // literal text inside the thinking block.
+            // Abort here (at most a few tokens into the simulation); the
+            // session feeds a fresh "continue" user turn to recover (a
+            // mid-think resume in place re-trips).  The aborted tokens stay
+            // in the context: the model already conditioned on them, and the
+            // tracker/KV/mirror remain in lockstep (no rollback).
+            thinking_sim_abort = true;
+            break;
+          }
           think_depth_ += is_open ? 1 : -1;
           if (!is_open && think_depth_ <= 0) {
             think_end_ = p;   // outer closing tag found
@@ -800,6 +843,40 @@ TokenGenerator::Result TokenGenerator::generate() {
       }
     }
     in_thinking_block_ = (think_start_ != string::npos && think_end_ == string::npos);
+
+    if (thinking_sim_abort) {
+      // The break below skips the feed: every piece appended before this
+      // (tripwire-completing) token was fed at the end of its own iteration,
+      // so this token's piece is the only unfed tail of `text`.  Record it
+      // for the canonical-text mirror (benchmark modes 1/2), which must end
+      // at the fed prefix.
+      unfed_tail_len = n_appended;
+      // A user interrupt that raced the tripwire (SIGINT landed after this
+      // iteration's top-of-loop check) is honored as the interrupt, not the
+      // tripwire: the top-of-loop check would have fired on the next
+      // iteration, so treat this token as the interrupt point.  Without
+      // this, generate_response() clears stop_generation on return and the
+      // session's recovery loop would feed "continue" and auto-continue
+      // against the user's Ctrl+C.  g_was_interrupted is consumed here.
+      if (stop_generation) {
+        diag("Task Interrupted by User", "\033[31m");
+        stream("\n\n[Task Interrupted by User]\n\n");
+        stop_generation = 0;
+        g_was_interrupted = 0;
+        was_interrupted = true;
+        thinking_sim_abort = false;
+        rl_redisplay();
+        break;
+      }
+      // Skip tool detection, output rendering, and the feed: the current
+      // (tripwire-completing) token is NOT fed, so the KV/tracker end at the
+      // committed prefix and the nested tag lives only in the result string
+      // (when the tag split across tokens, the KV may hold the fed partial
+      // fragment -- the same bounded divergence as the swallowed-EOG path).
+      // The post-loop MTP cleanup settles any in-flight round, and the
+      // result flag hands off to the session's recovery flow.
+      break;
+    }
 
     if (tool_start_ == string::npos) {
       size_t search_from = func_search_pos_;
@@ -1209,42 +1286,71 @@ TokenGenerator::Result TokenGenerator::generate() {
   if (spec_verify_pending_ || spec_in_progress_ || spec_bonus_pending_ ||
       spec_round_complete_pending_ || spec_origin_pending_) {
     if (spec_verify_pending_) {
-      // The origin token was committed no-feed but the verify batch
-      // never decoded (a break -- e.g. a completed tool call -- landed
-      // between the commit and the post-feed advancement).  Give it
-      // its KV cell with a single-row decode: position n_past_-1 is
-      // new, so this is a plain decode and the recurrent state lands
-      // in lockstep.  The emitted context (a tool call included)
-      // stays complete.
-      spec_verify_pending_ = false;
-      batch_.n_tokens = 0;
-      common_batch_add(batch_, spec_draft_[0], n_past_ - 1, {0}, true);
-      if (!handle_llama_decode_error(ctx_, batch_)) {
-        // The token has no guaranteed KV cell now: roll back to the
-        // pre-round state (drops a partially written cell if any)
-        // and drop it from the tracker to keep the invariant.
-        n_past_--;
-        if (out_tokens_) out_tokens_->pop_back();
-        if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1)) {
-          // The rollback itself failed (hybrid model: the
-          // recurrent state can't be restored to n_past_ -- the
-          // per-token snapshot window doesn't cover it).  A
-          // partially written cell would then stay in the KV ahead
-          // of the tracker: rebuild the committed prefix (the
-          // tracker, already minus the dropped token) from scratch.
-          diag("MTP: abort rollback failed; regenerating KV cache", "\033[31m");
-          // A failed re-decode (null tracker, or KV exhaustion
-          // mid-rebuild) can't be healed from here; the turn
-          // early-exits either way, so the result goes unhandled
-          // (unlike the in-loop sites that check it).
-          spec_rollback_redecode();
+      // The origin matched but the verify batch never decoded: the loop
+      // exited before the post-feed advancement that consumes
+      // spec_verify_pending_.  Two states are possible, distinguished by
+      // the KV position (the committed case advanced n_past_ and the
+      // tracker past the last decoded row):
+      //
+      // COMMITTED (n_past_ == KVmax + 2): a break that lands AFTER
+      // feed_token's no-feed commit -- tool call completed, canary
+      // double-open, or the silent-loop abort -- left d1 in the tracker
+      // without a KV cell.  Give it its cell with a single-row decode:
+      // position n_past_-1 is new, so this is a plain decode and the
+      // recurrent state lands in lockstep.  The emitted context (a tool
+      // call included) stays complete.  Clearing spec_verify_pending_
+      // makes the accounting below credit the round's one committed
+      // token (the note_round(1 + spec_committed_verify_) branch).
+      //
+      // UNCOMMITTED (n_past_ <= KVmax + 1): the break (the
+      // thinking-simulation tripwire) landed between the origin
+      // comparison and feed_token, so n_past_ and the tracker do not
+      // include d1.  Discard the round like a mismatch: no decode
+      // (decoding d1 at n_past_-1 would collide with the last committed
+      // row -- an M-RoPE model rejects a position the KV cache already
+      // holds) and no rollback.  The context stays exactly at the
+      // committed prefix (KV max = n_past_-1), the tripwire token
+      // discarded along with the draft; the verify batch never decoded,
+      // so no stale cells exist.  spec_verify_pending_ stays set so the
+      // round accounting below classifies the state (note_round(0)); the
+      // final reset clears it.
+      const llama_pos kvmax = llama_memory_seq_pos_max(llama_get_memory(ctx_), 0);
+      if (n_past_ > (int)kvmax + 1) {
+        spec_verify_pending_ = false;
+        spec_in_progress_ = false;
+        batch_.n_tokens = 0;
+        common_batch_add(batch_, spec_draft_[0], n_past_ - 1, {0}, true);
+        if (!handle_llama_decode_error(ctx_, batch_)) {
+          // The decode failed (KV exhausted or aborted): the batch may
+          // have written d1's cell.  Roll it back (drops a partially
+          // written cell if any) and drop d1 from the tracker so
+          // tracker == KV == n_past_ holds again.  spec_verify_pending_
+          // stays set: the round committed nothing, so the accounting
+          // below takes the note_round(0) branch.
+          n_past_--;
+          if (out_tokens_) out_tokens_->pop_back();
+          if (!llama_memory_seq_rm(llama_get_memory(ctx_), 0, n_past_, -1)) {
+            // The rollback itself failed (hybrid model: the recurrent
+            // state can't be restored to n_past_ -- the per-token
+            // snapshot window doesn't cover it).  Rebuild the committed
+            // prefix from scratch (clear + re-decode; the mirror
+            // rebuilds via the hook) and end the turn.
+            diag("MTP: abort rollback failed; regenerating KV cache", "\033[31m");
+            if (!spec_rollback_redecode()) early_exit = true;
+          }
+          spec_bonus_pending_ = false;
+          spec_round_complete_pending_ = false;
+          spec_draft_.clear();
+          early_exit = true;
+        } else {
+          spec_bonus_pending_ = false;
+          spec_round_complete_pending_ = false;
+          spec_draft_.clear();
         }
-        early_exit = true;
+      } else {
+        spec_in_progress_ = false;
+        spec_draft_.clear();
       }
-      spec_in_progress_ = false;
-      spec_bonus_pending_ = false;
-      spec_round_complete_pending_ = false;
-      spec_draft_.clear();
     }
     // Stale verify cells exist only when the verify batch was decoded
     // but not all of its rows were committed (n_past_ is behind the
@@ -1274,6 +1380,11 @@ TokenGenerator::Result TokenGenerator::generate() {
       if (spec_round_complete_pending_) {
         // Bonus was pending but never fed (break before its feed).
         g_mtp->note_round(1 + spec_verify_rows_);
+      } else if (spec_verify_pending_) {
+        // Uncommitted origin (tripwire break between comparison and
+        // feed): the round committed nothing -- the origin match was
+        // already counted in the comparison.
+        g_mtp->note_round(0);
       } else {
         // A round left at the origin (spec_origin_pending_: the turn
         // ended before the comparison block ran) committed its one
@@ -1325,6 +1436,8 @@ TokenGenerator::Result TokenGenerator::generate() {
   result.ctx_limit_interrupt = ctx_limit_interrupt;
   result.early_exit = early_exit;
   result.stuck_in_tool_call = stuck_in_tool_call;
+  result.thinking_sim_abort = thinking_sim_abort;
+  result.unfed_tail_len = unfed_tail_len;
   result.ended_on_eog = ended_on_eog;
   result.was_in_thinking_block = in_thinking_block_;
   result.decode_time = gen_wall_time;
