@@ -33,7 +33,7 @@ Always use these tools for any filesystem or shell operation:
   * CRITICAL: OLD MUST be the exact current text in the file. If 0 matches are found, check that you didn't accidentally prepend or append a newline to OLD.
   * You can invoke multiple tool calls in sequence if you need to make several independent changes.
 
-- Write (or overwrite) CONTENT to a file FILE in an existing directory:
+- Write (or overwrite) CONTENT to a file FILE (missing parent directories are created automatically):
   <function=write_file><parameter=path>FILE</parameter><parameter=content>CONTENT</parameter></function>
 
 - Run a command:

@@ -16,7 +16,7 @@ void escape_turn_tags(std::string& str);
 void unescape_turn_tags(std::string& str);
 
 // Strip quote characters and surrounding whitespace from a string (used for
-// forgiving tag-name matching: <parameter= paths> -> paths).
+// forgiving tag-name matching: PARAM_START paths> -> paths).
 std::string strip_quotes_from_name(const std::string& s);
 
 // Trim leading/trailing characters that appear in 'chars'.

@@ -166,7 +166,7 @@ static string strip_quotes(const string& s) {
 }
 
 // Strip quote characters and surrounding whitespace from a string (used for
-// forgiving tag-name matching: <parameter= paths> -> paths).  Names never
+// forgiving tag-name matching: PARAM_START paths> -> paths).  Names never
 // contain whitespace, so trimming is safe.  Values are never run through
 // here -- exact value whitespace (edit_file old/new) is preserved by the
 // value extractors.  Quotes are stripped before trimming so quoted names

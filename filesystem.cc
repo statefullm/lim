@@ -20,6 +20,7 @@
 #include <poll.h>
 #include <pwd.h>
 #include <cstring>
+#include <cerrno>
 #include <cstdint>
 #include <vector>
 #include <algorithm>
@@ -1322,10 +1323,58 @@ vector<map<string, string>> FileSystemTools::read_files(const vector<string>& pa
   return results;
 }
 
+// Create every missing parent directory of `fullpath` (mkdir -p semantics).
+// Fills `created` with the directories actually created (empty if the parent
+// already existed) and returns true. On a hard failure -- a path component
+// exists but is not a directory, or a mkdir is denied -- sets `error` and
+// returns false.
+static bool mkdir_p(const string& fullpath, string& created, string& error) {
+  string dir = fullpath;
+  size_t slash = dir.rfind('/');
+  if (slash == string::npos || slash == 0) return true;  // no parent dir, or root
+  dir = dir.substr(0, slash);
+
+  for (size_t i = 0; i <= dir.size(); ++i) {
+    if (i != dir.size() && dir[i] != '/') continue;  // act only at component ends
+    string prefix = dir.substr(0, i);
+    if (prefix.empty() || prefix == "/") continue;   // skip root
+
+    struct stat st;
+    if (stat(prefix.c_str(), &st) == 0) {
+      if (!S_ISDIR(st.st_mode)) {
+        error = "Cannot create directory for '" + prefix + "': a path component is not a directory";
+        return false;
+      }
+      continue;  // already a directory
+    }
+    if (errno != ENOENT) {
+      error = "Cannot access '" + prefix + "': " + strerror(errno);
+      return false;
+    }
+    if (mkdir(prefix.c_str(), 0777) == 0) {
+      if (!created.empty()) created += ", ";
+      created += prefix;
+    } else if (errno != EEXIST) {
+      error = "Failed to create directory '" + prefix + "': " + strerror(errno);
+      return false;
+    }  // EEXIST: created concurrently between stat and mkdir; assume a dir
+  }
+  return true;
+}
+
 map<string, string> FileSystemTools::write_file(const string& path, const string& content) {
-  // Build human-readable function call syntax
-  // Output the tool function call to both stdout and logfile
   string fullpath = _get_fullpath(path);
+
+  // Ensure the parent directory exists (mkdir -p) so a new file in a new
+  // directory doesn't fail and force the model to re-emit its content.
+  string created_dirs, mkdir_error;
+  if (!mkdir_p(fullpath, created_dirs, mkdir_error)) {
+    map<string, string> result;
+    result["status"] = "error";
+    result["error"] = mkdir_error;
+    log_diagnostic(mkdir_error, true /* logOnly */);
+    return result;
+  }
 
   // Unescape reserved tokens before writing to disk (LLM provides escaped content)
   string writable_content = content;
@@ -1354,6 +1403,7 @@ map<string, string> FileSystemTools::write_file(const string& path, const string
     return result;
   }
   result["status"] = "success";
+  if (!created_dirs.empty()) result["dirs_created"] = created_dirs;
   // Log success without content - use logOnly=true to ensure content is never shown
   log_diagnostic("Successfully written: " + path + " (size=" + to_string(writable_content.length()) + " bytes)", true /* logOnly */);
   return result;

@@ -147,8 +147,8 @@ static bool check_params(const string& tool_name, const string& tool_call) {
 }
 
 // Comma-separated list of parameter names in exact tag form
-// (e.g., "<parameter=path>, <parameter=old>, <parameter=new>").  Showing the
-// actual tags -- not bare quoted names -- pins the <parameter=...> format the
+// (e.g., "PARAM_START path>, PARAM_START old>, PARAM_START new>").  Showing the
+// actual tags -- not bare quoted names -- pins the PARAM_START ...> format the
 // model must reproduce, so the missing-parameter error leaves no room for
 // the model to invent a bare <new>-style tag.
 static string format_param_list(const vector<string>& params) {
@@ -280,16 +280,16 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   if (!out.params_valid) {
     vector<string> missing = find_missing_params(tool_name, tool_call);
     string missing_list = format_param_list(missing);
-    // Targeted and fed back as an ordinary tool result: the call is
-    // structurally well-formed -- recognized tool, all tags closed -- a
-    // required parameter is simply absent.  This is the model's one quick
-    // self-fix chance (tool_executor feeds the error straight back and
-    // latches it); only a repeat minor error before any non-minor tool
-    // call is routed through the correction cycle.  Naming the tool, the
-    // missing parameter(s), and the tool's full required set leaves no
-    // room for wild theories (escaping, truncation, FS bugs); the model
-    // just re-issues the call complete.
-    out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + ").";
+    // Targeted and fed back as an ordinary tool result: a recognized tool
+    // whose required parameter is absent -- either simply not provided, or
+    // made unparseable by a forgotten closing tag (PARAM_END).  This is the
+    // model's one quick self-fix chance (tool_executor feeds the error
+    // straight back and latches it); only a repeat minor error before any
+    // non-minor tool call is routed through the correction cycle.  Naming
+    // the tool, the missing parameter(s), and the tool's full required set
+    // -- plus the PARAM_END hint -- covers both causes without inviting wild
+    // theories (escaping, truncation, FS bugs).
+    out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + "). Did you forget a closing parameter tag (PARAM_END) in your tool call?";
     out.display = "Missing parameter(s) for " + tool_name + ": " + missing_list;
     out.is_error = true;
     return out;
@@ -454,9 +454,10 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       log_tool_diagnostic("write_file(\"" + path + "\")");
       FileSystemTools fs;
       auto result_map = fs.write_file(path, content);
-      string r_status, r_error;
+      string r_status, r_error, r_dirs;
       if (result_map.count("status")) r_status = result_map.at("status");
       if (result_map.count("error")) r_error = result_map.at("error");
+      if (result_map.count("dirs_created")) r_dirs = result_map.at("dirs_created");
       result = "Status: " + r_status;
       if (!r_error.empty()) {
         result += ", Error: " + r_error;
@@ -464,6 +465,10 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         display_result = "Write file: " + path + ": " + r_error;
       } else {
         display_result = "Write file: " + path + ": " + to_string(content.length()) + " bytes";
+        if (!r_dirs.empty()) {
+          result += "; created directories: " + r_dirs;
+          display_result += " (created directories)";
+        }
       }
       prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
     } else {
