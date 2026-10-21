@@ -1526,7 +1526,17 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
   // SEG_TURN_END here would prematurely collapse an open thinking
   // block that the auto-resumed generation continues into, and a
   // collapsed incomplete block cannot be reopened until completion.
-  if (!gen_result_.ctx_limit_interrupt) {
+  // The thinking-simulation tripwire abort needs the same treatment:
+  // the recovery flow injects a "continue" user turn and auto-continues,
+  // so the resumed generation continues into the open thinking block
+  // too.  The injection must stay invisible to the viewer -- a
+  // SEG_TURN_END here would collapse the block and hide the resumed
+  // output until the turn's final completion.  (If the recovery
+  // exhausts its budget or fails to feed "continue" and ejects to the
+  // prompt instead, the block stays open until the next user input,
+  // which renders the raw tail and collapses it as any other
+  // non-thinking segment does.)
+  if (!gen_result_.ctx_limit_interrupt && !gen_result_.thinking_sim_abort) {
     pipe_write(&SEG_TURN_END, 1);
   }
 
