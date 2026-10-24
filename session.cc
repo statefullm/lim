@@ -1536,7 +1536,19 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
   // prompt instead, the block stays open until the next user input,
   // which renders the raw tail and collapses it as any other
   // non-thinking segment does.)
-  if (!gen_result_.ctx_limit_interrupt && !gen_result_.thinking_sim_abort) {
+  // A generation that ends in a tool call (complete or stuck) needs it
+  // as well: the turn continues -- the tool executes and auto-continues,
+  // or the correction cycle regenerates -- and nothing is streamed
+  // between this segment and the next generation.  If the call sat
+  // inside a still-open thinking block, the next generation's thinking
+  // coalesces into this segment's block in the viewer; a SEG_TURN_END
+  // here would collapse it first and hide the correction's diagnostic
+  // thinking until the turn's final completion.  (A valid call's
+  // result streams as a non-thinking segment, which collapses the
+  // block as SEG_TURN_END would; an ejection leaves it open until the
+  // next user input, as in the tripwire case.)
+  if (!gen_result_.ctx_limit_interrupt && !gen_result_.thinking_sim_abort &&
+      !gen_result_.has_tool_call && !gen_result_.stuck_in_tool_call) {
     pipe_write(&SEG_TURN_END, 1);
   }
 
