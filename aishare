@@ -5,33 +5,412 @@
 owner="${USER:-$(whoami)}"
 group="${LIM_AI_USER:-ai}"
 
+store="/home/$group/.gitstore"
+
 target="${1:-.}"
 
 # Resolve to absolute path
 target="$(cd "$target" 2>/dev/null && pwd -P)" || { echo "ERROR: not a directory: $1" >&2; exit 1; }
 
-# Refuse to operate outside /home/$group
+# Refuse to operate outside /home/$group, or directly on the store
 case "$target" in
-    /home/$group*) ;;
+    "/home/$group"|"/home/$group"/*) ;;
     *) echo "ERROR: target must be under /home/$group" >&2; exit 1 ;;
 esac
+case "$target" in
+    "$store"|"$store"/*) echo "ERROR: $store is managed by aishare; do not share it directly" >&2; exit 1 ;;
+esac
 
-ssh_dir="/home/$group/.ssh"
+# Git executes code from a gitdir's config (core.hooksPath, credential.helper,
+# core.sshCommand, ...) and from its hooks, so the LLM must never be able to
+# swap a repo's gitdir for one of its own. That cannot be prevented by
+# permissions alone inside a group-writable tree -- the LLM could always
+# rename the .git directory away (a checkout dir cannot be sticky without
+# breaking normal file moves) -- so aishare uses two layers:
+#
+# 1. move_gitdir: a checkout's .git directory is moved into a store the group
+#    can traverse but not restructure (mirroring its path) and replaced by a
+#    "gitdir:" pointer file
+#    -- the mechanism git itself uses for worktrees -- pinned immutable
+#    with chattr so it cannot be replaced, rewritten, or deleted. The
+#    store's path-mirror dirs are 2750 (group traverses, never writes),
+#    so the stored gitdir cannot be renamed or deleted; the stored .git
+#    subtrees keep the group-writable modes the LLM's commits need,
+#    protected in place by layer 2. Before the move, retarget_gitdir
+#    re-points at the store location every reference to the gitdir (.git
+#    pointers of submodules and linked worktrees in the checkout, and the
+#    relative core.worktree values in submodule gitdir configs), so the
+#    move leaves nothing dangling. Linked worktrees checked out *outside* the
+#    checkout are not visible to that scan, so move_gitdir finishes with
+#    'git worktree repair', which re-points them at the moved gitdir.
+#
+# 2. protect_gitdirs: inside every gitdir (full, nested, submodule, and
+#    worktree admin dirs) the sticky bit lets only an entry's owner or the
+#    gitdir's owner rename or delete entries, so the LLM cannot move or
+#    replace the owner-only-writable config and hooks. New files (lockfiles,
+#    loose objects) can still be created, so commits keep working. config and
+#    hooks are pre-created if absent so the LLM cannot create them itself.
+#
+# Separately, disable_planted_hooks (run before ownership is normalized)
+# strips the executable bit from any git hook not owned by the user, so a
+# hook planted by the LLM in a repo it made cannot run as the user; it is
+# frozen, not removed, and the user re-enables a legitimate one with chmod +x.
+#
+# A gitdir is any directory holding a HEAD file plus objects/ and refs/
+# (full, nested, or submodule gitdir) or a commondir file (linked-worktree
+# admin dir).
+
+is_gitdir() {
+    [ -f "$1/commondir" ] || { [ -d "$1/objects" ] && [ -d "$1/refs" ]; }
+}
+
+# Print the paths of the real .git pointer files under $1: regular files whose
+# first line is a "gitdir: " pointer. A user data file that merely happens to
+# be named .git is not a pointer, so it is excluded everywhere this is used
+# (it must not be chmod'd, pinned, or flagged).
+git_pointers() {
+    find "$1" -type f -name .git 2>/dev/null | while IFS= read -r g; do
+        [ -r "$g" ] || continue
+        case "$(head -n 1 "$g" 2>/dev/null)" in
+            "gitdir: "*) printf '%s\n' "$g" ;;
+        esac
+    done
+}
+
+# sudo wrapper: show sudo's own error and warn (instead of failing silently)
+# when the sudoers rule for the command is missing or the command fails, and
+# propagate the failure so the caller decides whether to continue or abort.
+# Batched sites (find -exec, xargs) carry their own || warnings, and
+# move_gitdir's pin has its own specific one.
+run_sudo() {
+    if ! run_sudo_err="$(sudo "$@" 2>&1)"; then
+        [ -n "$run_sudo_err" ] && printf '%s\n' "$run_sudo_err" >&2
+        echo "WARNING: 'sudo $*' failed (missing sudoers rule or command error)" >&2
+        return 1
+    fi
+}
+
+# Run before ownership is normalized: neutralize git hooks not created by the
+# user (e.g. planted by the LLM in a repo it made, before the repo was shared),
+# which would otherwise run as the user on the user's next commit. Hooks are
+# identified by their ownership -- "not owned by you" -- so this must run
+# before fix()'s chown -R re-owns everything. For each planted hook aishare
+# takes ownership (via the sudo chown rule) and strips the executable bit as
+# the new owner; protect_gitdirs later freezes it (hooks tree not
+# group-writable). The hook is not removed: review it, and if it is legitimate
+# restore the executable bit with 'chmod +x'. A symlink not owned by the user
+# is not disabled -- chmod would follow it and act on the target, which might
+# be the user's own script -- and flagged instead.
+disable_planted_hooks() {
+    find "$1" -type f -name HEAD 2>/dev/null | while IFS= read -r head; do
+        d=$(dirname "$head")
+        is_gitdir "$d" || continue
+        find "$d/hooks" -maxdepth 1 -type l ! -name '*.sample' ! -user "$owner" \
+              2>/dev/null | while IFS= read -r h; do
+            echo "WARNING: $h is a symlink in a git hooks dir and is not owned by you: git would execute its target as you on your next commit -- aishare leaves it in place (disabling it would act on the target) -- review it and delete or replace it" >&2
+        done
+        find "$d/hooks" -maxdepth 1 -type f -perm -0111 ! -name '*.sample' \
+              ! -user "$owner" 2>/dev/null | while IFS= read -r h; do
+            # Take ownership (chown -R on a single file is a plain chown; the
+            # -R form is what the sudoers rule matches), then strip the exec
+            # bit as the new owner.
+            if ! run_sudo chown -R "$owner:$group" "$h"; then
+                echo "WARNING: $h is an executable git hook not owned by you and aishare could NOT disable it (the sudo chown failed -- see the error above): it still runs as you on your next commit -- review it" >&2
+                continue
+            fi
+            if ! chmod a-x "$h" 2>/dev/null; then
+                echo "WARNING: $h is an executable git hook not owned by you and aishare could NOT disable it (chmod a-x failed after the chown succeeded): it still runs as you on your next commit -- review it" >&2
+                continue
+            fi
+            echo "WARNING: $h is an executable git hook not owned by you: aishare disabled it (removed the executable bit) and froze it, but did not remove it -- review it, and if it is legitimate restore it with 'chmod +x $h'" >&2
+        done
+    done
+}
+
+# Lexically normalize an absolute path: resolve "." and ".." components.
+normpath() {
+    p="$1"
+    case "$p" in /*) ;; *) p="/$p" ;; esac
+    out=""
+    rest="$p"
+    while :; do
+        rest="${rest#/}"
+        case "$rest" in
+            */*) c="${rest%%/*}"; rest="${rest#*/}" ;;
+            *) c="$rest"; rest="" ;;
+        esac
+        case "$c" in
+            ''|.) ;;
+            ..) out="${out%/*}" ;;
+            *) if [ -z "$out" ]; then out="/$c"; else out="$out/$c"; fi ;;
+        esac
+        [ -n "$rest" ] || break
+    done
+    printf '%s\n' "${out:-/}"
+}
+
+# Re-point at $2 every reference to the gitdir $1, to be run before $1 is
+# moved to $2: .git pointer files of submodules and linked worktrees in
+# the checkout (relative or absolute) are rewritten into $2, and the
+# relative core.worktree values in submodule gitdir configs are made
+# absolute (they are resolved against the gitdir, which is about to move).
+# Only references whose target exists in $1 are rewritten.
+retarget_gitdir() {
+    old="$1"
+    new="$2"
+    find "${old%/.git}" \( -path "$old" -prune \) -o -type f -name .git -print 2>/dev/null | \
+        while IFS= read -r g; do
+        [ -r "$g" ] || continue
+        t="$(head -n 1 "$g")"
+        case "$t" in "gitdir: "*) ;; *) continue ;; esac
+        t="${t#gitdir: }"
+        case "$t" in /*) ;; *) t="$(dirname "$g")/$t" ;; esac
+        t="$(normpath "$t")"
+        case "$t" in
+            "$old") printf 'gitdir: %s\n' "$new" > "$g" ;;
+            "$old"/*) [ -d "$t" ] && printf 'gitdir: %s/%s\n' "$new" "${t#"$old"/}" > "$g" ;;
+        esac
+    done
+    find "$old/modules" -type f -name config 2>/dev/null | while IFS= read -r cfg; do
+        v=$(awk '/^[ \t]*\[/ { incore = tolower($0) ~ /^\[core\]/ ; next }
+                 incore && /^[ \t]*worktree[ \t]*=/ {
+                     sub(/^[ \t]*worktree[ \t]*=[ \t]*/, "")
+                     print
+                     exit }' "$cfg")
+        case "$v" in \"*\") v=${v#\"}; v=${v%\"} ;; esac
+        case "$v" in
+            ''|/*) ;;
+            *)
+                abs="$(normpath "${cfg%/*}/$v")"
+                if [ -d "$abs" ]; then
+                    git config --file "$cfg" core.worktree "$abs" 2>/dev/null || \
+                        echo "WARNING: could not make core.worktree absolute in $cfg (value: $v, target: $abs)" >&2
+                else
+                    echo "WARNING: $cfg has a relative core.worktree ($v) resolving to the missing $abs: git in that submodule will break once $old moves -- set core.worktree to the checkout path, then re-run aishare" >&2
+                fi
+                ;;
+        esac
+    done
+}
+
+# Move $1 (a checkout's .git directory in the group-writable tree) into the
+# store, re-pointing its references at the store location first, and replace
+# it with a pinned "gitdir:" pointer file. Each failure mode warns specifically:
+# by the time a later step fails, retarget_gitdir has already re-pointed the
+# in-tree references at $dest, so they would silently dangle otherwise.
+move_gitdir() {
+    d="$1"
+    dest="$store$d"
+    if [ -e "$dest" ]; then
+        echo "WARNING: $dest already exists; left $d in place. Keep the copy you want and re-run aishare -- to keep the stored one: rm -rf '$d'; printf 'gitdir: %s\n' '$dest' > '$d'; sudo chattr +i '$d' -- to keep this one: delete $dest" >&2
+        return 1
+    fi
+    if ! mkdir -p "${dest%/*}"; then
+        echo "WARNING: could not create the $store mirror directory for $d" >&2
+        return 1
+    fi
+    # Harden the mirror dirs (and the store root) to traverse-only for the
+    # group now, not only at the end (fix_store does the same): with a
+    # group-writable umask, the window in between would let the LLM
+    # restructure the store and swap the gitdir at the pinned pointer's
+    # destination. Walk up from the leaf; pre-existing parents are re-chmod'd
+    # idempotently.
+    p="${dest%/*}"
+    while [ "$p" != "$store" ]; do
+        chmod 2750 "$p" 2>/dev/null
+        p="${p%/*}"
+    done
+    chmod 2750 "$store" 2>/dev/null
+    retarget_gitdir "$d" "$dest"
+    if ! mv "$d" "$dest"; then
+        echo "WARNING: could not move $d into $store; the gitdir was not moved, but in-tree references may already point at $dest -- re-run aishare to retry the move" >&2
+        return 1
+    fi
+    if ! printf 'gitdir: %s\n' "$dest" > "$d"; then
+        echo "WARNING: moved $d into $store but could not write the $d pointer, so the checkout is broken -- restore it with: printf 'gitdir: %s\n' '$dest' > '$d'" >&2
+        return 1
+    fi
+    # Re-point any linked worktrees checked out *outside* this checkout, which
+    # retarget_gitdir (which only scans the checkout) cannot see; the pointer
+    # just written lets git locate the moved gitdir. Run this before the pin
+    # below on purpose: repair rewrites stale worktree pointers, and none of
+    # its writes should ever be blocked by the immutable flag (in-checkout
+    # pointers are already unpinned for this run, and the main pointer is not
+    # pinned yet).
+    # Best effort: on failure those worktrees stay dangling (check_gitfiles
+    # flags any under $target).
+    git -C "${d%/.git}" worktree repair >/dev/null 2>&1 || \
+        echo "WARNING: 'git worktree repair' failed for ${d%/.git}: linked worktrees checked out outside it may now be dangling -- run it yourself: git -C ${d%/.git} worktree repair; if it fails with a permission error on the .git pointer, unpin it (sudo chattr -i) first, then re-run aishare" >&2
+    chmod 640 "$d"
+    sudo chattr +i "$d" 2>/dev/null || \
+        echo "WARNING: could not pin $d immutable (chattr unavailable or unsupported here?): the LLM can then replace or delete this .git pointer; aishare will flag a pointer that no longer points into the store" >&2
+}
+
+protect_gitdirs() {
+    # A worktree/submodule checkout's .git is a file pointing at its gitdir:
+    # keep it group-readable (the LLM's git must read it) but owner-only
+    # writable. This runs before the move loop, which pins the main pointer
+    # it creates (chmod would fail on it), and before pin_gitfiles; new
+    # pointers made after this run (worktrees or submodules) are not yet
+    # pinned -- re-run aishare to pin them. Only real "gitdir:" pointers are
+    # touched, so a user data file merely named .git is left alone.
+    git_pointers "$1" | while IFS= read -r g; do
+        chmod g-w "$g"
+    done
+    find "$1" -type f -name HEAD | while IFS= read -r head; do
+        d=$(dirname "$head")
+        is_gitdir "$d" || continue
+        case "$d" in
+            "$store"/*) ;;                      # already stored (fix_store pass)
+            */.git)
+                if ! move_gitdir "$d"; then
+                    echo "WARNING: could not move $d into the store (see the specific warning above); re-run aishare after resolving" >&2
+                else
+                    d="$store$d"
+                fi
+                ;;
+        esac
+        touch "$d/config" 2>/dev/null && chmod g-w "$d/config"
+        # Pre-create hooks/ if it is absent (mirroring the config touch above)
+        # so the LLM cannot create it and plant an executable hook there; then
+        # make the whole tree not group-writable so the LLM cannot modify, add,
+        # or remove hooks.
+        mkdir -p "$d/hooks" 2>/dev/null && chmod -R g-w "$d/hooks"
+        # Git replaces or removes these top-level entries via lockfile+rename
+        # or unlink, which the sticky bit only permits for the entry's owner.
+        # The LLM is the committer of a shared repo, so it must own them; if
+        # the repo owner rewrites one (commit, add, rebase, gc, fetch),
+        # re-run aishare. One batched chown covers all of them that exist.
+        find "$d" -maxdepth 1 \
+            \( -name HEAD -o -name index -o -name packed-refs -o -name ORIG_HEAD \
+               -o -name FETCH_HEAD -o -name MERGE_HEAD -o -name MERGE_MSG \
+               -o -name COMMIT_EDITMSG -o -name AUTO_MERGE -o -name CHERRY_PICK_HEAD \
+               -o -name REVERT_HEAD -o -name REVERT_MSG -o -name TAG_EDITMSG \
+               -o -name BISECT_LOG -o -name BISECT_START -o -name BISECT_NEXT \
+               -o -name BISECT_BAD -o -name BISECT_GOOD -o -name BISECT_LEFT \
+               -o -name BISECT_RIGHT -o -name shallow \) \
+            -exec sudo chown "$group:$group" {} + 2>/dev/null || \
+                echo "WARNING: could not hand $d's state files to $group (sudo chown failed -- missing sudoers rule?): the LLM's next commit in that repo may fail" >&2
+        chmod 3770 "$d"
+    done
+}
+
+# Every .git pointer under $1 must resolve into the store; anything else means
+# the pointer is stale or was replaced (only possible where chattr +i is
+# unavailable), and the checkout may use a gitdir the LLM controls. A symlink
+# named .git cannot be pinned immutable, so it is flagged on sight. A regular
+# file merely named .git that is not a "gitdir:" pointer is not aishare's
+# concern and is skipped.
+check_gitfiles() {
+    find "$1" \( -type f -o -type l \) -name .git 2>/dev/null | while IFS= read -r g; do
+        if [ -L "$g" ]; then
+            echo "WARNING: $g is a symlink, which aishare cannot pin immutable: the LLM could replace it with a pointer to a gitdir it controls. Replace it with a real gitdir or a 'gitdir:' pointer file, then re-run aishare" >&2
+            continue
+        fi
+        [ -r "$g" ] || continue
+        ok=0
+        p=$(head -n 1 "$g")
+        case "$p" in
+            "gitdir: "*)
+                t="${p#gitdir: }"
+                case "$t" in
+                    /*) ;;
+                    *) t="$(dirname "$g")/$t" ;;
+                esac
+                case "$t" in
+                    "$store"/*) [ -d "$t" ] && ok=1 ;;
+                esac
+                ;;
+            *) continue ;;
+        esac
+        [ "$ok" = 1 ] || echo "WARNING: $g does not point at an existing gitdir in $store -- the pointer may be stale or was replaced by the LLM: re-point worktree pointers with 'git worktree repair', or restore a replaced pointer from the store, then re-run aishare" >&2
+    done
+}
+
+# .git pointer files are pinned immutable (chattr +i), which would make the
+# recursive chown/chmod below fail with EPERM; unpin them for the duration of
+# this fix and re-pin at the end (also pins pointers created meanwhile).
+unpin_gitfiles() {
+    find "$1" -type f -name .git -exec sudo chattr -i {} + 2>/dev/null || \
+        echo "WARNING: could not unpin some .git files (sudo chattr -i failed -- missing sudoers rule?): the chown/chmod that follow may fail on files that are still pinned" >&2
+}
+
+pin_gitfiles() {
+    # Pin only real "gitdir:" pointers; a data file merely named .git is left
+    # unpinned. unpin_gitfiles still covers every .git file, so a stale
+    # immutable bit on such a file from an older aishare run cannot trip the
+    # recursive chown/chmod.
+    git_pointers "$1" | xargs -d '\n' -r sudo chattr +i 2>/dev/null || \
+        echo "WARNING: could not pin some .git pointers immutable (sudo chattr +i failed -- missing sudoers rule?): the LLM could then replace or delete them" >&2
+}
+
+# Probe whether 'sudo chattr +i' actually works on the filesystem holding the
+# .git pointers: the binary must exist AND the filesystem must support the
+# immutable flag. The probe file goes in the group home (same filesystem, and
+# group-writable after any aishare run) rather than $target, which may not be
+# writable yet when first sharing an LLM-created repo. Run in the main shell
+# before any pinning so the result is a single, up-front warning rather than a
+# per-pointer one; if the probe cannot run at all, assume fine -- the
+# per-pointer warning in move_gitdir remains as the backstop.
+chattr_probe() {
+    aishare_probe="$(mktemp "/home/$group/.aishare.chattr.XXXXXX" 2>/dev/null)" || return 0
+    if sudo chattr +i "$aishare_probe" 2>/dev/null; then
+        sudo chattr -i "$aishare_probe" 2>/dev/null
+        rm -f "$aishare_probe"
+        return 0
+    fi
+    rm -f "$aishare_probe"
+    return 1
+}
 
 fix() {
-    sudo chown -R "$owner:$group" "$1"
+    disable_planted_hooks "$1"
+    unpin_gitfiles "$1"
+    # The rest of the setup -- and the protection it sets up -- only holds if
+    # the owner owns the tree, so abort instead of leaving it half-protected.
+    if ! run_sudo chown -R "$owner:$group" "$1"; then
+        echo "ERROR: aborting: $1 is not fully owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
+        exit 1
+    fi
     chmod -R g+rw "$1"
     chmod -R -t "$1"
     find "$1" -type d -exec chmod g+s {} +
+    protect_gitdirs "$1"
+    pin_gitfiles "$1"
 }
 
-if [ "$target" = "/home/$group" ] && [ -d "$ssh_dir" ]; then
-    # Fix the target itself so the AI can create new top-level entries
-    fix "$target"
-    # Then fix each child, skipping .ssh
+fix_store() {
+    [ -d "$store" ] || return 0
+    if ! run_sudo chown -R "$owner:$group" "$store"; then
+        echo "ERROR: aborting: $store is not fully owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
+        exit 1
+    fi
+    # 2750 on the store's path-mirror dirs (group can traverse, never write),
+    # leaving each stored .git subtree alone: it keeps the group-writable
+    # modes that let the LLM commit.
+    find "$store" -type d -path "$store/*/.git" -prune -o -type d -exec chmod 2750 {} +
+    protect_gitdirs "$store"
+}
+
+# Warn once, up front, if the .git pointers cannot be pinned immutable on this
+# filesystem; they then fall back to owner-only-writable plus check_gitfiles.
+if ! chattr_probe; then
+    echo "WARNING: 'chattr +i' is not usable on the filesystem holding the .git pointers (no chattr, or the fs lacks the immutable flag): .git pointers cannot be pinned, so the LLM could replace or delete them. Protection then relies on the pointers being owner-only-writable plus check_gitfiles flagging a bad pointer on each aishare run." >&2
+fi
+
+if [ "$target" = "/home/$group" ]; then
+    # Fix the home dir itself (not recursively) so the AI can create new
+    # top-level entries, then fix each child, skipping .ssh and the store
+    if ! run_sudo chown "$owner:$group" "$target"; then
+        echo "ERROR: aborting: $target is not owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
+        exit 1
+    fi
+    chmod g+rw "$target"
+    chmod -t "$target"
+    chmod g+s "$target"
     for entry in "$target"/* "$target"/.*; do
         case "$(basename "$entry")" in
-            .|..|.ssh) continue ;;
+            .|..|.ssh|.gitstore) continue ;;
         esac
         [ -e "$entry" ] || continue
         [ -L "$entry" ] && continue
@@ -40,3 +419,6 @@ if [ "$target" = "/home/$group" ] && [ -d "$ssh_dir" ]; then
 else
     fix "$target"
 fi
+fix_store
+check_gitfiles "$target"
+
