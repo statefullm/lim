@@ -64,16 +64,26 @@ is_gitdir() {
     [ -f "$1/commondir" ] || { [ -d "$1/objects" ] && [ -d "$1/refs" ]; }
 }
 
-# Print the paths of the real .git pointer files under $1: regular files whose
-# first line is a "gitdir: " pointer. A user data file that merely happens to
-# be named .git is not a pointer, so it is excluded everywhere this is used
-# (it must not be chmod'd, pinned, or flagged).
+# Print the resolved target of a real .git pointer file: the first line after
+# "gitdir: ", a relative target resolved against the pointer's directory
+# verbatim (the caller decides whether to normalize). Prints nothing if $1
+# is unreadable or its first line is not a "gitdir: " pointer (a user data
+# file merely named .git).
+pointer_target() {
+    [ -r "$1" ] || return
+    p="$(head -n 1 "$1" 2>/dev/null)"
+    case "$p" in "gitdir: "*) ;; *) return ;; esac
+    t="${p#gitdir: }"
+    case "$t" in /*) ;; *) t="$(dirname "$1")/$t" ;; esac
+    printf '%s\n' "$t"
+}
+
+# Print the paths of the real .git pointer files under $1; pointer_target
+# keeps out data files merely named .git, which must not be chmod'd, pinned,
+# or flagged.
 git_pointers() {
     find "$1" -type f -name .git 2>/dev/null | while IFS= read -r g; do
-        [ -r "$g" ] || continue
-        case "$(head -n 1 "$g" 2>/dev/null)" in
-            "gitdir: "*) printf '%s\n' "$g" ;;
-        esac
+        [ -n "$(pointer_target "$g")" ] && printf '%s\n' "$g"
     done
 }
 
@@ -134,28 +144,6 @@ disable_planted_hooks() {
     done
 }
 
-# Lexically normalize an absolute path: resolve "." and ".." components.
-normpath() {
-    p="$1"
-    case "$p" in /*) ;; *) p="/$p" ;; esac
-    out=""
-    rest="$p"
-    while :; do
-        rest="${rest#/}"
-        case "$rest" in
-            */*) c="${rest%%/*}"; rest="${rest#*/}" ;;
-            *) c="$rest"; rest="" ;;
-        esac
-        case "$c" in
-            ''|.) ;;
-            ..) out="${out%/*}" ;;
-            *) if [ -z "$out" ]; then out="/$c"; else out="$out/$c"; fi ;;
-        esac
-        [ -n "$rest" ] || break
-    done
-    printf '%s\n' "${out:-/}"
-}
-
 # Re-point at $2 every reference to the gitdir $1, to be run before $1 is
 # moved to $2: .git pointer files of submodules and linked worktrees in
 # the checkout (relative or absolute) are rewritten into $2, and the
@@ -167,12 +155,10 @@ retarget_gitdir() {
     new="$2"
     find "${old%/.git}" \( -path "$old" -prune \) -o -type f -name .git -print 2>/dev/null | \
         while IFS= read -r g; do
-        [ -r "$g" ] || continue
-        t="$(head -n 1 "$g")"
-        case "$t" in "gitdir: "*) ;; *) continue ;; esac
-        t="${t#gitdir: }"
-        case "$t" in /*) ;; *) t="$(dirname "$g")/$t" ;; esac
-        t="$(normpath "$t")"
+        t="$(pointer_target "$g")"
+        [ -n "$t" ] || continue
+        # lexical normalization (-sm: no symlink following, missing paths OK)
+        t="$(realpath -sm "$t")"
         case "$t" in
             "$old") printf 'gitdir: %s\n' "$new" > "$g" ;;
             "$old"/*) [ -d "$t" ] && printf 'gitdir: %s/%s\n' "$new" "${t#"$old"/}" > "$g" ;;
@@ -188,7 +174,7 @@ retarget_gitdir() {
         case "$v" in
             ''|/*) ;;
             *)
-                abs="$(normpath "${cfg%/*}/$v")"
+                abs="$(realpath -sm "${cfg%/*}/$v")"
                 if [ -d "$abs" ]; then
                     git config --file "$cfg" core.worktree "$abs" 2>/dev/null || \
                         echo "WARNING: could not make core.worktree absolute in $cfg (value: $v, target: $abs)" >&2
@@ -300,19 +286,16 @@ protect_gitdirs() {
     done
 }
 
-# Check every .git pointer under $1. Ownership is the trust signal: the LLM
-# cannot chown, so a gitdir it created or swapped is LLM-owned, while
-# gitdirs the user created (own checkouts, fresh worktrees) and gitdirs
-# aishare migrated (stored) are $owner-owned. A pointer is safe only when it
-# is a real "gitdir: " file whose target is an existing directory owned by
-# $owner; a symlink (aishare cannot pin it immutable, so the LLM could swap
-# its target), a missing target, or a target owned by anyone else is
-# unsafe. A regular file merely named .git that is not a "gitdir: " pointer
-# is user data and is ignored. Returns 0 if every pointer is safe, 1 if any
-# is unsafe or the check itself cannot report. The verdict is only
-# meaningful before the chown -R that re-owns the tree to $owner and
-# destroys the signal; run after the chown only to flag pointers that
-# appeared during the run.
+# Check every .git pointer under $1 (ownership is the trust signal -- see
+# the gate below). A pointer is safe only when it is a real "gitdir: " file
+# whose target is an existing directory owned by $owner; a symlink (aishare
+# cannot pin it immutable, so the LLM could swap its target), a missing
+# target, or a target owned by anyone else is unsafe. A regular file merely
+# named .git that is not a "gitdir: " pointer is user data and is ignored.
+# Returns 0 if every pointer is safe, 1 if any is unsafe or the check
+# itself cannot report. The verdict is only meaningful before the chown -R
+# that re-owns the tree to $owner and destroys the signal; run after the
+# chown only to flag pointers that appeared during the run.
 check_gitfiles() {
     # The marker file carries the "found unsafe" state out of the pipeline's
     # subshell; if it cannot be created, fail closed -- a check that cannot
@@ -327,17 +310,8 @@ check_gitfiles() {
             echo x >> "$unsafe"
             continue
         fi
-        [ -r "$g" ] || continue
-        p=$(head -n 1 "$g")
-        case "$p" in
-            "gitdir: "*) ;;
-            *) continue ;;                        # data file merely named .git
-        esac
-        t="${p#gitdir: }"
-        case "$t" in
-            /*) ;;
-            *) t="$(dirname "$g")/$t" ;;          # relative: against the pointer's dir
-        esac
+        t="$(pointer_target "$g")"
+        [ -n "$t" ] || continue                   # data file merely named .git
         if [ -d "$t" ] && [ "$(stat -c %U "$t" 2>/dev/null)" = "$owner" ]; then
             continue                              # safe: $owner-owned gitdir
         fi
@@ -358,61 +332,42 @@ exec_hooks() {
 }
 
 # Print the keys of gitdir config $1 that make git run a command, one per
-# line in the form section.key: core.fsmonitor, core.hooksPath,
-# core.sshCommand, core.pager, core.editor, credential.helper, and shell
-# aliases (alias.* = !...). Fails closed: an unreadable config exits
-# non-zero with no output, so a plant that cannot be inspected blocks rather
-# than passes.
+# line: core.(fsmonitor|hookspath|sshcommand|pager|editor),
+# credential[.*].helper, and shell aliases (alias.* = !...). git config
+# does the parsing (quotes, continuations, subsections, key case) and
+# reads only that file, so the runner's own config cannot leak in. Fails
+# closed: an unreadable or unparseable config (the latter a git fatal,
+# exit >=2) exits non-zero with no output, so a plant that cannot be
+# inspected blocks rather than passes.
 exec_config_keys() {
-    awk '
-        {
-            if (buf != "") { line = buf $0; buf = "" } else line = $0
-            if (line ~ /\\$/) { buf = substr(line, 1, length(line) - 1); next }
-        }
-        line ~ /^[ \t]*\[/ {
-            sec = line
-            sub(/^[ \t]*\[/, "", sec)
-            sub(/\].*$/, "", sec)
-            gsub(/[ \t]/, "", sec)
-            sec = tolower(sec)
-            next
-        }
-        line ~ /^[ \t]*[#;]/ { next }
-        line ~ /^[ \t]*$/ { next }
-        {
-            eq = index(line, "=")
-            if (eq == 0) next
-            val = substr(line, eq + 1)
-            key = substr(line, 1, eq - 1)
-            gsub(/^[ \t]+/, "", key); gsub(/[ \t]+$/, "", key)
-            raw = key
-            key = tolower(key)
-            gsub(/^[ \t]+/, "", val); gsub(/^"/, "", val)
-            if (sec == "core" && (key == "fsmonitor" || key == "hookspath" || key == "sshcommand" || key == "pager" || key == "editor")) print "core." raw
-            else if (sec ~ /^credential/ && key == "helper") print "credential.helper"
-            else if (sec == "alias" && substr(val, 1, 1) == "!") print "alias." raw
-        }
-        END { if (buf != "") exit 1 }
-    ' "$1" 2>/dev/null
+    [ -r "$1" ] || return 1
+    rc=0
+    keys="$(git config --file "$1" --get-regexp '^(core\.(fsmonitor|hookspath|sshcommand|pager|editor)|credential(\..+)?\.helper|alias\..+)$' 2>/dev/null)" || rc=$?
+    [ "$rc" -ge 2 ] && return 1
+    [ -n "$keys" ] || return 0
+    printf '%s\n' "$keys" | while IFS= read -r line; do
+        key=${line%% *}
+        case "$key" in
+            alias.*) case "${line#* }" in '!'*) printf '%s\n' "$key" ;; esac ;;
+            *) printf '%s\n' "$key" ;;
+        esac
+    done
 }
 
-# Check every gitdir that the upcoming chown would re-own: the in-tree gitdirs
-# under $1 (bare repos, custom-named gitdirs, and any gitdir swapped in place
-# of a stored one -- swapped pointers are caught by check_gitfiles) and the
-# store itself, which fix_store chowns on every run regardless of $1.
-# Ownership is the trust gate: gitdirs the user created or aishare stored are
-# $owner-owned and trusted as-is; a gitdir the LLM created or swapped is
-# LLM-owned (it cannot chown) and is unsafe only when it carries an
-# executable plant surface -- a non-sample executable hook or a config
-# directive that runs a command -- which the chown would make run as the
-# user. A LLM-owned gitdir with clean content (a normal clone, normal LLM
-# work) is safe and is shared as before. Each plant is reported as an ERROR
-# naming the hook or config key. Returns 0 if nothing is unsafe, 1 if
+# Check every gitdir that the upcoming chown would re-own (ownership is the
+# trust signal -- see the gate below): the in-tree gitdirs under $1 (bare
+# repos, custom-named gitdirs, and any gitdir swapped in place of a stored
+# one -- swapped pointers are caught by check_gitfiles) and the store
+# itself, which fix_store chowns on every run regardless of $1. $owner-owned
+# gitdirs are trusted as-is; an LLM-owned gitdir is unsafe only when it
+# carries an executable plant surface -- a non-sample executable hook or a
+# config directive that runs a command -- which the chown would make run as
+# the user. A LLM-owned gitdir with clean content (a normal clone, normal
+# LLM work) is safe and is shared as before. Each plant is reported as an
+# ERROR naming the hook or config key. Returns 0 if nothing is unsafe, 1 if
 # anything is or the check itself cannot report.
 check_gitdirs() {
-    # The marker file carries the "found unsafe" state out of the pipeline's
-    # subshell; if it cannot be created, fail closed -- a check that cannot
-    # report unsafe must not certify safe.
+    # Marker file as in check_gitfiles; fail closed if it cannot be created.
     unsafe="$(mktemp 2>/dev/null)" || {
         echo "ERROR: could not create the temp file the gitdir check reports through, so the check cannot run and cannot certify the gitdirs" >&2
         return 1
@@ -527,9 +482,9 @@ fi
 # the store that fix_store always chowns -- with an executable hook or config
 # directive) and disarm git's ownership check (safe.directory) -- after it,
 # the user's git runs in the LLM's gitdir and the plant runs as the user.
-# Check before any chown, while ownership still reflects the creator; the
-# plant is then left LLM-owned, where git keeps it inert, until the user
-# removes it.
+# Check before any chown, while ownership still reflects the creator (the
+# LLM cannot chown); the plant is then left LLM-owned, where git keeps it
+# inert, until the user removes it.
 bad=0
 check_gitfiles "$target" || bad=1
 check_gitdirs "$target" || bad=1
