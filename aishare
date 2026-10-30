@@ -77,6 +77,15 @@ git_pointers() {
     done
 }
 
+# Emit the gitdirs under $1 (full, nested, submodule, and worktree admin
+# dirs): the directory holding each HEAD file that is_gitdir accepts.
+gitdirs() {
+    find "$1" -type f -name HEAD 2>/dev/null | while IFS= read -r head; do
+        d=$(dirname "$head")
+        is_gitdir "$d" && printf '%s\n' "$d"
+    done
+}
+
 # sudo wrapper: show sudo's own error and warn (instead of failing silently)
 # when the sudoers rule for the command is missing or the command fails, and
 # propagate the failure so the caller decides whether to continue or abort.
@@ -102,9 +111,7 @@ run_sudo() {
 # is not disabled -- chmod would follow it and act on the target, which might
 # be the user's own script -- and flagged instead.
 disable_planted_hooks() {
-    find "$1" -type f -name HEAD 2>/dev/null | while IFS= read -r head; do
-        d=$(dirname "$head")
-        is_gitdir "$d" || continue
+    gitdirs "$1" | while IFS= read -r d; do
         find "$d/hooks" -maxdepth 1 -type l ! -name '*.sample' ! -user "$owner" \
               2>/dev/null | while IFS= read -r h; do
             echo "WARNING: $h is a symlink in a git hooks dir and is not owned by you: git would execute its target as you on your next commit -- aishare leaves it in place (disabling it would act on the target) -- review it and delete or replace it" >&2
@@ -257,9 +264,7 @@ protect_gitdirs() {
     git_pointers "$1" | while IFS= read -r g; do
         chmod g-w "$g"
     done
-    find "$1" -type f -name HEAD | while IFS= read -r head; do
-        d=$(dirname "$head")
-        is_gitdir "$d" || continue
+    gitdirs "$1" | while IFS= read -r d; do
         case "$d" in
             "$store"/*) ;;                      # already stored (fix_store pass)
             */.git)
@@ -295,36 +300,154 @@ protect_gitdirs() {
     done
 }
 
-# Every .git pointer under $1 must resolve into the store; anything else means
-# the pointer is stale or was replaced (only possible where chattr +i is
-# unavailable), and the checkout may use a gitdir the LLM controls. A symlink
-# named .git cannot be pinned immutable, so it is flagged on sight. A regular
-# file merely named .git that is not a "gitdir:" pointer is not aishare's
-# concern and is skipped.
+# Check every .git pointer under $1. Ownership is the trust signal: the LLM
+# cannot chown, so a gitdir it created or swapped is LLM-owned, while
+# gitdirs the user created (own checkouts, fresh worktrees) and gitdirs
+# aishare migrated (stored) are $owner-owned. A pointer is safe only when it
+# is a real "gitdir: " file whose target is an existing directory owned by
+# $owner; a symlink (aishare cannot pin it immutable, so the LLM could swap
+# its target), a missing target, or a target owned by anyone else is
+# unsafe. A regular file merely named .git that is not a "gitdir: " pointer
+# is user data and is ignored. Returns 0 if every pointer is safe, 1 if any
+# is unsafe or the check itself cannot report. The verdict is only
+# meaningful before the chown -R that re-owns the tree to $owner and
+# destroys the signal; run after the chown only to flag pointers that
+# appeared during the run.
 check_gitfiles() {
+    # The marker file carries the "found unsafe" state out of the pipeline's
+    # subshell; if it cannot be created, fail closed -- a check that cannot
+    # report unsafe must not certify safe.
+    unsafe="$(mktemp 2>/dev/null)" || {
+        echo "WARNING: could not create the temp file the .git pointer check reports through, so the check cannot run and cannot certify the pointers" >&2
+        return 1
+    }
     find "$1" \( -type f -o -type l \) -name .git 2>/dev/null | while IFS= read -r g; do
         if [ -L "$g" ]; then
             echo "WARNING: $g is a symlink, which aishare cannot pin immutable: the LLM could replace it with a pointer to a gitdir it controls. Replace it with a real gitdir or a 'gitdir:' pointer file, then re-run aishare" >&2
+            echo x >> "$unsafe"
             continue
         fi
         [ -r "$g" ] || continue
-        ok=0
         p=$(head -n 1 "$g")
         case "$p" in
-            "gitdir: "*)
-                t="${p#gitdir: }"
-                case "$t" in
-                    /*) ;;
-                    *) t="$(dirname "$g")/$t" ;;
-                esac
-                case "$t" in
-                    "$store"/*) [ -d "$t" ] && ok=1 ;;
-                esac
-                ;;
-            *) continue ;;
+            "gitdir: "*) ;;
+            *) continue ;;                        # data file merely named .git
         esac
-        [ "$ok" = 1 ] || echo "WARNING: $g does not point at an existing gitdir in $store -- the pointer may be stale or was replaced by the LLM: re-point worktree pointers with 'git worktree repair', or restore a replaced pointer from the store, then re-run aishare" >&2
+        t="${p#gitdir: }"
+        case "$t" in
+            /*) ;;
+            *) t="$(dirname "$g")/$t" ;;          # relative: against the pointer's dir
+        esac
+        if [ -d "$t" ] && [ "$(stat -c %U "$t" 2>/dev/null)" = "$owner" ]; then
+            continue                              # safe: $owner-owned gitdir
+        fi
+        echo "WARNING: $g does not resolve to an existing gitdir owned by you -- the pointer may be stale or was replaced by the LLM: remove any planted gitdir, restore or re-point the pointer (git worktree repair), then re-run aishare" >&2
+        echo x >> "$unsafe"
     done
+    rc=0
+    if [ -s "$unsafe" ]; then rc=1; fi
+    rm -f "$unsafe"
+    return "$rc"
+}
+
+# Print the hooks of gitdir $1 that git would run as the repo owner, one per
+# line: executable files, and symlinks (git runs their target), excluding
+# samples. The same test disable_planted_hooks uses.
+exec_hooks() {
+    find "$1/hooks" -maxdepth 1 \( -type f -perm -0111 -o -type l \) ! -name '*.sample' 2>/dev/null
+}
+
+# Print the keys of gitdir config $1 that make git run a command, one per
+# line in the form section.key: core.fsmonitor, core.hooksPath,
+# core.sshCommand, core.pager, core.editor, credential.helper, and shell
+# aliases (alias.* = !...). Fails closed: an unreadable config exits
+# non-zero with no output, so a plant that cannot be inspected blocks rather
+# than passes.
+exec_config_keys() {
+    awk '
+        {
+            if (buf != "") { line = buf $0; buf = "" } else line = $0
+            if (line ~ /\\$/) { buf = substr(line, 1, length(line) - 1); next }
+        }
+        line ~ /^[ \t]*\[/ {
+            sec = line
+            sub(/^[ \t]*\[/, "", sec)
+            sub(/\].*$/, "", sec)
+            gsub(/[ \t]/, "", sec)
+            sec = tolower(sec)
+            next
+        }
+        line ~ /^[ \t]*[#;]/ { next }
+        line ~ /^[ \t]*$/ { next }
+        {
+            eq = index(line, "=")
+            if (eq == 0) next
+            val = substr(line, eq + 1)
+            key = substr(line, 1, eq - 1)
+            gsub(/^[ \t]+/, "", key); gsub(/[ \t]+$/, "", key)
+            raw = key
+            key = tolower(key)
+            gsub(/^[ \t]+/, "", val); gsub(/^"/, "", val)
+            if (sec == "core" && (key == "fsmonitor" || key == "hookspath" || key == "sshcommand" || key == "pager" || key == "editor")) print "core." raw
+            else if (sec ~ /^credential/ && key == "helper") print "credential.helper"
+            else if (sec == "alias" && substr(val, 1, 1) == "!") print "alias." raw
+        }
+        END { if (buf != "") exit 1 }
+    ' "$1" 2>/dev/null
+}
+
+# Check every gitdir that the upcoming chown would re-own: the in-tree gitdirs
+# under $1 (bare repos, custom-named gitdirs, and any gitdir swapped in place
+# of a stored one -- swapped pointers are caught by check_gitfiles) and the
+# store itself, which fix_store chowns on every run regardless of $1.
+# Ownership is the trust gate: gitdirs the user created or aishare stored are
+# $owner-owned and trusted as-is; a gitdir the LLM created or swapped is
+# LLM-owned (it cannot chown) and is unsafe only when it carries an
+# executable plant surface -- a non-sample executable hook or a config
+# directive that runs a command -- which the chown would make run as the
+# user. A LLM-owned gitdir with clean content (a normal clone, normal LLM
+# work) is safe and is shared as before. Each plant is reported as an ERROR
+# naming the hook or config key. Returns 0 if nothing is unsafe, 1 if
+# anything is or the check itself cannot report.
+check_gitdirs() {
+    # The marker file carries the "found unsafe" state out of the pipeline's
+    # subshell; if it cannot be created, fail closed -- a check that cannot
+    # report unsafe must not certify safe.
+    unsafe="$(mktemp 2>/dev/null)" || {
+        echo "ERROR: could not create the temp file the gitdir check reports through, so the check cannot run and cannot certify the gitdirs" >&2
+        return 1
+    }
+    second=""
+    case "$store" in
+        "$1"/*) ;;                                  # $1 already contains the store
+        *) second="$store" ;;
+    esac
+    for root in "$1" $second; do
+        [ -n "$root" ] && [ -d "$root" ] || continue
+        gitdirs "$root" | while IFS= read -r d; do
+            [ "$(stat -c %U "$d" 2>/dev/null)" = "$owner" ] && continue
+            exec_hooks "$d" | while IFS= read -r h; do
+                echo "ERROR: $h is a planted git hook in $d, a gitdir not owned by you -- git would run it as you once aishare re-owns it: remove it, then re-run aishare" >&2
+                echo x >> "$unsafe"
+            done
+            if [ -f "$d/config" ]; then
+                keys=$(exec_config_keys "$d/config"); krc=$?
+                if [ "$krc" != 0 ]; then
+                    echo "ERROR: $d/config in a gitdir not owned by you could not be read: aishare cannot verify it has no executable directives -- make it readable, then re-run aishare" >&2
+                    echo x >> "$unsafe"
+                else
+                    for k in $keys; do
+                        echo "ERROR: $d/config has '$k', a planted git directive that runs a command as you, in $d, a gitdir not owned by you: remove the key, then re-run aishare" >&2
+                        echo x >> "$unsafe"
+                    done
+                fi
+            fi
+        done
+    done
+    rc=0
+    if [ -s "$unsafe" ]; then rc=1; fi
+    rm -f "$unsafe"
+    return "$rc"
 }
 
 # .git pointer files are pinned immutable (chattr +i), which would make the
@@ -395,7 +518,24 @@ fix_store() {
 # Warn once, up front, if the .git pointers cannot be pinned immutable on this
 # filesystem; they then fall back to owner-only-writable plus check_gitfiles.
 if ! chattr_probe; then
-    echo "WARNING: 'chattr +i' is not usable on the filesystem holding the .git pointers (no chattr, or the fs lacks the immutable flag): .git pointers cannot be pinned, so the LLM could replace or delete them. Protection then relies on the pointers being owner-only-writable plus check_gitfiles flagging a bad pointer on each aishare run." >&2
+    echo "WARNING: 'chattr +i' is not usable on the filesystem holding the .git pointers (no chattr, or the fs lacks the immutable flag): .git pointers cannot be pinned, so the LLM could replace or delete them. Protection then relies on the pointers being owner-only-writable plus check_gitfiles blocking the share on a bad pointer." >&2
+fi
+
+# Refuse to share (no chown anywhere) if any git ownership check fails: the
+# chowns below would re-own a gitdir carrying an LLM plant (a .git pointer to
+# a non-$owner gitdir, or an LLM-owned gitdir -- in-tree under $target or in
+# the store that fix_store always chowns -- with an executable hook or config
+# directive) and disarm git's ownership check (safe.directory) -- after it,
+# the user's git runs in the LLM's gitdir and the plant runs as the user.
+# Check before any chown, while ownership still reflects the creator; the
+# plant is then left LLM-owned, where git keeps it inert, until the user
+# removes it.
+bad=0
+check_gitfiles "$target" || bad=1
+check_gitdirs "$target" || bad=1
+if [ "$bad" = 1 ]; then
+    echo "ERROR: refusing to share $target: git ownership verification failed (see above); chowning would re-own a gitdir the LLM controls and let its hooks or config run as you. Remove the flagged plant(s) -- or scope aishare to a subdirectory that does not contain them -- then re-run aishare" >&2
+    exit 1
 fi
 
 if [ "$target" = "/home/$group" ]; then
@@ -420,5 +560,8 @@ else
     fix "$target"
 fi
 fix_store
+# Post-chown verification only: the tree is already re-owned, so blocking
+# now would be too late; this flags pointers that appeared during the run
+# (e.g. a new worktree) for the next run to pin and verify.
 check_gitfiles "$target"
 

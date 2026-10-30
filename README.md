@@ -126,7 +126,7 @@ The dedicated LLM user is controlled by the `LIM_AI_USER` environment variable (
 
 ### 1. Creating the AI User
 
-LIM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem read/write access and shell execution capabilities, so isolating it behind a dedicated user limits blast radius.
+LIM **must** run as a dedicated user. The binary enforces this at startup: it checks `getuid()` and refuses to run otherwise. This is a security measure: the LLM has filesystem read/write access and shell execution capabilities, so isolating it behind a dedicated user confines its direct access to that account.
 
 Create the user and group if they don't exist:
 
@@ -146,14 +146,15 @@ Log out and back in (or run `newgrp $LIM_AI_USER`) for the group change to take 
 
 ### 2. Git Safe Directories
 
-By default, Git refuses to operate in repositories owned by a different user. Since LIM runs as `$LIM_AI_USER` but your project directories are owned by you, add the `[safe]` section to **your personal** `~/.gitconfig`:
+Git refuses to operate in a repository owned by a different user ("detected dubious ownership"). Shared repos need no `safe.directory` entry for your personal user: `aishare` leaves the checkout and its stored gitdir owned by you. The refusal is also a security layer -- it keeps a gitdir the LLM created or swapped inert -- so do not add a blanket entry (`directory = /home/$LIM_AI_USER`, `*`).
+
+The LLM account needs its own entry so LIM can run git in your user-owned repos (the check fires for the LLM too). In `$LIM_AI_USER`'s `~/.gitconfig`:
 
 ```bash
 [safe]
-    directory = /home/$LIM_AI_USER
+    directory = ~/*
+    directory = /home/$USER/*
 ```
-
-This prevents "fatal: detected dubious ownership in repository" errors when the LLM runs git commands.
 
 ### 3. Directory Permissions
 
@@ -192,7 +193,7 @@ $USER ALL=(root) NOPASSWD: /usr/bin/chattr -i /home/$LIM_AI_USER/*
 
 They cover, in order: setting ownership to `$USER:$LIM_AI_USER` (recursively over the shared trees, including any planted hook aishare re-owns before disabling it, and non-recursively over the home dir itself on a home-level run); handing each gitdir's state files (`HEAD`, `index`, ...) to `$LIM_AI_USER` so its commits keep working; and pinning and unpinning `.git` pointer files.
 
-Git executes code from a gitdir's `config` (core.hooksPath, credential.helper, core.sshCommand, ...) and from its `hooks`, so the LLM must never be able to swap a repo's gitdir for one of its own. That cannot be prevented by permissions alone inside a group-writable tree -- the LLM could always rename the `.git` directory away (a checkout dir cannot be sticky without breaking normal file moves) -- so aishare instead moves each checkout's `.git` directory into a store at `/home/$LIM_AI_USER/.gitstore` that mirrors the repo's path (e.g. `/home/$LIM_AI_USER/project/.git` becomes a pointer to `/home/$LIM_AI_USER/.gitstore/home/$LIM_AI_USER/project/.git`), and replaces it with the `gitdir:` pointer file git itself uses for worktrees, pinned immutable with `sudo chattr +i`. The store's path-mirror dirs are 2750 -- the group can traverse them but never write to them -- so the stored gitdir can no longer be renamed or deleted, and the immutable pointer cannot be replaced, rewritten, or deleted either (the stored `.git` subtrees keep the group-writable modes the LLM's commits need; the in-place hardening below protects their contents). The repo's `.git` is now a file exactly like git's own worktree pointer, so anything that goes through git is unaffected. If `chattr` is not available on the filesystem the pin fails and aishare warns, and any `.git` pointer that no longer resolves into the store is flagged on every run. Store entries left behind by a move can be deleted by hand. Worktrees and submodules created after an aishare run get new pointers that are not yet pinned -- re-run aishare to pin them (the same re-run is needed after any user-side git command that re-owns the files below). Conversely, a git operation that must rewrite or delete an existing pinned pointer -- e.g. `git submodule deinit` or `git worktree remove` -- fails until you unpin it (`sudo chattr -i` on the `.git` file); re-run aishare afterwards to re-pin it. Bare repos and custom-named gitdirs (`git init --separate-git-dir`) stay in place and get only the in-place protection below.
+Git executes code from a gitdir's `config` (core.hooksPath, credential.helper, core.sshCommand, ...) and from its `hooks`, so the LLM must never be able to swap a repo's gitdir for one of its own. That cannot be prevented by permissions alone inside a group-writable tree -- the LLM could always rename the `.git` directory away (a checkout dir cannot be sticky without breaking normal file moves) -- so aishare instead moves each checkout's `.git` directory into a store at `/home/$LIM_AI_USER/.gitstore` that mirrors the repo's path (e.g. `/home/$LIM_AI_USER/project/.git` becomes a pointer to `/home/$LIM_AI_USER/.gitstore/home/$LIM_AI_USER/project/.git`), and replaces it with the `gitdir:` pointer file git itself uses for worktrees, pinned immutable with `sudo chattr +i`. The store's path-mirror dirs are 2750 -- the group can traverse them but never write to them -- so the stored gitdir can no longer be renamed or deleted, and the immutable pointer cannot be replaced, rewritten, or deleted either (the stored `.git` subtrees keep the group-writable modes the LLM's commits need; the in-place hardening below protects their contents). The repo's `.git` is now a file exactly like git's own worktree pointer, so anything that goes through git is unaffected. If `chattr` is not available on the filesystem the pin fails and aishare warns. Before re-owning anything, aishare checks that every `.git` pointer resolves to an existing gitdir owned by you, and it refuses to share (no chown, non-zero exit) if any gitdir it would re-own is not owned by you and carries an executable hook or config directive -- an LLM plant, left inert under git's ownership check until you remove it. A LLM-owned gitdir with clean content (e.g. a repo the LLM cloned) is shared as usual. Store entries left behind by a move can be deleted by hand. Worktrees and submodules created after an aishare run get new pointers that are not yet pinned -- re-run aishare to pin them (the same re-run is needed after any user-side git command that re-owns the files below). Conversely, a git operation that must rewrite or delete an existing pinned pointer -- e.g. `git submodule deinit` or `git worktree remove` -- fails until you unpin it (`sudo chattr -i` on the `.git` file); re-run aishare afterwards to re-pin it. Bare repos and custom-named gitdirs (`git init --separate-git-dir`) stay in place and get only the in-place protection below.
 
 Inside every gitdir, aishare makes `config` and `hooks` owner-owned and not group-writable, so the LLM cannot modify or replace them (both are pre-created if absent, so the LLM cannot create its own); it can still create new files (lockfiles, loose objects), so its commits keep working. The corollary is that LLM-side git commands that need to *write* the gitdir `config` -- e.g. `git submodule init`, which copies `.gitmodules` entries into config -- fail until you make the change yourself; that is by design, since `config` can execute code. The gitdir's state files (`index`, `HEAD`, `packed-refs`, ...) are kept owned by `$LIM_AI_USER` so the LLM can rewrite them; when you run a git command that rewrites them (commit, add, rebase, gc, fetch), re-run `aishare` or the LLM's next commit fails.
 
@@ -438,7 +439,7 @@ Between user turns, LIM resets the sampler chain (penalties ring buffer and RNG 
 
 ## User Isolation
 
-LIM runs as the dedicated `$LIM_AI_USER` account (default `ai`). Within that account, the LLM has full privileges: it can read, write, and execute anything the `$LIM_AI_USER` user can. Because the account is a regular user without `sudo`, the LLM cannot escalate to your personal user or root, which is what contains the blast radius.
+LIM runs as the dedicated `$LIM_AI_USER` account (default `ai`). Within that account, the LLM has full privileges: it can read, write, and execute anything the `$LIM_AI_USER` user can. The account is a regular user without `sudo` privileges. The isolation covers the LLM's direct access only; the code, commits, and commands it produces are for you to review before you run or push them.
 
 The practical consequences:
 
@@ -714,7 +715,7 @@ make GGML_CUDA=off
 
 ### "detected dubious ownership in repository"
 
-See **Git Safe Directories** in the User Setup section. Add `[safe] directory = /home/$LIM_AI_USER` to your personal `~/.gitconfig`.
+See **Git Safe Directories** in the User Setup section. In a directory the LLM created, the refusal is intentional (it keeps the LLM-owned gitdir inert).
 
 ---
 
