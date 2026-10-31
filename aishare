@@ -332,23 +332,45 @@ exec_hooks() {
 }
 
 # Print the keys of gitdir config $1 that make git run a command, one per
-# line: core.(fsmonitor|hookspath|sshcommand|pager|editor),
-# credential[.*].helper, and shell aliases (alias.* = !...). git config
-# does the parsing (quotes, continuations, subsections, key case) and
-# reads only that file, so the runner's own config cannot leak in. Fails
-# closed: an unreadable or unparseable config (the latter a git fatal,
-# exit >=2) exits non-zero with no output, so a plant that cannot be
-# inspected blocks rather than passes.
+# line.  The key list lives only in the --get-regexp pattern below (single
+# source of truth); a few keys are flagged only for certain values -- see
+# the post-filter after the pattern.  --includes makes git follow include
+# files itself (an unreadable or unparseable include is a git fatal and so
+# fails closed); two residuals are handled in the post-filter: a missing
+# include target is flagged, since git silently skips it -- that is how a
+# plant created after sharing would hide -- and includeIf.* is flagged
+# outright, since --file has no gitdir context in which to evaluate its
+# conditions.  git config does the parsing (quotes, continuations,
+# subsections, key case) and reads only $1, so the runner's own config
+# cannot leak in.  Fails closed: an unreadable or unparseable config (the
+# latter a git fatal, exit >=2) exits non-zero with no output, so a plant
+# that cannot be inspected blocks rather than passes.
 exec_config_keys() {
     [ -r "$1" ] || return 1
     rc=0
-    keys="$(git config --file "$1" --get-regexp '^(core\.(fsmonitor|hookspath|sshcommand|pager|editor)|credential(\..+)?\.helper|alias\..+)$' 2>/dev/null)" || rc=$?
+    keys="$(git config --file "$1" --includes --get-regexp '^(core\.(fsmonitor|hookspath|sshcommand|pager|editor|askpass|gitproxy|alternaterefscommand)|credential(\..+)?\.helper|alias\..+|diff\.(external|.+\.(command|textconv))|merge\..+\.driver|filter\..+\.(clean|smudge)|gpg(\..+)?\.program|gpg\.ssh\.defaultkeycommand|gc\.recentobjectshook|hook\..+\.command|difftool\..+\.cmd|mergetool\..+\.cmd|interactive\.difffilter|pager\..+|guitool\..+\.cmd|browser\..+\.cmd|man\..+\.cmd|instaweb\.(httpd|browser)|imap\.tunnel|include(\.path|if\..+\.path)|protocol\.ext\.allow|remote\..+\.(pushurl|url)|submodule\..+\.update)$' 2>/dev/null)" || rc=$?
     [ "$rc" -ge 2 ] && return 1
     [ -n "$keys" ] || return 0
+    cfgdir="${1%/*}"
+    [ "$cfgdir" = "$1" ] && cfgdir="."
     printf '%s\n' "$keys" | while IFS= read -r line; do
         key=${line%% *}
+        val="${line#* }"
         case "$key" in
-            alias.*) case "${line#* }" in '!'*) printf '%s\n' "$key" ;; esac ;;
+            alias.*) case "$val" in '!'*) printf '%s\n' "$key" ;; esac ;;
+            remote.*) case "$val" in 'ext::'*) printf '%s\n' "$key" ;; esac ;;
+            includeif.*) printf '%s\n' "$key" ;;
+            include.path)
+                # git followed it (it must exist to be readable); flag a
+                # missing target, which git silently skips and the LLM can
+                # create later.  Relative values are containing-dir
+                # relative, as git resolves them.
+                case "$val" in /*) ;; *) val="$cfgdir/$val" ;; esac
+                [ -f "$val" ] || printf '%s\n' "$key" ;;
+            submodule.*) case "$val" in
+                    checkout|rebase|merge) ;;
+                    *) printf '%s\n' "$key" ;;
+                esac ;;
             *) printf '%s\n' "$key" ;;
         esac
     done
