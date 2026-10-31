@@ -886,8 +886,20 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     // mid tool-call (reptyr won't attach a target with other group members).
     setpgid(0, 0);
 
-    // Redirect stdout/stderr to the pipe, then exec.
-    close(pipefd[0]); // Close read end
+    // Close the read end, detach stdin from lim's terminal, then exec.
+    close(pipefd[0]);
+
+    // stdin must not stay attached to lim's pty: the command tree is a
+    // non-foreground pty group (setpgid above, no TCSETPGRP), so a command
+    // that reads stdin -- git commit opening an editor, ssh, a pager,
+    // read -- raises SIGTTIN and stops, then holds the output pipe open
+    // forever and hangs the session.  /dev/null gives such commands EOF
+    // instead.
+    int nullfd = open("/dev/null", O_RDONLY);
+    if (nullfd >= 0) {
+      dup2(nullfd, STDIN_FILENO);
+      close(nullfd);
+    }
 
     // Reset SIGPIPE to default so pipelines like `find | head` behave as they
     // would in a normal terminal: the upstream process is silently killed by
@@ -959,9 +971,12 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
       if (errno == EINTR) {
         if (stop_generation) {
           // Ctrl+C: kill the whole tool tree (child is a group leader); fall
-          // back to the direct child if it is not.
-          if (kill(-pid, SIGTERM) != 0)
-            kill(pid, SIGTERM);
+          // back to the direct child if the group is already gone.  SIGKILL,
+          // not SIGTERM: a stopped member (SIGTTIN from a tty read) never
+          // processes TERM until woken, so TERM alone leaves survivors
+          // behind; KILL reaches them in place.
+          if (kill(-pid, SIGKILL) != 0)
+            kill(pid, SIGKILL);
           // Drain remaining pipe data to prevent zombie/EPIPE.
           char drain[65536];
           while (read(pipefd[0], drain, sizeof(drain)) > 0) {}
@@ -981,9 +996,16 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
         // Keep draining the child pipe to prevent EPIPE, but only
         // forward data to consumers until we hit the limit.
         forward_chunk(buffer, (size_t)n);
-      } else {
-        // n == 0 or n < 0: EOF / pipe closed.
+      } else if (n == 0) {
+        // EOF: every writer in the tree closed the pipe.
         break;
+      } else if (errno == EINTR || errno == EAGAIN) {
+        // Not EOF: a signal landed between poll and read (EINTR), or poll
+        // was spurious (EAGAIN).  Treating it as EOF would abandon a live
+        // child and fall through to the blocking waitpid below.
+        continue;
+      } else {
+        break;  // Unexpected read error, bail out.
       }
     }
 
@@ -994,10 +1016,16 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
       // Child exited: drain the rest of the pipe to EOF and forward it
       // through the same limit/truncation logic as the main read path
       // (a single read here would silently drop the tail of a bursty
-      // output past the last forwarded chunk).
+      // output past the last forwarded chunk).  EINTR is retried, not
+      // treated as end-of-data.
       char buffer[65536];
-      ssize_t n;
-      while ((n = read(pipefd[0], buffer, sizeof(buffer) - 1)) > 0) {
+      while (true) {
+        ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
+        if (n < 0) {
+          if (errno != EINTR) break;  // EAGAIN: drained for now.
+          continue;
+        }
+        if (n == 0) break;  // EOF.
         buffer[n] = '\0';
         forward_chunk(buffer, (size_t)n);
       }
@@ -1011,9 +1039,20 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   // Signal that streaming is complete, passing the accumulated result.
   if (on_close) on_close(result);
 
-  // Wait for child to finish and get exit status.
-  int pipe_status = 0;
-  waitpid(pid, &pipe_status, 0);
+  // Reap the child.  The streaming loop normally reaps it (WNOHANG) or
+  // breaks on pipe EOF (all writers, including the child, have exited), so
+  // this returns immediately; the retry loop covers the error-break paths,
+  // where the child may still be running.  EINTR must not be mistaken for a
+  // reap: if the interrupt arrived here, kill the tree like the in-loop
+  // path does, then keep waiting; otherwise retry.
+  int pipe_status = -1;
+  while (waitpid(pid, &pipe_status, 0) < 0) {
+    if (errno != EINTR) break;  // ECHILD (already reaped) or a real error.
+    if (stop_generation) {
+      if (kill(-pid, SIGKILL) != 0)
+        kill(pid, SIGKILL);
+    }
+  }
 
   // Read exit code from temp file -- guaranteed to be the actual command exit code.
   int exit_code = -1;
@@ -1027,8 +1066,10 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   unlink(exit_code_file.c_str());
   unlink(script_path.c_str());
 
-  // Fallback: if we couldn't read the temp file, try pipe status
-  if (exit_code == -1 && WIFEXITED(pipe_status)) {
+  // Fallback: if we couldn't read the temp file, try pipe status.  Guarded
+  // by pipe_status >= 0: -1 means the child was never reaped (error path)
+  // and there is no status to report -- never fabricate an exit 0.
+  if (exit_code == -1 && pipe_status >= 0 && WIFEXITED(pipe_status)) {
     exit_code = WEXITSTATUS(pipe_status);
   }
 
