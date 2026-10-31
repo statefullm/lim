@@ -19,6 +19,7 @@
 #include "json.hpp"
 #include <libxml/parser.h>
 #include <libxml/tree.h>
+#include <libxml/HTMLparser.h>
 #include <cstring>  // For strlen
 
 using json = nlohmann::json;
@@ -614,22 +615,22 @@ static pair<string, string> extract_page_metadata(xmlDocPtr doc) {
   string title, description;
   if (!doc || !doc->children) return {title, description};
 
-  for (xmlNodePtr cur = doc->children; cur; cur = cur->next) {
+  // Locate <head>: a direct child of the document for fragments/malformed
+  // HTML, or a child of the root element for well-formed pages
+  // (<html><head>).  <!DOCTYPE> declarations surface as an XML_DTD_NODE
+  // that precedes the root element, so scan all top-level children.
+  xmlNodePtr head = nullptr;
+  for (xmlNodePtr cur = doc->children; cur && !head; cur = cur->next) {
     if (cur->type != XML_ELEMENT_NODE || !cur->name) continue;
-    string tag((const char*)cur->name);
-    if (tag != "head" && tag != "title") {
-      // Also handle case where <title> is a direct child of root (malformed HTML)
-      if (tag == "title") {
-        xmlChar* content = xmlNodeGetContent(cur);
-        if (content) { title = (const char*)content; xmlFree(content); }
-        break;
-      }
-      continue;
+    if (string((const char*)cur->name) == "head") { head = cur; break; }
+    for (xmlNodePtr child = cur->children; child; child = child->next) {
+      if (child->type == XML_ELEMENT_NODE && child->name &&
+          string((const char*)child->name) == "head") { head = child; break; }
     }
+  }
 
-    // Walk head children (or just process title directly)
-    xmlNodePtr start = (tag == "title") ? cur : cur->children;
-    for (xmlNodePtr hchild = start; hchild; hchild = (tag == "title") ? nullptr : hchild->next) {
+  if (head) {
+    for (xmlNodePtr hchild = head->children; hchild; hchild = hchild->next) {
       if (hchild->type != XML_ELEMENT_NODE || !hchild->name) continue;
       string htag((const char*)hchild->name);
 
@@ -651,7 +652,16 @@ static pair<string, string> extract_page_metadata(xmlDocPtr doc) {
         if (content) xmlFree(content);
       }
     }
-    break; // Only process first <head> or <title> found
+  } else {
+    // No <head>: fall back to a bare top-level <title> (malformed HTML)
+    for (xmlNodePtr cur = doc->children; cur; cur = cur->next) {
+      if (cur->type == XML_ELEMENT_NODE && cur->name &&
+          string((const char*)cur->name) == "title") {
+        xmlChar* content = xmlNodeGetContent(cur);
+        if (content) { title = (const char*)content; xmlFree(content); }
+        break;
+      }
+    }
   }
   return {title, description};
 }
@@ -673,7 +683,15 @@ static xmlNodePtr find_body_element(xmlDocPtr doc) {
     return nullptr;
   };
 
-  return dfs(doc->children);
+  // Walk EVERY top-level element child, not just doc->children: a
+  // <!DOCTYPE html> declaration surfaces as an XML_DTD_NODE that precedes
+  // the real <html> root, and searching only the first child would miss
+  // the rest of the document.
+  xmlNodePtr found = nullptr;
+  for (xmlNodePtr top = doc->children; top && !found; top = top->next) {
+    if (top->type == XML_ELEMENT_NODE) found = dfs(top);
+  }
+  return found;
 }
 
 // --- Return API endpoint hints for known SPA sites ---
@@ -1011,13 +1029,20 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
   bool parse_succeeded = false;
 
   try {
-    xmlDocPtr doc = xmlReadMemory(
+    // Use the HTML parser, not the XML parser: it understands void elements
+    // (<meta>), raw-text <script> content, and unclosed tags, producing a
+    // proper <html>/<head>/<body> tree.  The XML parser in RECOVER mode
+    // treats <meta> as an unclosed container and nests the entire document
+    // inside it, and surfaces <!DOCTYPE html> as a sibling XML_DTD_NODE
+    // before the root element - which makes <body> unreachable.
+    htmlDocPtr hdoc = htmlReadMemory(
       readBuffer.c_str(),
       static_cast<int>(readBuffer.length()),
       nullptr,  // URL (not needed for memory)
       nullptr,  // encoding (auto-detect)
-      XML_PARSE_NOERROR | XML_PARSE_NOWARNING | XML_PARSE_NONET | XML_PARSE_RECOVER
+      HTML_PARSE_RECOVER | HTML_PARSE_NOERROR | HTML_PARSE_NOWARNING | HTML_PARSE_NONET
       );
+    xmlDocPtr doc = (xmlDocPtr)hdoc;
 
     if (doc && doc->children) {
       parse_succeeded = true;
@@ -1032,11 +1057,21 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
       if (body) {
         extract_visible_text(body, final_text);
       } else {
-        // No <body> found (fragment or malformed) - extract from root, skip <head>
-        for (xmlNodePtr child = doc->children->children; child; child = child->next) {
-          if (child->type == XML_ELEMENT_NODE && child->name &&
-              string((const char*)child->name) == "head") continue;
-          extract_visible_text(child, final_text);
+        // No <body> found (fragment or malformed) - extract from every
+        // top-level element, skipping <head> (and <html>'s own <head>)
+        for (xmlNodePtr top = doc->children; top; top = top->next) {
+          if (top->type != XML_ELEMENT_NODE || !top->name) continue;
+          string tag((const char*)top->name);
+          if (tag == "head") continue;
+          if (tag == "html") {
+            for (xmlNodePtr child = top->children; child; child = child->next) {
+              if (child->type == XML_ELEMENT_NODE && child->name &&
+                  string((const char*)child->name) == "head") continue;
+              extract_visible_text(child, final_text);
+            }
+          } else {
+            extract_visible_text(top, final_text);
+          }
         }
       }
 
