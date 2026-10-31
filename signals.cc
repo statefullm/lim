@@ -74,12 +74,14 @@ void setup_signals() {
   sa_cont.sa_flags = 0;
   sigaction(SIGCONT, &sa_cont, nullptr);
 
+
   // USR1 (manual poke) and SIGTERM (graceful quit) must be handled by the
-  // MAIN thread: the blocking waits they interrupt live there, and lim is
-  // multithreaded -- a process-directed signal can be dequeued by ANY thread
-  // that doesn't block it, in which case the main thread's wait is never
-  // interrupted (a lost poke = no reattach; a lost SIGTERM = `kill lim` on a
-  // detached lim silently fails).  Block both here, before any worker thread
+  // MAIN thread: the blocking waits they interrupt live there, and llama.cpp
+  // runs inference on worker threads -- a process-directed signal can be
+  // dequeued by ANY thread that doesn't block it, in which case the main
+  // thread's wait is never interrupted (a lost poke = no reattach; a lost
+  // SIGTERM = `kill lim` on a detached lim silently fails).  Block both here,
+  // before any worker thread
   // exists (workers inherit the mask); the main thread re-unblocks them at
   // the top of get_user_input().
   sigset_t main_thread_only{};

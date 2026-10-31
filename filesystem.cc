@@ -825,6 +825,24 @@ string FileSystemTools::_get_fullpath(const string& path) {
   return fullpath;
 }
 
+// SIGCHLD wake for exec_shell: the data pipe only EOFs when every writer
+// has closed it, but a backgrounded grandchild (a bare `&` job, or the
+// subshell that waits on a redirected/setsid daemon) may hold the
+// inherited write end long after the direct child has exited.  SIGCHLD is
+// the event that says the direct child is gone; this handler queues one
+// byte in the self-pipe so poll() returns and the waitpid(WNOHANG) path
+// can reap, drain, and finish.  Tool calls dispatch one at a time, so a
+// single static slot for the wake fd suffices.
+static volatile sig_atomic_t g_exec_shell_chld_fd = -1;
+static void exec_shell_sigchld_handler(int) {
+  sig_atomic_t fd = g_exec_shell_chld_fd;
+  if (fd < 0) return;
+  char b = 1;
+  ssize_t r;
+  do { r = write(fd, &b, 1); } while (r < 0 && errno == EINTR);
+  // A full buffer (EAGAIN) is fine: a wake byte is already queued.
+}
+
 string FileSystemTools::exec_shell(const string& command, function<void()> on_open,
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
@@ -872,10 +890,37 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
   // Maximize the pipe buffer to prevent EPIPE.
   fcntl(pipefd[0], F_SETPIPE_SZ, 1048576);
-  pid_t pid = fork();
-  if (pid < 0) {
+
+  // Self-pipe woken by SIGCHLD (see exec_shell_sigchld_handler).  It must be
+  // in place before fork: the child's exit is the very event that can arrive
+  // while poll() is still blocked on the data pipe.
+  int spipe[2];
+  if (pipe(spipe) == -1) {
     close(pipefd[0]);
     close(pipefd[1]);
+    unlink(exit_code_file.c_str());
+    unlink(script_path.c_str());
+    return "Error: Failed to create wake pipe for shell execution.";
+  }
+  fcntl(spipe[0], F_SETFL, O_NONBLOCK);
+  fcntl(spipe[1], F_SETFL, O_NONBLOCK);
+  struct sigaction sa_chld, old_chld;
+  sa_chld.sa_handler = exec_shell_sigchld_handler;
+  sigemptyset(&sa_chld.sa_mask);
+  // SA_RESTART: the wake travels as the self-pipe byte, not as EINTR churn
+  // in unrelated syscalls (glibc stdio already retries those).
+  sa_chld.sa_flags = SA_RESTART;
+  g_exec_shell_chld_fd = spipe[1];
+  sigaction(SIGCHLD, &sa_chld, &old_chld);
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    g_exec_shell_chld_fd = -1;
+    sigaction(SIGCHLD, &old_chld, nullptr);
+    close(pipefd[0]);
+    close(pipefd[1]);
+    close(spipe[0]);
+    close(spipe[1]);
     unlink(exit_code_file.c_str());
     unlink(script_path.c_str());
     return "Error: Failed to spawn shell process. The exec_shell tool may be temporarily unavailable.";
@@ -885,6 +930,10 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     // Own process group so lim's group holds only lim; lets relim reattach
     // mid tool-call (reptyr won't attach a target with other group members).
     setpgid(0, 0);
+
+    // The SIGCHLD self-pipe belongs to the parent; drop both ends here.
+    close(spipe[0]);
+    close(spipe[1]);
 
     // Close the read end, detach stdin from lim's terminal, then exec.
     close(pipefd[0]);
@@ -959,13 +1008,16 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     }
   };
 
-  struct pollfd pfd;
-  pfd.fd = pipefd[0];
-  pfd.events = POLLIN;
+  struct pollfd pfds[2];
+  pfds[0].fd = pipefd[0];
+  pfds[0].events = POLLIN;
+  pfds[1].fd = spipe[0];
+  pfds[1].events = POLLIN;
 
   while (true) {
-    // Block until the pipe has data or the child exits.
-    int ready = poll(&pfd, 1, -1);  // -1 = block indefinitely
+    // Block until the pipe has data, the child exits (SIGCHLD queues a byte
+    // in the self-pipe), or a signal interrupts.
+    int ready = poll(pfds, 2, -1);
     if (ready < 0) {
       // Interrupted by signal (e.g., Ctrl+C).
       if (errno == EINTR) {
@@ -987,7 +1039,17 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
       break;  // Unexpected error, bail out.
     }
 
-    if (pfd.revents & (POLLIN | POLLHUP)) {
+    // SIGCHLD byte: one of lim's children exited.  The direct child may be
+    // done even though a backgrounded grandchild still holds the data pipe's
+    // write end -- pipe EOF would never come; the waitpid(WNOHANG) check
+    // below settles it.  A byte from some other lim child (e.g. the docling
+    // service) just costs one extra waitpid that returns 0.
+    if (pfds[1].revents & POLLIN) {
+      char b;
+      while (read(spipe[0], &b, 1) > 0) {}
+    }
+
+    if (pfds[0].revents & (POLLIN | POLLHUP)) {
       char buffer[65536];
       ssize_t n = read(pipefd[0], buffer, sizeof(buffer) - 1);
 
@@ -1053,6 +1115,13 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
         kill(pid, SIGKILL);
     }
   }
+
+  // Child is reaped: no SIGCHLD wake is needed any more.  Restore the
+  // previous SIGCHLD disposition and drop the self-pipe.
+  g_exec_shell_chld_fd = -1;
+  sigaction(SIGCHLD, &old_chld, nullptr);
+  close(spipe[0]);
+  close(spipe[1]);
 
   // Read exit code from temp file -- guaranteed to be the actual command exit code.
   int exit_code = -1;
