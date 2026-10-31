@@ -318,6 +318,7 @@ static void start_service(const string& name, const string& probe_url,
       curl_easy_setopt(wait_curl, CURLOPT_TIMEOUT_MS, 500L);
 
       int retries = 0;
+      bool child_died = false;
       while (retries < 40) {
         if (stop_generation) {
           std::cerr << "\033[0m" + name + " startup interrupted by user" << std::endl;
@@ -325,6 +326,12 @@ static void start_service(const string& name, const string& probe_url,
         }
         if (curl_easy_perform(wait_curl) == CURLE_OK) {
           std::cerr << "\033[0m" + name + " is ready and responding!" << std::endl;
+          break;
+        }
+        // Non-blocking reap: if the process already exited (e.g. missing install
+        // directory or bad command), stop polling a port that will never open.
+        if (waitpid(child, NULL, WNOHANG) == child) {
+          child_died = true;
           break;
         }
         this_thread::sleep_for(chrono::milliseconds(500));
@@ -338,6 +345,10 @@ static void start_service(const string& name, const string& probe_url,
         std::cerr << "\033[0m" + name + " failed to start after waiting. Will retry on next request." << std::endl;
         kill(-child, SIGKILL);
         waitpid(child, NULL, 0);
+        pid = -1;
+      } else if (child_died) {
+        // Already reaped in the loop above.
+        std::cerr << "\033[0m" + name + " process exited during startup. Will retry on next request." << std::endl;
         pid = -1;
       }
     }
@@ -1399,7 +1410,10 @@ NetworkTools::NetworkTools(const string& searxng_url) : base_url(searxng_url) {}
 
 string NetworkTools::web_search(const string& query) {
   if (g_searxng_disabled) {
-    return "System Error: Web search is currently disabled for this session.";
+    return "System Error: Web search is disabled for this session - SearXNG is unavailable"
+           " and the Brave API fallback failed or is not configured. "
+           "Set LIM_BRAVE_API_KEY (Brave Search API key) to enable the fallback, "
+           "or install SearXNG and restart lim to re-enable web search.";
   }
 
   cerr << "\033[0mweb_search(\"" + query + "\")" << endl;
