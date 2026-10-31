@@ -20,7 +20,6 @@
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include <cstring>  // For strlen
-#include <ctime>    // For time()
 
 using json = nlohmann::json;
 using namespace std;
@@ -376,82 +375,6 @@ static string base64_encode(const string &in) {
   return out;
 }
 
-// --- SSL Certificate Initialization with Cache ---
-void NetworkTools::init_ssl_certificates() {
-  static bool initialized = false;
-  if (initialized) return;
-
-  struct stat st;
-
-  // Use LIM_CONFIG_DIR for certificate storage
-  string cached_ca = LIM_CONFIG_DIR + "/combined-ca.crt";
-
-  const int MAX_AGE_SECONDS = 30 * 24 * 60 * 60; // 30 days in seconds
-
-  // Check if cached CA exists and is not older than 30 days
-  bool needs_update = false;
-  if (stat(cached_ca.c_str(), &st) != 0 || st.st_size == 0) {
-    needs_update = true;
-  } else {
-    time_t now = time(NULL);
-    if (now - st.st_mtime > MAX_AGE_SECONDS) {
-      needs_update = true;
-    }
-  }
-
-  if (needs_update) {
-    std::cerr << "\033[0mUpdating SSL certificate cache..." << std::endl;
-
-    // Get system CA bundle path
-    string system_ca;
-    const char* ca_paths[] = {
-      "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-      "/etc/ssl/certs/ca-certificates.crt",
-      "/etc/pki/tls/certs/ca-bundle.crt",
-      NULL
-    };
-
-    for (const char* path : ca_paths) {
-      if (stat(path, &st) == 0 && st.st_size > 0) {
-        system_ca = path;
-        break;
-      }
-    }
-
-    // Download Cloudflare certificate chain to config directory
-    string cloudflare_cache = LIM_CONFIG_DIR + "/cloudflare-chain.pem";
-    string cloudflare_cmd = "openssl s_client -connect example.com:443 -showcerts 2>/dev/null | "
-      "awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/{if(/BEGIN CERTIFICATE/)p=1; if(p)print; if(/END CERTIFICATE/)p=0}' > " + cloudflare_cache;
-    system(cloudflare_cmd.c_str());
-
-    // Combine CA bundles into cache directory
-    string combine_cmd;
-    if (!system_ca.empty()) {
-      combine_cmd = "cat " + system_ca + " " + cloudflare_cache + " > " + cached_ca;
-    } else {
-      // Download standard CA bundle and add Cloudflare certs to cache
-      string temp_bundle = LIM_CONFIG_DIR + "/ca-bundle-temp.crt";
-      combine_cmd = "curl -s https://curl.se/ca/cacert.pem > " + temp_bundle + " && "
-        "cat " + temp_bundle + " " + cloudflare_cache + " > " + cached_ca;
-    }
-
-    int result = system(combine_cmd.c_str());
-    if (result == 0 && stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
-      std::cerr << "\033[0mCreated combined CA bundle in cache: " + cached_ca << std::endl;
-      setenv("CURL_CA_BUNDLE", cached_ca.c_str(), 1);
-    } else {
-      std::cerr << "\033[0mFailed to create combined CA bundle - using curl defaults" << std::endl;
-    }
-  } else {
-    cout << "\033[0m" << "Using cached SSL certificate from: " << cached_ca << endl;
-    consoleMarkNewline(true);
-    cout.flush();
-    setenv("CURL_CA_BUNDLE", cached_ca.c_str(), 1);
-  }
-
-  initialized = true;
-}
-
 // --- Smart Context Truncation (Stateful) ---
 string NetworkTools::limit_context_size(const string& text, size_t per_file_max) {
   // Use env-configured default if caller passed 0.
@@ -501,50 +424,6 @@ string NetworkTools::limit_context_size(const string& text, size_t per_file_max)
   return truncated;
 }
 
-// --- Helper to configure SSL certificate options for curl ---
-static void configure_curl_ssl(CURL* curl, const string& base_url) {
-  bool is_https = base_url.substr(0, 8) == "https://";
-  if (is_https) {
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-
-    // Use the cached CA bundle from LIM_CONFIG_DIR
-    string cached_ca = LIM_CONFIG_DIR + "/combined-ca.crt";
-    struct stat st;
-    if (stat(cached_ca.c_str(), &st) == 0 && st.st_size > 0) {
-      curl_easy_setopt(curl, CURLOPT_CAINFO, cached_ca.c_str());
-      cerr << "\033[0mUsing cached CA bundle: " + cached_ca << endl;
-    } else {
-      // Fall back to system CA bundle paths
-      static const char* ca_paths[] = {
-        "/etc/ssl/certs/ca-certificates.crt",
-        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
-        "/etc/pki/tls/certs/ca-bundle.crt",
-        NULL
-      };
-      bool found = false;
-      for (const char* path : ca_paths) {
-        if (stat(path, &st) == 0 && st.st_size > 0) {
-          curl_easy_setopt(curl, CURLOPT_CAINFO, path);
-          cerr << "\033[0mUsing system CA bundle: " + string(path) << endl;
-          found = true;
-          break;
-        }
-      }
-      if (!found) {
-        static const char* default_ca = "";
-        curl_easy_setopt(curl, CURLOPT_CAINFO, default_ca);
-        cerr << "\033[0mUsing curl's built-in system certificate store" << endl;
-      }
-    }
-  } else {
-    // HTTP requests (localhost, http:// URLs) - disable SSL verification options
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-    cerr << "\033[0mHTTP request detected - SSL verification disabled" << endl;
-  }
-}
-
 // --- Helper to configure common curl options for fetch operations ---
 // Returns the header list that caller must free with curl_slist_free_all()
 static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
@@ -563,8 +442,6 @@ static struct curl_slist* configure_curl_fetch(CURL* curl, const string& url) {
   headers = curl_slist_append(headers, "Accept: */*");
   headers = curl_slist_append(headers, "Accept-Language: en-US,en;q=0.5");
   curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-
-  configure_curl_ssl(curl, url);
 
   // Enable interrupt checking during transfer
   curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
@@ -888,8 +765,6 @@ static string github_api_fetch(const string& url) {
 
   cerr << "\033[0mGitHub API fetch: " << (is_graphql ? "GraphQL" : api_url) << endl;
 
-  NetworkTools::init_ssl_certificates();
-
   CURL *curl = curl_easy_init();
   if (!curl) return "";
 
@@ -907,7 +782,6 @@ static string github_api_fetch(const string& url) {
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, StringWriteCallback);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
-  configure_curl_ssl(curl, api_url);
 
   if (is_graphql) {
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, graphql_query.c_str());
@@ -985,7 +859,6 @@ static string github_api_fetch(const string& url) {
         curl_easy_setopt(c2, CURLOPT_WRITEFUNCTION, StringWriteCallback);
         curl_easy_setopt(c2, CURLOPT_WRITEDATA, &comments_buf);
         curl_easy_setopt(c2, CURLOPT_TIMEOUT, 30L);
-        configure_curl_ssl(c2, comments_url);
         curl_easy_perform(c2);
         long c2_code = 0;
         curl_easy_getinfo(c2, CURLINFO_RESPONSE_CODE, &c2_code);
@@ -1072,8 +945,6 @@ static string github_api_fetch(const string& url) {
 
 // --- HTML Fetcher ---
 string NetworkTools::fetch_and_clean_html(const string& url) {
-  // Ensure SSL certificates are initialized before any HTTPS fetch
-  init_ssl_certificates();
 
   if (url.length() > 4) {
     string ext = url.substr(url.length() - 4);
@@ -1426,8 +1297,6 @@ static string brave_api_search(const string& query) {
 
   cerr << "\033[0mFalling back to Brave Search API..." << endl;
 
-  NetworkTools::init_ssl_certificates();
-
   CURL *curl = curl_easy_init();
   if (!curl) return "";
 
@@ -1449,7 +1318,6 @@ static string brave_api_search(const string& query) {
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
   curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
   curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-  configure_curl_ssl(curl, url);
   curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);
   curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 
@@ -1499,9 +1367,6 @@ string NetworkTools::web_search(const string& query) {
     return "System Error: Web search is currently disabled for this session.";
   }
 
-  // Initialize SSL certificates on first web search
-  init_ssl_certificates();
-
   cerr << "\033[0mweb_search(\"" + query + "\")" << endl;
 
   string cache = LIM_CONFIG_DIR + "/searchCache";
@@ -1547,8 +1412,6 @@ string NetworkTools::web_search(const string& query) {
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &readBuffer);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, g_web_timeout_seconds);
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
-
-    configure_curl_ssl(curl, url);
 
     // Enable interrupt checking during transfer
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, interrupt_check_callback);

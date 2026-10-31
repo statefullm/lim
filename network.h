@@ -33,9 +33,6 @@ public:
   // Strip base64 images from markdown to prevent cache corruption
   static std::string strip_base64_images(const std::string& text);
 
-  // Initialize SSL certificate support (downloads CA bundle if needed)
-  static void init_ssl_certificates();
-
   // Track context usage across an agentic session
   static void reset_context_usage();
 

@@ -162,7 +162,7 @@ uninstall: FORCE
 	root="$$(pwd)"; \
 	case "$$root" in "$$cfg"|"$$cfg"/*) :;; \
 	*) \
-		cd "$$cfg" && rm -f $(CONFIG_FILES) userprompt combined-ca.crt cloudflare-chain.pem ca-bundle-temp.crt && rmdir searchCache 2>/dev/null || true; \
+		cd "$$cfg" && rm -f $(CONFIG_FILES) userprompt && rmdir searchCache 2>/dev/null || true; \
 		cd "$$cfg"/libs && rm -f $(LIBS_FILES) && rm -rf fonts || true; \
 		rmdir "$$cfg"/libs 2>/dev/null || true; \
 		rmdir "$$cfg" 2>/dev/null || true;; \
