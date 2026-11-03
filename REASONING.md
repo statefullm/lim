@@ -39,7 +39,7 @@ Reasoning effort is set to low. Keep your thinking brief and focused, moving dir
 ```
 
 **`gpu`** -- your persistent rules, appended to every mode (content and
-name are yours; this example is a GPU usage rule):
+name are yours; this example includes an important GPU usage rule):
 
 ```
 **CRITICAL RULE**
@@ -47,7 +47,7 @@ NEVER LAUNCH A TASK ON THE DISCRETE GPU, WHICH IS DEDICATED TO YOUR SESSION: ASK
 
 Always follow the DRY principle when coding: avoid duplicate code.
 Clean up dead code.
-Avoid comments that only make sense in the context of your session.
+Avoid past-issue narrative that only makes sense in the context of your session.
 ```
 
 ## 2. Per-mode env files
