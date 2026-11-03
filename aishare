@@ -104,7 +104,7 @@ gitdirs() {
 run_sudo() {
     if ! run_sudo_err="$(sudo "$@" 2>&1)"; then
         [ -n "$run_sudo_err" ] && printf '%s\n' "$run_sudo_err" >&2
-        echo "WARNING: 'sudo $*' failed (missing sudoers rule or command error)" >&2
+        echo "WARNING: 'sudo $*' failed" >&2
         return 1
     fi
 }
@@ -281,7 +281,7 @@ protect_gitdirs() {
                -o -name BISECT_BAD -o -name BISECT_GOOD -o -name BISECT_LEFT \
                -o -name BISECT_RIGHT -o -name shallow \) \
             -exec sudo chown "$group:$group" {} + 2>/dev/null || \
-                echo "WARNING: could not hand $d's state files to $group (sudo chown failed -- missing sudoers rule?): the LLM's next commit in that repo may fail" >&2
+                echo "WARNING: could not hand $d's state files to $group (sudo chown failed): the LLM's next commit in that repo may fail" >&2
         chmod 3770 "$d"
     done
 }
@@ -431,8 +431,8 @@ check_gitdirs() {
 # recursive chown/chmod below fail with EPERM; unpin them for the duration of
 # this fix and re-pin at the end (also pins pointers created meanwhile).
 unpin_gitfiles() {
-    find "$1" -type f -name .git -exec sudo chattr -i {} + 2>/dev/null || \
-        echo "WARNING: could not unpin some .git files (sudo chattr -i failed -- missing sudoers rule?): the chown/chmod that follow may fail on files that are still pinned" >&2
+    find "$1" -type f -name .git -exec sudo chattr -i {} + || \
+        echo "WARNING: could not unpin some .git files (sudo chattr -i failed): the chown/chmod that follow may fail on files that are still pinned" >&2
 }
 
 pin_gitfiles() {
@@ -440,8 +440,8 @@ pin_gitfiles() {
     # unpinned. unpin_gitfiles still covers every .git file, so a stale
     # immutable bit on such a file from an older aishare run cannot trip the
     # recursive chown/chmod.
-    git_pointers "$1" | xargs -d '\n' -r sudo chattr +i 2>/dev/null || \
-        echo "WARNING: could not pin some .git pointers immutable (sudo chattr +i failed -- missing sudoers rule?): the LLM could then replace or delete them" >&2
+    git_pointers "$1" | xargs -d '\n' -r sudo chattr +i || \
+        echo "WARNING: could not pin some .git pointers immutable (sudo chattr +i failed): the LLM could then replace or delete them" >&2
 }
 
 # Probe whether 'sudo chattr +i' actually works on the filesystem holding the
