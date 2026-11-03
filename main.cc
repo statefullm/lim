@@ -44,7 +44,6 @@ bool g_deterministic_mode = false;
 ofstream chat_log;
 ofstream token_log;
 ofstream tps_log;
-string INITIAL_CWD;
 // LIM_HONEST_SPEED: how the t/s diagnostic is computed.
 //   0 (default): benchmark-style -- tokens / sample+sync window (first to last token),
 //                 covering N sampling ops + (N-1) decode cycles. Matches llama-cli.
@@ -148,17 +147,6 @@ int main(int argc, char ** argv) {
   }
 
   // HOME is initialized at global scope via g_homeInit
-
-  char cwd[1024];
-  if (getcwd(cwd, sizeof(cwd)) != nullptr) {
-    ofstream cwd_file(HOME+"/.cwd");
-    if (cwd_file.is_open()) {
-      cwd_file << cwd << endl;
-      cwd_file.close();
-    }
-    // Save initial directory for clear command to restore
-    INITIAL_CWD = cwd;
-  }
 
   umask(0002);
   atexit([]() {

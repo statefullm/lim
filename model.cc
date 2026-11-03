@@ -15,6 +15,7 @@
 #include <string>
 #include <cstring>
 #include <cstdlib>
+#include <limits.h>
 #include <unistd.h>
 
 using namespace std;
@@ -453,13 +454,15 @@ bool load_system_prompt_text(string& prompt) {
     }
   }
 
-  // Append cwd and date/time.  The wall-clock timestamp is omitted in
+  // Append cwd and date/time.  This is the only getcwd in the program: lim
+  // never chdirs, so this launch directory is the fixed anchor every relative
+  // path resolves against.  The wall-clock timestamp is omitted in
   // deterministic (temperature 0) mode: it is the only session-varying piece
   // of the prompt, and dropping it makes greedy runs byte-reproducible.  (A
   // fixed date can still be given explicitly in the user prompt if needed.)
-  char current_cwd[1024];
+  char current_cwd[PATH_MAX];
   if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
-    prompt += "\n\nCurrent working directory: " + string(current_cwd) + "\n";
+    prompt += "\n\nRelative paths resolve against the current working directory " + string(current_cwd) + "\n";
   }
 
   if (!g_deterministic_mode) {
@@ -648,4 +651,3 @@ void quiet_log_callback(enum ggml_log_level level, const char * text, void * use
   (void) text;
   (void) user_data;
 }
-

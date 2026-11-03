@@ -13,9 +13,6 @@
 #include <chrono>
 #include "filesystem.h"
 
-// Forward declaration for INITIAL_CWD from main.cc
-extern std::string INITIAL_CWD;
-
 struct SessionState {
   bool auto_continue = false;
   bool reincarnate_mode = false;

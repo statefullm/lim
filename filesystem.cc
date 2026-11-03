@@ -282,10 +282,9 @@ static std::string sha256_hex(const std::string& data) {
 }
 
 static std::string get_cache_dir_internal() {
-  // Use LIM_CACHE_DIR subdirectory in the project directory alongside save files.
-  char cwd[4096];
-  std::string base = (getcwd(cwd, sizeof(cwd)) ? cwd : ".");
-  std::string dir = base + "/" + LIM_CACHE_DIR;
+  // LIM_CACHE_DIR relative to the process cwd -- the launch directory, which
+  // is fixed for the session (lim never chdirs).
+  std::string dir = LIM_CACHE_DIR;
   mkdir(dir.c_str(), 0755);
   return dir;
 }
@@ -800,29 +799,22 @@ static string _file_ext(const string& path) {
 FileSystemTools::FileSystemTools() {}
 
 string FileSystemTools::_get_fullpath(const string& path) {
-  string home_cwd = HOME + "/.cwd";
-  ifstream cwd_file(home_cwd);
-  string cwd_str;
-
-  if (cwd_file.is_open()) {
-    getline(cwd_file, cwd_str);
-    cwd_file.close();
-  } else {
-    cwd_str = HOME;
-  }
-
-  string fullpath;
-  if (path.empty() || path[0] != '/') {
-    fullpath = cwd_str + "/" + path;
-  } else {
-    fullpath = path;
-  }
-
+  if (path.empty()) return path;
   char result[PATH_MAX];
-  if (realpath(fullpath.c_str(), result) != nullptr) {
+  // Existing paths: realpath canonicalizes (resolves "..", symlinks, cwd).
+  if (realpath(path.c_str(), result) != nullptr) {
     return string(result);
   }
-  return fullpath;
+  // Non-existing relative paths (e.g. write_file target): resolve the base
+  // ("." = process cwd, which is the launch dir and never changes) so the
+  // result is consistently absolute.
+  if (path[0] != '/') {
+    char base[PATH_MAX];
+    if (realpath(".", base) != nullptr) {
+      return string(base) + "/" + path;
+    }
+  }
+  return path;
 }
 
 // SIGCHLD wake for exec_shell: the data pipe only EOFs when every writer
@@ -871,7 +863,9 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     return "Error: Failed to create temp script for shell execution.";
   }
   {
-    string script_content = "#!/bin/bash\nsource ~/.bashrc 2>/dev/null\ncd \"$(cat ~/.cwd 2>/dev/null || echo " + HOME + ")\"\n" + command + "\necho \"$?\" > \"" + exit_code_file + "\"\n";
+    // The child inherits lim's cwd (the launch directory); a cd inside the
+    // command is local to that command and never changes it.
+    string script_content = "#!/bin/bash\nsource ~/.bashrc 2>/dev/null\n" + command + "\necho \"$?\" > \"" + exit_code_file + "\"\n";
     ssize_t written = write(sfd, script_content.c_str(), script_content.size());
     (void)written; // Best effort; if it fails, the script will just be empty
   }

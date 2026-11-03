@@ -287,11 +287,6 @@ Add these lines to `/home/$LIM_AI_USER/.bashrc`:
 
 umask 0002                    # Group-writable files by default
 
-# Track current working directory so the LLM knows where you are.
-cd() {
-    builtin cd "$@" && pwd > $HOME/.cwd
-}
-
 # Block git add -A / --all and git add . to prevent the LLM from staging untracked files
 git() {
     if [ "$1" = "add" ]; then
@@ -317,7 +312,7 @@ relim() {
 export PATH="$HOME/bin:$PATH"
 ```
 
-The `cd` override writes the current directory to `$HOME/.cwd`. LIM writes it at startup from its own working directory and reads it to resolve relative paths in the file tools and to set the working directory for `exec_shell` commands. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
+LIM resolves relative paths -- in the file tools and in `exec_shell` -- against the directory it was launched in. That directory is fixed for the session and is given to the LLM in the system prompt: a `cd` inside an `exec_shell` command is local to that command. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
 
 Note: `relim` needs a patched `reptyr`: vanilla 0.10.0 can hang silently while attaching a multithreaded target, because it sends SIGCONT before reaping the attach stop, which can cancel that stop so the unbounded wait never returns. `reptyr-attach-retry.patch` (this repository) sends the SIGCONT only after the attach stop is reaped and bounds the wait (a real failure reports `Connection timed out` instead of hanging), making reattach reliable. Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
@@ -376,9 +371,9 @@ Set via `LIM_OUTPUT`:
 | Variable | Default | Description |
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
-| `LIM_CACHE_DIR` | `.cache` | Directory (relative to CWD) for fast restore KV-cache files. |
+| `LIM_CACHE_DIR` | `.cache` | Directory (relative to the launch directory) for fast restore KV-cache files. |
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `libs/`). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
-| `LIM_LOG_DIR` | `log` | Directory (relative to CWD) for session logs, token traces, and autosave files. |
+| `LIM_LOG_DIR` | `log` | Directory (relative to the launch directory) for session logs, token traces, and autosave files. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server |
@@ -446,7 +441,7 @@ LIM runs as the dedicated `$LIM_AI_USER` account (default `ai`). Within that acc
 The practical consequences:
 
 - **File write access** is limited to directories where the `$LIM_AI_USER` group has write permission (read access is broader -- the LLM can read anything the user can). Use `aishare` to grant write access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
-- **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment.
+- **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment, and run in the directory where lim was launched (a `cd` inside a command is local to that command).
 - **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories. `aishare` moves each shared repo's gitdir into the `/home/$LIM_AI_USER/.gitstore` (a store the group can traverse but not restructure) behind an immutable `.git` pointer (so the AI cannot swap the repo's git for one of its own), and keeps the gitdir's `config` and `hooks` owner-owned, not group-writable, and sticky-protected, so planted hooks or rewritten local config cannot execute as you on your next commit.
 
 ---

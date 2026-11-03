@@ -929,17 +929,6 @@ private:
     state_.prompt_checkpoints.clear();
     state_.file_cache.clear();
 
-    // Reset the current directory to the initial value so no memory of the last session persists.
-    // Done before reload_system_prompt() so getcwd() reflects the initial directory.
-    {
-      chdir(INITIAL_CWD.c_str());
-      ofstream cwd_file(HOME + "/.cwd");
-      if (cwd_file.is_open()) {
-        cwd_file << INITIAL_CWD << endl;
-        cwd_file.close();
-      }
-    }
-
     // Reload system prompt from disk to pick up any edits + fresh timestamp.
     if (!reload_system_prompt()) {
       diag("Prompt file not found; reusing cached system prompt.", "\033[33m");
