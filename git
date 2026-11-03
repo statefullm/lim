@@ -1,0 +1,80 @@
+#!/bin/sh
+# git -- re-share wrapper for shared (aishare'd) repos.
+#
+# After every git command you run in a shared repo (cwd under
+# /home/$LIM_AI_USER, gitdir in the store), re-chown the volatile git
+# state files (index, HEAD, ...) to $LIM_AI_USER: user-side git re-owns
+# them to you, and the sticky store gitdir then blocks the LLM's next
+# index write until they are chowned back. This is the fallback for the
+# interval between aishare runs, including when aishare's own state-file
+# chown fails.
+#
+# A plain pass-through everywhere else -- in particular when run as
+# $LIM_AI_USER: same command, output, and exit code, and no sudo attempt
+# at all, so the LLM can never gain a chown path through it.
+#
+# Install ahead of the real git in your PATH:
+#   cp git /home/$USER/bin/git
+# then check with 'type git' that this one wins.
+#
+# The real git is auto-detected: the wrapper walks your PATH and uses the
+# first git whose directory is not its own. Each PATH entry and the
+# wrapper's own dir are resolved physically (pwd -P) before comparing, so a
+# "." entry or a symlink that lands in the wrapper's dir is still skipped
+# and the wrapper never re-invokes itself. Set LIM_GIT_BIN to force a
+# specific git binary if auto-detection is not enough.
+find_real_git() {
+    case $0 in
+        */*) self=$0 ;;
+        *)   self=$(command -v git 2>/dev/null) || self=$0 ;;
+    esac
+    self_dir=$(CDPATH= cd -- "${self%/*}" 2>/dev/null && pwd -P)
+    [ -n "$self_dir" ] || return 1
+    (
+        IFS=:
+        for d in $PATH; do
+            [ -n "$d" ] || d=.
+            nd=$(CDPATH= cd -- "$d" 2>/dev/null && pwd -P) || continue
+            [ "$nd" = "$self_dir" ] && continue
+            [ -x "$nd/git" ] && { printf '%s' "$nd/git"; exit 0; }
+        done
+        exit 1
+    )
+}
+
+GIT_BIN=${LIM_GIT_BIN:-}
+[ -n "$GIT_BIN" ] || GIT_BIN=$(find_real_git)
+if [ -z "$GIT_BIN" ] || [ ! -x "$GIT_BIN" ]; then
+    echo "git: wrapper could not locate the real git in PATH -- set LIM_GIT_BIN to its path" >&2
+    exit 127
+fi
+
+"$GIT_BIN" "$@"
+rc=$?
+AI_USER=${LIM_AI_USER:-ai}
+user=$(id -un 2>/dev/null)
+if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
+    # Resolve the physical path before the gate: the checkout may be reached
+    # via a symlink (e.g. /home/bowman/lim/ai -> /home/ai/lim), and a logical
+    # $PWD outside /home/ai would silently skip the re-share.
+    pdir=$(CDPATH= cd -- "$PWD" 2>/dev/null && pwd -P)
+    case $pdir in
+        "/home/$AI_USER" | "/home/$AI_USER"/*)
+            gd=$("$GIT_BIN" rev-parse --absolute-git-dir 2>/dev/null)
+            case "$gd" in
+                "/home/$AI_USER"/.gitstore/*)
+                    sudo -n chown "$AI_USER:$AI_USER" \
+                        "$gd/HEAD" "$gd/index" "$gd/packed-refs" "$gd/ORIG_HEAD" \
+                        "$gd/FETCH_HEAD" "$gd/MERGE_HEAD" "$gd/MERGE_MSG" \
+                        "$gd/COMMIT_EDITMSG" "$gd/AUTO_MERGE" "$gd/CHERRY_PICK_HEAD" \
+                        "$gd/REVERT_HEAD" "$gd/REVERT_MSG" "$gd/TAG_EDITMSG" \
+                        "$gd/BISECT_LOG" "$gd/BISECT_START" "$gd/BISECT_NEXT" \
+                        "$gd/BISECT_BAD" "$gd/BISECT_GOOD" "$gd/BISECT_LEFT" \
+                        "$gd/BISECT_RIGHT" "$gd/shallow" 2>/dev/null
+                    ;;
+            esac
+            ;;
+    esac
+fi
+exit $rc
+

@@ -173,6 +173,14 @@ To set permissions in any project directory, copy `aishare` from this repository
 cp aishare /home/$USER/bin/
 ```
 
+Also copy the `git` wrapper from this repository to `/home/$USER/bin/` (it must come ahead of the real git in your `PATH` -- check with `type git`). It locates the real git automatically -- the first *other* `git` in your `PATH`, each entry resolved physically so a `.` or a symlink pointing at its own directory is skipped and it never invokes itself -- and `LIM_GIT_BIN` forces a specific binary if needed:
+
+```bash
+cp git /home/$USER/bin/
+```
+
+In a shared repo the wrapper re-shares the gitdir's volatile state files (`index`, `HEAD`, ...) with `$LIM_AI_USER` after every git command you run there (via the `chown` rule below), so the LLM is never blocked waiting for an `aishare` re-run; elsewhere it is a plain pass-through -- as is every invocation by the LLM user (never sudo).
+
 Then run it on any directory under `/home/$LIM_AI_USER` that you want the AI to access -- or with no argument, on the current directory:
 
 ```bash
@@ -180,6 +188,8 @@ aishare /home/$LIM_AI_USER/project
 ```
 
 It sets ownership to `$USER:$LIM_AI_USER` (via `sudo`), grants group read/write and setgid, and clears the sticky bit.
+
+Re-run `aishare` in a directory whenever you add new files or directories to it -- a new git repo included. New entries you create inherit the `$LIM_AI_USER` group (via setgid) but usually not the group-write bit (your umask), so the AI can read them but not write until `aishare` re-grants group read/write. For a new repo, the re-run is also what moves its gitdir into the store and applies the protection below.
 
 `aishare` needs five passwordless `sudo` rules, added once to your sudoers (`sudo visudo`, or a drop-in file in `/etc/sudoers.d/`). They are a one-time setup, not commands to run ad hoc. Substitute your username for `$USER`; the `:` in `user:group` must be escaped as `\:` in sudoers:
 
@@ -197,7 +207,7 @@ Since git runs code from a gitdir's `config` (core.hooksPath, credential.helper,
 
 - **The gitdir is moved, the checkout is not.** Each checkout's `.git` directory is moved into a store at `/home/$LIM_AI_USER/.gitstore` (mirroring the path) and replaced with the `gitdir:` pointer file git itself uses for worktrees, pinned immutable (`sudo chattr +i`). The store is group-traversable but not group-writable, so the stored gitdir cannot be renamed or deleted; the `.git` file looks exactly like git's own worktree pointer, so anything that goes through git is unaffected. If `chattr` is not available on the filesystem the pin fails and aishare warns.
 - **Before re-owning anything**, aishare checks that every `.git` pointer resolves to an existing gitdir owned by you, and it refuses to share (no chown, non-zero exit) if any gitdir it would re-own is not owned by you and carries an executable hook or config directive -- an LLM plant, left inert under git's ownership check until you remove it. A LLM-owned gitdir with clean content (e.g. a repo the LLM cloned) is shared as usual.
-- **Inside every gitdir**, `config` and `hooks` are owner-owned and not group-writable (pre-created if absent, so the LLM cannot create its own); the state files (`HEAD`, `index`, `packed-refs`, ...) are kept owned by `$LIM_AI_USER`, and the LLM can still create new files (lockfiles, loose objects) -- so its commits keep working. Two corollaries: LLM-side git commands that need to *write* the config (e.g. `git submodule init`) fail until you make the change yourself, and when you run a git command that rewrites the state files (commit, add, rebase, gc, fetch), re-run `aishare` or the LLM's next commit fails.
+- **Inside every gitdir**, `config` and `hooks` are owner-owned and not group-writable (pre-created if absent, so the LLM cannot create its own); the state files (`HEAD`, `index`, `packed-refs`, ...) are kept owned by `$LIM_AI_USER`, and the LLM can still create new files (lockfiles, loose objects) -- so its commits keep working. Two corollaries: LLM-side git commands that need to *write* the config (e.g. `git submodule init`) fail until you make the change yourself, and when you run a git command that rewrites the state files (commit, add, rebase, gc, fetch), the `git` wrapper above re-shares them automatically; if a rewrite bypassed the wrapper (your editor's own git, a script that calls git directly, or `git -C <repo>` run from outside the repo), the next git command you run in the repo (even just `git status`) re-shares it.
 - **Planted hooks are disabled, not removed**: an executable, non-sample hook not owned by you is warned about, stripped of its executable bit, and frozen; if it is legitimate restore it with `chmod +x`. If aishare could not disable a hook, it reports that explicitly: the hook is still executable -- review it before your next commit. A symlink in a hooks dir that is not yours is flagged but left in place, since disabling it would act on whatever it points to, which might be your own script.
 - **Re-run `aishare`** after creating worktrees or submodules (new pointers are not yet pinned), and to re-pin after unpinning: a git operation that must rewrite or delete a pinned pointer (e.g. `git submodule deinit`, `git worktree remove`) fails until you unpin it (`sudo chattr -i` on the `.git` file). Bare repos and custom-named gitdirs (`git init --separate-git-dir`) stay in place and get only the in-place protection above. Store entries left behind by a move can be deleted by hand.
 
@@ -440,7 +450,7 @@ LIM runs as the dedicated `$LIM_AI_USER` account (default `ai`). Within that acc
 
 The practical consequences:
 
-- **File write access** is limited to directories where the `$LIM_AI_USER` group has write permission (read access is broader -- the LLM can read anything the user can). Use `aishare` to grant write access to new project directories. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
+- **File write access** is limited to directories where the `$LIM_AI_USER` group has write permission (read access is broader -- the LLM can read anything the user can). Use `aishare` to grant write access to new project directories and files. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment, and run in the directory where lim was launched (a `cd` inside a command is local to that command).
 - **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories. `aishare` moves each shared repo's gitdir into the `/home/$LIM_AI_USER/.gitstore` (a store the group can traverse but not restructure) behind an immutable `.git` pointer (so the AI cannot swap the repo's git for one of its own), and keeps the gitdir's `config` and `hooks` owner-owned, not group-writable, and sticky-protected, so planted hooks or rewritten local config cannot execute as you on your next commit.
 
