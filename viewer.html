@@ -3,6 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:;">
     <title>LIM Viewer</title>
 
     <script src="libs/marked.min.js"></script>
@@ -1344,6 +1345,29 @@
             };
         }
 
+        // Strip dangerous URLs (javascript:, data:, vbscript:,
+        // protocol-relative //) from href/src attributes in HTML produced by
+        // marked.parse().  The bundled marked does no URL cleaning of its own,
+        // so this is the primary URL defense.  Quoted values use a strict
+        // allowlist (default-deny).  Unquoted values -- which raw HTML can
+        // carry and which marked passes through verbatim -- block only
+        // executable schemes (decoding character-reference colons), so that
+        // legitimate unquoted tokens in prose and code spans are left intact.
+        function sanitizeMarkdownHtml(html) {
+            return html.replace(/(href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`]+))/gi, function(m, attr, dval, sval, uval) {
+                if (dval !== undefined || sval !== undefined) {
+                    var val = (dval !== undefined ? dval : sval).trim();
+                    if (/^\/\//.test(val)) return attr + '=""';
+                    if (/^(https?:|mailto:|#|\/)/i.test(val)) return m;
+                    return attr + '=""';
+                }
+                var u = uval.replace(/&colon;|&#0*58;|&#x0*3a;/gi, ':');
+                if (/^\/\//.test(u)) return attr + '=""';
+                if (/^(javascript|vbscript|data):/i.test(u)) return attr + '=""';
+                return m;
+            });
+        }
+
         // Shared pipeline: mask code regions, extract math delimiters, run
         // through marked, render KaTeX.  Used by both rawTextToHtml (streaming)
         // and segToHtml (full re-render).  Every step is a single linear pass
@@ -1374,6 +1398,7 @@
                 var content2 = content.replace(/\\\\/g, '\x00\x00');
                 html = marked.parse(content2, { breaks: true });
                 html = html.replace(/\x00\x00/g, '\\\\');
+                html = sanitizeMarkdownHtml(html);
             } else {
                 var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
@@ -2017,16 +2042,9 @@
         /* ------------------------------------------------------------------ */
 
         function connect() {
-            const urlParams = new URLSearchParams(window.location.search);
-            let ws;
-
-            if (urlParams.get('url')) {
-                ws = new WebSocket(urlParams.get('url'));
-            } else {
-                const pageHost = window.location.host;
-                const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                ws = new WebSocket(proto + '//' + pageHost + '/ws');
-            }
+            const pageHost = window.location.host;
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            let ws = new WebSocket(proto + '//' + pageHost + '/ws');
 
             ws.onopen = () => {
                 statusDiv.textContent = speedInfo || 'Ready';
