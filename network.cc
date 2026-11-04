@@ -364,7 +364,7 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
 
 void NetworkTools::start_docling_if_needed() {
   if (g_docling_pid != -1) return;
-  string docling_cmd = getenvOrDefault("LIM_DOCLING_CMD", HOME+"/venv/bin/docling-serve run --enable-ui");
+  string docling_cmd = getenvOrDefault("LIM_DOCLING_CMD", HOME+"/venv/bin/docling-serve run --enable-ui --host 127.0.0.1");
   string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+docling_cmd;
   start_service("Docling", "http://127.0.0.1:5001/docs", DOCLING_LOG_PATH, cmd, g_docling_pid);
 }

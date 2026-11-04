@@ -397,7 +397,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_BRAVE_API_KEY` | *(empty)* | Brave Search API key. When set, LIM falls back to the [Brave Search API](https://api.search.brave.com/app) if SearXNG fails or returns no results. |
 | `GH_TOKEN` | *(empty)* | Optional GitHub personal access token for higher API rate limits when read_files fetches GitHub URLs (issues, PRs, discussions, files). |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
-| `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui` | Command to start the Docling PDF service. Override if installed elsewhere (e.g., via Docker or a different venv). |
+| `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui --host 127.0.0.1` | Command to start the Docling PDF service. Binds to localhost only. Override if installed elsewhere (e.g., via Docker or a different venv). |
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && exec python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
 | `LIM_LLAMA_DEBUG_LOG` | `0` | Only with `LIM_DEBUG=1`: set to `1` to also print DEBUG-level llama.cpp/ggml log lines (e.g. "CUDA Graph id N reused" on every decode). Default keeps INFO and above. |
@@ -704,7 +704,7 @@ LIM tries to connect to SearXNG on `127.0.0.1:8888`. Make sure SearXNG is instal
 
 Ensure Docling is installed. If it's not at `~/venv/bin/docling-serve`, set `LIM_DOCLING_CMD` to the correct command, e.g.:
 ```bash
-export LIM_DOCLING_CMD="/opt/docling/bin/docling-serve run --enable-ui"
+export LIM_DOCLING_CMD="/opt/docling/bin/docling-serve run --enable-ui --host 127.0.0.1"
 ```
 
 ### "No GPU detected and CUDA_ARCH_FLAGS not set"
