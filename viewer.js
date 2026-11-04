@@ -1,0 +1,2092 @@
+        const outputDiv = document.getElementById('output');
+        const statusDiv = document.getElementById('status');
+        let speedInfo = '';
+        let userScrolledAway = false;  // set when user scrolls up during generation
+
+        /* ------------------------------------------------------------------ */
+        /*  Segment-based renderer                                            */
+        /* ------------------------------------------------------------------ */
+        /*  Content arrives tagged with control-character prefixes:
+        /*    \x02 = LLM text   -> rendered through marked.parse()
+        /*    \x03 = Tool label -> inserted as raw HTML
+        /*    \x04 = Other HTML -> inserted as raw HTML (results, user input, etc.)
+        /*
+        /*  Each segment renders independently. Markdown code fences in one
+        /*  LLM segment can never swallow a tool-label div from another segment.
+        /* ------------------------------------------------------------------ */
+
+        const SEG_LLM_TEXT   = '\x02';
+        const SEG_TOOL_LABEL = '\x03';
+        const SEG_HTML       = '\x04';
+        const SEG_SPEED      = '\x05';
+        const SEG_THINK      = '\x06';
+        const SEG_TURN_END   = '\x07';
+
+        /* Browser escape contract characters (mirrors tokens.h) */
+        const HTML_SENTINEL_CHAR = '%';   // Sentinel char: used in lt, gt, mth_N
+        const HTML_ESCAPE_CHAR   = '\\';  // Escape char for HTML sentinels
+
+        /* ------------------------------------------------------------------ */
+        /*  Math sentinel escaping (mirrors parsers.cc)                        */
+        /* ------------------------------------------------------------------ */
+        /*  The internal math sentinel mth_N can appear literally in LLM     */
+        /*  output.  To prevent marked/browser from interpreting it as an      */
+        /*  HTML tag, we escape on input and unescape before DOM insertion.   */
+        /*  Escape char: _ (underscore).                                      */
+        /* ------------------------------------------------------------------ */
+
+        // Escape mth_N tokens in incoming SSE payloads.
+        // Mirrors escape_one_token() in parsers.cc with '_' as the escape char.
+        function escapeMth(str) {
+            var start_pos = 0;
+            while (start_pos < str.length) {
+                var pos = str.indexOf(HTML_SENTINEL_CHAR, start_pos);
+                if (pos === -1) break;
+
+                // Skip any underscores after the sentinel char.
+                var scan = pos + 1;
+                while (scan < str.length && str[scan] === '_') scan++;
+
+                // Check if suffix matches 'mth_N@' where N is digits.
+                var match = true;
+                if (str.substring(scan, scan + 4) !== 'mth_') {
+                    match = false;
+                } else {
+                    var k = scan + 4;
+                    while (k < str.length && str[k] >= '0' && str[k] <= '9') k++;
+                    if (k >= str.length || str[k] !== HTML_SENTINEL_CHAR) {
+                        match = false;
+                    }
+                }
+
+                if (match) {
+                    // Insert one more underscore after the first char.
+                    str = str.substring(0, pos + 1) + '_' + str.substring(pos + 1);
+                    start_pos = pos + 2 + (k - scan);
+                } else {
+                    start_pos = pos + 1;
+                }
+            }
+            return str;
+        }
+
+        // Unescape mth_N tokens before DOM insertion.
+        // Mirrors unescape_one_token() in parsers.cc with '_' as the escape char.
+        function unescapeMth(str) {
+            var start_pos = 0;
+            while (start_pos < str.length) {
+                var pos = str.indexOf(HTML_SENTINEL_CHAR, start_pos);
+                if (pos === -1) break;
+
+                // Count underscores after the first char.
+                var scan = pos + 1;
+                var bs = 0;
+                while (scan < str.length && str[scan] === '_') { bs++; scan++; }
+
+                // Check if suffix matches 'mth_N@' where N is digits.
+                var match = true;
+                if (str.substring(scan, scan + 4) !== 'mth_') {
+                    match = false;
+                } else {
+                    var k = scan + 4;
+                    while (k < str.length && str[k] >= '0' && str[k] <= '9') k++;
+                    if (k >= str.length || str[k] !== HTML_SENTINEL_CHAR) {
+                        match = false;
+                    }
+                }
+
+                if (match) {
+                    if (bs > 0) {
+                        // Remove one underscore: first + (bs-1) underscores + mth_N@.
+                        var replacement = HTML_SENTINEL_CHAR;
+                        for (var b = 0; b < bs - 1; b++) replacement += '_';
+                        replacement += str.substring(scan, k + 1);
+                        str = str.substring(0, pos) + replacement + str.substring(k + 1);
+                        start_pos = pos + replacement.length;
+                    } else {
+                        // No underscores -- raw token, leave alone.
+                        start_pos = k + 1;
+                    }
+                } else {
+                    start_pos = pos + 1;
+                }
+            }
+            return str;
+        }
+
+        // Unescape lt and gt sentinel tokens before DOM insertion.
+        // Uses HTML_ESCAPE_CHAR as escape char (same as C++ side, mirrors parsers.cc).
+        // Example when HTML_SENTINEL_CHAR='|' and HTML_ESCAPE_CHAR='\'
+        // Escaped: |\lt| -> literal text |lt|
+        // Raw:     |lt|  -> HTML entity &lt;
+        function htmlUnescapeSentinels(str) {
+            var result = '';
+            var i = 0;
+            while (i < str.length) {
+                if (str[i] === HTML_SENTINEL_CHAR) {
+                    var j = i + 1;
+                    var bs = 0;
+                    while (j < str.length && str[j] === HTML_ESCAPE_CHAR) { bs++; j++; }
+                    if (j + 3 <= str.length) {
+                        var s3 = str.substring(j, j + 3);
+                        var sentinel_end = HTML_SENTINEL_CHAR;
+                        if (s3 === 'lt' + sentinel_end) {
+                            if (bs > 0) { result += HTML_SENTINEL_CHAR; for (var b = 0; b < bs - 1; b++) result += HTML_ESCAPE_CHAR; result += 'lt' + sentinel_end; }
+                            else { result += '&lt;'; }
+                            i = j + 3; continue;
+                        }
+                        if (s3 === 'gt' + sentinel_end) {
+                            if (bs > 0) { result += HTML_SENTINEL_CHAR; for (var b = 0; b < bs - 1; b++) result += HTML_ESCAPE_CHAR; result += 'gt' + sentinel_end; }
+                            else { result += '&gt;'; }
+                            i = j + 3; continue;
+                        }
+                    }
+                }
+                result += str[i++];
+            }
+            // Fix marked's double-escaping of & inside <code> blocks.
+            // C++ sends & -> &amp;, but marked escapes &amp; -> &amp;amp; inside code.
+            result = result.replace(/&amp;amp;/g, '&amp;');
+            return result;
+        }
+
+        // Unescape sentinels in math tex content before passing to KaTeX.
+        // Unlike the HTML version, converts sentinels back to raw characters
+        // (not HTML entities) since KaTeX expects plain text input.
+        function unescapeMathTex(str) {
+            var s = HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
+            var e = HTML_ESCAPE_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&');
+            str = str.replace(new RegExp(s + 'lt' + s, 'g'), '<').replace(new RegExp(s + 'gt' + s, 'g'), '>');
+            // Also handle escaped forms
+            str = str.replace(new RegExp(s + e + 'lt' + s, 'g'), HTML_SENTINEL_CHAR + 'lt' + HTML_SENTINEL_CHAR)
+                     .replace(new RegExp(s + e + 'gt' + s, 'g'), HTML_SENTINEL_CHAR + 'gt' + HTML_SENTINEL_CHAR);
+            return str.replace(/&amp;/g, '&');
+        }
+
+        /* Toggle think block visibility.  Survives re-renders because the
+           wrapper div stores a data-think-collapsed attribute. */
+        function toggleThinkBlock(headerEl) {
+            var body = headerEl.nextElementSibling;
+            var block = headerEl.parentElement;
+            var collapsed = body.classList.toggle('hidden');
+            headerEl.classList.toggle('collapsed', collapsed);
+            block.setAttribute('data-think-collapsed', collapsed ? '1' : '0');
+        }
+
+        // Collapse a think-block's body (adds hidden/collapsed classes and attribute).
+        function collapseThinkBlock(blockEl, attrValue) {
+            var th = blockEl.querySelector('.think-header');
+            var tb = blockEl.querySelector('.think-body');
+            if (th && tb) {
+                tb.classList.add('hidden');
+                th.classList.add('collapsed');
+                blockEl.setAttribute('data-think-collapsed', attrValue || '1');
+            }
+        }
+
+        /* Fallback copy for insecure (HTTP) contexts where navigator.clipboard is unavailable. */
+        function fallbackCopy(text, btn) {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try {
+                const successful = document.execCommand('copy');
+                btn.textContent = successful ? 'Copied!' : 'Failed';
+            } catch (e) {
+                btn.textContent = 'Failed';
+            }
+            setTimeout(function() {
+                btn.textContent = 'Copy';
+                document.body.removeChild(ta);
+            }, 1500);
+        }
+
+        // Segments: array of { type, content }
+        let segments = [];
+
+        // Track what content was last rendered for each segment index.
+        // Used to skip re-rendering unchanged segments (incremental rendering).
+        let segRenderedContent = [];
+
+        // Track whether the user manually scrolled away from the bottom during
+        // the current generation turn.  If so, skip the auto-scroll at turn end.
+
+        /* ------------------------------------------------------------------ */
+        /*  O(1) streaming with progressive paragraph-boundary rendering       */
+        /* ------------------------------------------------------------------ */
+        /*  During streaming, append raw text and progressively render         */
+        /*  completed paragraphs through marked + KaTeX. Each character is     */
+        /*  parsed exactly once -> O(n) total.                                */
+        /* ------------------------------------------------------------------ */
+
+        // Render the raw tail of a single segment.  Called by progressiveRender()
+        // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
+        // Only parses the new delta -- never re-parses already-rendered content.
+        function renderRawTail(wrapperDiv, segIndex, finish, commitEnd) {
+            if (finish === undefined) finish = true;
+            var fullText = segments[segIndex].content;
+            var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
+
+            var end = (commitEnd === undefined) ? fullText.length : commitEnd;
+            var tail = fullText.substring(renderedPrefixLen, end);
+            if (tail.length === 0) {
+                if (finish) wrapperDiv.removeAttribute('data-raw');
+                return;
+            }
+
+            // Render + insert (handles fence continuation: when the tail
+            // starts inside a fence an earlier commit left open, the fence
+            // lines are appended to the existing <pre><code> instead of being
+            // re-rendered as a synthetic-fence block).
+            var inserted = commitDeltaHtml(wrapperDiv, segIndex, tail);
+            var firstInserted = inserted.firstInserted;
+            var lastInserted = inserted.lastInserted;
+
+            // Insertion target (for the math pass below): .think-body for
+            // think blocks, otherwise the wrapper itself.
+            var target = (segments[segIndex].type === SEG_THINK) ?
+                wrapperDiv.querySelector('.think-body') : wrapperDiv;
+            if (finish) {
+                wrapperDiv.removeAttribute('data-raw');
+            } else {
+                // Mid-stream force-render: keep streaming so the next delta renders
+                // incrementally instead of triggering a full O(n) re-render.
+                // commitEnd trims a pending would-be-fence-opener run off the
+                // tail (progressiveRender passes it); the full length otherwise.
+                wrapperDiv.setAttribute('data-rendered-len', String(end));
+            }
+
+            // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
+            if (firstInserted) {
+                renderMathInDiv(target);
+                if (tail.includes('```')) {
+                    var anchor = firstInserted.previousSibling || firstInserted;
+                    injectCopyButtonsInRange(anchor, lastInserted);
+                }
+            }
+
+            // Fallback: scan the entire wrapper for any <pre> blocks missed by
+            // the range-based pass.  The copy-btn-host guard ensures each <pre>
+            // is processed at most once, so this is O(missed), not O(n).
+            injectCopyButtons(wrapperDiv);
+
+            // Only collapse a THINK segment when it is truly finishing (turn end, or
+            // a non-think segment has followed).  A mid-stream force-render must NOT
+            // collapse -- thinking is still in progress and the user needs to see it.
+            if (segments[segIndex].type === SEG_THINK && finish) {
+                collapseThinkBlock(wrapperDiv);
+            }
+
+            segRenderedContent[segIndex] = segments[segIndex].content;
+        }
+
+        function finishAllRawSegments() {
+            var didRender = false;
+            for (var i = 0; i < segments.length; i++) {
+                var wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
+                if (!wrapperDiv) continue;
+                if (!wrapperDiv.hasAttribute('data-raw')) continue;
+                renderRawTail(wrapperDiv, i);
+                didRender = true;
+            }
+
+            // Auto-collapse think blocks when thinking is done.
+            autoCollapseThinkBlocks();
+        }
+
+        // True if the ``` at tail[i] begins a fenced code block.  Per CommonMark a
+        // fence only starts at the beginning of a line (up to 3 leading spaces); a
+        // ``` in the middle of a line (e.g., prose that mentions backticks, or an LLM
+        // reasoning about markdown) is literal text, NOT a fence.  Treating it as one
+        // corrupts the fence counter, which stalls progressive rendering and can
+        // force-collapse a still-active thinking block.
+        function isFenceMarker(tail, i) {
+            var spaces = 0;
+            var k = i;
+            while (k > 0 && tail[k - 1] === ' ') { spaces++; k--; }
+            if (spaces > 3) return false;
+            return k === 0 || tail[k - 1] === '\n';
+        }
+
+        // Whitespace test that matches JS regex \s exactly -- it must agree with
+        // the list/header guard patterns, which use \s.
+        var WS_RE = /^\s$/;
+
+        function scanIntAttr(el, name, def) {
+            var v = parseInt(el.getAttribute(name));
+            return isNaN(v) ? def : v;
+        }
+
+        // True if the # run starting at p0Pos has length 1..6 and ends exactly at
+        // L (the ($) end-of-text case of #{1,6}(\s|$)).  Bounded work: a run
+        // longer than six stops matching immediately.
+        function endHeadingAt(fullText, p0Pos, L) {
+            if (p0Pos < 0) return false;
+            var h = p0Pos + 1;
+            while (h < L && fullText[h] === '#') h++;
+            return h - p0Pos <= 6 && h === L;
+        }
+
+        // Try to progressively render completed paragraphs from the raw tail.
+        // Splits at the last \n\n so that code fences spanning multiple
+        // paragraphs are not broken: we keep one incomplete paragraph as buffer.
+        // Only parses the new delta -- never re-parses already-rendered content.
+        // O(N) total: each wrapper keeps a "waiting episode" of scan state in
+        // data attributes, so every call examines ONLY the characters appended
+        // since the previous call (no character is examined more than a bounded
+        // number of times per episode):
+        //   data-scan-hwm     furthest absolute offset scanned so far; the next
+        //                     scan resumes here.  It only ever increases over the
+        //                     segment's lifetime, so every position is examined a
+        //                     bounded number of times (total O(N)); it may briefly
+        //                     trail rendered-len by <=2 after a mid-stream force-
+        //                     render outruns a deferred lookahead.
+        //   data-in-fence     fence parity over fullText[0 .. data-scan-hwm) -- the
+        //                     exact state to resume from (closed when absent).
+        //   data-last-break   furthest \n\n found OUTSIDE a fence this episode
+        //                     (absolute index of the first \n); -1 if none yet.
+        //   data-break-fence  fence parity just after that break, i.e. up to
+        //                     last-break + 2 -- the would-be render end.
+        //   data-max-list     max absolute position of a line-start list marker
+        //                     (\d+[.)]\s or bare - * +) seen this episode; the
+        //                     "any list marker in tail" guard is just an O(1)
+        //                     compare against renderEnd (marker positions only grow).
+        //   data-max-head     same for block-header markers #{1,6}(\s|$).
+        //   data-pend-line / data-pend-phase / data-pend-cur
+        //                     line-start \d+[.)]\s pattern whose deciding char has
+        //                     not arrived yet ('d' = still in digits, 'a' = after
+        //                     [.)] waiting for \s); pend-cur is the absolute
+        //                     position of the next character it consumes.
+        //   data-pend-head    line start whose # run currently ends exactly at the
+        //                     end of the text with length 1..6 (live ($) case).
+        //   data-p0-state / data-p0-pos
+        //                     status of testing the first non-whitespace char
+        //                     after data-last-break (the old trimmed-regex guard):
+        //                     'p' none seen yet, 'd' in \d+, 'a' after [.)] waiting
+        //                     \s, 'n' after \d+- waiting \s, 't' in a # run,
+        //                     'l' list item, 'h' header, 'r' ordinary text.
+        //
+        // A force-commit (no break to split at) renders the WHOLE unrendered
+        // tail, so its end sits at the live end of the text -- where a
+        // would-be fence-opener run may still be growing.  If the text ends in
+        // a LINE-START backtick run of length 1-2 (up to 3 leading spaces, the
+        // fence rule), the run may complete to 3+ -- a fence -- with the next
+        // delta.  Committing the partial run now would render it as literal
+        // prose; the next delta's remaining backticks (1-2) can never open the
+        // fence, so the fence content escapes as prose and later fence lines
+        // misalign (an empty box between two prose chunks).  Return the safe
+        // commit end (exclusive): the run's start when it is a pending
+        // would-be opener, else the full text length.  A complete run of 3+
+        // is a real fence (the continuation protocol handles it); a mid-line
+        // run can never become a fence; a run followed by a non-backtick next
+        // delta is judged literal when that delta renders it.
+        function forceCommitEnd(fullText, from) {
+            var L2 = fullText.length;
+            if (L2 <= from) return L2;
+            var p = L2 - 1, n = 0;
+            while (p >= 0 && fullText[p] === '`') { n++; p--; }
+            if (n < 1 || n > 2) return L2;
+            if (p + 1 < from) return L2;   // run crosses the render boundary (shouldn't)
+            var q = p, sp = 0;
+            while (q >= 0 && fullText[q] === ' ' && sp < 3) { sp++; q--; }
+            if (sp === 3 && q >= 0 && fullText[q] === ' ') return L2;  // 4+ leading spaces
+            if (q >= 0 && fullText[q] !== '\n') return L2;             // mid-line run
+            return p + 1;   // the run's start
+        }
+        function progressiveRender(wrapperDiv, segIndex) {
+            var fullText = segments[segIndex].content;
+            var L = fullText.length;
+
+            // How much has already been rendered (tracked via data attribute, not DOM text).
+            var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
+
+            // Resume point: furthest offset examined so far.  data-scan-hwm only
+            // ever increases over the segment's lifetime (a commit does not reset
+            // it), so every position is scanned once -- that bounds total work to
+            // O(N).  It may briefly sit below renderedPrefixLen when a mid-stream
+            // force-render outruns a deferred lookahead; rescanning those <=2 held
+            // positions is bounded and re-runs the fence probe correctly.
+            var hwm = scanIntAttr(wrapperDiv, 'data-scan-hwm', -1);
+            if (hwm < 0) hwm = 0;
+
+            // Fence parity over fullText[0 .. hwm) -- the state to resume with.
+            var inFence    = wrapperDiv.getAttribute('data-in-fence') === '1';
+            var lastBreak  = scanIntAttr(wrapperDiv, 'data-last-break', -1);
+            var breakFence = scanIntAttr(wrapperDiv, 'data-break-fence', 0);
+            var maxList    = scanIntAttr(wrapperDiv, 'data-max-list', -1);
+            var maxHead    = scanIntAttr(wrapperDiv, 'data-max-head', -1);
+            var pendLine   = scanIntAttr(wrapperDiv, 'data-pend-line', -1);
+            var pendPhase  = wrapperDiv.getAttribute('data-pend-phase') || 'd';
+            var pendCur    = scanIntAttr(wrapperDiv, 'data-pend-cur', -1);
+            var pendHead   = scanIntAttr(wrapperDiv, 'data-pend-head', -1);
+            var p0State    = wrapperDiv.getAttribute('data-p0-state') || 'p';
+            var p0Pos      = scanIntAttr(wrapperDiv, 'data-p0-pos', -1);
+
+            // Scan ONLY the new suffix [hwm, L), tracking fence state, paragraph
+            // breaks outside fences, and the marker positions feeding the tail guards.
+            // Position m is never "consumed" while one of its lookahead tests is still
+            // undecided (text ends mid \n\n or mid ```): it is deferred so the next
+            // call re-runs it once the missing characters have arrived.
+            var deferredPos = -1;
+            for (var m = hwm; m < L; ) {
+                var c = fullText[m];
+
+                if (!inFence && c === '\n' && m === L - 1) {
+                    deferredPos = m;   // pair (m, m+1) cannot be decided yet
+                    break;
+                }
+                if (c === '`' && (m === L - 1 || (m === L - 2 && fullText[m + 1] === '`'))) {
+                    deferredPos = m;   // a ``` triple starting at m can still complete
+                    break;
+                }
+
+                // Continuation of a line-start list pattern (\d+[.)]\s) whose
+                // deciding character arrives with a later token.
+                if (pendLine >= 0 && pendCur === m) {
+                    if (pendPhase === 'd') {
+                        if (c >= '0' && c <= '9') {
+                            pendCur = m + 1;
+                        } else if (c === '.' || c === ')') {
+                            pendPhase = 'a';
+                            pendCur = m + 1;
+                        } else {
+                            pendLine = -1;          // pattern dead
+                        }
+                    } else {                        // 'a': waiting for the \s after [.)]
+                        if (WS_RE.test(c)) maxList = Math.max(maxList, pendLine);
+                        pendLine = -1;              // decided either way
+                    }
+                }
+
+                // Line-start marker recording (fence-blind, like the old whole-tail
+                // regexes).  Only the MAX position is kept: the guards ask whether
+                // ANY such marker sits at/after renderEnd, and positions only grow.
+                if ((m === 0 || fullText[m - 1] === '\n')) {
+                    if (c === '-' || c === '*' || c === '+') {
+                        maxList = m;
+                    } else if (c >= '0' && c <= '9') {
+                        var d = m + 1;
+                        while (d < L && fullText[d] >= '0' && fullText[d] <= '9') d++;
+                        if (d < L && (fullText[d] === '.' || fullText[d] === ')')) {
+                            if (d + 1 < L) {
+                                if (WS_RE.test(fullText[d + 1])) maxList = m;
+                            } else {
+                                pendLine = m;      // the \s may arrive next token
+                                pendPhase = 'a';
+                                pendCur = d + 1;
+                            }
+                        } else if (d === L) {
+                            pendLine = m;          // digits still arriving
+                            pendPhase = 'd';
+                            pendCur = d;
+                        }
+                    } else if (c === '#') {
+                        var h2 = m + 1;
+                        while (h2 < L && fullText[h2] === '#') h2++;
+                        if (h2 - m <= 6) {         // run is >= 1 since c === '#'
+                            if (h2 < L) {
+                                if (WS_RE.test(fullText[h2])) maxHead = m;
+                            } else {
+                                pendHead = m;      // (\s|$): $ holds while run ends text
+                            }
+                        }
+                    }
+                }
+
+                // First non-whitespace char after the current last break drives the
+                // "list/header at start of tail" guards (the old trimmed-regexes).
+                if (m >= lastBreak + 2) {
+                    if (p0State === 'p') {
+                        if (!WS_RE.test(c)) {
+                            if (c === '-' || c === '*' || c === '+') p0State = 'l';
+                            else if (c === '#') { p0State = 't'; p0Pos = m; }
+                            else if (c >= '0' && c <= '9') p0State = 'd';
+                            else p0State = 'r';
+                        }
+                    } else if (p0State === 'd') {  // accumulating \d+ : next char decides
+                        if (!(c >= '0' && c <= '9')) {
+                            if (c === '.' || c === ')') p0State = 'a';
+                            else if (c === '-') p0State = 'n';
+                            else p0State = 'r';
+                        }
+                    } else if (p0State === 'a' || p0State === 'n') {
+                        p0State = WS_RE.test(c) ? 'l' : 'r';   // \d+[.)]\s / \d+-\s
+                    } else if (p0State === 't') {              // # run; bounded re-scan
+                        var h3 = p0Pos + 1;
+                        while (h3 < L && fullText[h3] === '#') h3++;
+                        if (c === '#') {
+                            if (h3 - p0Pos > 6) p0State = 'r'; // too many #: not a header
+                            // else stay 't' -- (\s|$) still undecided at end of text
+                        } else {
+                            p0State = (h3 - p0Pos <= 6 && WS_RE.test(c)) ? 'h' : 'r';
+                        }
+                    }
+                }
+
+                // Fence toggle: a ``` only counts at line start (up to 3 leading
+                // spaces); mid-line backticks are literal prose, NOT a fence.  The +3
+                // jump matches the original scan and skips only backtick positions,
+                // which can never affect break or marker detection; the head position
+                // itself ran all checks above first (a p0 search that meets a fence
+                // must see its leading backtick, exactly like the trimmed-regex).
+                if (c === '`' && fullText[m + 1] === '`' && fullText[m + 2] === '`' &&
+                    isFenceMarker(fullText, m)) {
+                    inFence = !inFence;
+                    m += 3;
+                    continue;
+                }
+
+                // Paragraph break outside a fence.  On a hit we skip the second \n
+                // (net +2) exactly like the original scan, so "\n\n\n" registers a
+                // single break at the first position and delta boundaries are
+                // unchanged from before.
+                if (!inFence && c === '\n' && fullText[m + 1] === '\n') {
+                    lastBreak = m;
+                    breakFence = inFence ? 1 : 0;   // == parity up to m + 2 (render end)
+                    p0State = 'p';                  // restart first-non-whitespace search
+                    p0Pos = -1;
+                    m += 2;
+                    continue;
+                }
+
+                m += 1;
+            }
+
+            // Persist episode state: the next call resumes from deferredPos (if a
+            // lookahead was left undecided) or from L, with fence parity at that
+            // exact resume offset.
+            wrapperDiv.setAttribute('data-scan-hwm', String(deferredPos >= 0 ? deferredPos : L));
+            wrapperDiv.setAttribute('data-in-fence', inFence ? '1' : '0');
+            wrapperDiv.setAttribute('data-last-break', String(lastBreak));
+            wrapperDiv.setAttribute('data-break-fence', breakFence ? '1' : '0');
+            wrapperDiv.setAttribute('data-max-list', String(maxList));
+            wrapperDiv.setAttribute('data-max-head', String(maxHead));
+            wrapperDiv.setAttribute('data-pend-line', String(pendLine));
+            if (pendLine >= 0) {
+                wrapperDiv.setAttribute('data-pend-phase', pendPhase);
+                wrapperDiv.setAttribute('data-pend-cur', String(pendCur));
+            } else {
+                wrapperDiv.removeAttribute('data-pend-phase');
+                wrapperDiv.removeAttribute('data-pend-cur');
+            }
+            wrapperDiv.setAttribute('data-pend-head', String(pendHead));
+            wrapperDiv.setAttribute('data-p0-state', p0State);
+            if (p0Pos >= 0) {
+                wrapperDiv.setAttribute('data-p0-pos', String(p0Pos));
+            } else {
+                wrapperDiv.removeAttribute('data-p0-pos');
+            }
+
+            if (lastBreak < 0) {
+                // No paragraph break outside a fence yet.  If the unrendered tail is
+                // very long, force-render it so the user sees progress: no split
+                // means no risk of breaking code fences or lists.
+                var tailLen = L - renderedPrefixLen;
+                if (tailLen > 2000) {
+                    if (segments[segIndex].type === SEG_THINK && inFence) {
+                        // A think block sitting inside an unclosed fence: rendering now
+                        // would commit a broken (open) code block, and we must not
+                        // collapse it.  Wait for the fence to close or a break to
+                        // appear; the next call resumes from data-scan-hwm above, so
+                        // each waited-on character is examined only once.
+                        return;
+                    }
+                    // Mid-stream: render but keep the segment in raw mode
+                    // (finish=false) so the next delta commits incrementally
+                    // instead of leaving raw mode and paying a full O(n)
+                    // re-render of the whole segment on every subsequent delta
+                    // (quadratic for long code blocks).  Fence continuation is
+                    // safe now: commitDeltaHtml appends fence lines to the
+                    // existing <pre><code>, so a long code block stays a single
+                    // block.  The turn-end finishAllRawSegments() sweep
+                    // force-finishes the segment, as for think blocks today.
+                    // Never end the commit mid would-be-fence-opener run
+                    // (see forceCommitEnd): a trailing line-start backtick
+                    // run of 1-2 may complete to a fence with the next
+                    // delta; committing it now would render it as prose and
+                    // the fence could never form.  data-scan-hwm is already
+                    // parked at the run, so the next call re-judges the
+                    // COMPLETED run at the same position (bounded re-scan).
+                    var forceEnd = forceCommitEnd(fullText, renderedPrefixLen);
+                    if (forceEnd === renderedPrefixLen) {
+                        // The whole unrendered tail is the pending run (and/or
+                        // its leading spaces): wait for the deciding character.
+                        return;
+                    }
+                    renderRawTail(wrapperDiv, segIndex, false, forceEnd);
+                }
+                return;
+            }
+
+            var renderEnd = lastBreak + 2;
+
+            // Refuse to commit while a fence is left open at renderEnd: the parity
+            // was recorded when the break was found, so no from-index-0 re-scan.
+            if (breakFence) {
+                return;
+            }
+
+            // Resolve the live ($) end-of-text header now that text may continue
+            // past its # run.
+            if (pendHead >= 0) {
+                var dh = pendHead + 1;
+                while (dh < L && fullText[dh] === '#') dh++;
+                var hrun = dh - pendHead;
+                if (dh < L) {
+                    // $ no longer applies once text continues past the run.
+                    if (hrun <= 6 && WS_RE.test(fullText[dh])) maxHead = Math.max(maxHead, pendHead);
+                    wrapperDiv.setAttribute('data-pend-head', '-1');
+                    pendHead = -1;
+                } else if (hrun > 6) {
+                    wrapperDiv.setAttribute('data-pend-head', '-1');   // more than six #
+                    pendHead = -1;
+                }
+            }
+
+            // --- Tail guards (tailAfter = fullText[renderEnd .. L)); all O(1): ---
+
+            // First non-whitespace char of the tail is a list item (old trim+regex);
+            // if so, this break splits a list in half -- skip it and wait.
+            if (p0State === 'l') return;
+
+            // Any line-start list marker in the tail -- would render the list before
+            // its surrounding context text.
+            if (maxList >= renderEnd) return;
+
+            // First non-whitespace char of the tail is an ATX block header ($ case
+            // included); if so, this break would render content before its heading.
+            if (p0State === 'h' || (p0State === 't' && endHeadingAt(fullText, p0Pos, L))) return;
+
+            // Any line-start block header in the tail ($ case included via pendHead);
+            // a heading mid-tail must not be rendered after its own content.
+            if (maxHead >= renderEnd || pendHead >= renderEnd) return;
+
+            var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
+
+            // Render + insert (handles fence continuation: when the delta
+            // starts inside a fence a previous commit left open, the fence
+            // lines are appended to the existing <pre><code> instead of being
+            // re-rendered as a synthetic-fence block).
+            var inserted = commitDeltaHtml(wrapperDiv, segIndex, deltaText);
+            var firstInserted = inserted.firstInserted;
+            var lastInserted = inserted.lastInserted;
+
+            // Advance the rendered prefix.  The scan state is position-based, so it
+            // carries over instead of resetting: data-scan-hwm keeps advancing (no
+            // re-scan of already-rendered content), fence parity lives at that
+            // offset, and a marker position below renderEnd can never block a later
+            // commit (the guards compare against the new renderEnd).  Only the
+            // committed break itself and the first-non-whitespace search restart.
+            wrapperDiv.setAttribute('data-rendered-len', String(renderEnd));
+            if (maxList >= renderEnd) {
+                wrapperDiv.setAttribute('data-max-list', String(maxList));
+            } else {
+                wrapperDiv.removeAttribute('data-max-list');
+            }
+            if (maxHead >= renderEnd) {
+                wrapperDiv.setAttribute('data-max-head', String(maxHead));
+            } else {
+                wrapperDiv.removeAttribute('data-max-head');
+            }
+            if (pendLine >= renderEnd) {
+                wrapperDiv.setAttribute('data-pend-line', String(pendLine));
+                wrapperDiv.setAttribute('data-pend-phase', pendPhase);
+                wrapperDiv.setAttribute('data-pend-cur', String(pendCur));
+            } else {
+                wrapperDiv.removeAttribute('data-pend-line');
+                wrapperDiv.removeAttribute('data-pend-phase');
+                wrapperDiv.removeAttribute('data-pend-cur');
+            }
+            if (pendHead >= renderEnd) {
+                wrapperDiv.setAttribute('data-pend-head', String(pendHead));
+            } else {
+                wrapperDiv.removeAttribute('data-pend-head');
+            }
+            wrapperDiv.removeAttribute('data-last-break');
+            wrapperDiv.removeAttribute('data-break-fence');
+            wrapperDiv.setAttribute('data-p0-state', 'p');
+            wrapperDiv.removeAttribute('data-p0-pos');
+
+            // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
+            // O(1) per step, not O(n) rescanning of already-rendered content.
+            if (firstInserted) {
+                var anchor = firstInserted.previousSibling || firstInserted;
+                renderMathInRange(anchor, lastInserted);
+                if (deltaText.includes('```')) {
+                    injectCopyButtonsInRange(anchor, lastInserted);
+                }
+            }
+
+            // Fallback: scan the entire wrapper for any <pre> blocks missed by
+            // the range-based pass.  The copy-btn-host guard ensures each <pre>
+            // is processed at most once, so this is O(missed), not O(n).
+            injectCopyButtons(wrapperDiv);
+        }
+        /* ------------------------------------------------------------------ */
+        /*  Code region masking (O(N))                                        */
+        /* ------------------------------------------------------------------ */
+        /*  A '$' inside a code span or fenced block is a shell/env reference, */
+        /*  never a math delimiter -- and rendered LaTeX in code we might      */
+        /*  cut and paste would be useless.  So before math extraction, the   */
+        /*  content of all code regions is masked out and restored verbatim   */
+        /*  (still C++-escaped) after marked.parse().                         */
+        /*                                                                     */
+        /*  Complexity: one forward scan -- the index only moves forward.     */
+        /*  Inline spans are handled per line: all backtick runs on the line  */
+        /*  are gathered in a single pass and matched to same-length closers  */
+        /*  with monotonically advancing per-length pointers, so every run is */
+        /*  visited a bounded number of times even when many backticks are    */
+        /*  unpaired -- strictly O(N) over the whole text.                    */
+        /*                                                                     */
+        /*  Streaming: a delta can start inside a fence opened by an earlier  */
+        /*  delta (forced mid-fence render), so the caller passes the fence   */
+        /*  parity at the delta's start; the parity at the delta's end is     */
+        /*  returned for the next call.                                        */
+        function maskCodeRegions(text, startInFence) {
+            var codeContents = [];
+            var out = [];
+            var i = 0, L = text.length;
+            var inFence = !!startInFence;
+            var fenceRunLen = 3;          // opener run length (unknown if startInFence)
+            var fenceIndent = 0;          // opener's leading spaces (sentinel alignment)
+            var fenceBuf = '';            // pending fence content lines
+            var heldLine = '';            // final candidate closer line, held for next delta
+            var lineStart = 0;            // start of the current line
+
+            // If the text itself contains %code_N% tokens (LLM output), use a
+            // different placeholder family to avoid a restore collision (same
+            // idea as the mth escape system).
+            var prefix = /%code_\d+%/.test(text) ? 'codeB_' : 'code_';
+
+            function pushTo(pos) {
+                if (pos > i) out.push(text.substring(i, pos));
+                i = pos;
+            }
+
+            function flushFence(withNewline) {
+                if (fenceBuf !== '') {
+                    codeContents.push(fenceBuf);
+                    // Emit the sentinel at the fence opener's indent: a
+                    // column-0 sentinel is shallower than an indented fence's
+                    // enclosing list item, which would make marked close the
+                    // fence empty and demote the sentinel to prose (the fence
+                    // content leaking out below the box as a paragraph).
+                    out.push(' '.repeat(fenceIndent) +
+                             HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
+                             HTML_SENTINEL_CHAR + (withNewline ? '\n' : ''));
+                }
+                fenceBuf = '';
+            }
+
+            // Inline code spans for one line, in one pass.  i sits at the
+            // line's first backtick (not a fence).  All backtick runs on the
+            // line are gathered in a single forward scan, then each opener is
+            // matched to the next same-length run (the closer) using a
+            // monotonically advancing pointer per run length -- each run is
+            // visited a bounded number of times, so this is O(line length)
+            // even with many unpaired backticks.  Spans are same-line only
+            // (cross-line spans are pathological in LLM output; the
+            // restriction keeps line structure intact).  Different-length
+            // runs inside a span are content.
+            function processLineSpans() {
+                var lineEnd = text.indexOf('\n', i);
+                if (lineEnd === -1) lineEnd = L;
+
+                var runs = [];
+                var r = i;
+                while (r < lineEnd) {
+                    if (text[r] === '`') {
+                        var r2 = r;
+                        while (r2 < lineEnd && text[r2] === '`') r2++;
+                        runs.push({ start: r, end: r2, len: r2 - r });
+                        r = r2;
+                    } else {
+                        r++;
+                    }
+                }
+
+                var emit = i;
+                var nextFor = {};   // run length -> candidate index in runs
+                var idx = 0;
+                while (idx < runs.length) {
+                    var op = runs[idx];
+                    var q = (nextFor[op.len] !== undefined) ? nextFor[op.len] : (idx + 1);
+                    while (q < runs.length &&
+                           (runs[q].len !== op.len || runs[q].start < op.end)) q++;
+                    nextFor[op.len] = q;
+                    if (q < runs.length) {
+                        var cl = runs[q];
+                        if (op.start > emit) out.push(text.substring(emit, op.start));
+                        codeContents.push(text.substring(op.end, cl.start));
+                        out.push('`' + HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
+                                 HTML_SENTINEL_CHAR + '`');
+                        emit = cl.end;
+                        idx = q + 1;   // closer is consumed
+                    } else {
+                        // No same-length closer on the line: literal backticks.
+                        if (op.end > emit) out.push(text.substring(emit, op.end));
+                        emit = op.end;
+                        idx++;
+                    }
+                }
+                if (lineEnd > emit) out.push(text.substring(emit, lineEnd));
+                if (lineEnd < L) out.push('\n');   // preserve line structure
+                i = (lineEnd < L) ? lineEnd + 1 : L;
+                lineStart = i;
+            }
+
+            // If we start inside a fence opened by an earlier delta, the
+            // previous delta's marked auto-closed its fence; open a synthetic
+            // one here so this delta's remaining fence content (and its real
+            // closer line) forms a complete code block as well.
+            if (inFence) out.push('```\n');
+
+            while (i < L) {
+                if (inFence) {
+                    // Consume one line; check if it closes the fence: at most 3
+                    // leading spaces, a backtick run of length >= fenceRunLen,
+                    // then only spaces.
+                    var ce = text.indexOf('\n', i);
+                    var line = text.substring(i, ce === -1 ? L : ce);
+                    var p = 0;
+                    while (p < line.length && line[p] === ' ') p++;
+                    var ls = p, rb = 0;
+                    while (p + rb < line.length && line[p + rb] === '`') rb++;
+                    var rest = line.substring(p + rb);
+                    if (ls <= 3 && rb >= fenceRunLen && rest.replace(/ /g, '') === '') {
+                        flushFence(true);
+                        out.push(line + (ce === -1 ? '' : '\n'));
+                        i = (ce === -1 ? L : ce) + 1;
+                        inFence = false;
+                        lineStart = i;
+                        continue;
+                    }
+                    if (ce === -1) {
+                        // Final line, no newline yet.  If it is a closer-line
+                        // CANDIDATE (<=3 spaces + only backticks), the line may
+                        // still complete into a closer with the next delta --
+                        // hold it out of the content so the next commit can
+                        // judge the COMPLETED line (a closer split across a
+                        // commit boundary would otherwise leave a stray
+                        // backtick in the content and never close the fence).
+                        if (/^ {0,3}`*$/.test(line)) {
+                            heldLine = line;
+                        } else {
+                            fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
+                        }
+                        i = L;
+                        break;
+                    }
+                    fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
+                    i = ce + 1;
+                    lineStart = i;
+                    continue;
+                }
+
+                if (text[i] !== '`') {
+                    // Literal text up to the next backtick (chunked: one push).
+                    var nb = text.indexOf('`', i);
+                    var stop = nb === -1 ? L : nb;
+                    var seg = text.substring(i, stop);
+                    var nl = seg.lastIndexOf('\n');
+                    if (nl !== -1) lineStart = i + nl + 1;
+                    out.push(seg);
+                    i = stop;
+                    continue;
+                }
+
+                // A backtick run.
+                var j = i;
+                while (j < L && text[j] === '`') j++;
+                var n = j - i;
+
+                // Fence opener?  Same rule as isFenceMarker(): a run of 3+
+                // backticks at text start or after \n, with at most 3 leading
+                // spaces.
+                var b = i, sp = 0;
+                while (b > 0 && text[b - 1] === ' ' && sp < 3) { b--; sp++; }
+                if (n >= 3 && (b === 0 || text[b - 1] === '\n')) {
+                    // Emit the opening fence line (info string) verbatim.
+                    var nl2 = text.indexOf('\n', j);
+                    pushTo(nl2 === -1 ? L : nl2 + 1);
+                    i = nl2 === -1 ? L : nl2 + 1;
+                    inFence = true;
+                    fenceRunLen = n;
+                    fenceIndent = sp;
+                    lineStart = i;
+                    continue;
+                }
+
+                // Inline spans: process the whole line in one pass.
+                processLineSpans();
+            }
+            pushTo(L);
+            var fenceOpen = inFence;
+            var bufAtEnd = fenceBuf;            // capture before flushFence clears it
+            if (fenceOpen) flushFence(false);   // unclosed fence at end of delta
+            return { text: out.join(''), codeContents: codeContents,
+                     prefix: prefix, endParity: fenceOpen ? 1 : 0,
+                     // Fence state for the next delta (fence-continuation
+                     // append): the last content line lacks its \n (the delta
+                     // ended mid-line, so the next append needs no leading
+                     // newline -- a held closer candidate completes a line,
+                     // so it does not count as mid-line), the fence already
+                     // has content (so the next append does need one), the
+                     // opener's run length (3 = unknown when resuming across
+                     // a delta boundary), and the held closer candidate line
+                     // (the next commit judges the COMPLETED line).
+                     endMidLine: fenceOpen && bufAtEnd !== '' && heldLine === '' &&
+                                 text.charAt(L - 1) !== '\n',
+                     endHasContent: fenceOpen && bufAtEnd !== '',
+                     endFenceRunLen: fenceOpen ? fenceRunLen : 0,
+                     endHeldLine: fenceOpen ? heldLine : '' };
+        }
+
+        // CommonMark closer rule (matching maskCodeRegions): at most 3
+        // leading spaces, a backtick run of length >= fenceRunLen, then only
+        // spaces.
+        function isFenceCloseLine(line, fenceRunLen) {
+            var p = 0;
+            while (p < line.length && line[p] === ' ') p++;
+            if (p > 3) return false;
+            var rb = 0;
+            while (p + rb < line.length && line[p + rb] === '`') rb++;
+            if (rb < fenceRunLen) return false;
+            var q = p + rb;
+            while (q < line.length) {
+                if (line[q] !== ' ') return false;
+                q++;
+            }
+            return true;
+        }
+
+        // Find the line in delta that closes a fence already open before the
+        // delta starts.  firstLinePartial: the delta starts mid-line
+        // (the previous commit ended mid-line), so the first line is a
+        // continuation of an earlier fence line and can never be the closer.
+        // Returns { contentEnd, closeEnd } -- contentEnd is the start of the
+        // close line (fence content is delta[0..contentEnd)), closeEnd is the
+        // index just past the close line's newline (or delta.length when the
+        // close line is the last line without a trailing newline) -- or null
+        // when no close line is present.  Single O(delta) scan.
+        function findFenceCloseInDelta(delta, fenceRunLen, firstLinePartial) {
+            var L = delta.length;
+            var lineStart = 0;
+            var i = 0;
+            function checkLine(ls, le) {
+                if (!isFenceCloseLine(delta.substring(ls, le), fenceRunLen)) return null;
+                return { contentEnd: ls, closeEnd: le === L ? L : le + 1 };
+            }
+            while (i < L) {
+                if (delta[i] === '\n') {
+                    // The first line is a continuation of an earlier fence
+                    // line when firstLinePartial; it can never be the closer.
+                    if (!(lineStart === 0 && firstLinePartial)) {
+                        var res = checkLine(lineStart, i);
+                        if (res) return res;
+                    }
+                    lineStart = i + 1;
+                }
+                i++;
+            }
+            // Final line (no trailing newline) can still be the closer --
+            // unless the whole delta is one partial first line.
+            if (lineStart === 0 && firstLinePartial) return null;
+            return checkLine(lineStart, L);
+        }
+
+        // Proper prefixes of the C++ stream-escape tokens -- %lt%, %gt% and
+        // their backslash-escaped forms, plus &amp; (C++ escapes every &, so
+        // a bare & in the raw stream is always the start of one).  A fence
+        // commit that ends mid-token must hold the partial back and prepend
+        // it to the next commit, or the split token renders as literal text.
+        var PARTIAL_ESCAPE_PREFIXES =
+            ['&amp', '%\\lt', '&am', '%lt', '%gt', '%\\l', '%\\g', '&a', '%l', '%g', '%\\', '&', '%'];
+
+        // Longest suffix of s (length <= 4) that is a proper prefix of a
+        // stream-escape token, or '' when s does not end mid-token.  O(1).
+        // Must run on the RAW (pre-unescape) stream text: a user-literal
+        // '%lt%' (escaped form in the stream: '%\lt%') is NOT a partial.
+        // A trailing COMPLETE token is not a partial either: its final char
+        // closes the token (holding it would split the token from the next
+        // commit's content and change how the pair unescapes).
+        function longestPartialEscapeSuffix(s) {
+            if (/(?:%\\?(?:lt|gt)%|&amp;)$/.test(s)) return '';
+            for (var n = Math.min(4, s.length); n >= 1; n--) {
+                var suf = s.substring(s.length - n);
+                if (PARTIAL_ESCAPE_PREFIXES.indexOf(suf) !== -1) return suf;
+            }
+            return '';
+        }
+
+        // Plan a fence-continuation commit: the delta starts inside a fence
+        // that a previous commit left open.  Pure function (no DOM) so the
+        // plan is unit-testable; the caller performs the DOM ops:
+        //   appendText  the fence content in this delta, unescaped for
+        //               textContent ( %lt% %gt% -> < > , &amp; -> & ), or
+        //               null when the delta has no fence content (it starts
+        //               at the close line).  The caller prepends '\n' when
+        //               the previous commit ended at a line boundary AND the
+        //               block already has content (it knows both; this
+        //               function does not).
+        //   rest        text after the close line, to be run through the
+        //               normal pipeline (marked etc.) with parity 0.
+        //   closeFound  the fence closed inside this delta.
+        //   endMidLine  when the fence is still open: the appended content's
+        //               last line lacks its newline (a held closer candidate
+        //               completes a line, so it does not count as mid-line).
+        //   pending     a partial escape token held back from the (still open)
+        //               fence content's end; prepend it to the NEXT commit.
+        //   heldLine    a closer candidate line held back from the (still
+        //               open) fence content's end; the NEXT commit judges the
+        //               completed line (candidate + its first line).
+        // pending: partial escape token held back by the previous commit.
+        // heldLine: closer candidate line held back by the previous commit.
+        function fenceContinuationCommit(delta, fenceRunLen, firstLinePartial, pending, heldLine) {
+            pending = pending || '';
+            heldLine = heldLine || '';
+            var work = delta;
+
+            // A held closer candidate: the completed line = heldLine + the
+            // delta's first line.  Judge it before anything else.
+            if (heldLine !== '') {
+                var nl = work.indexOf('\n');
+                var firstLine = nl === -1 ? work : work.substring(0, nl);
+                var combined = heldLine + firstLine;
+                if (nl === -1 && /^ {0,3}`*$/.test(combined)) {
+                    // Still unterminated and still a candidate: keep holding;
+                    // nothing to append this commit.  (pending is always ''
+                    // here: a held line means the previous content ended on a
+                    // complete line, so no escape token is split.)
+                    return { appendText: null, rest: '', closeFound: false,
+                             endMidLine: false, pending: '', heldLine: combined };
+                }
+                if (nl !== -1 && isFenceCloseLine(combined, fenceRunLen)) {
+                    // The completed line is the closer: no content from it.
+                    return {
+                        appendText: (pending !== '') ? unescapeMathTex(pending) : null,
+                        rest: work.substring(nl + 1),
+                        closeFound: true, endMidLine: false,
+                        pending: '', heldLine: ''
+                    };
+                }
+                if (nl !== -1) {
+                    // The completed line is a content line.
+                    work = combined + work.substring(nl);
+                } else {
+                    // No newline yet and no longer a candidate: the completed
+                    // line is content, still mid-line.
+                    work = combined;
+                }
+                firstLinePartial = false;   // the first line is now complete
+            }
+
+            var close = findFenceCloseInDelta(work, fenceRunLen, firstLinePartial);
+            var rest = close ? work.substring(close.closeEnd) : '';
+            var newHeld = '';
+            var rawBase;
+            if (close) {
+                rawBase = work.substring(0, close.contentEnd);
+            } else {
+                // The fence stays open: hold a final closer candidate line
+                // (a commit boundary may land mid-closer-line on any commit)
+                // so the next commit can judge the COMPLETED line.
+                var lastNl = work.lastIndexOf('\n');
+                var finalLine = work.substring(lastNl + 1);
+                if (finalLine !== '' && /^ {0,3}`*$/.test(finalLine)) {
+                    newHeld = finalLine;
+                    rawBase = work.substring(0, lastNl + 1);
+                } else {
+                    rawBase = work;
+                }
+            }
+            var raw = pending + rawBase;
+            // Match the mask's convention: the last content line does not keep
+            // its newline (the \n before the close line, or a trailing \n at
+            // delta end, is a line terminator, not content).  Without this,
+            // every append would add a spurious trailing newline to <pre>.
+            if (raw.length > 0 && raw.charAt(raw.length - 1) === '\n') {
+                raw = raw.substring(0, raw.length - 1);
+            }
+            // An escape token split across commits renders as literal text, so
+            // when the fence stays open, hold any partial token at the end of
+            // the (pending + new) content for the next commit.  When the fence
+            // closes, the combined raw text is unescaped whole (the partial
+            // either completes or is a literal).
+            var newPending = '';
+            var content = raw;
+            if (!close) {
+                newPending = longestPartialEscapeSuffix(raw);
+                if (newPending !== '') {
+                    content = raw.substring(0, raw.length - newPending.length);
+                }
+            }
+            return {
+                appendText: (content !== '') ? unescapeMathTex(content) : null,
+                rest: rest,
+                closeFound: !!close,
+                endMidLine: !close && newHeld === '' && work.length > 0 &&
+                            work.charAt(work.length - 1) !== '\n',
+                pending: newPending,
+                heldLine: newHeld
+            };
+        }
+
+        // Strip dangerous URLs (javascript:, data:, vbscript:,
+        // protocol-relative //) from href/src attributes in HTML produced by
+        // marked.parse().  The bundled marked does no URL cleaning of its own,
+        // so this is the primary URL defense.  Quoted values use a strict
+        // allowlist (default-deny).  Unquoted values -- which raw HTML can
+        // carry and which marked passes through verbatim -- block only
+        // executable schemes (decoding character-reference colons), so that
+        // legitimate unquoted tokens in prose and code spans are left intact.
+        function sanitizeMarkdownHtml(html) {
+            return html.replace(/(href|src)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`]+))/gi, function(m, attr, dval, sval, uval) {
+                if (dval !== undefined || sval !== undefined) {
+                    var val = (dval !== undefined ? dval : sval).trim();
+                    if (/^\/\//.test(val)) return attr + '=""';
+                    if (/^(https?:|mailto:|#|\/)/i.test(val)) return m;
+                    return attr + '=""';
+                }
+                var u = uval.replace(/&colon;|&#0*58;|&#x0*3a;/gi, ':');
+                if (/^\/\//.test(u)) return attr + '=""';
+                if (/^(javascript|vbscript|data):/i.test(u)) return attr + '=""';
+                return m;
+            });
+        }
+
+        // Second-layer defense, applied to the marked output (before code
+        // regions are restored, so it never sees fence content):
+        //   1. Remove <script>...</script> element pairs entirely.
+        //   2. Remove on* handler attributes from real tags only.
+        // The CSP (script-src 'self') is the primary boundary and blocks these
+        // in the live DOM; this scrub additionally keeps the DOM clean so the
+        // exported HTML (which carries no CSP) cannot inherit an executable
+        // <script> or handler, and stops an unterminated <script> from making
+        // the browser treat the rest of a streaming fragment as script text.
+        // Code spans show "<script>" as "&lt;script&gt;" (entity-escaped by
+        // marked) and fences are sentinel-masked, so neither matches here.
+        function scrubDangerousHtml(html) {
+            html = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
+            html = html.replace(/<[a-z][a-z0-9]*(?:"[^"]*"|'[^']*'|[^<>])*\/?>/gi, function(tag) {
+                return tag.replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+            });
+            return html;
+        }
+
+        // Shared pipeline: mask code regions, extract math delimiters, run
+        // through marked, render KaTeX.  Used by both rawTextToHtml (streaming)
+        // and segToHtml (full re-render).  Every step is a single linear pass
+        // over its input, so the pipeline is O(N) per call; progressive
+        // rendering feeds each character exactly once, so O(N) per segment.
+        function convertTextToHtml(text, startInFence) {
+            var mathBlocks = [];
+            var masked = maskCodeRegions(text, startInFence);
+            var content = masked.text;
+
+            content = content.replace(/\$\$([\s\S]*?)\$\$/g, function(_, m) {
+                mathBlocks.push({ tex: m.trim(), display: true, srcEsc: m });
+                return HTML_SENTINEL_CHAR + 'mth_' + (mathBlocks.length - 1) + HTML_SENTINEL_CHAR;
+            });
+
+            // Extract inline math $...$ so that | inside $a|b$ doesn't get
+            // treated as a table delimiter by marked.  $ pairs inside code
+            // regions can't reach here (masked above).  Candidates are still
+            // validated at restore time: a $ pair in prose is usually an
+            // env-var reference, not math.
+            content = content.replace(/\$([^\$\n]+?)\$/g, function(_, m) {
+                mathBlocks.push({ tex: m.trim(), display: false, srcEsc: m });
+                return HTML_SENTINEL_CHAR + 'mth_' + (mathBlocks.length - 1) + HTML_SENTINEL_CHAR;
+            });
+
+            var html;
+            if (typeof marked !== 'undefined') {
+                var content2 = content.replace(/\\\\/g, '\x00\x00');
+                html = marked.parse(content2, { breaks: true });
+                html = html.replace(/\x00\x00/g, '\\\\');
+                html = sanitizeMarkdownHtml(html);
+                html = scrubDangerousHtml(html);
+            } else {
+                var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
+            }
+
+            // Restore masked code content verbatim (still C++-escaped: &amp;
+            // and %lt%/%gt% tokens).  Runs before htmlUnescapeSentinels so the
+            // %lt%/%gt% inside resolve to entities like everywhere else.
+            var codeRe = new RegExp(HTML_SENTINEL_CHAR + masked.prefix + '(\\d+)' + HTML_SENTINEL_CHAR, 'g');
+            html = html.replace(codeRe, function(_, idx) {
+                return masked.codeContents[parseInt(idx)];
+            });
+            html = htmlUnescapeSentinels(html);
+
+            // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
+            html = html.replace(new RegExp(HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&') + 'mth_(\\d+)' + HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&'), 'g'), function(_, idx) {
+                var block = mathBlocks[parseInt(idx)];
+                var tex = unescapeMathTex(block.tex);
+                if (!block.display) {
+                    // Inline $...$ validation (LIM_INLINE_LATEX=1): the same
+                    // byte sequence in prose is usually a shell/env reference,
+                    // so render only candidates that look like deliberate
+                    // inline math:
+                    //   1. TeX convention: a math delimiter never abuts
+                    //      whitespace.  This is what kills the adjacent-env-var
+                    //      pairing artifacts: in "$HOME $PATH" / "$HOME and
+                    //      $PATH" the non-greedy pair captures "HOME " /
+                    //      "HOME and ", which ends in whitespace.
+                    //   2. Backticks never appear in math -- they mark code.
+                    //   3. It must actually parse as math.
+                    // Clean unspaced pairs like $N$ and $H_0$ render as math;
+                    // only a parse failure (or mode 0) leaves them literal.
+                    // $ pairs in code regions never reach here (masked above
+                    // by maskCodeRegions).  Fallback is the exact original
+                    // text (srcEsc is the untrimmed capture, unescaped).
+                    if (!LIM_INLINE_LATEX_ENABLED) return '$' + unescapeMathTex(block.srcEsc) + '$';
+                    var src = block.srcEsc;
+                    if (/\s/.test(src.charAt(0)) || /\s/.test(src.charAt(src.length - 1))) {
+                        return '$' + unescapeMathTex(src) + '$';
+                    }
+                    if (src.indexOf('`') !== -1) return '$' + unescapeMathTex(src) + '$';
+                    if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
+                        try {
+                            return katex.renderToString(tex, { displayMode: false, throwOnError: true });
+                        } catch(e) {}
+                    }
+                    return '$' + unescapeMathTex(src) + '$';
+                }
+                // Display $$...$$: intentional block math -- render as before.
+                if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
+                    try {
+                        var result = katex.renderToString(tex, { displayMode: true, throwOnError: false });
+                        if (!result.includes('katex-error')) return result;
+                    } catch(e) {}
+                }
+                return '$$' + unescapeMathTex(block.srcEsc) + '$$';
+            });
+
+            return { html: html, endParity: masked.endParity,
+                     endMidLine: masked.endMidLine,
+                     endHasContent: masked.endHasContent,
+                     endFenceRunLen: masked.endFenceRunLen,
+                     endHeldLine: masked.endHeldLine };
+        }
+
+        // Persist fence-continuation state on the wrapper from a pipeline
+        // result.  A delta can start inside a fence opened by an earlier
+        // delta (forced mid-fence render), so the parity is persisted on the
+        // wrapper; the other fence-state attributes feed the fence-continuation
+        // append (data-fence-midline / data-fence-content decide the
+        // leading-newline rule; data-fence-runlen is the closer rule).
+        function writeFenceAttrs(wrapperDiv, r) {
+            if (!wrapperDiv) return;
+            wrapperDiv.setAttribute('data-fence-parity', r.endParity ? '1' : '0');
+            if (r.endParity) {
+                if (r.endMidLine) wrapperDiv.setAttribute('data-fence-midline', '1');
+                else wrapperDiv.removeAttribute('data-fence-midline');
+                if (r.endHasContent) wrapperDiv.setAttribute('data-fence-content', '1');
+                else wrapperDiv.removeAttribute('data-fence-content');
+                wrapperDiv.setAttribute('data-fence-runlen', String(r.endFenceRunLen || 3));
+            } else {
+                wrapperDiv.removeAttribute('data-fence-midline');
+                wrapperDiv.removeAttribute('data-fence-content');
+                wrapperDiv.removeAttribute('data-fence-runlen');
+            }
+        }
+
+        function rawTextToHtml(text, segType, wrapperDiv) {
+            var v = wrapperDiv ?
+                (wrapperDiv.getAttribute('data-fence-parity') === '1' ? 1 : 0) : 0;
+            var r = convertTextToHtml(text, v);
+            writeFenceAttrs(wrapperDiv, r);
+            return r.html;
+        }
+
+        // Last <pre><code> element among the nodes from firstNode to
+        // lastNode (siblings, inclusive) -- the open fence's code element,
+        // when an inserted commit ends inside an unclosed fence.  O(new
+        // nodes only), not O(wrapper).
+        function findLastPreCode(firstNode, lastNode) {
+            if (!firstNode) return null;
+            var found = null;
+            var node = firstNode;
+            while (node) {
+                if (node.nodeType === 1) {
+                    var pres = (node.nodeName === 'PRE') ?
+                        [node] : Array.prototype.slice.call(node.querySelectorAll('pre'));
+                    if (pres.length > 0) found = pres[pres.length - 1];
+                }
+                if (node === lastNode) break;
+                node = node.nextSibling;
+            }
+            return found ? found.querySelector('code') : null;
+        }
+
+        // marked terminates the <pre><code> content of ANY fence with \n --
+        // even when the fence is UNTERMINATED and the source's last line has
+        // no newline (and an empty fence emits a lone \n).  The fence-
+        // continuation protocol assumes the stashed <code> holds the mask's
+        // convention (no terminator after the last content line), so strip
+        // marked's added trailing \n at stash time.  Without this, a commit
+        // boundary landing at a line terminator renders a blank line (the
+        // continuation's leading-\n prefix meets marked's \n), and a
+        // boundary mid-line splits the line in two.  The last child is a
+        // single text node at this point (fresh from the sentinel restore).
+        function stripCodeTrailingNewline(codeEl) {
+            if (!codeEl) return;
+            var last = codeEl.lastChild;
+            if (last && last.nodeType === 3 &&
+                last.nodeValue.charAt(last.nodeValue.length - 1) === '\n') {
+                last.nodeValue = last.nodeValue.slice(0, -1);
+            }
+        }
+
+        // Render deltaText and insert it into the segment wrapper (or its
+        // .think-body), handling fence continuation: when the delta starts
+        // inside a fence the previous commit left open (data-fence-parity=1
+        // and a stashed code element), the fence lines are appended as a
+        // text node to the EXISTING <pre><code> instead of being rendered
+        // through marked as a synthetic-fence block -- which would split one
+        // logical code block into one <pre> per commit.  When the fence
+        // closes inside the delta, only the post-close remainder goes
+        // through marked.  Returns { firstInserted, lastInserted }.
+        function commitDeltaHtml(wrapperDiv, segIndex, deltaText) {
+            var segType = segments[segIndex].type;
+            var target = (segType === SEG_THINK) ?
+                wrapperDiv.querySelector('.think-body') : wrapperDiv;
+            var firstInserted = null, lastInserted = null;
+
+            function insertHtml(html) {
+                var fragment = htmlFragment(html);
+                while (fragment.firstChild) {
+                    if (!firstInserted) firstInserted = fragment.firstChild;
+                    lastInserted = fragment.firstChild;
+                    target.appendChild(fragment.firstChild);
+                }
+            }
+
+            // Normal-pipeline render with sentinel hold-back: if the delta
+            // ends inside an open fence AND its tail is a partial sentinel,
+            // render the trimmed text and hold the partial for the next
+            // commit (a sentinel split across commits would otherwise render
+            // as literal text).  When the fence is not open at the end, the
+            // full text renders as before (a trailing partial in non-fence
+            // text is pre-existing behavior, unchanged).
+            function renderWithHold(text) {
+                var start = wrapperDiv.getAttribute('data-fence-parity') === '1' ? 1 : 0;
+                var hold = longestPartialEscapeSuffix(text);
+                var r = null, used = false;
+                if (hold !== '') {
+                    var rt = convertTextToHtml(
+                        text.substring(0, text.length - hold.length), start);
+                    if (rt.endParity) { r = rt; used = true; }
+                }
+                if (!used) r = convertTextToHtml(text, start);
+                writeFenceAttrs(wrapperDiv, r);
+                return { r: r, hold: used ? hold : '' };
+            }
+
+            if (wrapperDiv.getAttribute('data-fence-parity') === '1' &&
+                wrapperDiv.__openFenceCode) {
+                var runLen = scanIntAttr(wrapperDiv, 'data-fence-runlen', 3);
+                var partial = wrapperDiv.getAttribute('data-fence-midline') === '1';
+                var hasContent = wrapperDiv.getAttribute('data-fence-content') === '1';
+                var heldNow = wrapperDiv.__fenceHeldLine || '';
+                var pendNow = wrapperDiv.__fencePending || '';
+                // An empty stashed fence (no content line committed yet) whose
+                // opener line was committed WITHOUT its newline: the mask's
+                // fenceBuf is empty, so endMidLine was false even though the
+                // text ended mid-line on the opener run.  The next delta then
+                // starts with the opener's missing terminator \n -- not
+                // content: consume it, or the box gains a spurious leading
+                // blank line.  With content already present (or a held/pending
+                // line to judge first) a leading \n is a genuine terminator.
+                var contDelta = deltaText;
+                if (!hasContent && heldNow === '' && pendNow === '' &&
+                    deltaText.charAt(0) === '\n') {
+                    contDelta = deltaText.substring(1);
+                }
+                var plan = fenceContinuationCommit(contDelta, runLen, partial,
+                    pendNow, heldNow);
+                if (plan.appendText !== null) {
+                    var prefix = (!partial && hasContent) ? '\n' : '';
+                    wrapperDiv.__openFenceCode.appendChild(
+                        document.createTextNode(prefix + plan.appendText));
+                    if (!plan.closeFound) {
+                        // Fence still open: content now exists.
+                        wrapperDiv.setAttribute('data-fence-content', '1');
+                    }
+                }
+                if (plan.closeFound) {
+                    // Fence closed in this delta: clear continuation state;
+                    // the post-close remainder renders normally (parity 0).
+                    wrapperDiv.__openFenceCode = null;
+                    wrapperDiv.__fencePending = null;
+                    wrapperDiv.__fenceHeldLine = null;
+                    wrapperDiv.setAttribute('data-fence-parity', '0');
+                    wrapperDiv.removeAttribute('data-fence-midline');
+                    wrapperDiv.removeAttribute('data-fence-content');
+                    wrapperDiv.removeAttribute('data-fence-runlen');
+                    if (plan.rest !== '') {
+                        var rr = renderWithHold(plan.rest);
+                        insertHtml(rr.r.html);
+                        if (rr.r.endParity) {
+                            // The remainder opened a new fence: stash it.
+                            wrapperDiv.__openFenceCode =
+                                findLastPreCode(firstInserted, lastInserted);
+                            stripCodeTrailingNewline(wrapperDiv.__openFenceCode);
+                            wrapperDiv.__fencePending = rr.hold || null;
+                            wrapperDiv.__fenceHeldLine =
+                                rr.r.endHeldLine || null;
+                        } else {
+                            wrapperDiv.__fencePending = null;
+                            wrapperDiv.__fenceHeldLine = null;
+                        }
+                    }
+                } else if (plan.endMidLine) {
+                    // Still open, appended content ends mid-line.
+                    wrapperDiv.setAttribute('data-fence-midline', '1');
+                    wrapperDiv.__fencePending = plan.pending || null;
+                    wrapperDiv.__fenceHeldLine = plan.heldLine || null;
+                } else {
+                    wrapperDiv.removeAttribute('data-fence-midline');
+                    wrapperDiv.__fencePending = plan.pending || null;
+                    wrapperDiv.__fenceHeldLine = plan.heldLine || null;
+                }
+                // (No close: stash and parity are unchanged.)
+            } else {
+                var rr = renderWithHold(deltaText);
+                insertHtml(rr.r.html);
+                // Stash (or clear) the open fence's code element.
+                if (rr.r.endParity) {
+                    wrapperDiv.__openFenceCode =
+                        findLastPreCode(firstInserted, lastInserted);
+                    stripCodeTrailingNewline(wrapperDiv.__openFenceCode);
+                    wrapperDiv.__fencePending = rr.hold || null;
+                    wrapperDiv.__fenceHeldLine = rr.r.endHeldLine || null;
+                } else {
+                    wrapperDiv.__openFenceCode = null;
+                    wrapperDiv.__fencePending = null;
+                    wrapperDiv.__fenceHeldLine = null;
+                }
+            }
+            return { firstInserted: firstInserted, lastInserted: lastInserted };
+        }
+
+        // Parse an HTML string into a DocumentFragment (no outerHTML wrapper).
+        function htmlFragment(htmlStr) {
+            var template = document.createElement('template');
+            template.innerHTML = unescapeMth(htmlStr);
+            return template.content;
+        }
+
+        // Append raw text to a segment's in-memory buffer.
+        // O(1) -- no markdown parsing, no DOM scan.  After appending, tries
+        // progressive paragraph-boundary rendering.
+        function appendRawText(wrapperDiv, delta, segIndex) {
+            // Try progressive render after each append.
+            progressiveRender(wrapperDiv, segIndex);
+        }
+
+        // Auto-collapse think blocks when a non-THINK segment appears.
+        function autoCollapseThinkBlocks() {
+            outputDiv.querySelectorAll('.think-block').forEach(function (block) {
+                if (!block.hasAttribute('data-think-collapsed')) {
+                    collapseThinkBlock(block, 'auto');
+                }
+            });
+        }
+
+        // Merge adjacent segments of the same type into one.
+        // Critical: C++ sends \x02 before every small token; without this, each token
+        // becomes its own segment and gets independently rendered through marked.parse(),
+        // producing broken-up output with excessive block-level wrappers.
+        function coalesceSegments() {
+            let i = 1;
+            while (i < segments.length) {
+                if (segments[i].type !== SEG_SPEED &&
+                    segments[i].type === segments[i - 1].type && segments[i].content.length > 0) {
+                    segments[i - 1].content += segments[i].content;
+                    segments.splice(i, 1);
+                } else {
+                    i++;
+                }
+            }
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  Incremental render helpers                                        */
+        /* ------------------------------------------------------------------ */
+
+        function segToHtml(seg) {
+            if (seg.type === SEG_LLM_TEXT) {
+                return convertTextToHtml(seg.content).html;
+            } else if (seg.type === SEG_THINK) {
+                var html = convertTextToHtml(seg.content).html;
+                return '<div class="think-header">' +
+                    '<span class="arrow">&#9660;</span> Thinking' +
+                    '</div>' +
+                    '<div class="think-body">' + html + '</div>';
+            } else {
+                return seg.content;
+            }
+        }
+
+        // Inject copy buttons into <pre><code> blocks within a specific parent div.
+        // Buttons are placed in a wrapper div around each <pre> so they stay visible
+        // when the code block is scrolled (the <pre> has overflow-y: auto).
+        function injectCopyButtons(parentDiv) {
+            parentDiv.querySelectorAll('pre code').forEach(function(codeEl) {
+                const pre = codeEl.parentElement;
+                if (!pre || pre.classList.contains('copy-btn-host')) return;
+                pre.classList.add('copy-btn-host');
+
+                const wrapper = document.createElement('div');
+                wrapper.className = 'code-block-wrapper';
+                pre.parentNode.insertBefore(wrapper, pre);
+                wrapper.appendChild(pre);
+
+                const btn = document.createElement('button');
+                btn.className = 'copy-btn';
+                btn.textContent = 'Copy';
+                btn.addEventListener('click', function() {
+                    const textToCopy = codeEl.textContent;
+
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(textToCopy).then(function() {
+                            btn.textContent = 'Copied!';
+                            setTimeout(function() { btn.textContent = 'Copy'; }, 1500);
+                        }).catch(function(err) {
+                            console.warn('Clipboard API failed:', err);
+                            fallbackCopy(textToCopy, btn);
+                        });
+                    } else {
+                        fallbackCopy(textToCopy, btn);
+                    }
+                });
+                wrapper.appendChild(btn);
+            });
+        }
+
+        // Inject copy buttons only into <pre><code> blocks within the nodes between
+        // startNode (exclusive) and endNode (inclusive).  Avoids O(n^2) rescanning
+        // of already-processed code blocks on every progressive-render step.
+        function injectCopyButtonsInRange(startNode, endNode) {
+            var parent = startNode.parentNode;
+            var nodes = [];
+            var node = startNode.nextSibling;
+            while (node && node !== endNode) {
+                nodes.push(node);
+                node = node.nextSibling;
+            }
+            nodes.push(endNode);
+
+            var tmp = document.createElement('div');
+            nodes.forEach(function(n) { tmp.appendChild(n); });
+
+            injectCopyButtons(tmp);
+
+            // Move nodes back into the real DOM, preserving order.
+            // Each insertBefore must target the node AFTER the last-inserted one,
+            // otherwise all nodes end up in reverse order (each new insert goes
+            // before the previous one at startNode.nextSibling).
+            var ref = startNode;
+            while (tmp.firstChild) {
+                parent.insertBefore(tmp.firstChild, ref.nextSibling);
+                ref = ref.nextSibling;  // advance past the node we just inserted
+            }
+        }
+
+
+        function renderMathInDiv(parentDiv) {
+            if (typeof renderMathInElement === 'function') {
+                renderMathInElement(parentDiv, {
+                    // No single-$ delimiter: inline math is fully handled by the
+                    // validated pipeline in convertTextToHtml; a blind $ pairing
+                    // over the DOM would re-render env vars that the pipeline
+                    // deliberately left as raw text.
+                    delimiters: [
+                        { left: '$$',  right: '$$',  display: true  },
+                        { left: '\\(', right: '\\)', display: false },
+                        { left: '\\[', right: '\\]', display: true  }
+                    ],
+                    // Tool labels (e.g. exec_shell("find ... \( -type f ...\)"))
+                    // are raw diagnostic text, never intended math: skip them
+                    // entirely so shell commands are never typeset as KaTeX.
+                    ignoredClasses: ['tool-label'],
+                    throwOnError: false
+                });
+            }
+        }
+
+        // Render math with KaTeX only on the nodes between startNode (exclusive)
+        // and endNode (inclusive) within their shared parent.  This avoids the
+        // O(n^2) behaviour of rescanning already-rendered content on every
+        // progressive-render step: each new fragment is rendered exactly once.
+        function renderMathInRange(startNode, endNode) {
+            if (!LIM_INLINE_LATEX_ENABLED || typeof renderMathInElement !== 'function') return;
+
+            // Render directly into a standalone temp div without extracting real
+            // nodes -- this avoids reordering block-level elements that can happen
+            // when moving DOM nodes in and out of a container.  Instead, we collect
+            // all text nodes in range, extract their $...$ content, render it with
+            // katex.renderToString, and replace the delimiters inline.
+            var parent = startNode.parentNode;
+            var textNodes = [];
+            var node = startNode.nextSibling;
+            while (node && node !== endNode) {
+                if (node.nodeType === 3) textNodes.push(node);
+                node = node.nextSibling;
+            }
+            if (endNode.nodeType === 3) textNodes.push(endNode);
+            else if (endNode) {
+                var walker = document.createTreeWalker(endNode, NodeFilter.SHOW_TEXT);
+                while (walker.nextNode()) textNodes.push(walker.currentNode);
+            }
+
+            // $$ only: inline $...$ is handled (with validation) by the
+            // convertTextToHtml pipeline; a blind $ pairing over DOM text nodes
+            // would re-render env vars the pipeline deliberately left raw.
+            var delimRe = /\$\$([^\$]+?)\$\$/g;
+            textNodes.forEach(function(tn) {
+                var text = tn.nodeValue;
+                if (!text.includes('$')) return;
+                var fragments = [];
+                var lastIdx = 0;
+                var m;
+                while ((m = delimRe.exec(text)) !== null) {
+                    if (m.index > lastIdx) fragments.push(document.createTextNode(text.substring(lastIdx, m.index)));
+                    var tex = m[1].trim();
+                    if (typeof katex !== 'undefined') {
+                        try {
+                            var result = katex.renderToString(tex, { displayMode: true, throwOnError: false });
+                            if (!result.includes('katex-error')) {
+                                fragments.push(result);
+                            } else {
+                                fragments.push(document.createTextNode(m[0]));
+                            }
+                        } catch(e) {
+                            fragments.push(document.createTextNode(m[0]));
+                        }
+                    } else {
+                        fragments.push(document.createTextNode(m[0]));
+                    }
+                    lastIdx = m.index + m[0].length;
+                }
+                if (fragments.length === 0) return;
+                if (lastIdx < text.length) fragments.push(document.createTextNode(text.substring(lastIdx)));
+                // Replace the text node with a fragment containing math spans.
+                // Text nodes can't have children, so we must swap it out.
+                var frag = document.createDocumentFragment();
+                fragments.forEach(function(f) {
+                    if (typeof f === 'string') {
+                        var t = document.createElement('template');
+                        t.innerHTML = f;
+                        while (t.content.firstChild) frag.appendChild(t.content.firstChild);
+                    } else {
+                        frag.appendChild(f);
+                    }
+                });
+                tn.parentNode.replaceChild(frag, tn);
+            });
+        }
+
+        function render(wasAtBottom) {
+            let hasChanges = false;
+
+            for (let i = 0; i < segments.length; i++) {
+                if (i < segRenderedContent.length) {
+                    if (segments[i].content !== segRenderedContent[i]) {
+                        hasChanges = true;
+
+                        const wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
+                        if (wrapperDiv) {
+                            // Streaming text/think segment in raw mode: O(1) append + progressive render.
+                            if (wrapperDiv.hasAttribute('data-raw')) {
+                                var oldContent = segRenderedContent[i];
+                                var newContent = segments[i].content;
+                                var delta = '';
+                                if (newContent.length >= oldContent.length) {
+                                    delta = newContent.substring(oldContent.length);
+                                } else {
+                                    // Content shrank (shouldn't happen normally, but handle it).
+                        wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                                    wrapperDiv.removeAttribute('data-raw');
+                                    wrapperDiv.__openFenceCode = null;   // DOM replaced
+                                    wrapperDiv.__fencePending = null;
+                                    wrapperDiv.__fenceHeldLine = null;
+                                    injectCopyButtons(wrapperDiv);
+                                    renderMathInDiv(wrapperDiv);
+                                    segRenderedContent[i] = segments[i].content;
+                                }
+                                if (delta.length > 0) {
+                                    appendRawText(wrapperDiv, delta, i);
+                                    segRenderedContent[i] = segments[i].content;
+                                }
+                            } else {
+                                // Non-streaming segment changed -- full re-render.
+                                // Preserve collapsed state of think blocks across re-renders.
+                                var wasThinkCollapsed = wrapperDiv.getAttribute('data-think-collapsed') === '1';
+
+                                // Before replacing innerHTML, check whether each <pre>
+                                // inside this segment was scrolled to the bottom.  We'll
+                                // restore that state after re-rendering so that streaming
+                                // code blocks (e.g., exec_shell output) always stay at the
+                                // bottom like a terminal, unless the user scrolled up.
+                                const preWasAtBottom = [];
+                                wrapperDiv.querySelectorAll('pre').forEach(function(pre) {
+                                    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+                                    preWasAtBottom.push(nearBottom);
+                                });
+
+                                wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                                wrapperDiv.__openFenceCode = null;   // DOM replaced
+                                wrapperDiv.__fencePending = null;
+                                wrapperDiv.__fenceHeldLine = null;
+                                injectCopyButtons(wrapperDiv);
+                                renderMathInDiv(wrapperDiv);
+
+                                const pres = wrapperDiv.querySelectorAll('pre');
+                                for (let p = 0; p < pres.length && p < preWasAtBottom.length; p++) {
+                                    if (preWasAtBottom[p]) {
+                                        pres[p].scrollTop = pres[p].scrollHeight;
+                                    }
+                                }
+
+                                // Restore collapsed state of think blocks.
+                                if (wasThinkCollapsed) collapseThinkBlock(wrapperDiv);
+
+                                segRenderedContent[i] = segments[i].content;
+                            }
+                        }
+                    }
+                } else {
+                    // New segment -- create wrapper div.
+                    // LLM text and think segments start in raw-text streaming mode
+                    // so that incoming tokens are O(1) appends.  Progressive rendering
+                    // converts completed paragraphs to markdown/KaTeX as they appear.
+                    hasChanges = true;
+                    segRenderedContent[i] = '';
+
+                    const wrapperDiv = document.createElement('div');
+                    wrapperDiv.setAttribute('data-seg', String(i));
+
+                    if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
+                        wrapperDiv.setAttribute('data-raw', '1');
+                        wrapperDiv.setAttribute('data-rendered-len', '0');
+                        wrapperDiv.setAttribute('data-scan-hwm', '0');
+
+                        if (segments[i].type === SEG_THINK) {
+                            // Think block: create the collapsible structure immediately,
+                            // but put raw text inside .think-body.
+                            wrapperDiv.className = 'think-block';
+                            var header = document.createElement('div');
+                            header.className = 'think-header';
+                            var arrow = document.createElement('span');
+                            arrow.className = 'arrow';
+                            arrow.innerHTML = '&#9660;';
+                            header.appendChild(arrow);
+                            header.appendChild(document.createTextNode(' Thinking'));
+                            wrapperDiv.appendChild(header);
+
+                            var body = document.createElement('div');
+                            body.className = 'think-body';
+                            wrapperDiv.appendChild(body);
+                        }
+                        // for LLM text, .think-body for think blocks).
+                        progressiveRender(wrapperDiv, i);
+                        segRenderedContent[i] = segments[i].content;
+                    } else {
+                        wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                        outputDiv.appendChild(wrapperDiv);
+                        injectCopyButtons(wrapperDiv);
+                        renderMathInDiv(wrapperDiv);
+                    }
+
+                    if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
+                        outputDiv.appendChild(wrapperDiv);
+                    }
+                }
+            }
+
+            // Auto-collapse think blocks when thinking is done.
+            // When a non-THINK segment appears after THINK segments, the LLM has
+            // finished reasoning -- render any remaining raw tails, then collapse.
+            if (segments.length > 0 && segments[segments.length - 1].type !== SEG_THINK) {
+                var autoCollapsed = false;
+                outputDiv.querySelectorAll('.think-block').forEach(function(block) {
+                    if (block.hasAttribute('data-raw')) {
+                        var segIdx = parseInt(block.getAttribute('data-seg'));
+                        renderRawTail(block, segIdx);
+                    }
+                    if (!block.hasAttribute('data-think-collapsed')) {
+                        collapseThinkBlock(block, 'auto');
+                        autoCollapsed = true;
+                    }
+                });
+                if (autoCollapsed) hasChanges = true;
+            }
+
+            while (outputDiv.children.length > segments.length) {
+                outputDiv.removeChild(outputDiv.lastChild);
+            }
+            // Auto-scroll only when the user was near the bottom before the new
+            // content was rendered.  This lets the user scroll back to read earlier
+            // output without being forcibly pulled back to the bottom while
+            // generation continues.
+            if (hasChanges && wasAtBottom) {
+                window.scrollTo(0, document.body.scrollHeight);
+                userScrolledAway = false;
+            } else if (hasChanges && !wasAtBottom) {
+                // User scrolled up during generation -- remember this so we skip
+                // the auto-scroll at turn end.
+                userScrolledAway = true;
+            }
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  WebSocket connection                                              */
+        /* ------------------------------------------------------------------ */
+
+        function connect() {
+            const pageHost = window.location.host;
+            const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            let ws = new WebSocket(proto + '//' + pageHost + '/ws');
+
+            ws.onopen = () => {
+                statusDiv.textContent = speedInfo || 'Ready';
+                statusDiv.className = 'status connected';
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                let data = event.data;
+
+                let lastIdx = 0;
+                // Track a prefix that appeared at the end of the data with no content
+                // after it.  The next message's plain text (or the next prefix's
+                // payload) will be associated with this pending type.  This prevents
+                // empty segments from being created, which would cause DOM elements to
+                // be destroyed and recreated on every chunk (the root cause of the
+                // post-generation CPU spike).
+                let pendingType = null;
+                // Flag: set when SEG_TURN_END (\x07) is seen in this frame.
+                // Survives subsequent prefix overwrites so we can act on it after coalescing.
+                let turnEnded = false;
+
+                for (let i = 0; i < data.length; i++) {
+                    const ch = data[i];
+                    if (ch === SEG_LLM_TEXT || ch === SEG_TOOL_LABEL || ch === SEG_HTML || ch === SEG_SPEED || ch === SEG_THINK || ch === SEG_TURN_END) {
+                        // Append any text between the last prefix and this one to the
+                        // segment that was opened by the last prefix.  When multiple
+                        // prefixes arrive in a single WebSocket frame (e.g., three
+                        // stream_html() calls read together), the content of each
+                        // segment sits between its own prefix and the next prefix.
+                        if (i > lastIdx) {
+                            var payload = escapeMth(data.substring(lastIdx, i));
+                            if (pendingType !== null) {
+                                segments.push({ type: pendingType, content: payload });
+                                pendingType = null;
+                            } else if (segments.length > 0) {
+                                segments[segments.length - 1].content += payload;
+                            } else {
+                                // Untagged text with no prior segment - treat as LLM text
+                                segments.push({ type: SEG_LLM_TEXT, content: payload });
+                            }
+                        }
+                        // Remember this prefix; create the segment lazily when content arrives.
+                        // SEG_TURN_END is a control signal, not a content type -- set a
+                        // flag but do NOT use it as pendingType (so subsequent prefixes
+                        // in the same frame still work normally).
+                        if (ch === SEG_TURN_END) {
+                            turnEnded = true;
+                        } else {
+                            pendingType = ch;
+                        }
+                        lastIdx = i + 1;
+                    }
+                }
+
+                if (lastIdx < data.length) {
+                    var payload = escapeMth(data.substring(lastIdx));
+                    if (pendingType !== null) {
+                        segments.push({ type: pendingType, content: payload });
+                        pendingType = null;
+                    } else if (segments.length > 0) {
+                        segments[segments.length - 1].content += payload;
+                    } else {
+                        // Untagged trailing text with no prior segment - treat as LLM text
+                        segments.push({ type: SEG_LLM_TEXT, content: payload });
+                    }
+                }
+                coalesceSegments();
+
+                // Extract speed/context diagnostics and update the status bar, then
+                // remove speed segments BEFORE any index-dependent logic (render,
+                // finishAllRawSegments) so that segment indices remain stable relative
+                // to segRenderedContent and DOM wrapper divs.
+                for (const seg of segments) {
+                    if (seg.type === SEG_SPEED && seg.content.length > 0) {
+                        speedInfo = seg.content;
+                        statusDiv.textContent = speedInfo;
+                        statusDiv.className = 'status connected';
+                    }
+                }
+                segments = segments.filter(seg => seg.type !== SEG_SPEED);
+
+                // Capture scroll state once, before any DOM mutations (think-block
+                // collapse can shrink the page and make wasAtBottom true even when
+                // the user intentionally scrolled away).
+                const margin = 120;
+                const wasAtBottom = (window.innerHeight + window.scrollY) >= (document.body.offsetHeight - margin);
+
+                render(wasAtBottom);
+                if (turnEnded) {
+                    finishAllRawSegments();
+
+                    // Scroll to bottom at end of turn unless the user manually
+                    // scrolled away during generation.  This must happen AFTER
+                    // both render() and finishAllRawSegments() so the page height
+                    // includes all newly rendered content.
+                    if (!userScrolledAway) {
+                        window.scrollTo(0, document.body.scrollHeight);
+                    }
+                    userScrolledAway = false;
+                }
+                } catch(e) {
+                    console.error('[ws] ERROR in onmessage handler:', e);
+                    console.trace('[ws] Stack trace:');
+                }
+            };
+
+            ws.onclose = () => {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'status disconnected';
+            };
+        }
+
+        /* ------------------------------------------------------------------ */
+        /*  Export session as standalone HTML                                  */
+        /* ------------------------------------------------------------------ */
+
+        // Finish rendering raw segments within a given container element.
+        // Like finishAllRawSegments() but operates on an arbitrary parent
+        // (e.g., a DOM clone) rather than the live outputDiv.
+        function finishRawSegmentsInElement(container) {
+            for (var i = 0; i < segments.length; i++) {
+                var wrapperDiv = container.querySelector('[data-seg="' + i + '"]');
+                if (!wrapperDiv) continue;
+                if (!wrapperDiv.hasAttribute('data-raw')) continue;
+                var fullText = segments[i].content;
+                var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
+                var tail = fullText.substring(renderedPrefixLen);
+                if (tail.length === 0) { wrapperDiv.removeAttribute('data-raw'); continue; }
+                var html = rawTextToHtml(tail, segments[i].type, wrapperDiv);
+                var target = (segments[i].type === SEG_THINK) ?
+                    wrapperDiv.querySelector('.think-body') : wrapperDiv;
+                if (target) target.innerHTML += html;
+                wrapperDiv.removeAttribute('data-raw');
+            }
+            container.querySelectorAll('.think-block').forEach(function (block) {
+                if (!block.hasAttribute('data-think-collapsed')) {
+                    collapseThinkBlock(block, 'auto');
+                }
+            });
+        }
+
+        async function exportHtml() {
+            var now = new Date();
+            var ts = now.getFullYear() + '-' +
+                String(now.getMonth() + 1).padStart(2, '0') + '-' +
+                String(now.getDate()).padStart(2, '0') + '_' +
+                String(now.getHours()).padStart(2, '0') + '-' +
+                String(now.getMinutes()).padStart(2, '0') + '-' +
+                String(now.getSeconds()).padStart(2, '0');
+            var filename = 'lim_export_' + ts + '.html';
+
+            // Finish rendering any remaining raw segments (including active think blocks)
+            // into a DOM clone so the export is complete without mutating the live session.
+            var outputDiv = document.getElementById('output');
+            var clone = outputDiv.cloneNode(true);
+            finishRawSegmentsInElement(clone);
+
+            var bodyContent = clone.innerHTML;
+
+            var cssText = '';
+            document.querySelectorAll('style').forEach(function(s) {
+                cssText += s.textContent + '\n';
+            });
+
+            // Inline KaTeX CSS with embedded fonts so exports render math correctly offline.
+            try {
+                var katexCss = await fetch('libs/katex-standalone.css').then(function(r) { return r.text(); });
+                cssText += katexCss + '\n';
+            } catch(e) {
+                // Fallback: no KaTeX CSS, math may look unstyled.
+            }
+
+            // Minimal inline script to keep think-block toggling and copy buttons working
+            // in the exported file without needing the full viewer JS or WebSocket connection.
+            // (The export has no CSP, and the live viewer's delegated think-header
+            // listener is not serialized, so the headers are wired here.)
+            var exportScript = '<script>\n' +
+                'function toggleThinkBlock(headerEl){var b=headerEl.nextElementSibling;var bl=headerEl.parentElement;var c=b.classList.toggle("hidden");headerEl.classList.toggle("collapsed",c);bl.setAttribute("data-think-collapsed",c?"1":"0")}\n' +
+                'document.querySelectorAll(".think-header").forEach(function(h){h.addEventListener("click",function(){toggleThinkBlock(h)})});\n' +
+                'document.querySelectorAll(".copy-btn").forEach(function(btn){btn.addEventListener("click",function(){var code=btn.parentElement.querySelector("code");if(navigator.clipboard){navigator.clipboard.writeText(code.textContent).then(function(){btn.textContent="Copied!";setTimeout(function(){btn.textContent="Copy"},1500)})}})});\n' +
+                '<' + '/script>';
+
+            // Build a standalone HTML document.  KaTeX CSS (with fonts embedded as
+            // data URIs) is inlined above so that pre-rendered KaTeX spans display
+            // correctly in the exported file -- no CDN or external font files needed.
+            var html = '<!DOCTYPE html>\n' +
+                '<html lang="en">\n<head>\n' +
+                '  <meta charset="UTF-8">\n' +
+                '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+                '  <title>LIM Session Export</title>\n' +
+                '  <style>\n' + cssText + '\n  </style>\n' +
+                '</head>\n<body>\n' +
+                bodyContent + '\n' +
+                exportScript + '\n' +
+                '<hr style="border-color:#555;margin-top:30px;">\n' +
+                '<p style="color:#888;font-size:0.75em;text-align:center;">Exported from LIM on ' + now.toISOString() + '</p>\n' +
+                '</body>\n</html>';
+
+            var blob = new Blob([html], { type: 'text/html' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+
+        // LIM_INLINE_LATEX_ENABLED: overridden by limServer.py (via LIM_INLINE_LATEX env var).
+        // 1 = default: inline $...$ renders when the candidate doesn't abut
+        // whitespace (which leaves adjacent-env-var pairings like "$HOME $PATH"
+        // literal), contains no backticks, and parses as math; 0 = never render
+        // inline $...$.  Code regions are never treated as math in either mode.
+        var LIM_INLINE_LATEX_ENABLED = 1;
+
+        // Wire the export button now that the page's script-src no longer
+        // permits inline onclick="..." handlers.  The button is in the DOM
+        // above this (end-of-body) script, so it is available synchronously.
+        var exportBtn = document.querySelector('.export-btn');
+        if (exportBtn) exportBtn.addEventListener('click', exportHtml);
+
+        // Think-block headers use one delegated click handler (both the
+        // streaming and full-re-render paths create them), replacing the old
+        // inline onclick="toggleThinkBlock(this)" that script-src 'self'
+        // blocks.  All think-headers are descendants of outputDiv.
+        outputDiv.addEventListener('click', function(e) {
+            var h = e.target.closest('.think-header');
+            if (h) toggleThinkBlock(h);
+        });
+
+        connect();

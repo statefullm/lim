@@ -127,7 +127,7 @@ $(VSIX): vscode-extension/src/extension.ts \
 
 
 LIM_CONFIG_DIR ?= $(HOME)/.config/lim
-CONFIG_FILES = prompt reincarnate limServer.py viewer.html
+CONFIG_FILES = prompt reincarnate limServer.py viewer.html viewer.js
 LIBS_FILES = auto-render.min.js katex-standalone.css katex.min.css katex.min.js marked.min.js
 
 # Install the binary and config files, then build and install the

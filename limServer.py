@@ -123,7 +123,12 @@ async def status_handler(request):
     return web.json_response({"connected": connected, "clients": len(clients)})
 
 async def serve_viewer(request):
-    """Serve viewer.html from the script directory, injecting LIM_INLINE_LATEX setting."""
+    """Serve viewer.html from the script directory.
+
+    The LIM_INLINE_LATEX flag now lives in viewer.js (see serve_viewer_js),
+    but the auto-render <script> line still has to be removed here when LaTeX
+    is disabled so it doesn't mangle $HOME etc.
+    """
     script_path = Path(__file__).resolve()
     viewer_html_path = script_path.parent / 'viewer.html'
 
@@ -133,6 +138,35 @@ async def serve_viewer(request):
     with open(viewer_html_path, 'r') as f:
         content = f.read()
 
+    # When LaTeX is disabled, remove auto-render so it doesn't mangle $HOME etc.
+    if os.environ.get('LIM_INLINE_LATEX', '1') == '0':
+        content = content.replace(
+            '    <script defer src="libs/auto-render.min.js"></script>\n',
+            '',
+        )
+
+    return web.Response(
+        text=content,
+        content_type='text/html',
+        headers={'Cache-Control': 'no-store'},
+    )
+
+async def serve_viewer_js(request):
+    """Serve viewer.js, injecting the LIM_INLINE_LATEX setting.
+
+    The app script was moved out of viewer.html so the page's script-src can
+    be 'self' (no 'unsafe-inline').  The LIM_INLINE_LATEX_ENABLED default in
+    the file is overridden here, exactly as serve_viewer used to do for HTML.
+    """
+    script_path = Path(__file__).resolve()
+    viewer_js_path = script_path.parent / 'viewer.js'
+
+    if not viewer_js_path.exists():
+        return web.Response(status=404, text="viewer.js not found")
+
+    with open(viewer_js_path, 'r') as f:
+        content = f.read()
+
     # Override the default LIM_INLINE_LATEX_ENABLED value based on the env var.
     latex_val = os.environ.get('LIM_INLINE_LATEX', '1')
     content = content.replace(
@@ -140,20 +174,18 @@ async def serve_viewer(request):
         "var LIM_INLINE_LATEX_ENABLED = " + latex_val + ";",
     )
 
-    # When LaTeX is disabled, also remove auto-render so it doesn't mangle $HOME etc.
-    if latex_val == '0':
-        content = content.replace(
-            '    <script defer src="libs/auto-render.min.js"></script>\n',
-            '',
-        )
-
-    return web.Response(text=content, content_type='text/html')
+    return web.Response(
+        text=content,
+        content_type='application/javascript',
+        headers={'Cache-Control': 'no-store'},
+    )
 
 async def main():
     # Single aiohttp server handling both HTTP and WebSocket
     app = web.Application()
     script_path = Path(__file__).resolve()
     app.router.add_get('/viewer.html', serve_viewer)
+    app.router.add_get('/viewer.js', serve_viewer_js)
     app.router.add_static('/libs/', str(script_path.parent / 'libs'))
     app.router.add_get('/status', status_handler)
     app.router.add_get('/ws', websocket_handler)
