@@ -34,7 +34,6 @@ bool wait_for_server_ready(long timeout_ms = 15000);
 
 // --- Browser Connection ---
 bool check_browser_connected();
-std::string get_hostname();
 std::string get_viewer_url();
 int get_server_port();
 

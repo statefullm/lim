@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import os
+import socket
 from pathlib import Path
 from aiohttp import web
 
@@ -8,6 +9,23 @@ FIFO_PATH = "/tmp/lim.fifo"
 
 # Configurable port via environment variable (default: 8765)
 LIM_PORT = int(os.environ.get('LIM_PORT', '8765'))
+
+def allowed_ws_origins():
+    """Origins the viewer page itself can have when it connects to /ws:
+    the loopback names and this machine's own name, all on LIM_PORT.
+    viewer.html is served by this server and connects back to the same
+    host (window.location.host), so no other origin is legitimate.
+    WebSockets are not covered by CORS, so without this check JavaScript
+    on any website the user has open could subscribe to the stream
+    through an SSH tunnel."""
+    hosts = {'localhost', '127.0.0.1'}
+    try:
+        name = socket.gethostname()
+        hosts.add(name)
+        hosts.add(name.split('.')[0])
+    except OSError:
+        pass
+    return {'http://' + h + ':' + str(LIM_PORT) for h in hosts}
 
 # Keep track of connected browsers
 clients = set()
@@ -93,6 +111,17 @@ async def broadcast_llm_stream():
 
 async def websocket_handler(request):
     """Handles WebSocket connections for LLM streaming."""
+    # The server binds to loopback only, so every connection is local or
+    # arrives through an SSH tunnel.  Through the tunnel, however, JavaScript
+    # on any website the user has open could still reach us (WebSockets are
+    # not covered by CORS), so require the browser to identify itself as the
+    # viewer page.  Non-browser clients send no Origin header and are let
+    # through -- they can only arrive from the same host or the tunnel.
+    origin = request.headers.get('Origin')
+    if origin is not None and origin not in allowed_ws_origins():
+        print(f"[WARNING] Rejected WebSocket connection from disallowed origin: {origin}")
+        return web.Response(status=403, text="Origin not allowed")
+
     ws = web.WebSocketResponse(heartbeat=10)  # Enable ping/pong every 10 seconds to prevent timeout
     await ws.prepare(request)
     clients.add(ws)
@@ -192,7 +221,11 @@ async def main():
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', LIM_PORT)
+    # Loopback only: the stream carries everything the viewer shows (file
+    # contents, shell output, secrets in them).  Remote access goes through
+    # an explicit SSH tunnel (ssh -L <port>:localhost:<port> ...), which
+    # arrives here as a localhost connection; LAN hosts cannot reach it.
+    site = web.TCPSite(runner, '127.0.0.1', LIM_PORT)
     await site.start()
 
     try:

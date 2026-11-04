@@ -223,10 +223,10 @@ Add this to the `~/.bashrc` of `$LIM_AI_USER`:
 alias coder='lim ~/models/Qwen3.8-27B-Q6_K.gguf'
 ```
 
-Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`:
+Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`. The `-L` forward carries the browser viewer: the server listens on `127.0.0.1` only, so from your laptop the viewer is at `http://localhost:8765/viewer.html` (see **Browser Output**):
 
 ```bash
-ssh -a $LIM_AI_USER@$LIM_HOST
+ssh -a -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST
 coder
 ```
 
@@ -385,10 +385,10 @@ Set via `LIM_OUTPUT`:
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory (relative to the launch directory) for session logs, token traces, and autosave files. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
-| `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for SSH connection and browser viewer URL. |
-| `LIM_PORT` | `8765` | Port for the browser WebSocket server |
+| `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for the SSH connection; the viewer is always reached via localhost (through the SSH port forward when remote). |
+| `LIM_PORT` | `8765` | Port for the browser WebSocket server (listens on `127.0.0.1` only; the SSH tunnel's remote side uses the same port) |
 | `LIM_OUTPUT` | `2` | Output mode: `0` = none, `1` = stdout only, `2` = browser only (default), `3` = both |
-| `LIM_VIEWER_URL` | *(auto)* | Override the auto-generated viewer URL |
+| `LIM_VIEWER_URL` | *(auto: `http://localhost:<port>/viewer.html`)* | Override the auto-generated viewer URL, e.g. when the SSH tunnel's local side uses a different port |
 | `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget. Set between `0.0` and `1.0` (0.0 means the default value of `0.75`). |
 | `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget. Set explicitly to override. |
 | `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
@@ -593,13 +593,13 @@ When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn 
 
 ### Browser Output
 
-By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. Load:
+By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. The server listens on `127.0.0.1` only, so the viewer is reachable from the machine itself, or from another machine through an SSH tunnel. Load:
 
 ```
-http://<hostname>:8765/viewer.html
+http://localhost:8765/viewer.html
 ```
 
-whenever the server is running. Only on the first session after a machine reboot (when the server does not exist yet) must you start lim first and then load the page; on every later restart the server is already running, so the page can be loaded -- or left open -- before lim starts.
+whenever the server is running -- in your local browser when connected via `ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST` (the port follows `LIM_PORT`; if the tunnel's local side uses a different port, set `LIM_VIEWER_URL`). Only on the first session after a machine reboot (when the server does not exist yet) must you start lim first and then load the page; on every later restart the server is already running, so the page can be loaded -- or left open -- before lim starts.
 
 When lim starts and the viewer is not connected, lim prints the URL and waits before the first decode; the session proceeds as soon as the viewer loads the page. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables itself if the viewer connects later.
 
@@ -610,8 +610,8 @@ The Python server (`limServer.py`) is a persistent service: it is started on fir
 The LIM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
 
 The extension does two things:
-- **Opens a browser** pointing to `$LIM_HOST` (or the local hostname) on the configured port, after waiting for the server to respond.
-- **Creates a terminal** at `$HOME`. If `$LIM_HOST` is set and remote, it SSHs into that host as user `$LIM_AI_USER`; otherwise it opens a local shell.
+- **Opens a browser** at `http://localhost:<port>/viewer.html` (the `lim.workspace.browserPort` setting, default 8765), after waiting for the server to respond. The server binds to loopback only, so it is reached directly on the machine and, when remote, through the tunnel below.
+- **Creates a terminal** at `$HOME`. If `$LIM_HOST` is set and remote, it SSHs into that host as user `$LIM_AI_USER` with a port forward for the viewer (`ssh -L <port>:localhost:<port>`); otherwise it opens a local shell.
 
 You then run your `coder` alias in that terminal as usual.
 
@@ -717,8 +717,8 @@ make GGML_CUDA=off
 ### Browser viewer shows nothing / won't connect
 
 1. The page is served by the persistent browser server, so it must be running before the page can load. If it is (the common case), just load or reload the viewer page (or press **Ctrl+2** / **Ctrl+Shift+R** in VS Code). If it is not -- only right after a machine reboot -- start lim first; it starts the server on first need and prints the URL.
-2. Check that nothing else is using port 8765 (or your custom `LIM_PORT`).
-3. If behind a firewall or SSH tunnel, set `LIM_VIEWER_URL` to the correct address.
+2. Check that nothing else is using port 8765 (or your custom `LIM_PORT`) -- on the LIM host for the server, or locally when using a tunnel.
+3. The server binds to `127.0.0.1` only: from another machine, establish the tunnel (`ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST`) and load `http://localhost:8765/viewer.html`. If the tunnel's local side uses a different port, set `LIM_VIEWER_URL`.
 
 ### "detected dubious ownership in repository"
 

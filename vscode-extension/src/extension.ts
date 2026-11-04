@@ -64,14 +64,16 @@ function startWorkspace() {
     const config = vscode.workspace.getConfiguration('lim.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
 
-    const host = process.env.LIM_HOST || getHostname();
-    const viewerUrl = `http://${host}:${browserPort}/viewer.html`;
+    // The server binds to loopback only, so the viewer is always reached via
+    // localhost: directly on the machine, or remotely through the -L port
+    // forward in the SSH command below.
+    const viewerUrl = `http://localhost:${browserPort}/viewer.html`;
     currentViewerUrl = viewerUrl;
 
     // Wait for the server to be up before opening the browser. Uses an async
     // fetch that resolves on first success -- not a busy loop, just event-driven
     // retries via setTimeout. Opens the browser only when viewer.html will load.
-    waitForServer(host, browserPort).then(() => {
+    waitForServer(browserPort).then(() => {
         vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
         setTimeout(() => terminal.show(false), 200);
     });
@@ -87,7 +89,10 @@ function startWorkspace() {
         const aiUser = process.env.LIM_AI_USER || 'ai';
         // Plain interactive SSH: the remote side starts a login shell, which
         // loads the coder alias and LIM environment from the user's rc files.
-        terminal.sendText(`ssh -t -a ${aiUser}@${limHost}`);
+        // The -L forward makes the loopback-only viewer reachable from the
+        // local browser through this session (ssh binds the local side to
+        // 127.0.0.1 by default, so no LAN exposure).
+        terminal.sendText(`ssh -t -a -L ${browserPort}:localhost:${browserPort} ${aiUser}@${limHost}`);
     }
 
     terminal.show();
@@ -105,10 +110,12 @@ function getHostname(): string {
 export function deactivate() {}
 
 // Wait for the server to respond via /status. Resolves on first success.
-// Uses setTimeout between attempts -- event-driven, not a busy loop.
-function waitForServer(host: string, port: number): Promise<void> {
+// localhost: the server binds to loopback only, so it is only reachable here
+// on the machine itself or through an SSH port forward. Uses setTimeout
+// between attempts -- event-driven, not a busy loop.
+function waitForServer(port: number): Promise<void> {
     return new Promise((resolve) => {
-        const url = `http://${host}:${port}/status`;
+        const url = `http://localhost:${port}/status`;
         const tryFetch = () => {
             fetch(url, { mode: 'cors' }).then(() => resolve()).catch(() => {
                 setTimeout(tryFetch, 1000);

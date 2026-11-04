@@ -479,25 +479,17 @@ int get_server_port() {
   return 8765;
 }
 
-string get_hostname() {
-  char hostname[256];
-  if (gethostname(hostname, sizeof(hostname)) == 0) {
-    string h(hostname);
-    size_t dot_pos = h.find('.');
-    if (dot_pos != string::npos) {
-      h = h.substr(0, dot_pos);
-    }
-    return h;
-  }
-  return "localhost";
-}
-
 string get_viewer_url() {
   const char* env = getenv("LIM_VIEWER_URL");
   if (env != nullptr && strlen(env) > 0) {
     return string(env);
   }
-  return "http://" + get_hostname() + ":" + std::to_string(get_server_port()) + "/viewer.html";
+  // The server binds to loopback only, so the viewer is reachable either
+  // directly on the machine or through an SSH tunnel
+  // (ssh -L <port>:localhost:<port> ...); "localhost" is the right host in
+  // both cases.  Override with LIM_VIEWER_URL, e.g. when the tunnel's local
+  // side uses a different port.
+  return "http://localhost:" + std::to_string(get_server_port()) + "/viewer.html";
 }
 
 void disable_browser_output() {
