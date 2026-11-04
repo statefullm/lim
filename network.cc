@@ -128,6 +128,13 @@ static string g_brave_api_key = []() -> string {
   return (env && env[0]) ? string(env) : "";
 }();
 
+// Remove the Brave API key from the environment so exec_shell commands
+// cannot exfiltrate it (e.g. via prompt injection). GH_TOKEN stays in the
+// environment: the model needs it for `gh` CLI and authenticated git.
+static struct TokenUnset { TokenUnset() {
+  unsetenv("LIM_BRAVE_API_KEY");
+} } g_tokenUnset;
+
 // Session web-content budget: LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4 bytes/token.
 static size_t compute_session_max_chars() {
   int n_ctx = LIM_DEFAULT_CTX;
@@ -776,8 +783,23 @@ static string github_api_fetch(const string& url) {
     api_url = api_base + "/issues/" + segs[3];
   } else if (section == "discussions" && segs.size() >= 4) {
     // /discussions/{number} -> GraphQL only
+    // Validate components: owner/repo must match GitHub name rules,
+    // number must be all digits (prevents GraphQL injection via crafted URLs)
+    auto is_valid_gh_name = [](const string& s) {
+      if (s.empty() || s.size() > 39) return false;
+      for (char c : s) {
+        if (!isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_' && c != '.') return false;
+      }
+      return true;
+    };
+    string disc_num = segs[3];
+    if (!is_valid_gh_name(owner) || !is_valid_gh_name(repo) ||
+        disc_num.empty() || disc_num.size() > 10 ||
+        disc_num.find_first_not_of("0123456789") != string::npos) {
+      return "";
+    }
     is_graphql = true;
-    graphql_query = "{\"query\":\"{ repository(owner: \\\"" + owner + "\\\", name: \\\"" + repo + "\\\") { discussion(number: " + segs[3] + ") { title bodyText comments(first: 10) { nodes { bodyText author { login } } } } } }\"}";
+    graphql_query = "{\"query\":\"{ repository(owner: \\\"" + owner + "\\\", name: \\\"" + repo + "\\\") { discussion(number: " + disc_num + ") { title bodyText comments(first: 10) { nodes { bodyText author { login } } } } } }\"}";
     api_url = "https://api.github.com/graphql";
   } else if (section == "blob" && segs.size() >= 5) {
     // /blob/{branch}/{path...} -> contents API
