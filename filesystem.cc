@@ -772,7 +772,7 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
       // Stream as a tagged HTML segment (stream_html checks
       // should_output_to_browser() itself and goes through pipe_write);
       // raw untagged text would render in the browser as LLM output.
-      stream_html(final_message + "\n");
+      stream_html(html_escape(final_message) + "\n");
       if (should_output_to_stdout()) {
         // Output to stdout (when browser mode is off, or in combined mode 3)
         cout << final_message << endl;
