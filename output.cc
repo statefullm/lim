@@ -59,8 +59,16 @@ void init_output_stream() {
   // (which keeps its own fd open on this inode), so lim must never unlink it.
   // mkfifo is idempotent -- it only bootstraps the node on the first run after
   // a machine reboot, when nothing holds the inode yet.
-  mkfifo(FIFO_PATH, 0666);
+  // Mode 0600: only the owning user (LIM_AI_USER) can read the stream.
+  // Both lim and limServer.py run as the same user, so no other access is
+  // needed. Prevents other local users from opening the FIFO and reading
+  // the session stream (file contents, shell output, etc.).
+  mkfifo(FIFO_PATH, 0600);
   pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
+  if (pipe_fd >= 0) {
+    // Fix existing FIFOs created with the old world-readable mode.
+    fchmod(pipe_fd, 0600);
+  }
 }
 
 static void ensure_pipe_open() {
