@@ -20,6 +20,14 @@
 using namespace std;
 using namespace Tokens;
 
+// Tail windows for the incremental scans below: a token can split a marker
+// across a boundary, so each scan must re-cover a full marker at the tail
+// of generated_text_ (2x the marker for margin).  Derived from the marker
+// constants at compile time so the windows can never drift out of sync with
+// the markers they serve.
+static constexpr size_t FUNC_SEARCH_TAIL = 2 * std::strlen(FUNC_START);
+static constexpr size_t DOUBLE_OPEN_LEN  = std::strlen(DOUBLE_OPEN);
+
 // Forward declarations for functions defined in main.cc
 extern void diag(const string& msg, const char* color);
 extern bool is_debug;
@@ -902,7 +910,7 @@ TokenGenerator::Result TokenGenerator::generate() {
         break;
       }
       if (tool_start_ == string::npos) {
-        func_search_pos_ = generated_text_.length() > 20 ? generated_text_.length() - 20 : 0;
+        func_search_pos_ = generated_text_.length() > FUNC_SEARCH_TAIL ? generated_text_.length() - FUNC_SEARCH_TAIL : 0;
       }
     }
     if (tool_start_ != string::npos && tool_end_ == string::npos) {
@@ -919,8 +927,8 @@ TokenGenerator::Result TokenGenerator::generate() {
 
     in_tool_call_stream_ = (tool_start_ != string::npos && tool_end_ == string::npos);
 
-    if (in_tool_call_stream_ && !in_parameter_ && generated_text_.length() >= 4 &&
-        generated_text_.compare(generated_text_.length() - 4, 4, DOUBLE_OPEN) == 0) {
+    if (in_tool_call_stream_ && !in_parameter_ && generated_text_.length() >= DOUBLE_OPEN_LEN &&
+        generated_text_.compare(generated_text_.length() - DOUBLE_OPEN_LEN, DOUBLE_OPEN_LEN, DOUBLE_OPEN) == 0) {
       // Canary probe: the recovery (forced close) still runs, but the
       // probe is invisible -- the break rolls everything back anyway.
       if (!canary_silent_) diag("System: Infinite slash loop detected. Auto-recovering...", "\033[31m");
