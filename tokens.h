@@ -9,6 +9,14 @@ constexpr const char* FUNC_END   = "</function>";
 constexpr const char* PARAM_START = "<parameter=";
 constexpr const char* PARAM_END   = "</parameter>";
 
+// Every parameter name in the tool protocol (must match tool_specs in
+// tools.cc).  Single source of truth for the bare <name> fallback (the
+// tolerated alias for PARAM_STARTname>): the validation gate, the
+// extractors, and the streaming scanner all match against this list.
+static constexpr const char* const PARAM_NAMES[] = {
+  "paths", "path", "content", "old", "new", "text", "begin", "end", "command", "query"
+};
+
 // --- Escaped Tokens (For protecting the C++ parser) ---
 // Escape contract: prepend ESCAPE_CHAR before first character of token.
 // PARAM_END = "</parameter>"  -> escaped: "\</parameter>"

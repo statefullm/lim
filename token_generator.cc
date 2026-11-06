@@ -1,5 +1,6 @@
 #include "token_generator.h"
 #include "tokens.h"
+#include "parsers.h"
 #include "output.h"
 #include "session_utils.h"
 #include "signals.h"
@@ -51,6 +52,8 @@ string escape_token_piece(const string& s) {
 
 // Find tool call end robustly, handling malformed closing tags, nested FUNC_START in content,
 // and FUNC_START/FUNC_END embedded within parameter values (ignored via in_parameter guard).
+// A parameter region opens with PARAM_START or the bare <name> alias
+// (PARAM_NAMES); PARAM_END is the only exit.
 size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_parameter) {
   string fe_str(FUNC_END);
   string fs_str(FUNC_START);
@@ -68,11 +71,15 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
     size_t next_end = text.find(fe_str, pos);
     size_t next_ps = text.find(ps_str, pos);
     size_t next_pe = in_parameter ? text.find(pe_str, pos) : string::npos;
+    // The bare <name> alias opens a parameter region too.  Only searched
+    // outside a parameter: values may legitimately contain bare tags.
+    size_t bare_len = 0;
+    size_t next_bare = in_parameter ? string::npos : find_bare_param_open(text, pos, bare_len);
 
     // Determine the earliest event
-    size_t events[4] = {next_start, next_end, next_ps, next_pe};
-    int type = -1; // 0=start, 1=end, 2=param_start, 3=param_end
-    for (int i = 0; i < 4; i++) {
+    size_t events[5] = {next_start, next_end, next_ps, next_pe, next_bare};
+    int type = -1; // 0=start, 1=end, 2=param_start, 3=param_end, 4=bare_param_start
+    for (int i = 0; i < 5; i++) {
       if (events[i] == string::npos) continue;
       if (type == -1 || events[i] < events[type]) type = i;
     }
@@ -88,6 +95,12 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
       // Exited a parameter region
       in_parameter = false;
       pos = next_pe + pe_str.length();
+      continue;
+    }
+    if (type == 4) {
+      // Entered a parameter region via the bare <name> alias.
+      in_parameter = true;
+      pos = next_bare + bare_len;
       continue;
     }
     if (in_parameter) {
@@ -116,14 +129,22 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
     size_t pp = text.find(partial, pos);
 
     // Find earliest event
-    if (ps != string::npos && (pe == string::npos || ps < pe) && (pp == string::npos || ps < pp)) {
+    size_t bare_len = 0;
+    size_t pb = in_parameter ? string::npos : find_bare_param_open(text, pos, bare_len);
+    if (ps != string::npos && (pe == string::npos || ps < pe) && (pp == string::npos || ps < pp) && (pb == string::npos || ps < pb)) {
       in_parameter = true;
       pos = ps + ps_str.length();
       continue;
     }
-    if (pe != string::npos && (pp == string::npos || pe < pp)) {
+    if (pe != string::npos && (pp == string::npos || pe < pp) && (pb == string::npos || pe < pb)) {
       in_parameter = false;
       pos = pe + pe_str.length();
+      continue;
+    }
+    if (pb != string::npos && (pp == string::npos || pb < pp)) {
+      // Entered a parameter region via the bare <name> alias.
+      in_parameter = true;
+      pos = pb + bare_len;
       continue;
     }
     if (pp == string::npos) break;
@@ -963,7 +984,8 @@ TokenGenerator::Result TokenGenerator::generate() {
     // (FUNC_START found) but no complete tool call has been found yet,
     // and we're NOT inside a parameter, the model may be generating garbage.
     // Outside parameters, tool call tags are just a few tokens.  If the
-    // threshold passes without PARAM_START or FUNC_END, something is broken.
+    // threshold passes without PARAM_START (or its bare <name> alias) or
+    // FUNC_END, something is broken.
     if (tool_call_outside_param_count_ >= outside_param_limit) {
       diag("System: Stuck generating tool call after " + std::to_string(tool_call_outside_param_count_) + " tokens outside parameters.", "\033[1;31m");
       stop_generation = 1;

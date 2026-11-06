@@ -44,6 +44,18 @@ std::string extract_string_arg_bounded(const std::string& tool_call, const std::
 // newline detection in the "paths" array value).
 std::string extract_raw_arg_bounded(const std::string& tool_call, const std::string& arg_name);
 
+// Presence check shared by the validation gate (tools.cc): true when the
+// parameter opens in either accepted form -- canonical PARAM_STARTname> or
+// the bare <name> tag -- so the gate and the extractors apply the same
+// rule.  The value is still terminated by PARAM_END only.
+bool param_present(const std::string& tool_call, const std::string& arg_name);
+
+// Earliest bare parameter opening tag -- <name> for any name in
+// Tokens::PARAM_NAMES -- at or after 'from'; sets 'tag_len' to the tag's
+// length.  string::npos if none.  The streaming scanner uses it so it
+// recognizes the same alias the gate and extractors accept.
+size_t find_bare_param_open(const std::string& text, size_t from, size_t& tag_len);
+
 std::vector<std::string> extract_array_arg_bounded(const std::string& tool_call, const std::string& arg_name);
 
 // Collect base turn tokens from model turn markers.

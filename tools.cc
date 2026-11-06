@@ -122,20 +122,9 @@ static vector<string> find_missing_params(const string& tool_name, const string&
   const ToolSpec* spec = find_spec(tool_name);
   if (spec == nullptr) return missing;  // unknown tool returns empty
   for (const auto& param : spec->params) {
-    // Search on PARAM_START only, then extract and compare the name
-    // tolerating stray quotes
-    bool found = false;
-    size_t pos = 0;
-    while ((pos = tool_call.find(PARAM_START, pos)) != string::npos) {
-      size_t after_prefix = pos + strlen(PARAM_START);
-      size_t gt = tool_call.find('>', after_prefix);
-      if (gt == string::npos) break;
-
-      string raw = tool_call.substr(after_prefix, gt - after_prefix);
-      if (strip_quotes_from_name(raw) == param) { found = true; break; }
-      pos++;
-    }
-    if (!found) {
+    // Same tag matching as the extractors (canonical or bare tag form),
+    // so a call the parser would accept is not rejected here.
+    if (!param_present(tool_call, param)) {
       missing.push_back(param);
     }
   }
@@ -252,12 +241,12 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
   // Check for interrupt before starting tool execution
   if (stop_generation) { out.content = "[Tool interrupted by user]"; return out; }
 
-  // If this is an edit_file call missing a path but we just did a search_file,
-  // inject the inferred path into the XML before validation so check_params passes.
+  // If this is an edit_file call missing a path (canonical or bare form)
+  // but we just did a search_file, inject the inferred path into the XML
+  // before validation so check_params passes.
   bool path_inferred = false;
   if (tool_name == "edit_file" && !state.last_search_path.empty()) {
-    size_t path_tag_pos = tool_call.find(string(PARAM_START) + "path>");
-    if (path_tag_pos == string::npos) {
+    if (!param_present(tool_call, "path")) {
       size_t inject_at = tool_call.find('>', ns);
       if (inject_at != string::npos) {
         string injection = string(PARAM_START) + "path>" + state.last_search_path + PARAM_END;

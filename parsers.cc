@@ -245,6 +245,35 @@ static bool find_param_tag(const string& tool_call, const string& arg_name, size
   return false;
 }
 
+// Presence check shared by the validation gate (tools.cc): true if the
+// parameter is present in either accepted form (canonical or bare tag),
+// so a call the extractors accept is not rejected by the gate.
+bool param_present(const string& tool_call, const string& arg_name) {
+  size_t content_begin = 0;
+  return find_param_tag(tool_call, arg_name, content_begin);
+}
+
+// Earliest bare parameter opening tag (<name> for any name in PARAM_NAMES)
+// at or after 'from'; sets 'tag_len' to the length of the tag found.
+size_t find_bare_param_open(const string& text, size_t from, size_t& tag_len) {
+  static const vector<string> tags = [] {
+    vector<string> v;
+    v.reserve(sizeof(PARAM_NAMES) / sizeof(PARAM_NAMES[0]));
+    for (const char* name : PARAM_NAMES) v.push_back(string("<") + name + ">");
+    return v;
+  }();
+  tag_len = 0;
+  size_t best = string::npos;
+  for (const string& tag : tags) {
+    size_t pos = text.find(tag, from);
+    if (pos != string::npos && (best == string::npos || pos < best)) {
+      best = pos;
+      tag_len = tag.length();
+    }
+  }
+  return best;
+}
+
 // Extract the raw parameter block: text between the opening tag
 // (canonical PARAM_START name> form or the bare-tag fallback) and the
 // closing PARAM_END, or through the end of the tool call if no PARAM_END
