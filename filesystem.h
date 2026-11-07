@@ -12,7 +12,11 @@
 std::string file_fingerprint(const std::string& path);
 
 // --- Compact token-based save/restore ---
-// Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_entries>
+// Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M> [session=<S>] [cwd=<dir>]\n<token_ids_as_int32_le><checkpoint_entries>
+// The cwd field (absolute path, runs to end of line so spaces are
+// handled) records the working directory the session was in; a restore
+// chdirs back to it.  Absent in older save files, which restore without
+// a chdir.
 // Each checkpoint entry: <n_past as int32_le><prompt_len as uint16_le><prompt_bytes>
 bool read_token_save(const std::string& save_path, std::vector<llama_token>& tokens);
 
@@ -29,9 +33,13 @@ bool write_token_save_v3(const std::string& save_path, const std::vector<llama_t
 std::vector<PromptCheckpoint> read_checkpoint_offsets(const std::string& save_path);
 // Extract the session number from a V3 save file header. Returns -1 if absent or unreadable.
 int read_save_session(const std::string& save_path);
+// Extract the working directory recorded in a V3 save file header.
+// Returns "" if the save is from before the field existed or is unreadable.
+std::string read_save_cwd(const std::string& save_path);
 
 // V1 cache: after a slow restore, auto-save the rebuilt KV cache for instant
-// future restores.  Cache lives in <cwd>/$LIM_CACHE_DIR/<name>-<hash>.
+// future restores.  Cache lives in $LIM_CACHE_DIR/<name>-<hash> (a relative
+// value follows the working directory, as with a relaunch).
 // The hash is content-based (SHA-256 of token data + model filename), so it
 // survives save file renames and moves.  The name suffix is purely informational.
 // File format: a "LIM_CACHE_V1 main_size=<N> mtp_size=<M>\n" header line (same

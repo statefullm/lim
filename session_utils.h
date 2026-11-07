@@ -20,6 +20,14 @@ std::string html_escape_for_browser(const std::string& s);
 // Log a batch of tokens with a label (no-op if debug disabled or token_log not open)
 void log_tokens(const std::string& label, const std::vector<llama_token>& toks, llama_context* ctx);
 
+// Advance a session number past existing log files in LIM_LOG_DIR (the
+// first-free rule of the startup scan): returns the first N >= from for
+// which <LIM_LOG_DIR>/<N> does not exist.  Used at startup and whenever
+// the process cwd (and thus the relative log directory) changes, so a
+// number assigned in one directory never reuses a historical session
+// number of another.
+int next_free_log_index(int from);
+
 // Open the chat/token/TPS log files for the given session index.
 // Returns false if the chat log could not be opened.
 bool open_session_logs(int idx);

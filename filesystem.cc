@@ -58,6 +58,7 @@ static const struct HeaderKey {
   STR("n_tokens="),          // 1
   STR("n_checkpoints="),     // 2
   STR("session="),           // 3
+  STR("cwd="),               // 4
 };
 #undef STR
 
@@ -65,15 +66,20 @@ static constexpr int HDR_MAGIC         = 0;
 static constexpr int HDR_N_TOKENS      = 1;
 static constexpr int HDR_N_CHECKPOINTS = 2;
 static constexpr int HDR_SESSION       = 3;
+static constexpr int HDR_CWD           = 4;
 
 // --- Compact token-based save/restore ---
-// Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M>\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
+// Save format: LIM_SAVE_V3 git_sha=<40-hex> n_tokens=<N> n_checkpoints=<M> [session=<S>] [cwd=<dir>]\n<token_ids_as_int32_le><checkpoint_offsets_as_int32_le>
+// cwd is last and its value runs to the end of the line (absolute paths may
+// contain spaces); it is absent in save files written before it existed.
 
 // Parse a V3 header line. Returns false if format is invalid.
-// On success, fills *out_n_tokens and optionally *out_n_checkpoints and *out_session.
+// On success, fills *out_n_tokens and optionally *out_n_checkpoints,
+// *out_session, and *out_cwd.
 static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
                             size_t* out_n_checkpoints = nullptr,
-                            int* out_session = nullptr) {
+                            int* out_session = nullptr,
+                            string* out_cwd = nullptr) {
   // Validate magic prefix
   if (header_str.substr(0, header_keys[0].len) != header_keys[0].name) return false;
 
@@ -105,6 +111,16 @@ static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
     }
   }
 
+  // Parse cwd= (optional; last field, value runs to end of line)
+  if (out_cwd) {
+    pos = header_str.find(header_keys[HDR_CWD].name);
+    if (pos != string::npos) {
+      *out_cwd = header_str.substr(pos + header_keys[HDR_CWD].len);
+    } else {
+      *out_cwd = ""; // Save predates the cwd field
+    }
+  }
+
   return true;
 }
 
@@ -114,16 +130,18 @@ static bool read_save_header(const string& save_path, string& header) {
   FILE* fp = fopen(save_path.c_str(), "rb");
   if (!fp) return false;
 
-  static constexpr size_t MAX_HEAD = 256;
-  char head[MAX_HEAD];
-  size_t n = fread(head, 1, MAX_HEAD, fp);
+  // The line length is data-dependent (the cwd field can be up to PATH_MAX),
+  // so read dynamically. The cap guards against a corrupt file with no
+  // newline (without it we'd slurp the entire token payload).
+  header.clear();
+  constexpr size_t max_len = PATH_MAX + 256;
+  int c;
+  while (header.size() < max_len && (c = fgetc(fp)) != EOF && c != '\n') {
+    header += static_cast<char>(c);
+  }
+  bool complete = (c == '\n');
   fclose(fp);
-
-  string first_chunk(head, n);
-  size_t nl = first_chunk.find('\n');
-  if (nl == string::npos) return false;
-  header.assign(first_chunk.begin(), first_chunk.begin() + nl);
-  return true;
+  return complete;
 }
 
 bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
@@ -160,12 +178,22 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
                          int session_num) {
   string sha = get_git_head_sha();
 
-  // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M> session=<S>\n"
+  // Header: "LIM_SAVE_V3 git_sha=<sha> n_tokens=<N> n_checkpoints=<M> session=<S> cwd=<dir>\n"
   string header = string(header_keys[0].name) + "git_sha=" + sha +
     " " + header_keys[1].name + std::to_string(tokens.size()) +
     " " + header_keys[2].name + std::to_string(checkpoints.size());
   if (session_num >= 0) {
     header += string(" ") + header_keys[3].name + std::to_string(session_num);
+  }
+  // Record the working directory so a restore can return to it (the
+  // system prompt baked into the saved tokens claims it).  cwd is the
+  // last header field; omitted if it can't be determined (e.g., the
+  // launch directory was deleted), which restores as a pre-cwd save.
+  {
+    char cwd_buf[PATH_MAX];
+    if (getcwd(cwd_buf, sizeof(cwd_buf)) != nullptr) {
+      header += string(" ") + header_keys[HDR_CWD].name + cwd_buf;
+    }
   }
   header += "\n";
 
@@ -253,6 +281,16 @@ int read_save_session(const string& save_path) {
   return session;
 }
 
+string read_save_cwd(const string& save_path) {
+  string header_line;
+  if (!read_save_header(save_path, header_line)) return "";
+
+  size_t num_tokens = 0;
+  string cwd;
+  if (!parse_v3_header(header_line, &num_tokens, nullptr, nullptr, &cwd)) return "";
+  return cwd;
+}
+
 // --- V1 Cache: auto-cached KV cache for instant restores ---
 
 #include <array>
@@ -282,9 +320,24 @@ static std::string sha256_hex(const std::string& data) {
 }
 
 static std::string get_cache_dir_internal() {
-  // LIM_CACHE_DIR relative to the process cwd -- the launch directory, which
-  // is fixed for the session (lim never chdirs).
+  // LIM_CACHE_DIR relative to the current cwd (a relative value follows the
+  // working directory, as with a relaunch); ensure it exists.
   std::string dir = LIM_CACHE_DIR;
+  mkdir(dir.c_str(), 0755);
+  return dir;
+}
+
+// Resolve LIM_CACHE_DIR against the save file's directory rather than the
+// process cwd.  A relative cache dir was written relative to the save's
+// location, so a restore must look there even if the process cwd differs
+// (e.g., a /load from another directory before the chdir takes effect).
+// An absolute LIM_CACHE_DIR is returned as-is.
+static std::string get_cache_dir_for_save(const std::string& save_path) {
+  if (!LIM_CACHE_DIR.empty() && LIM_CACHE_DIR[0] == '/') return LIM_CACHE_DIR;
+  // Extract the directory component of save_path (e.g., "/a/b/c.save" -> "/a/b").
+  size_t slash = save_path.rfind('/');
+  std::string base_dir = (slash == std::string::npos) ? "." : save_path.substr(0, slash);
+  std::string dir = base_dir + "/" + LIM_CACHE_DIR;
   mkdir(dir.c_str(), 0755);
   return dir;
 }
@@ -348,11 +401,12 @@ static std::string cache_filename(const std::string& save_path,
 
 // Scan $LIM_CACHE_DIR/ and return the full paths of all entries whose names
 // end with 'suffix' (e.g., "-<hash>").  Empty if the directory can't be opened.
-static std::vector<std::string> find_cache_files(const std::string& suffix) {
+static std::vector<std::string> find_cache_files(const std::string& suffix,
+                                                  const std::string& dir = "") {
   std::vector<std::string> matches;
-  std::string dir = get_cache_dir_internal();
+  std::string cache_dir = dir.empty() ? get_cache_dir_internal() : dir;
 
-  DIR* d = opendir(dir.c_str());
+  DIR* d = opendir(cache_dir.c_str());
   if (!d) return matches;
 
   struct dirent* entry;
@@ -360,28 +414,29 @@ static std::vector<std::string> find_cache_files(const std::string& suffix) {
     std::string fname = entry->d_name;
     if (fname.size() > suffix.size() &&
         fname.compare(fname.size() - suffix.size(), suffix.size(), suffix) == 0) {
-      matches.push_back(dir + "/" + fname);
+      matches.push_back(cache_dir + "/" + fname);
     }
   }
   closedir(d);
   return matches;
 }
 
-// Scan $LIM_CACHE_DIR/ and return the full paths of all entries whose names
+// Scan a cache directory and return the full paths of all entries whose names
 // start with 'prefix' (e.g., "<save-name>-").  Empty if the directory can't
 // be opened.
-static std::vector<std::string> find_cache_files_by_prefix(const std::string& prefix) {
+static std::vector<std::string> find_cache_files_by_prefix(const std::string& prefix,
+                                                           const std::string& dir = "") {
   std::vector<std::string> matches;
-  std::string dir = get_cache_dir_internal();
+  std::string cache_dir = dir.empty() ? get_cache_dir_internal() : dir;
 
-  DIR* d = opendir(dir.c_str());
+  DIR* d = opendir(cache_dir.c_str());
   if (!d) return matches;
 
   struct dirent* entry;
   while ((entry = readdir(d)) != nullptr) {
     std::string fname = entry->d_name;
     if (fname.compare(0, prefix.size(), prefix) == 0) {
-      matches.push_back(dir + "/" + fname);
+      matches.push_back(cache_dir + "/" + fname);
     }
   }
   closedir(d);
@@ -457,10 +512,11 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
                        struct llama_context* ctx_mtp, bool* mtp_loaded) {
   if (mtp_loaded) *mtp_loaded = false;
   std::string hash = cache_hash(tokens, model_path);
+  std::string cache_dir = get_cache_dir_for_save(save_path);
 
   // Look for any file ending with -<hash>. All matches share the same
   // content+model hash, so the first one that loads is valid.
-  for (const auto& cache_path : find_cache_files("-" + hash)) {
+  for (const auto& cache_path : find_cache_files("-" + hash, cache_dir)) {
     std::vector<uint8_t> file;
     if (!read_file_buf(cache_path, file)) {
       diag("V1 cache: cannot read " + cache_path + " -- skipping entry", "\033[33m");
@@ -566,7 +622,7 @@ bool try_load_v1_cache(const std::string& save_path, const std::vector<llama_tok
 bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>& tokens,
                     const std::string& model_path, struct llama_context* ctx,
                     const std::string& old_hash, struct llama_context* ctx_mtp) {
-  std::string dir = get_cache_dir_internal();
+  std::string dir = get_cache_dir_for_save(save_path);
   std::string hash = cache_hash(tokens, model_path);
 
   // Remove orphaned entries for this save file: same name prefix, different
@@ -581,7 +637,7 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
     std::string name = save_file_name(save_path);
     if (!name.empty()) {
       std::string prefix = name + "-";
-      for (const auto& cache_path : find_cache_files_by_prefix(prefix)) {
+      for (const auto& cache_path : find_cache_files_by_prefix(prefix, dir)) {
         size_t slash = cache_path.rfind('/');
         std::string base = (slash == std::string::npos) ? cache_path : cache_path.substr(slash + 1);
         if (base != prefix + hash) unlink(cache_path.c_str());
@@ -596,7 +652,7 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   // mirror-less one (the user asked to cache the current state); the
   // slow-restore auto-write passes an empty old_hash and never does this.
   if (!old_hash.empty()) {
-    for (const auto& cache_path : find_cache_files("-" + old_hash)) {
+    for (const auto& cache_path : find_cache_files("-" + old_hash, dir)) {
       unlink(cache_path.c_str());
     }
   }
@@ -618,7 +674,7 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
   {
     bool existing_has_mirror = false;
     bool existing_valid = false;
-    for (const auto& cache_path : find_cache_files("-" + hash)) {
+    for (const auto& cache_path : find_cache_files("-" + hash, dir)) {
       std::string header;
       uint64_t ms = 0, ts = 0;
       struct stat st;
@@ -638,7 +694,7 @@ bool write_v1_cache(const std::string& save_path, const std::vector<llama_token>
       if (ts > 0) existing_has_mirror = true;
     }
     if (existing_has_mirror || (!ctx_mtp && existing_valid)) return true;
-    for (const auto& cache_path : find_cache_files("-" + hash)) unlink(cache_path.c_str());
+    for (const auto& cache_path : find_cache_files("-" + hash, dir)) unlink(cache_path.c_str());
   }
 
   // Refuse to cache a KV that doesn't match the save's tokens exactly: a
@@ -715,9 +771,10 @@ bool delete_save_and_cache(const std::string& save_path,
   int rc = unlink(save_path.c_str());
   if (rc != 0) return false;
 
-  // If we have a hash, scan $LIM_CACHE_DIR/ for matching entries and delete them.
+  // If we have a hash, scan the save's cache directory for matching entries.
   if (!hash.empty()) {
-    for (const auto& cache_path : find_cache_files("-" + hash)) {
+    std::string cache_dir = get_cache_dir_for_save(save_path);
+    for (const auto& cache_path : find_cache_files("-" + hash, cache_dir)) {
       unlink(cache_path.c_str());
       if (cache_deleted) (*cache_deleted)++;
     }

@@ -88,6 +88,15 @@ static struct HomeInit { HomeInit() {
   DOCLING_LOG_PATH = LIM_LOG_DIR + "/docling.log";
 } } g_homeInit;
 
+// Re-create the relative session directories in the current cwd.  Called
+// after the process cwd changes (/cd, /load to a save made elsewhere) so
+// logs and fast-restore caches follow the working directory, as with
+// /quit; cd; coder.  Absolute values (explicitly set) are left untouched.
+void lim_reanchor_session_dirs() {
+  if (!LIM_LOG_DIR.empty() && LIM_LOG_DIR[0] != '/') mkdir(LIM_LOG_DIR.c_str(), 0775);
+  if (!LIM_CACHE_DIR.empty() && LIM_CACHE_DIR[0] != '/') mkdir(LIM_CACHE_DIR.c_str(), 0755);
+}
+
 extern bool is_debug;
 extern volatile sig_atomic_t stop_generation;  // Forward declaration for interrupt checking
 

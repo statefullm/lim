@@ -44,6 +44,14 @@ std::string html_escape_for_browser(const std::string& s) {
   }
   return escaped;
 }
+int next_free_log_index(int from) {
+  if (from < 1) from = 1;
+  for (int idx = from; ; idx++) {
+    ifstream check(LIM_LOG_DIR + "/" + to_string(idx));
+    if (!check.good()) return idx;
+  }
+}
+
 bool open_session_logs(int idx) {
   string log_file_name = LIM_LOG_DIR + "/" + to_string(idx);
   chat_log.open(log_file_name, ios::app);

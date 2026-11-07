@@ -322,7 +322,7 @@ relim() {
 export PATH="$HOME/bin:$PATH"
 ```
 
-LIM resolves relative paths -- in the file tools and in `exec_shell` -- against the directory it was launched in. That directory is fixed for the session and is given to the LLM in the system prompt: a `cd` inside an `exec_shell` command is local to that command. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
+LIM resolves relative paths -- in the file tools and in `exec_shell` -- against its current working directory. That directory starts as the launch directory; it changes only on an empty context via `/cd` or `/load`, and is given to the LLM in the system prompt: a `cd` inside an `exec_shell` command is local to that command. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
 
 Note: `relim` needs a patched `reptyr`: vanilla 0.10.0 can hang silently while attaching a multithreaded target, because it sends SIGCONT before reaping the attach stop, which can cancel that stop so the unbounded wait never returns. `reptyr-attach-retry.patch` (this repository) sends the SIGCONT only after the attach stop is reaped and bounds the wait (a real failure reports `Connection timed out` instead of hanging), making reattach reliable. Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
@@ -381,9 +381,9 @@ Set via `LIM_OUTPUT`:
 | Variable | Default | Description |
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
-| `LIM_CACHE_DIR` | `.cache` | Directory (relative to the launch directory) for fast restore KV-cache files. |
+| `LIM_CACHE_DIR` | `.cache` | Directory for fast restore KV-cache files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
-| `LIM_LOG_DIR` | `log` | Directory (relative to the launch directory) for session logs, token traces, and autosave files. |
+| `LIM_LOG_DIR` | `log` | Directory for session logs, token traces, and autosave files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for the SSH connection; the viewer is always reached via localhost (through the SSH port forward when remote). |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server (listens on `127.0.0.1` only; the SSH tunnel's remote side uses the same port) |
@@ -515,6 +515,7 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | Command | Effect |
 |---|---|
 | `/clear` | Auto-save the current state to `$LIM_LOG_DIR/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
+| `/cd <dir>` | Change the working directory for the next session. Only allowed with an empty context (at startup or after `/clear`): re-anchors the session to the new directory (logs, cache, history) and re-feeds the system prompt there, so a new conversation can start there without quitting and reloading the model. |
 | `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models, instant undo works only for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback. If the re-decode fallback is interrupted (Ctrl+C), LIM resets the context to a fresh session. |
 | `/continue` | Resume a live interruption (only). If interrupted mid-tool-call, resumes from the exact point of interruption. At a well-formed boundary, keeps the model generating. After `/undo` to a mid-turn checkpoint it is a silent no-op -- type a prompt (e.g., "continue") to carry the conversation on (the turn is closed automatically) |
 | `/reset` | Reset terminal, web search, and the browser server (replaced only if it has stopped, or is left reading a deleted FIFO node). Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
@@ -542,7 +543,7 @@ coder $LIM_LOG_DIR/5         # .save appended automatically
 coder cats                   # restores from cats.save
 ```
 
-This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
+This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. It also restores the working directory: save files record the directory they were made in, and a restore changes to it before decoding (the system prompt baked into the save claims it) and, on success, re-anchors the session there (logs, cache, history), as with `/quit; cd; coder`. If that directory no longer exists or is inaccessible, the restore is refused. Saves from older versions record no directory: they restore without changing directory, as before. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
 
 **In-session load:** You can also restore from within a running session using `/load <path>`. This must be used immediately after `/clear`; if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the fast cache when available. Typical workflow:
 
@@ -728,7 +729,7 @@ See **Git Safe Directories** in the User Setup section. In a directory the LLM c
 
 ## Session History
 
-Input history is persisted to `.lim_history` in the current working directory and survives across sessions.
+Input history is persisted to `.lim_history` in the current working directory and survives across sessions; `/cd` and `/load` switch to the new directory's file (like a relaunch).
 
 ---
 

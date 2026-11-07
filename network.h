@@ -53,4 +53,9 @@ extern std::string LIM_LOG_DIR;
 extern std::string LIM_CACHE_DIR;
 extern std::string LIM_SAVE_DIR;
 
+// Re-create the relative session directories (LIM_LOG_DIR, LIM_CACHE_DIR)
+// in the current cwd after the process cwd changes (/cd, /load to a save
+// made elsewhere), so they follow the working directory as with a relaunch.
+void lim_reanchor_session_dirs();
+
 #endif // NETWORK_H

@@ -293,14 +293,7 @@ int main(int argc, char ** argv) {
 
   mkdir(LIM_LOG_DIR.c_str(), 0775);
   mkdir(LIM_CACHE_DIR.c_str(), 0775);
-  int log_index = 1;
-  string log_file_name;
-  while (true) {
-    log_file_name = LIM_LOG_DIR + "/" + to_string(log_index);
-    ifstream check_file(log_file_name.c_str());
-    if (!check_file.good()) break;
-    log_index++;
-  }
+  int log_index = next_free_log_index(1);
   // Open chat/token/TPS log files for this session.
   if (!open_session_logs(log_index)) {
     cerr << "Error: Failed to open log file. The directory isn't writeable by user ai." << endl;

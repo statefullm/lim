@@ -35,6 +35,9 @@ extern std::string g_model_path;
 #include <sys/select.h>
 #include <sys/stat.h>
 #include <termios.h>
+#include <cstring>
+#include <cerrno>
+#include <limits.h>
 
 // --- Readline Headers ---
 #include <readline/readline.h>
@@ -65,7 +68,7 @@ extern std::string g_dummy_thought_text;
 // HOME is declared as extern std::string HOME in network.h
 
 // --- Command table: single source of truth for dispatch, alias blocking, and help ---
-enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, REMIND, CONTINUE, SAVE, RESTORE, DELETE, HELP, UNDO };
+enum class Cmd : int { NONE, QUIT, CLEAR, RESET, REINCARNATE, REMIND, CONTINUE, SAVE, RESTORE, DELETE, HELP, UNDO, CD };
 
 enum class ArgType { NONE, PATH };
 
@@ -119,6 +122,7 @@ static const struct CmdInfo {
   { "quit",         Cmd::QUIT,        ArgType::PATH,   "Save session and exit; /quit <path> does a named save with fast cache" },
   { "exit",         Cmd::QUIT,        ArgType::PATH,   nullptr },              // alias, not shown in help
   { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
+  { "cd",           Cmd::CD,          ArgType::PATH,   "Change working directory for a new session (empty context only, like /load); no model reload" },
   { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
   { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
   { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, web search, and browser server (replaced only if it has stopped, or is left reading a deleted FIFO node)" },
@@ -170,6 +174,13 @@ static map<string, string> load_aliases() {
 }
 
 // --- Safe Multiline History Handlers ---
+// The history file is ".lim_history", resolved against the current cwd at
+// each use: it follows the working directory, as with a relaunch.  After a
+// cwd change (/cd, /load to a save made elsewhere) reanchor_after_chdir()
+// reloads the new directory's file as the persistent A and re-baselines
+// (history_file_size_at_startup_), so flush_history never truncates a file
+// to a foreign baseline.
+
 static void load_history_safe(const char* filename) {
   ifstream in(filename);
   string line;
@@ -309,9 +320,14 @@ private:
   string save_prefix_;
   string restore_path_;
   string delete_path_;
+  string cd_path_;
   bool restore_checkpoints_ = false;  // /load <path> --checkpoints
   // Track if the previous turn was a manual save, so /quit can skip redundant auto-save
   bool prev_was_save_ = false;
+  // The startup session divider is deferred until the first prompt or /load
+  // so that a /load which re-bases the session number (via reanchor_after_chdir)
+  // shows the correct number in the browser.
+  bool divider_sent_ = false;
   // Track if we already logged assistant output this turn (via process_tool_call),
   // so the main loop doesn't duplicate it.
   bool assistant_logged_this_turn_ = false;
@@ -397,23 +413,73 @@ private:
     }
   }
 
-  // Increment the session number and reopen all log files for the new
-  // session (same layout/headers as startup: see open_session_logs in
-  // session_utils.cc and write_tps_header in main.cc). Returns the new
-  // session number.
-  int bump_session() {
-    state_.log_index++;
-    int idx = state_.log_index;
+  // Re-anchor the per-directory state after the process cwd changed
+  // (/cd, /load to a save made elsewhere) -- what /quit; cd; coder does
+  // for everything except the model: create the relative session
+  // directories in the new location, and load its .lim_history as the
+  // fresh persistent A (re-baselined).  C entries typed in the old
+  // directory are already on disk there (crash-safety append) and B is
+  // empty in a clean context, so the switch is a plain reload.
+  void reanchor_after_chdir() {
+    lim_reanchor_session_dirs();
+    // The session counter was assigned in the old directory: re-base it by
+    // scanning the CURRENT log directory from 1 (a dir scan, so it happens
+    // only here, after a chdir) -- each directory keeps its own numbering,
+    // exactly as a relaunch there would.  Subsequent /clears then
+    // increment as usual, and the in-flight session's log files move to
+    // the new directory at the re-based number (a relaunch opens them
+    // there from the start).
+    state_.log_index = next_free_log_index(1);
+    open_session_logs_current();
+    using_history();
+    clear_history();
+    load_history_safe(".lim_history");
+    persistent_history_len_ = history_length;
+    c_count_since_restore_ = 0;
+    struct stat st;
+    if (stat(".lim_history", &st) == 0) {
+      history_file_size_at_startup_ = st.st_size;
+    } else {
+      history_file_size_at_startup_ = 0;  // first session in this directory
+    }
+  }
 
+
+  // (Re)open all log files for the given session number (same layout/
+  // headers as startup: see open_session_logs in session_utils.cc and
+  // write_tps_header in main.cc).
+  void open_session_logs_current() {
+    int idx = state_.log_index;
     chat_log.close();
     token_log.close();
     tps_log.close();
-
     if (!open_session_logs(idx)) {
       diag("Failed to open log files for session #" + to_string(idx), "\033[31m");
     }
     write_tps_header();
-    return idx;
+  }
+
+  // Increment the session number and reopen the log files.  The increment
+  // is a blind ++: the base number is (re)established by a directory scan
+  // at startup and by reanchor_after_chdir() after every chdir, so the
+  // counter is always valid for the current log directory.
+  int bump_session() {
+    state_.log_index++;
+    open_session_logs_current();
+    return state_.log_index;
+  }
+
+  // Announce the session (terminal + chat log + browser divider) now that
+  // the session number is final (the first prompt or a /load has occurred
+  // since the last /clear or startup).  No-op if already announced.
+  void announce_session_if_pending() {
+    if (!divider_sent_) {
+      announce_new_session(state_.log_index);
+      if (should_output_to_browser()) {
+        stream_html(session_divider(state_.log_index, false));
+      }
+      divider_sent_ = true;
+    }
   }
 
   void log_entry(const string& role, const string& text) {
@@ -454,8 +520,11 @@ private:
   // /clear).  Leaves the context in exactly the state /load requires, so a
   // saved session can be restored straight from the fresh prompt.  The
   // caller performs the pre-clear auto-save.
+  // bump=false: the session number was just assigned by
+  // reanchor_after_chdir() (a /cd); /clear and the recovery paths bump
+  // as usual.
   void clear_session(const char* history_file, const string& cleared_diag,
-                     const char* color = "\033[32m") {
+                     const char* color = "\033[32m", bool bump = true) {
     clear_context();
     state_.auto_continue = false;
     state_.prev_was_interrupted = false;
@@ -469,13 +538,14 @@ private:
     state_.last_n_past = n_past_;
     state_.first_turn_done = true;
     flush_history(history_file);
-    int new_log_index = bump_session();
+    if (bump) bump_session();
 
-    // Update browser: mark the new session with a dashed divider (the
-    // previous session's output stays readable, as with a lim restart),
-    // then set the context diagnostic.
+    // The session announcement is deferred (announce_session_if_pending)
+    // until the next prompt or /load: a /clear followed by /load may
+    // re-base the session number via a chdir, so the number isn't final
+    // yet.  Send only the context diagnostic for immediate feedback.
+    divider_sent_ = false;
     if (should_output_to_browser()) {
-      stream_html(session_divider(new_log_index, false));
       string ctx_str = context_pos(n_past_, (int)cparams_.n_ctx);
       pipe_write(&SEG_SPEED, 1);
       string speed_msg = "Cleared | " + ctx_str;
@@ -483,7 +553,6 @@ private:
     }
 
     diag(cleared_diag, color);
-    announce_new_session(new_log_index);
     // Remove B (checkpoint prompts) while preserving A (persistent)
     // and C (user inputs since last restore).  After flush_history above,
     // the surviving C entries are now on disk, so promote them into A.
@@ -1301,6 +1370,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
       save_prefix_.clear();
       restore_path_.clear();
       delete_path_.clear();
+      cd_path_.clear();
       restore_checkpoints_ = false;
       if (c->cmd == Cmd::SAVE)    save_prefix_   = arg;
       if (c->cmd == Cmd::RESTORE) {
@@ -1310,6 +1380,7 @@ ChatSession::Command ChatSession::handle_command(const string& input) {
       }
       if (c->cmd == Cmd::DELETE)  delete_path_   = arg;
       if (c->cmd == Cmd::QUIT)    save_prefix_   = arg;
+      if (c->cmd == Cmd::CD)      cd_path_       = arg;
       return static_cast<Command>(c->cmd);
 
     case ArgType::NONE:
@@ -1750,13 +1821,13 @@ bool ChatSession::handle_reincarnate_completion() {
 
   diag("Clearing context and starting reincarnated session...", "\033[35m");
   clear_context();
-  const char* history_file = ".lim_history";
-  flush_history(history_file);
+  flush_history(".lim_history");
   int new_log_index = bump_session();
   announce_new_session(new_log_index);
 
   if (should_output_to_browser()) {
     stream_html(session_divider(new_log_index, true));
+    divider_sent_ = true;
   }
 
   string follow_prompt = "Follow the prompt in " + LIM_CONFIG_DIR + "/userprompt";
@@ -1966,6 +2037,35 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     restore_path_abs = rpath;
   }
   int saved_session = read_save_session(rpath);
+
+  // Return to the working directory recorded in the save: the restored
+  // system prompt claims it, so the process cwd must match it.  This runs
+  // after rpath is resolved to an absolute path (a relative save argument
+  // was typed against the old cwd).  Saves written before the cwd field
+  // existed carry none: they restore without a chdir, as before.
+  // rollback_cwd_on_fail() restores it again if the restore is cancelled or
+  // fails: those paths keep the old system prompt (claiming the old cwd)
+  // in the KV, so the process cwd must go back with it.
+  string saved_cwd = read_save_cwd(rpath);
+  string orig_cwd;
+  if (!saved_cwd.empty()) {
+    char cur_cwd_buf[PATH_MAX];
+    string cur_cwd = getcwd(cur_cwd_buf, sizeof(cur_cwd_buf)) ? cur_cwd_buf : string();
+    if (cur_cwd != saved_cwd && chdir(saved_cwd.c_str()) != 0) {
+      diag("Restore failed: the save's working directory " + saved_cwd +
+           " is not accessible (" + strerror(errno) + "). Restore aborted.", "\033[1;31m");
+      return RestoreStatus::Failed;
+    }
+    if (cur_cwd != saved_cwd) {
+      orig_cwd = cur_cwd;  // non-empty only when a chdir actually happened
+      diag("Working directory restored: " + saved_cwd, "\033[35m");
+    }
+  }
+  auto rollback_cwd_on_fail = [&orig_cwd]() {
+    if (!orig_cwd.empty() && chdir(orig_cwd.c_str()) != 0) {
+      diag("Failed to restore the previous working directory " + orig_cwd, "\033[31m");
+    }
+  };
 
   // --- Fast path (V1 cache) with the pre-turn canary ---
   // A corrupted canary re-runs the fast restore (the fault is
@@ -2181,6 +2281,7 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
 
       if (cancelled) {
         diag("Restore cancelled.", "\033[35m");
+        rollback_cwd_on_fail();
         return RestoreStatus::Cancelled;
       }
 
@@ -2284,6 +2385,7 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
         log_entry("SYSTEM", string("Restore ") + (was_interrupted ? "interrupted" : "failed") +
                   ", context reset to a fresh session");
       }
+      rollback_cwd_on_fail();
       return RestoreStatus::Failed;
     }
 
@@ -2368,6 +2470,13 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
   {
     vector<string> saved_c = collect_recent_user_inputs();  // oldest first
 
+    // A /load to a save made elsewhere moved the process cwd: re-anchor the
+    // per-directory state before repopulating so the restored B sits on the
+    // new directory's A.  Cancel/fail paths roll the cwd back and never
+    // reach here, so the history moves only with a successful restore.
+    if (!orig_cwd.empty()) reanchor_after_chdir();
+    announce_session_if_pending();
+
     // Repopulate readline history from restored checkpoints so up-arrow
     // navigates through the restored session's prompts.
     repopulate_history();
@@ -2442,13 +2551,9 @@ bool ChatSession::run() {
     }
   }
 
-  // Stream the dashed "Session N" divider the reincarnate flow uses so the
-  // viewer always shows the current session number -- and, when a persistent
-  // server's viewer is still showing a previous session, so the sessions stay
-  // visually separated (the previous session's output remains readable).
-  if (should_output_to_browser()) {
-    stream_html(session_divider(state_.log_index, false));
-  }
+  // The session announcement is deferred (announce_session_if_pending)
+  // until the first prompt or /load: a CLI restore that chdirs to a save's
+  // directory re-bases the session number, so the number isn't known yet.
 
   // --- MAIN CHAT TURN LOOP ---
   while (true) {
@@ -2508,6 +2613,56 @@ bool ChatSession::run() {
       // with the regular save file that /quit or /exit will overwrite.
       autosave_before_clear();
       clear_session(history_file, "Context Cleared Successfully");
+      continue;
+    }
+
+    if (last_cmd_ == Command::CD) {
+      if (cd_path_.empty()) {
+        diag("/cd requires a directory argument. Usage: /cd <directory>", "\033[31m");
+        continue;
+      }
+      // Same clean-state precondition as /load: only the system prompt may
+      // be present, because /cd re-feeds it for the new directory.  (A
+      // later /load restores a saved session, which returns to that
+      // session's own directory: /cd picks where a new session starts.)
+      if ((int)state_.all_context_tokens.size() != (int)system_tokens_.size() ||
+          !state_.prompt_checkpoints.empty()) {
+        diag("/cd is only allowed with an empty context. Type '/clear' first.", "\033[31m");
+        continue;
+      }
+      struct stat st_cd;
+      if (stat(cd_path_.c_str(), &st_cd) != 0 || !S_ISDIR(st_cd.st_mode)) {
+        diag("/cd failed: " + cd_path_ + " is not an accessible directory", "\033[31m");
+        continue;
+      }
+      // /quit part: persist the C entries to the current directory's
+      // history file before the switch.
+      flush_history(history_file);
+      char cwd_before_buf[PATH_MAX];
+      string cwd_before = getcwd(cwd_before_buf, sizeof(cwd_before_buf)) ? cwd_before_buf : string();
+      if (chdir(cd_path_.c_str()) != 0) {
+        diag("/cd failed: " + cd_path_ + " (" + strerror(errno) + ")", "\033[31m");
+        continue;
+      }
+      // Then /quit; cd; coder minus the model: re-anchor the per-directory
+      // state (session directories, history), and run the /clear flow --
+      // KV reset, system prompt re-fed for the new directory (plus any
+      // directory-specific localprompt), new session number whose logs
+      // open in the new directory, browser divider.  The context held only
+      // the old system prompt, so nothing is lost.
+      char new_cwd_buf[PATH_MAX];
+      string new_cwd = getcwd(new_cwd_buf, sizeof(new_cwd_buf)) ? new_cwd_buf : cd_path_;
+      // No-op /cd: nothing moved, so re-anchoring (which re-bases the
+      // session number by scanning the log directory and reopens the log
+      // files) must not run -- the counter's own log file is present here
+      // and the number would jump.
+      if (new_cwd == cwd_before) {
+        diag("Already in " + new_cwd, "\033[35m");
+        continue;
+      }
+      reanchor_after_chdir();
+      clear_session(history_file, "Changed working directory to " + new_cwd,
+                    "\033[35m", /*bump=*/false);
       continue;
     }
 
@@ -3065,6 +3220,7 @@ bool ChatSession::run() {
 
     // 6. Feed user message (if non-empty)
     if (!user_input.empty()) {
+      announce_session_if_pending();
       prev_was_save_ = false;
       // /remind is an alias for the system prompt: the feed routes below
       // take the expanded text, while last_user_input_ (the /undo label)

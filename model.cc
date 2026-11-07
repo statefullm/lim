@@ -454,12 +454,15 @@ bool load_system_prompt_text(string& prompt) {
     }
   }
 
-  // Append cwd and date/time.  This is the only getcwd in the program: lim
-  // never chdirs, so this launch directory is the fixed anchor every relative
-  // path resolves against.  The wall-clock timestamp is omitted in
-  // deterministic (temperature 0) mode: it is the only session-varying piece
-  // of the prompt, and dropping it makes greedy runs byte-reproducible.  (A
-  // fixed date can still be given explicitly in the user prompt if needed.)
+  // Append cwd and date/time.  The cwd can change after startup (/cd,
+  // restoring a save made elsewhere), but this prompt text is always
+  // (re)built after such a change -- at startup, on /clear, on /cd, and
+  // restored verbatim from the save file -- so the line always matches the
+  // process cwd the file tools and exec_shell resolve against.  The
+  // wall-clock timestamp is omitted in deterministic (temperature 0) mode:
+  // it is the only session-varying piece of the prompt, and dropping it
+  // makes greedy runs byte-reproducible.  (A fixed date can still be given
+  // explicitly in the user prompt if needed.)
   char current_cwd[PATH_MAX];
   if (getcwd(current_cwd, sizeof(current_cwd)) != nullptr) {
     prompt += "\n\nRelative paths resolve against the current working directory " + string(current_cwd) + "\n";
