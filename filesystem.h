@@ -29,13 +29,19 @@ struct PromptCheckpoint {
 bool write_token_save_v3(const std::string& save_path, const std::vector<llama_token>& tokens,
                          const std::vector<PromptCheckpoint>& checkpoints,
                          int session_num = -1);
-// Returns the prompt-return checkpoints embedded in a V3 save file.
-std::vector<PromptCheckpoint> read_checkpoint_offsets(const std::string& save_path);
-// Extract the session number from a V3 save file header. Returns -1 if absent or unreadable.
-int read_save_session(const std::string& save_path);
-// Extract the working directory recorded in a V3 save file header.
-// Returns "" if the save is from before the field existed or is unreadable.
-std::string read_save_cwd(const std::string& save_path);
+// Full contents of a V3 save file, read with a single open (the file is
+// small -- 4 bytes per token plus prompt labels): the header fields
+// (session number, cwd, git sha), the token sequence, and the prompt-
+// return checkpoints.  The caller takes the data by move; nothing else
+// needs the file afterwards.
+struct SaveFile {
+  std::vector<llama_token> tokens;
+  std::vector<PromptCheckpoint> checkpoints;
+  int session = -1;
+  std::string cwd;
+  std::string git_sha;
+};
+bool read_save_file(const std::string& save_path, SaveFile& sf);
 
 // V1 cache: after a slow restore, auto-save the rebuilt KV cache for instant
 // future restores.  Cache lives in $LIM_CACHE_DIR/<name>-<hash> (a relative

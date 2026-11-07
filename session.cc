@@ -2009,12 +2009,17 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     return RestoreStatus::Failed;
   }
 
-  // Read the save file tokens.
-  vector<llama_token> restored_tokens;
-  if (!read_token_save(rpath, restored_tokens)) {
+  // Read the whole save file in a single open (header fields, tokens,
+  // checkpoints) and take the data by move: the file is small, and
+  // nothing else needs it afterwards.
+  SaveFile sf;
+  if (!read_save_file(rpath, sf)) {
     diag("Restore failed: invalid save file format: " + rpath, "\033[31m");
     return RestoreStatus::Failed;
   }
+  vector<llama_token> restored_tokens = std::move(sf.tokens);
+  int saved_session = sf.session;
+  string saved_cwd = std::move(sf.cwd);
 
   // Fail fast if the session can't fit in the context: the restore
   // decode needs one KV position per token. Without this check the
@@ -2028,25 +2033,30 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     return RestoreStatus::Failed;
   }
 
-  // Resolve to absolute path for cache key consistency.
-  char abs_buf[4096];
-  string restore_path_abs;
-  if (realpath(rpath.c_str(), abs_buf)) {
-    restore_path_abs = abs_buf;
-  } else {
-    restore_path_abs = rpath;
-  }
-  int saved_session = read_save_session(rpath);
 
-  // Return to the working directory recorded in the save: the restored
-  // system prompt claims it, so the process cwd must match it.  This runs
-  // after rpath is resolved to an absolute path (a relative save argument
-  // was typed against the old cwd).  Saves written before the cwd field
-  // existed carry none: they restore without a chdir, as before.
+  // Resolve to an absolute path before the chdir below (to the save's
+  // recorded cwd, or to the launch dir for pre-cwd saves): a relative
+  // path would silently re-resolve against the new cwd (the cache key
+  // in particular is derived from it).
+  char abs_buf[4096];
+  if (realpath(rpath.c_str(), abs_buf)) {
+    rpath = abs_buf;
+  }
+
+
+  // Return to the working directory the restored session claims: the
+  // restored system prompt bakes it in, so the process cwd must match it.
+  // This runs after rpath is resolved to an absolute path (a relative save
+  // argument was typed against the old cwd).  Saves written before the cwd
+  // field existed carry none: they were made in the launch directory (lim
+  // never chdir'd then), so the fallback is the launch directory -- return
+  // to it when the process moved away since (/cd, /load to a cwd-bearing
+  // save), as with /quit; coder;  Staying in the most recent directory
+  // would leave the restored system prompt and the process in different
+  // places.
   // rollback_cwd_on_fail() restores it again if the restore is cancelled or
   // fails: those paths keep the old system prompt (claiming the old cwd)
   // in the KV, so the process cwd must go back with it.
-  string saved_cwd = read_save_cwd(rpath);
   string orig_cwd;
   if (!saved_cwd.empty()) {
     char cur_cwd_buf[PATH_MAX];
@@ -2059,6 +2069,18 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     if (cur_cwd != saved_cwd) {
       orig_cwd = cur_cwd;  // non-empty only when a chdir actually happened
       diag("Working directory restored: " + saved_cwd, "\033[35m");
+    }
+  } else if (!g_launch_dir.empty()) {
+    char cur_cwd_buf[PATH_MAX];
+    string cur_cwd = getcwd(cur_cwd_buf, sizeof(cur_cwd_buf)) ? cur_cwd_buf : string();
+    if (cur_cwd != g_launch_dir && chdir(g_launch_dir.c_str()) != 0) {
+      diag("Restore failed: the launch directory " + g_launch_dir +
+           " is not accessible (" + strerror(errno) + "). Restore aborted.", "\033[1;31m");
+      return RestoreStatus::Failed;
+    }
+    if (cur_cwd != g_launch_dir) {
+      orig_cwd = cur_cwd;  // non-empty only when a chdir actually happened
+      diag("Working directory restored: " + g_launch_dir, "\033[35m");
     }
   }
   auto rollback_cwd_on_fail = [&orig_cwd]() {
@@ -2079,7 +2101,7 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     // the main KV.
     bool mtp_loaded = false;
     bool cache_hit = restore_checkpoints_ ? false
-      : try_load_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_,
+      : try_load_v1_cache(rpath, restored_tokens, g_model_path, ctx_,
                           (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr,
                           &mtp_loaded);
     if (!cache_hit) break;  // no cache entry: fall through to the slow path
@@ -2103,7 +2125,8 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     // invalidate the canonical conversation text (benchmark modes
     // 1/2 rebuild it from the tokens on the next turn).
     state_.conversation_text.clear();
-    state_.prompt_checkpoints = read_checkpoint_offsets(rpath);
+    // Copy (not move): a canary retry re-runs this attempt.
+    state_.prompt_checkpoints = sf.checkpoints;
 
     // --- Canary: pre-turn MTP-mirror validation (eligibility) ---
     // Runs only when MTP is active, the mirror was loaded (it is the
@@ -2213,7 +2236,7 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     restore_point_ckpt_idx_ = -1;  // the canary did not run for this restore
     diag_restore(rpath, (int)restored_tokens.size());
 
-    vector<PromptCheckpoint> restored_checkpoints = read_checkpoint_offsets(rpath);
+    vector<PromptCheckpoint> restored_checkpoints = std::move(sf.checkpoints);
 
     // Slow restore: offer partial restore via readline history
     // navigation so the user can select a restore point.
@@ -2396,13 +2419,11 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
          std::to_string((int)restore_speed) + " t/s (" +
          std::to_string((int)restore_elapsed) + "s)", "\033[35m");
 
-    // Update session state.
-    state_.all_context_tokens = restored_tokens;
     // Restored tracker comes from disk, not from a maintained text:
     // invalidate the canonical conversation text (benchmark modes
     // 1/2 rebuild it from the tokens on the next turn).
     state_.conversation_text.clear();
-    state_.prompt_checkpoints = restored_checkpoints;
+    state_.prompt_checkpoints = std::move(restored_checkpoints);
     state_.checkpoint_stack_offset = 0; // all checkpoints are live
     state_.interrupted_checkpoint_idx = -1;  // list replaced from disk
 
@@ -2418,7 +2439,7 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
     // the entry so the next plain restore is instant.  The n_past_ check
     // is defense in depth; write_v1_cache re-checks the KV/token match
     // before writing.
-    if (!restore_path_abs.empty() &&
+    if (!rpath.empty() &&
         (int)restored_tokens.size() == total_restore_tokens &&
         n_past_ == (int)restored_tokens.size()) {
       if (is_debug) {
@@ -2426,9 +2447,13 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
       }
       // The slow-restore re-decode fed the mirror via the decode
       // hook, so it is consistent here: persist it too.
-      write_v1_cache(restore_path_abs, restored_tokens, g_model_path, ctx_, "",
+      write_v1_cache(rpath, restored_tokens, g_model_path, ctx_, "",
                      (g_mtp && g_mtp->valid()) ? g_mtp->draft_ctx() : nullptr);
     }
+
+    // The cache write above was the last use of the local token copy:
+    // move the buffer into the tracker instead of duplicating it.
+    state_.all_context_tokens = std::move(restored_tokens);
 
     diag_session_restored(saved_session, restored_tokens.size(), (int)cparams_.n_ctx);
     log_entry("SYSTEM", "Restored session from " + rpath);
@@ -2444,24 +2469,9 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
   // when a later turn crosses.
   last_context_ = n_past_;
 
-  // Check git HEAD against saved session
-  {
-    string saved_sha;
-    FILE* fp_git = fopen(rpath.c_str(), "rb");
-    if (fp_git) {
-      char hdr_buf[256];
-      if (fgets(hdr_buf, sizeof(hdr_buf), fp_git)) {
-        const char* sha_ptr = strstr(hdr_buf, "git_sha=");
-        if (sha_ptr) {
-          sha_ptr += 8;
-          while (*sha_ptr && *sha_ptr != ' ') saved_sha += *sha_ptr++;
-        }
-      }
-      fclose(fp_git);
-    }
-
-    check_git_head_on_restore(rpath, saved_sha, ctx_, batch_, n_past_, state_.all_context_tokens, (int)cparams_.n_batch);
-  }
+  // Check git HEAD against the saved session (git_sha came with the
+  // single header read above; empty for saves written without it).
+  check_git_head_on_restore(sf.git_sha, ctx_, batch_, n_past_, state_.all_context_tokens, (int)cparams_.n_batch);
 
   // Reset sampler state for a clean generation start.
   llama_sampler_reset(smpl_);
@@ -2470,10 +2480,12 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
   {
     vector<string> saved_c = collect_recent_user_inputs();  // oldest first
 
-    // A /load to a save made elsewhere moved the process cwd: re-anchor the
-    // per-directory state before repopulating so the restored B sits on the
-    // new directory's A.  Cancel/fail paths roll the cwd back and never
-    // reach here, so the history moves only with a successful restore.
+    // A /load that moved the process cwd (to a save made elsewhere, or
+    // back to the launch dir for a pre-cwd save) re-anchors the
+    // per-directory state before repopulating so the restored B sits on
+    // the new directory's A.  Cancel/fail paths roll the cwd back and
+    // never reach here, so the history moves only with a successful
+    // restore.
     if (!orig_cwd.empty()) reanchor_after_chdir();
     announce_session_if_pending();
 

@@ -8,6 +8,7 @@
 #include <fstream>
 #include <vector>
 #include <unistd.h>
+#include <limits.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <signal.h>
@@ -57,6 +58,7 @@ string LIM_CONFIG_DIR;
 string LIM_LOG_DIR;
 string LIM_CACHE_DIR;
 string LIM_SAVE_DIR;
+string g_launch_dir;
 static struct HomeInit { HomeInit() {
   const char* h = getenv("HOME");
   HOME = h ? h : "";
@@ -84,6 +86,12 @@ static struct HomeInit { HomeInit() {
   } else {
     LIM_SAVE_DIR = ".";
   }
+  // The launch directory, captured at static init (before any chdir can
+  // happen): the fallback cwd for saves written before the cwd field
+  // existed.  Empty when the launch directory is already gone (getcwd
+  // failed), which disables the fallback.
+  char launch_buf[PATH_MAX];
+  g_launch_dir = getcwd(launch_buf, sizeof(launch_buf)) ? launch_buf : "";
   SEARXNG_LOG_PATH = LIM_LOG_DIR + "/searxng.log";
   DOCLING_LOG_PATH = LIM_LOG_DIR + "/docling.log";
 } } g_homeInit;

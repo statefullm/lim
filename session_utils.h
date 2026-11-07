@@ -88,7 +88,7 @@ std::string get_git_head_sha();
 // The note is decoded into the KV cache and appended to restored_tokens so
 // both stay consistent (skipped if it does not fit in the remaining context).
 // n_batch bounds the decode chunks. Returns true if there was a mismatch.
-bool check_git_head_on_restore(const std::string& save_path, const std::string& saved_sha,
+bool check_git_head_on_restore(const std::string& saved_sha,
                                llama_context* ctx, llama_batch& batch, int& n_past,
                                std::vector<llama_token>& restored_tokens, int n_batch);
 

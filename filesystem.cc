@@ -124,12 +124,10 @@ static bool parse_v3_header(const string& header_str, size_t* out_n_tokens,
   return true;
 }
 
-// Read the newline-terminated header line of a save file into 'header'.
-// Returns false if the file can't be opened or has no complete header line.
-static bool read_save_header(const string& save_path, string& header) {
-  FILE* fp = fopen(save_path.c_str(), "rb");
-  if (!fp) return false;
-
+// Read the newline-terminated header line of an open save file (from the
+// current position) into 'header'.  Returns false when the line is not
+// complete (EOF or the cap hit before the newline).
+static bool read_header_line(FILE* fp, string& header) {
   // The line length is data-dependent (the cwd field can be up to PATH_MAX),
   // so read dynamically. The cap guards against a corrupt file with no
   // newline (without it we'd slurp the entire token payload).
@@ -139,26 +137,22 @@ static bool read_save_header(const string& save_path, string& header) {
   while (header.size() < max_len && (c = fgetc(fp)) != EOF && c != '\n') {
     header += static_cast<char>(c);
   }
-  bool complete = (c == '\n');
-  fclose(fp);
-  return complete;
+  return c == '\n';
 }
 
 bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
-  string header_str;
-  if (!read_save_header(save_path, header_str)) return false;
-
-  size_t num_tokens = 0;
-  if (!parse_v3_header(header_str, &num_tokens)) return false;
-
   FILE* fp = fopen(save_path.c_str(), "rb");
   if (!fp) return false;
 
-  long header_end = (long)(header_str.size() + 1);
-  if (fseek(fp, header_end, SEEK_SET) != 0) { fclose(fp); return false; }
+  string header_str;
+  if (!read_header_line(fp, header_str)) { fclose(fp); return false; }
+
+  size_t num_tokens = 0;
+  if (!parse_v3_header(header_str, &num_tokens)) { fclose(fp); return false; }
 
   tokens.resize(num_tokens);
   if (num_tokens > 0) {
+    // The cursor sits right after the header line: the tokens follow it.
     size_t n_read = fread(tokens.data(), sizeof(llama_token), num_tokens, fp);
     fclose(fp);
     if (n_read != num_tokens) {
@@ -232,63 +226,60 @@ bool write_token_save_v3(const string& save_path, const vector<llama_token>& tok
   return ok;
 }
 
-vector<PromptCheckpoint> read_checkpoint_offsets(const string& save_path) {
-  string header_str;
-  if (!read_save_header(save_path, header_str)) return {};
+bool read_save_file(const string& save_path, SaveFile& sf) {
+  FILE* fp = fopen(save_path.c_str(), "rb");
+  if (!fp) return false;
+
+  string header;
+  if (!read_header_line(fp, header)) { fclose(fp); return false; }
 
   size_t num_tokens = 0, num_checkpoints = 0;
-  if (!parse_v3_header(header_str, &num_tokens, &num_checkpoints)) return {};
+  int session = -1;
+  string cwd;
+  bool parsed;
+  try {
+    parsed = parse_v3_header(header, &num_tokens, &num_checkpoints, &session, &cwd);
+  } catch (...) {
+    parsed = false;  // Malformed numeric field -- treat as invalid format.
+  }
+  if (!parsed) { fclose(fp); return false; }
 
-  if (num_checkpoints == 0) return {};
+  // git_sha is the first header field (parse_v3_header only validates the
+  // magic); absent or empty for saves written without it.
+  const char* k = "git_sha=";
+  size_t pos = header.find(k);
+  if (pos != string::npos) {
+    pos += std::strlen(k);
+    while (pos < header.size() && header[pos] != ' ') sf.git_sha += header[pos++];
+  }
+  sf.session = session;
+  sf.cwd = std::move(cwd);
 
-  FILE* fp = fopen(save_path.c_str(), "rb");
-  if (!fp) return {};
+  // The cursor sits right after the header line: the token block follows.
+  sf.tokens.resize(num_tokens);
+  if (num_tokens > 0 &&
+      fread(sf.tokens.data(), sizeof(llama_token), num_tokens, fp) != num_tokens) {
+    fclose(fp);
+    sf.tokens.clear();
+    return false;
+  }
 
-  // Skip header + tokens to reach checkpoint data
-  long header_end = (long)(header_str.size() + 1);
-  long token_data_size = (long)(num_tokens * sizeof(llama_token));
-  long cp_offset = header_end + token_data_size;
-  if (fseek(fp, cp_offset, SEEK_SET) != 0) { fclose(fp); return {}; }
-
-  vector<PromptCheckpoint> checkpoints;
-  checkpoints.reserve(num_checkpoints);
+  // Checkpoint entries: <n_past as int32_le><prompt_len as uint16_le><prompt_bytes>
+  sf.checkpoints.reserve(num_checkpoints);
   for (size_t i = 0; i < num_checkpoints; i++) {
-    int32_t pos;
+    int32_t pos32;
     uint16_t plen;
-    if (fread(&pos, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return {}; }
-    if (fread(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return {}; }
+    if (fread(&pos32, sizeof(int32_t), 1, fp) != 1) { fclose(fp); return false; }
+    if (fread(&plen, sizeof(uint16_t), 1, fp) != 1) { fclose(fp); return false; }
     string prompt;
     if (plen > 0) {
       prompt.resize(plen);
-      if (fread(prompt.data(), 1, plen, fp) != plen) { fclose(fp); return {}; }
+      if (fread(prompt.data(), 1, plen, fp) != plen) { fclose(fp); return false; }
     }
-    checkpoints.push_back({static_cast<int>(pos), std::move(prompt)});
+    sf.checkpoints.push_back({static_cast<int>(pos32), std::move(prompt)});
   }
   fclose(fp);
-  return checkpoints;
-}
-
-int read_save_session(const string& save_path) {
-  string header_line;
-  if (!read_save_header(save_path, header_line)) return -1;
-
-  // Route through the shared V3 header parser (keeps session= parsing in one place).
-  size_t num_tokens = 0;
-  int session = -1;
-  try {
-    if (!parse_v3_header(header_line, &num_tokens, nullptr, &session)) return -1;
-  } catch (...) { return -1; }  // Malformed numeric field -- treat as no session.
-  return session;
-}
-
-string read_save_cwd(const string& save_path) {
-  string header_line;
-  if (!read_save_header(save_path, header_line)) return "";
-
-  size_t num_tokens = 0;
-  string cwd;
-  if (!parse_v3_header(header_line, &num_tokens, nullptr, nullptr, &cwd)) return "";
-  return cwd;
+  return true;
 }
 
 // --- V1 Cache: auto-cached KV cache for instant restores ---

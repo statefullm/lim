@@ -52,6 +52,10 @@ extern std::string LIM_CONFIG_DIR;
 extern std::string LIM_LOG_DIR;
 extern std::string LIM_CACHE_DIR;
 extern std::string LIM_SAVE_DIR;
+// The working directory at process startup, captured before any chdir
+// (/cd, /load to a save made elsewhere).  Fallback cwd for saves written
+// before the cwd field existed; "" if the launch directory is already gone.
+extern std::string g_launch_dir;
 
 // Re-create the relative session directories (LIM_LOG_DIR, LIM_CACHE_DIR)
 // in the current cwd after the process cwd changes (/cd, /load to a save
