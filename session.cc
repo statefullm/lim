@@ -122,15 +122,15 @@ static const struct CmdInfo {
   { "quit",         Cmd::QUIT,        ArgType::PATH,   "Save session and exit; /quit <path> does a named save with fast cache" },
   { "exit",         Cmd::QUIT,        ArgType::PATH,   nullptr },              // alias, not shown in help
   { "clear",        Cmd::CLEAR,       ArgType::NONE,   "Clear context (auto-saves first to log/<N>-clear.save)" },
-  { "cd",           Cmd::CD,          ArgType::PATH,   "Change working directory for a new session (empty context only, like /load); no model reload" },
+  { "cd",           Cmd::CD,          ArgType::PATH,   "Change working directory for a new session (at startup or after /clear)" },
   { "undo",         Cmd::UNDO,        ArgType::NONE,   "Interactive undo: select a checkpoint to restore to" },
   { "continue",     Cmd::CONTINUE,    ArgType::NONE,   "Resume generation after interruption" },
-  { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, web search, and browser server (replaced only if it has stopped, or is left reading a deleted FIFO node)" },
-  { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in ~/.config/lim/userprompt, then restart (auto-saves first)" },
-  { "remind",       Cmd::REMIND,     ArgType::NONE,   "Re-send the full system prompt to the LLM (unescaped) so it re-anchors to its instructions" },
+  { "reset",        Cmd::RESET,       ArgType::NONE,   "Reset terminal, web search, and browser server (if stopped)" },
+  { "reincarnate",  Cmd::REINCARNATE,ArgType::NONE,   "Compose new prompt in $LIM_CONFIG_DIR/userprompt, then clear and restart" },
+  { "remind",       Cmd::REMIND,     ArgType::NONE,   "Re-send the system prompt to re-anchor the LLM" },
   { "save",         Cmd::SAVE,        ArgType::PATH,   "Save session state to <path>.save (default: log/<N>.save)" },
-  { "load",         Cmd::RESTORE,     ArgType::PATH,   "Load session from <path>.save (must be used after /clear); --checkpoints skips the fast cache" },
-  { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete <path>.save and its fast restore cache" },
+  { "load",         Cmd::RESTORE,     ArgType::PATH,   "Load session from <path>.save (at startup or after /clear); --checkpoints skips the fast cache" },
+  { "delete",       Cmd::DELETE,      ArgType::PATH,   "Delete <path>.save and its fast cache" },
   { "help",         Cmd::HELP,        ArgType::NONE,   "Show this help message" },
 };
 
@@ -3156,8 +3156,16 @@ bool ChatSession::run() {
           cmd_col += " <path>";
         }
 
+        // Expand $LIM_CONFIG_DIR in description.
+        string desc = c.description;
+        string token = "$LIM_CONFIG_DIR";
+        size_t pos;
+        while ((pos = desc.find(token)) != string::npos) {
+          desc.replace(pos, token.size(), LIM_CONFIG_DIR);
+        }
+
         while (cmd_col.size() < 24) cmd_col += ' ';
-        diag((cmd_col + c.description).c_str(), "\033[37m");
+        diag((cmd_col + desc).c_str(), "\033[37m");
       }
       diag("Multi-line input: Ctrl+J to insert newline, Enter to submit", "\033[1;35m");
       continue;

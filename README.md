@@ -517,17 +517,17 @@ The prompt uses GNU readline in callback mode with `select()` polling instead of
 | `/clear` | Auto-save the current state to `$LIM_LOG_DIR/<N>-clear.save`, then clear the KV-cache (reset to system prompt only). The auto-saved file lets you restore if you change your mind. Use `/save <name>` to create a permanent restore point before clearing. |
 | `/cd <dir>` | Change the working directory for the next session. Only allowed with an empty context (at startup or after `/clear`): re-anchors the session to the new directory (logs, cache, history) and re-feeds the system prompt there, so a new conversation can start there without quitting and reloading the model. |
 | `/undo` | Interactive undo: auto-saves first to `$LIM_LOG_DIR/<N>-clear.save`, then presents an `Undo>` prompt listing all checkpoints (most recent first). Use up/down arrows to navigate, Enter to confirm. Ctrl+C, Ctrl+D, `/quit`, or `/exit` cancel the undo and return to the user prompt without losing your session. Selecting a checkpoint restores the session to the end of the turn associated with that prompt. On hybrid models, instant undo works only for checkpoints generated in the current session; pre-restore checkpoints from a fast cache restore require re-decode fallback. If the re-decode fallback is interrupted (Ctrl+C), LIM resets the context to a fresh session. |
-| `/continue` | Resume a live interruption (only). If interrupted mid-tool-call, resumes from the exact point of interruption. At a well-formed boundary, keeps the model generating. After `/undo` to a mid-turn checkpoint it is a silent no-op -- type a prompt (e.g., "continue") to carry the conversation on (the turn is closed automatically) |
-| `/reset` | Reset terminal, web search, and the browser server (replaced only if it has stopped, or is left reading a deleted FIFO node). Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure |
-| `/reincarnate` | Ask the LLM to compose a new prompt in `~/.config/lim/userprompt`, then clear and restart with it |
-| `/remind` | Re-send the full system prompt to the LLM, fed directly into the KV-cache as a user turn so it re-anchors its instructions |
-| `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session |
+| `/continue` | Resume a live interruption (only). If interrupted mid-tool-call, resumes from the exact point of interruption. At a well-formed boundary, keeps the model generating. After `/undo` to a mid-turn checkpoint it is a silent no-op -- type a prompt (e.g., "continue") to proceed. |
+| `/reset` | Reset terminal, web search, and the browser server (if stopped). Useful for recovering from a corrupted terminal or disabled web search after an interrupt or connection failure. |
+| `/reincarnate` | Ask the LLM to compose a new prompt in `$LIM_CONFIG_DIR/userprompt`, then clear and restart with it. |
+| `/remind` | Re-send the system prompt to re-anchor the LLM. |
+| `/save` | Save the full session state to `$LIM_LOG_DIR/<N>.save`, overwriting any previous save for this session. |
 | `/save <path>` | Save the full session state to `<path>.save`. The path can be relative or absolute. If it already ends in `.save`, no extra extension is added. Use this to create named restore points at meaningful moments in your session. |
-| `/quit` or `/exit` | Auto-save the current state to `$LIM_LOG_DIR/<N>.save`, then exit the session |
+| `/quit` or `/exit` | Auto-save the current state to `$LIM_LOG_DIR/<N>.save`, then exit the session. |
 | `/quit <path>` or `/exit <path>` | Named save with fast cache to `<path>.save`, then exit the session. Accepts the same path format as `/save`. |
 | `/load <path> [--checkpoints]` | Load a saved session from within the current session. Must be used immediately after `/clear`: fails if any conversation tokens have been added since the clear. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. Uses the fast cache when available, falling back to a re-decode that first offers checkpoint selection at a `Restore>` prompt. `--checkpoints` skips the fast cache (forcing the prompt). A full restore still auto-writes the fast cache; a partial (checkpoint-selected) restore does not. |
-| `/delete <path>` | Delete a save file and its associated fast restore cache entry (if any). Accepts the same path format as `/save`: `.save` is appended automatically if not already present. |
-| `/help` | Display a summary of all available commands |
+| `/delete <path>` | Delete a save file and any associated fast cache entry. Accepts the same path format as `/save`: `.save` is appended automatically if not already present. |
+| `/help` | Display a summary of all available commands. |
 
 ### Save and Restore
 
