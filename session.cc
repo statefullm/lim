@@ -1672,6 +1672,7 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
     state_.reincarnate_mode = false;
   } else if (!gen_result_.has_tool_call) {
     // Normal EOG
+    state_.prev_was_interrupted = false;
     if (state_.reincarnate_first_turn) {
       // LLM hit EOG prematurely on the first turn after reincarnate.
       // Auto-continue so it can produce a full response rather than
@@ -3865,12 +3866,16 @@ bool ChatSession::run() {
         // still holds the last row's logits, so the next
         // generate_response() picks up exactly where this one paused
         // (as with Ctrl-C + /continue) and the LLM never sees the
-        // break.  The "/continue" label appears in the /undo list from
-        // the checkpoint itself; after an /undo,
+        // break.  prev_was_interrupted is left true so that if the
+        // auto-resume fails (context exhaustion, tripwire budget
+        // exhausted) and the user gets the prompt, /continue can
+        // resume the turn; it is cleared by the normal EOG completion
+        // in generate_response() when the auto-resume succeeds.  The
+        // "/continue" label appears in the /undo list from the
+        // checkpoint itself; after an /undo,
         // repopulate_history() re-adds checkpoint prompts (including
         // "/continue") to readline history in checkpoint order.
         state_.prompt_checkpoints.back().prompt = CTX_LIMIT_TURN_END_LABEL;
-        state_.prev_was_interrupted = false;
         state_.auto_continue = true;
       } else {
         // An interrupted return leaves the context mid-turn: the checkpoint
