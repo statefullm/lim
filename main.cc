@@ -23,6 +23,7 @@
 #include <vector>
 #include <string>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
 #include <clocale>
 #include <ctime>
@@ -170,6 +171,34 @@ int main(int argc, char ** argv) {
   }
 
   g_model_path = argv[1];
+
+  // Expose the model for commit provenance: the ai user's prepare-commit-msg
+  // hook (core.hooksPath) reads LIM_MODEL_NAME and records it in the
+  // co-author trailer, so each commit credits the model that produced it.
+  // Default to the GGUF basename (quant suffix included) -- exact and
+  // self-documenting.  A pre-set LIM_MODEL_NAME (e.g. in .bashrc) wins, so the
+  // name can be curated to taste without a rebuild.
+  {
+    const char* override = getenv("LIM_MODEL_NAME");
+    if (override == nullptr || override[0] == '\0') {
+      string name = g_model_path;
+      size_t slash = name.find_last_of('/');
+      if (slash != string::npos) name = name.substr(slash + 1);
+      // Strip a trailing .gguf extension (case-insensitive); the length is
+      // derived from the extension so there is a single source of truth.
+      const string ext = ".gguf";
+      const size_t ext_len = ext.size();
+      if (name.size() >= ext_len) {
+        bool is_gguf = true;
+        for (size_t i = 0; i < ext_len; i++) {
+          char c = (char)tolower((unsigned char)name[name.size() - ext_len + i]);
+          if (c != ext[i]) { is_gguf = false; break; }
+        }
+        if (is_gguf) name = name.substr(0, name.size() - ext_len);
+      }
+      if (!name.empty()) setenv("LIM_MODEL_NAME", name.c_str(), 0);
+    }
+  }
 
 
   // Everything after the model path is the /load argument: joined verbatim

@@ -359,7 +359,7 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 /closing=Did you forget a closing parameter or function tag in your tool call?
 ```
 
-At the `>>>` prompt, typing `/commit` expands to `run git commit -a -m "<message>"` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. Built-in command names (e.g., `/quit`, `/clear`) cannot be used as alias keys. This is loaded fresh each session.
+At the `>>>` prompt, typing `/test` expands to `Test the filesystem tools and clean up any new files you created.` before being sent to the LLM. Lines starting with `#` are treated as comments. Blank lines are skipped. Built-in command names (e.g., `/quit`, `/clear`) cannot be used as alias keys. This is loaded fresh each session.
 
 ---
 
