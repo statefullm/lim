@@ -4,6 +4,7 @@
 #include "output.h"
 #include "tokens.h"
 #include "network.h"  // For LIM_LOG_DIR
+#include "model.h"    // handle_llama_decode_error (MTP mirror hook)
 #include <cstdio>
 #include <fstream>
 #include <iomanip>
@@ -205,7 +206,12 @@ bool check_git_head_on_restore(const std::string& saved_sha,
       common_batch_add(batch, git_msg[i + j], n_past + j, {0}, (i + j == (int)git_msg.size() - 1));
     }
     n_past += chunk;
-    if (llama_decode(ctx, batch) != 0) ok = false;
+    // Decode through handle_llama_decode_error (not a raw llama_decode) so the
+    // MTP mirror hook mirrors these rows too. A raw decode would advance the
+    // main KV without mirroring, leaving the mirror behind: a later named
+    // /save would then cache a mirror covering fewer rows than the main KV,
+    // and the next fast restore would reject it and drop MTP for the session.
+    if (!handle_llama_decode_error(ctx, batch, "Git HEAD note failed to decode.", true)) ok = false;
   }
 
   if (!ok) {
