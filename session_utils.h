@@ -77,9 +77,12 @@ void diag_restore(const std::string& path, int token_count);
 // Returns true if the flag was present and removed.
 bool strip_checkpoints_flag(std::string& arg);
 
-// Announce a new session number to the terminal and chat log
-// (used at startup, /clear, and /reincarnate).
-void announce_new_session(int session_num);
+// Announce a session to the terminal and chat log.
+// is_launch=true (startup): terminal shows only the /help tip (the session
+// number is not final yet -- a /load may re-base it).
+// is_launch=false (deferred, /reincarnate): terminal shows "Session #N started".
+// The chat log always records the session number.
+void announce_new_session(int session_num, bool is_launch = false);
 
 // Get the current git HEAD SHA (40 hex chars), or "" if not in a repo / git missing.
 std::string get_git_head_sha();

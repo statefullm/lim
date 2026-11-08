@@ -144,8 +144,12 @@ bool strip_checkpoints_flag(std::string& arg) {
   return false;
 }
 
-void announce_new_session(int session_num) {
-  diag("Session #" + std::to_string(session_num) + " started: type /help to see a list of commands", "\033[35m");
+void announce_new_session(int session_num, bool is_launch) {
+  if (is_launch) {
+    diag("Type /help to see a list of commands", "\033[35m");
+  } else {
+    diag("Session #" + std::to_string(session_num) + " started", "\033[35m");
+  }
   if (chat_log.is_open()) {
     chat_log << "=== SYSTEM ===\nStarting LLM Controller Session (#" + std::to_string(session_num) + ")\n\n";
     chat_log.flush();

@@ -320,7 +320,7 @@ int main(int argc, char ** argv) {
     }
   }
 
-  announce_new_session(log_index);  // also logs "Starting LLM Controller Session (#N)" to the chat log
+  announce_new_session(log_index, true);  // also logs "Starting LLM Controller Session (#N)" to the chat log
   if (chatbot_mode == 1) {
     diag("Chatbot mode 1 enabled: full re-tokenize + re-decode each turn", "\033[33m");
   } else if (chatbot_mode == 2) {
