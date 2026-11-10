@@ -7,6 +7,12 @@ group="${LIM_AI_USER:-ai}"
 
 store="/home/$group/.gitstore"
 
+# The only command aishare runs as root: the sudoers helper, which fixes the
+# chown identities, allows only the operations below, and re-validates every
+# path (must stay under /home/$group, no symlink component) -- the rule
+# itself cannot be pointed elsewhere. See the helper's header.
+helper="/usr/local/bin/aishare-helper"
+
 target="${1:-.}"
 
 # Resolve to absolute path
@@ -114,7 +120,7 @@ run_sudo() {
 # which would otherwise run as the user on the user's next commit. Hooks are
 # identified by their ownership -- "not owned by you" -- so this must run
 # before fix()'s chown -R re-owns everything. For each planted hook aishare
-# takes ownership (via the sudo chown rule) and strips the executable bit as
+# takes ownership (via the sudo helper) and strips the executable bit as
 # the new owner; protect_gitdirs later freezes it (hooks tree not
 # group-writable). The hook is not removed: review it, and if it is legitimate
 # restore the executable bit with 'chmod +x'. A symlink not owned by the user
@@ -128,10 +134,9 @@ disable_planted_hooks() {
         done
         find "$d/hooks" -maxdepth 1 -type f -perm -0111 ! -name '*.sample' \
               ! -user "$owner" 2>/dev/null | while IFS= read -r h; do
-            # Take ownership (chown -R on a single file is a plain chown; the
-            # -R form is what the sudoers rule matches), then strip the exec
-            # bit as the new owner.
-            if ! run_sudo chown -R "$owner:$group" "$h"; then
+            # Take ownership (the helper chowns to $owner:$group), then
+            # strip the exec bit as the new owner.
+            if ! run_sudo "$helper" chown "$h"; then
                 echo "WARNING: $h is an executable git hook not owned by you and aishare could NOT disable it (the sudo chown failed -- see the error above): it still runs as you on your next commit -- review it" >&2
                 continue
             fi
@@ -195,7 +200,7 @@ move_gitdir() {
     d="$1"
     dest="$store$d"
     if [ -e "$dest" ]; then
-        echo "WARNING: $dest already exists; left $d in place. Keep the copy you want and re-run aishare -- to keep the stored one: rm -rf '$d'; printf 'gitdir: %s\n' '$dest' > '$d'; sudo chattr +i '$d' -- to keep this one: delete $dest" >&2
+        echo "WARNING: $dest already exists; left $d in place. Keep the copy you want and re-run aishare -- to keep the stored one: rm -rf '$d'; printf 'gitdir: %s\n' '$dest' > '$d'; sudo /usr/local/bin/aishare-helper chattr +i '$d' -- to keep this one: delete $dest" >&2
         return 1
     fi
     if ! mkdir -p "${dest%/*}"; then
@@ -233,9 +238,9 @@ move_gitdir() {
     # Best effort: on failure those worktrees stay dangling (check_gitfiles
     # flags any under $target).
     git -C "${d%/.git}" worktree repair >/dev/null 2>&1 || \
-        echo "WARNING: 'git worktree repair' failed for ${d%/.git}: linked worktrees checked out outside it may now be dangling -- run it yourself: git -C ${d%/.git} worktree repair; if it fails with a permission error on the .git pointer, unpin it (sudo chattr -i) first, then re-run aishare" >&2
+        echo "WARNING: 'git worktree repair' failed for ${d%/.git}: linked worktrees checked out outside it may now be dangling -- run it yourself: git -C ${d%/.git} worktree repair; if it fails with a permission error on the .git pointer, unpin it (sudo /usr/local/bin/aishare-helper chattr -i) first, then re-run aishare" >&2
     chmod 640 "$d"
-    sudo chattr +i "$d" 2>/dev/null || \
+    sudo "$helper" chattr +i "$d" 2>/dev/null || \
         echo "WARNING: could not pin $d immutable (chattr unavailable or unsupported here?): the LLM can then replace or delete this .git pointer; aishare will flag a pointer that no longer points into the store" >&2
 }
 
@@ -274,8 +279,9 @@ protect_gitdirs() {
         # re-run aishare. One batched chown covers all of them that exist.
         # -h (no-dereference): an entry may be a symlink the LLM planted in
         # the group-writable gitdir; following it would chown whatever it
-        # points at, possibly outside the store. The sudoers rule matches
-        # only this form.
+        # points at, possibly outside the store. The helper exposes only
+        # this form for group-chown, and refuses the batch when a planted
+        # symlink is among the names (fail closed).
         find "$d" -maxdepth 1 \
             \( -name HEAD -o -name index -o -name packed-refs -o -name ORIG_HEAD \
                -o -name FETCH_HEAD -o -name MERGE_HEAD -o -name MERGE_MSG \
@@ -284,8 +290,8 @@ protect_gitdirs() {
                -o -name BISECT_LOG -o -name BISECT_START -o -name BISECT_NEXT \
                -o -name BISECT_BAD -o -name BISECT_GOOD -o -name BISECT_LEFT \
                -o -name BISECT_RIGHT -o -name shallow \) \
-            -exec sudo chown -h "$group:$group" {} + 2>/dev/null || \
-                echo "WARNING: could not hand $d's state files to $group (sudo chown failed): the LLM's next commit in that repo may fail" >&2
+            -exec sudo "$helper" chown -h {} + 2>/dev/null || \
+                echo "WARNING: could not hand $d's state files to $group (sudo aishare-helper chown failed): the LLM's next commit in that repo may fail" >&2
         chmod 3770 "$d"
     done
 }
@@ -435,8 +441,8 @@ check_gitdirs() {
 # recursive chown/chmod below fail with EPERM; unpin them for the duration of
 # this fix and re-pin at the end (also pins pointers created meanwhile).
 unpin_gitfiles() {
-    find "$1" -type f -name .git -exec sudo chattr -i {} + || \
-        echo "WARNING: could not unpin some .git files (sudo chattr -i failed): the chown/chmod that follow may fail on files that are still pinned" >&2
+    find "$1" -type f -name .git -exec sudo "$helper" chattr -i {} + || \
+        echo "WARNING: could not unpin some .git files (sudo aishare-helper chattr -i failed): the chown/chmod that follow may fail on files that are still pinned" >&2
 }
 
 pin_gitfiles() {
@@ -444,8 +450,8 @@ pin_gitfiles() {
     # unpinned. unpin_gitfiles still covers every .git file, so a stale
     # immutable bit on such a file from an older aishare run cannot trip the
     # recursive chown/chmod.
-    git_pointers "$1" | xargs -d '\n' -r sudo chattr +i || \
-        echo "WARNING: could not pin some .git pointers immutable (sudo chattr +i failed): the LLM could then replace or delete them" >&2
+    git_pointers "$1" | xargs -d '\n' -r sudo "$helper" chattr +i || \
+        echo "WARNING: could not pin some .git pointers immutable (sudo aishare-helper chattr +i failed): the LLM could then replace or delete them" >&2
 }
 
 # Probe whether 'sudo chattr +i' actually works on the filesystem holding the
@@ -458,8 +464,8 @@ pin_gitfiles() {
 # per-pointer warning in move_gitdir remains as the backstop.
 chattr_probe() {
     aishare_probe="$(mktemp "/home/$group/.aishare.chattr.XXXXXX" 2>/dev/null)" || return 0
-    if sudo chattr +i "$aishare_probe" 2>/dev/null; then
-        sudo chattr -i "$aishare_probe" 2>/dev/null
+    if sudo "$helper" chattr +i "$aishare_probe" 2>/dev/null; then
+        sudo "$helper" chattr -i "$aishare_probe" 2>/dev/null
         rm -f "$aishare_probe"
         return 0
     fi
@@ -472,7 +478,7 @@ fix() {
     unpin_gitfiles "$1"
     # The rest of the setup -- and the protection it sets up -- only holds if
     # the owner owns the tree, so abort instead of leaving it half-protected.
-    if ! run_sudo chown -R "$owner:$group" "$1"; then
+    if ! run_sudo "$helper" chown -R "$1"; then
         echo "ERROR: aborting: $1 is not fully owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
         exit 1
     fi
@@ -485,7 +491,7 @@ fix() {
 
 fix_store() {
     [ -d "$store" ] || return 0
-    if ! run_sudo chown -R "$owner:$group" "$store"; then
+    if ! run_sudo "$helper" chown -R "$store"; then
         echo "ERROR: aborting: $store is not fully owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
         exit 1
     fi
@@ -522,7 +528,7 @@ fi
 if [ "$target" = "/home/$group" ]; then
     # Fix the home dir itself (not recursively) so the AI can create new
     # top-level entries, then fix each child, skipping .ssh and the store
-    if ! run_sudo chown "$owner:$group" "$target"; then
+    if ! run_sudo "$helper" chown "$target"; then
         echo "ERROR: aborting: $target is not owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
         exit 1
     fi

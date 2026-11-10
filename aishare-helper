@@ -1,0 +1,132 @@
+
+#!/bin/sh
+# aishare-helper -- the only command aishare and the git re-share wrapper
+# may run as root. It replaces the per-command sudoers rules, whose trailing
+# /home/ai/* glob matched '/', '..' and spaces, so e.g. 'chown ai:ai
+# /home/ai/../../etc/passwd' was allowed: any code running as the sharing
+# user then had root on arbitrary paths.
+#
+# The helper re-validates every path itself and refuses to run the operation
+# at all if any path
+#   - leaves /home/$GROUP lexically ('..' or an absolute jump), or
+#   - has a symlink component (checked per component),
+# so the operations can only ever touch the real directory tree under
+# /home/$GROUP (which must be a real directory, as aishare's store layout
+# requires). The identities chown is allowed to set are fixed below, never
+# taken from the arguments, and the only operations are the ones aishare
+# and the wrapper use:
+#
+#   aishare-helper chown -R PATH...   chown -R USER:GROUP PATH...
+#   aishare-helper chown -h PATH...   chown -h GROUP:GROUP PATH...
+#   aishare-helper chown PATH         chown USER:GROUP PATH
+#   aishare-helper chattr +i PATH...  chattr +i PATH...
+#   aishare-helper chattr -i PATH...  chattr -i PATH...
+#
+# Install root-owned and unreadable/unwritable by everyone else (the LLM
+# user shares $GROUP and can modify anything the group can write):
+#   sudo install -m 0700 aishare-helper /usr/local/bin/aishare-helper
+# plus one sudoers rule:
+#   $USER ALL=(root) NOPASSWD: /usr/local/bin/aishare-helper
+# Set USER and GROUP below to your users if they differ.
+#
+# Residual race: validation and exec are not atomic, and the group can
+# rename entries in a group-writable directory in between. The damage is
+# bounded by the operations themselves: chown -R does not follow symlinks
+# (GNU default -P) and chown -h chowns the link itself, never its target,
+# so a swapped-in symlink leads to at most a chown of the link, not of its
+# target.
+
+# The two identities chown is allowed to set; the sudoers rule names USER.
+USER=bowman
+GROUP=ai
+
+usage() {
+    echo "usage: aishare-helper chown [-R|-h] PATH... | aishare-helper chown PATH | aishare-helper chattr +i|-i PATH..." >&2
+    exit 1
+}
+
+# safe_path: 0 iff PATH's lexical form stays under /home/$GROUP and no
+# component of it is a symlink. A missing final component is fine: the
+# state-file chown batch names files that usually do not exist yet.
+safe_path() {
+    [ -n "$1" ] || return 1
+    sp_p=$(realpath -sm -- "$1" 2>/dev/null) || return 1
+    case "$sp_p" in
+        "/home/$GROUP"|"/home/$GROUP"/*) ;;
+        *) return 1 ;;
+    esac
+    sp_rest="$sp_p"
+    sp_acc=""
+    while [ -n "$sp_rest" ]; do
+        case "$sp_rest" in
+            */*) sp_c="${sp_rest%%/*}"; sp_rest="${sp_rest#*/}" ;;
+            *)   sp_c="$sp_rest";        sp_rest="" ;;
+        esac
+        [ -n "$sp_c" ] || continue
+        sp_acc="$sp_acc/$sp_c"
+        [ -L "$sp_acc" ] && return 1
+    done
+    return 0
+}
+
+# Refuse the whole operation if any path fails (fail closed: a planted
+# symlink in a batch is a signal, not something to work around).
+check_paths() {
+    for sp_p in "$@"; do
+        case "$sp_p" in
+            -*) echo "aishare-helper: refusing: bad argument $sp_p" >&2; exit 1 ;;
+        esac
+        safe_path "$sp_p" || {
+            echo "aishare-helper: refusing: $sp_p is outside /home/$GROUP or has a symlink component" >&2
+            exit 1
+        }
+    done
+}
+
+[ $# -ge 2 ] || usage
+op="$1"
+shift
+case "$op" in
+    chown)
+        mode=""
+        case "$1" in
+            -R|-h) mode="$1"; shift ;;
+        esac
+        [ $# -ge 1 ] || usage
+        # Plain form is the home-dir chown: exactly one path, so a caller
+        # cannot smuggle an owner:group operand (chown would parse its first
+        # operand as the identity). -R/-h inject the identity themselves.
+        [ -n "$mode" ] || [ $# -eq 1 ] || usage
+        check_paths "$@"
+        ;;
+    chattr)
+        [ $# -ge 2 ] || usage
+        case "$1" in
+            +i|-i) ;;
+            *) usage ;;
+        esac
+        flag="$1"
+        shift
+        check_paths "$@"
+        ;;
+    *) usage ;;
+esac
+
+[ "$(id -u)" = 0 ] || {
+    echo "aishare-helper: must be run as root (via sudo)" >&2
+    exit 1
+}
+
+case "$op" in
+    chown)
+        case "$mode" in
+            -R) exec /usr/bin/chown -R "$USER:$GROUP" "$@" ;;
+            -h) exec /usr/bin/chown -h "$GROUP:$GROUP" "$@" ;;
+            *)  exec /usr/bin/chown "$USER:$GROUP" "$@" ;;
+        esac
+        ;;
+    chattr)
+        exec /usr/bin/chattr "$flag" "$@"
+        ;;
+esac
+

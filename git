@@ -63,12 +63,13 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
             gd=$("$GIT_BIN" rev-parse --absolute-git-dir 2>/dev/null)
             case "$gd" in
                 "/home/$AI_USER"/.gitstore/*)
-                    # -h (no-dereference): a state-file name may be a symlink
-                    # the LLM planted (the gitdir top level is group-writable);
-                    # chown the link itself, never its target. The sudoers rule
-                    # matches only this form, so the dereferencing chown is
-                    # not available through sudo either.
-                    sudo -n chown -h "$AI_USER:$AI_USER" \
+                    # Through the sudoers helper: it fixes the identity to
+                    # $AI_USER:$AI_USER, re-validates every path (must stay
+                    # under /home/$AI_USER with no symlink component), and
+                    # exposes only the -h (no-dereference) form for
+                    # group-chown, so a state-file name the LLM has made a
+                    # symlink is chowned itself, never its target.
+                    sudo -n /usr/local/bin/aishare-helper chown -h \
                         "$gd/HEAD" "$gd/index" "$gd/packed-refs" "$gd/ORIG_HEAD" \
                         "$gd/FETCH_HEAD" "$gd/MERGE_HEAD" "$gd/MERGE_MSG" \
                         "$gd/COMMIT_EDITMSG" "$gd/AUTO_MERGE" "$gd/CHERRY_PICK_HEAD" \
