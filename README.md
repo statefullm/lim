@@ -196,12 +196,12 @@ Re-run `aishare` in a directory whenever you add new files or directories to it 
 ```
 $USER ALL=(root) NOPASSWD: /usr/bin/chown -R $USER\:$LIM_AI_USER /home/$LIM_AI_USER/*
 $USER ALL=(root) NOPASSWD: /usr/bin/chown $USER\:$LIM_AI_USER /home/$LIM_AI_USER
-$USER ALL=(root) NOPASSWD: /usr/bin/chown $LIM_AI_USER\:$LIM_AI_USER /home/$LIM_AI_USER/*
+$USER ALL=(root) NOPASSWD: /usr/bin/chown -h $LIM_AI_USER\:$LIM_AI_USER /home/$LIM_AI_USER/*
 $USER ALL=(root) NOPASSWD: /usr/bin/chattr +i /home/$LIM_AI_USER/*
 $USER ALL=(root) NOPASSWD: /usr/bin/chattr -i /home/$LIM_AI_USER/*
 ```
 
-They cover, in order: setting ownership to `$USER:$LIM_AI_USER` (recursively over the shared trees, including any planted hook aishare re-owns before disabling it, and non-recursively over the home dir itself on a home-level run); handing each gitdir's state files (`HEAD`, `index`, ...) to `$LIM_AI_USER` so its commits keep working; and pinning and unpinning `.git` pointer files.
+They cover, in order: setting ownership to `$USER:$LIM_AI_USER` (recursively over the shared trees, including any planted hook aishare re-owns before disabling it, and non-recursively over the home dir itself on a home-level run); handing each gitdir's state files (`HEAD`, `index`, ...) to `$LIM_AI_USER` so its commits keep working -- with `-h`, so the `chown` acts on the name itself and cannot follow a symlink the LLM planted under one of those names (and the dereferencing form does not match the rule); and pinning and unpinning `.git` pointer files.
 
 Since git runs code from a gitdir's `config` (core.hooksPath, credential.helper, core.sshCommand, ...) and from its `hooks`, the LLM must never be able to swap a repo's gitdir for one of its own. The git side of aishare:
 

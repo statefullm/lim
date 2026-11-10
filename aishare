@@ -272,6 +272,10 @@ protect_gitdirs() {
         # The LLM is the committer of a shared repo, so it must own them; if
         # the repo owner rewrites one (commit, add, rebase, gc, fetch),
         # re-run aishare. One batched chown covers all of them that exist.
+        # -h (no-dereference): an entry may be a symlink the LLM planted in
+        # the group-writable gitdir; following it would chown whatever it
+        # points at, possibly outside the store. The sudoers rule matches
+        # only this form.
         find "$d" -maxdepth 1 \
             \( -name HEAD -o -name index -o -name packed-refs -o -name ORIG_HEAD \
                -o -name FETCH_HEAD -o -name MERGE_HEAD -o -name MERGE_MSG \
@@ -280,7 +284,7 @@ protect_gitdirs() {
                -o -name BISECT_LOG -o -name BISECT_START -o -name BISECT_NEXT \
                -o -name BISECT_BAD -o -name BISECT_GOOD -o -name BISECT_LEFT \
                -o -name BISECT_RIGHT -o -name shallow \) \
-            -exec sudo chown "$group:$group" {} + 2>/dev/null || \
+            -exec sudo chown -h "$group:$group" {} + 2>/dev/null || \
                 echo "WARNING: could not hand $d's state files to $group (sudo chown failed): the LLM's next commit in that repo may fail" >&2
         chmod 3770 "$d"
     done
