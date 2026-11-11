@@ -1,3 +1,4 @@
+
 #!/bin/sh
 # git -- re-share wrapper for shared (aishare'd) repos.
 #
@@ -7,7 +8,10 @@
 # them to you, and the sticky store gitdir then blocks the LLM's next
 # index write until they are chowned back. This is the fallback for the
 # interval between aishare runs, including when aishare's own state-file
-# chown fails.
+# chown fails. It also reports (backstop) any top-level file in the stored
+# gitdir that is not owned by you and is not one of the state, lock or
+# tmp files git expects there -- a planted commondir or config.worktree,
+# or a name no specific protection covers.
 #
 # A plain pass-through everywhere else -- in particular when run as
 # $LIM_AI_USER: same command, output, and exit code, and no sudo attempt
@@ -77,6 +81,28 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
                         "$gd/BISECT_LOG" "$gd/BISECT_START" "$gd/BISECT_NEXT" \
                         "$gd/BISECT_BAD" "$gd/BISECT_GOOD" "$gd/BISECT_LEFT" \
                         "$gd/BISECT_RIGHT" "$gd/shallow" 2>/dev/null
+                    # Backstop: the LLM can create any top-level file name in
+                    # the group-writable gitdir, and git only expects the
+                    # state files and its own lock/tmp files there, so
+                    # report anything else that is not yours. The specific
+                    # protections (placeholder commondir and config.worktree,
+                    # pinned pointer, ...) cover the known redirect names;
+                    # this catches the rest. Directories are not reported:
+                    # git-created ones (logs/, worktrees/, ...) are expected
+                    # LLM-owned, and a directory git does not know is inert.
+                    state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
+                    find "$gd" -maxdepth 1 -type f ! -user "$user" 2>/dev/null | while IFS= read -r gw_f; do
+                        gw_b=$(basename "$gw_f")
+                        gw_allowed=no
+                        for gw_n in $state_files; do
+                            [ "$gw_b" = "$gw_n" ] && gw_allowed=yes
+                        done
+                        case "$gw_b" in
+                            *.lock|*.tmp) gw_allowed=yes ;;
+                        esac
+                        [ "$gw_allowed" = yes ] && continue
+                        echo "git: wrapper: $gw_f is a top-level file in the shared gitdir not owned by you and not a git state, lock or tmp file: git does not expect it there -- review it (it may be a plant the $AI_USER user created)" >&2
+                    done
                     ;;
             esac
             ;;

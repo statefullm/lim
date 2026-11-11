@@ -7,6 +7,13 @@ group="${LIM_AI_USER:-ai}"
 
 store="/home/$group/.gitstore"
 
+# The gitdir top-level state files git rewrites when committing (via
+# lockfile+rename or in place). The LLM is the committer of a shared repo,
+# so it must own them (protect_gitdirs chowns them to the group), and the
+# unexpected-entry reports below treat them as expected LLM-owned entries.
+# One list, used for both the chown and the reports.
+state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
+
 # The only command aishare runs as root: the sudoers helper, which fixes the
 # chown identities, allows only the operations below, and re-validates every
 # path (must stay under /home/$group, no symlink component) -- the rule
@@ -54,8 +61,20 @@ esac
 #    worktree admin dirs) the sticky bit lets only an entry's owner or the
 #    gitdir's owner rename or delete entries, so the LLM cannot move or
 #    replace the owner-only-writable config and hooks. New files (lockfiles,
-#    loose objects) can still be created, so commits keep working. config and
-#    hooks are pre-created if absent so the LLM cannot create them itself.
+#    loose objects) can still be created, so commits keep working. config,
+#    hooks, commondir and config.worktree are pre-created if absent so the
+#    LLM cannot create them itself: git reads a gitdir's commondir to find
+#    the directory its config, hooks and objects come from (and
+#    config.worktree as the worktree's own config when
+#    extensions.worktreeConfig is set), so a LLM-planted file at either name
+#    would redirect the user's git to an LLM-controlled gitdir. A full
+#    gitdir's commondir carries ".", which makes the common
+#    directory the gitdir itself, as when the file is absent, and a planted
+#    one is replaced with it; in a linked-worktree admin dir the real
+#    commondir and gitdir files are verified and made not group-writable.
+#    report_unexpected_entries then reports any other top-level file not
+#    owned by the user -- the backstop for names the specific protections do
+#    not cover.
 #
 # Separately, disable_planted_hooks (run before ownership is normalized)
 # strips the executable bit from any git hook not owned by the user, so a
@@ -244,6 +263,56 @@ move_gitdir() {
         echo "WARNING: could not pin $d immutable (chattr unavailable or unsupported here?): the LLM can then replace or delete this .git pointer; aishare will flag a pointer that no longer points into the store" >&2
 }
 
+# Protect gitdir $1's config.worktree: git reads it as
+# the worktree's own config when extensions.worktreeConfig is set, so the
+# LLM must not be able to create or rewrite it. A symlink is removed rather
+# than written through (its target might be outside the store). An existing
+# file carrying an executable directive is a plant: it is emptied and
+# warned; a clean one (possibly the user's per-worktree config) is kept.
+protect_config_worktree() {
+    pcw_f="$1"
+    if [ -L "$pcw_f" ]; then
+        echo "WARNING: $pcw_f is a symlink: git would read its target as this gitdir's per-worktree config, which the LLM could point at a config of its own -- aishare removed it" >&2
+        rm -f "$pcw_f"
+    fi
+    if [ -f "$pcw_f" ]; then
+        pcw_keys=$(exec_config_keys "$pcw_f"); pcw_krc=$?
+        if [ "$pcw_krc" = 0 ] && [ -n "$pcw_keys" ]; then
+            echo "WARNING: $pcw_f (this worktree's own config) carries a git directive that runs a command ($(echo $pcw_keys | tr '\n' ' ')) -- it may be a plant the LLM created -- aishare emptied it: review it and re-add any legitimate per-worktree config" >&2
+            : > "$pcw_f" 2>/dev/null
+        fi
+    else
+        # Pre-create (like config and hooks) so the LLM cannot create a plant.
+        : > "$pcw_f" 2>/dev/null
+    fi
+    chmod g-w "$pcw_f" 2>/dev/null
+}
+
+# Report (without blocking) the top-level files of gitdir $1 that are not
+# owned by the user and are not one of the state files aishare hands to the
+# group or a git lock/tmp file. The LLM can create any top-level name in the
+# group-writable gitdir, and git only expects the state files and its own
+# lock and tmp files there, so an unexpected file -- a commondir or
+# config.worktree the LLM planted, or a name no specific check covers -- is
+# what this backstop is for; the wrapper's Landlock sandbox bounds what such
+# a file can do, the report makes it visible. Directories
+# are not reported: git-created ones (logs/, worktrees/, ...) are expected
+# LLM-owned, and a directory git does not know is inert.
+report_unexpected_entries() {
+    find "$1" -maxdepth 1 -type f ! -user "$owner" 2>/dev/null | while IFS= read -r rue_f; do
+        rue_b=$(basename "$rue_f")
+        rue_allowed=no
+        for sf_n in $state_files; do
+            [ "$rue_b" = "$sf_n" ] && rue_allowed=yes
+        done
+        case "$rue_b" in
+            *.lock|*.tmp) rue_allowed=yes ;;
+        esac
+        [ "$rue_allowed" = yes ] && continue
+        echo "WARNING: $rue_f is a top-level file in gitdir $1 that is not owned by you and is not a git state, lock or tmp file: git does not expect it there -- review it (it may be a plant the LLM created)" >&2
+    done
+}
+
 protect_gitdirs() {
     # A worktree/submodule checkout's .git is a file pointing at its gitdir:
     # keep it group-readable (the LLM's git must read it) but owner-only
@@ -272,6 +341,57 @@ protect_gitdirs() {
         # make the whole tree not group-writable so the LLM cannot modify, add,
         # or remove hooks.
         mkdir -p "$d/hooks" 2>/dev/null && chmod -R g-w "$d/hooks"
+        # Git reads a gitdir's commondir file to find the directory its
+        # config, hooks and objects come from: a file
+        # the LLM planted there would redirect the user's git to an
+        # LLM-controlled gitdir, and the safe.directory ownership check
+        # covers the gitdir, the work tree and the .git file -- not the
+        # common directory. The sticky bit and the not-group-writable mode
+        # below keep the LLM from replacing or rewriting the file once the
+        # user owns it, so the protection holds between aishare runs.
+        if [ -d "$d/objects" ] && [ -d "$d/refs" ]; then
+            # A full gitdir never has a commondir of its own -- git writes
+            # one only in the linked-worktree admin dirs -- so any that is
+            # here is a plant (or a stale one a past chown re-owned):
+            # replace its content with ".", which makes the common directory
+            # the gitdir itself, exactly as when the file is absent. A
+            # symlink is removed rather than written through (its target
+            # might be outside the store).
+            if [ -L "$d/commondir" ]; then
+                echo "WARNING: $d/commondir is a symlink: git would take its config, hooks and objects from wherever its target points, which the LLM could control -- aishare removed it" >&2
+                rm -f "$d/commondir"
+            elif [ -f "$d/commondir" ] && [ "$(cat "$d/commondir" 2>/dev/null)" != "." ]; then
+                echo "WARNING: $d/commondir would make git take its config, hooks and objects from a different gitdir (not $d) -- it may be a plant the LLM created -- aishare replaced its content with '.'; remove any gitdir it named" >&2
+            fi
+            printf '.\n' > "$d/commondir" 2>/dev/null && chmod g-w "$d/commondir"
+            protect_config_worktree "$d/config.worktree"
+        else
+            # A linked-worktree admin dir (worktrees/<name>/): git's own
+            # commondir (naming the common dir) and gitdir (naming the
+            # worktree's .git) live here. The LLM can rewrite them in place
+            # while the dir is group-writable (it owns the dir right after
+            # creating the worktree, until the next aishare re-owns it), so
+            # verify the commondir still names the common dir -- canonically
+            # "../.." from this location -- and make both files not
+            # group-writable.
+            case "$d" in
+                */worktrees/*)
+                    pgd_common="${d%/*}"; pgd_common="${pgd_common%/*}"
+                    pgd_res=$(realpath -sm "$d/$(cat "$d/commondir" 2>/dev/null)" 2>/dev/null)
+                    if [ "$pgd_res" != "$(realpath -sm "$pgd_common" 2>/dev/null)" ]; then
+                        echo "WARNING: $d/commondir does not name the common dir $pgd_common (it named '$(cat "$d/commondir" 2>/dev/null)') -- aishare restored the canonical '../..'" >&2
+                        printf '../..\n' > "$d/commondir" 2>/dev/null
+                    fi
+                    ;;
+            esac
+            if [ -L "$d/commondir" ] || [ -L "$d/gitdir" ]; then
+                echo "WARNING: $d/commondir or $d/gitdir is a symlink, which would redirect this worktree's git to wherever the LLM points it -- aishare removed it; run 'git worktree repair' in the checkout to regenerate the gitdir file" >&2
+                rm -f "$d/commondir" "$d/gitdir"
+            fi
+            chmod g-w "$d/commondir" 2>/dev/null
+            chmod g-w "$d/gitdir" 2>/dev/null
+            protect_config_worktree "$d/config.worktree"
+        fi
         # Git replaces or removes these top-level entries via lockfile+rename
         # or unlink, which the sticky bit only permits for the entry's owner.
         # The LLM is the committer of a shared repo, so it must own them; if
@@ -282,17 +402,16 @@ protect_gitdirs() {
         # points at, possibly outside the store. The helper exposes only
         # this form for group-chown, and refuses the batch when a planted
         # symlink is among the names (fail closed).
-        find "$d" -maxdepth 1 \
-            \( -name HEAD -o -name index -o -name packed-refs -o -name ORIG_HEAD \
-               -o -name FETCH_HEAD -o -name MERGE_HEAD -o -name MERGE_MSG \
-               -o -name COMMIT_EDITMSG -o -name AUTO_MERGE -o -name CHERRY_PICK_HEAD \
-               -o -name REVERT_HEAD -o -name REVERT_MSG -o -name TAG_EDITMSG \
-               -o -name BISECT_LOG -o -name BISECT_START -o -name BISECT_NEXT \
-               -o -name BISECT_BAD -o -name BISECT_GOOD -o -name BISECT_LEFT \
-               -o -name BISECT_RIGHT -o -name shallow \) \
+        pgd_args=""
+        for sf_n in $state_files; do
+            [ -n "$pgd_args" ] && pgd_args="$pgd_args -o"
+            pgd_args="$pgd_args -name $sf_n"
+        done
+        find "$d" -maxdepth 1 \( $pgd_args \) \
             -exec sudo "$helper" chown -h {} + 2>/dev/null || \
                 echo "WARNING: could not hand $d's state files to $group (sudo aishare-helper chown failed): the LLM's next commit in that repo may fail" >&2
         chmod 3770 "$d"
+        report_unexpected_entries "$d"
     done
 }
 
@@ -386,6 +505,28 @@ exec_config_keys() {
     done
 }
 
+# Check one gitdir config file ($1) of gitdir $2 for directives that make
+# git run a command; report each as an ERROR and return 1 if any is found or
+# the file cannot be read, 0 otherwise. Used by check_gitdirs for config and
+# for config.worktree: the latter only takes effect when
+# extensions.worktreeConfig is set, but an LLM plant pairs the enabled
+# extension (a config key) with an executable directive in config.worktree,
+# so both files are checked.
+check_config_content() {
+    [ -f "$1" ] || return 0
+    ccc_keys=$(exec_config_keys "$1"); ccc_krc=$?
+    if [ "$ccc_krc" != 0 ]; then
+        echo "ERROR: $1 in a gitdir not owned by you could not be read: aishare cannot verify it has no executable directives -- make it readable, then re-run aishare" >&2
+        return 1
+    fi
+    ccc_bad=0
+    for ccc_k in $ccc_keys; do
+        echo "ERROR: $1 has '$ccc_k', a planted git directive that runs a command as you, in $2, a gitdir not owned by you: remove the key, then re-run aishare" >&2
+        ccc_bad=1
+    done
+    return "$ccc_bad"
+}
+
 # Check every gitdir that the upcoming chown would re-own (ownership is the
 # trust signal -- see the gate below): the in-tree gitdirs under $1 (bare
 # repos, custom-named gitdirs, and any gitdir swapped in place of a stored
@@ -417,18 +558,8 @@ check_gitdirs() {
                 echo "ERROR: $h is a planted git hook in $d, a gitdir not owned by you -- git would run it as you once aishare re-owns it: remove it, then re-run aishare" >&2
                 echo x >> "$unsafe"
             done
-            if [ -f "$d/config" ]; then
-                keys=$(exec_config_keys "$d/config"); krc=$?
-                if [ "$krc" != 0 ]; then
-                    echo "ERROR: $d/config in a gitdir not owned by you could not be read: aishare cannot verify it has no executable directives -- make it readable, then re-run aishare" >&2
-                    echo x >> "$unsafe"
-                else
-                    for k in $keys; do
-                        echo "ERROR: $d/config has '$k', a planted git directive that runs a command as you, in $d, a gitdir not owned by you: remove the key, then re-run aishare" >&2
-                        echo x >> "$unsafe"
-                    done
-                fi
-            fi
+            check_config_content "$d/config" "$d" || echo x >> "$unsafe"
+            check_config_content "$d/config.worktree" "$d" || echo x >> "$unsafe"
         done
     done
     rc=0
