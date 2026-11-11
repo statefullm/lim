@@ -52,7 +52,7 @@ USER=${SUDO_USER:-}
 GROUP=ai
 
 usage() {
-    echo "usage: aishare-helper chown [-R|-h] PATH... | aishare-helper chown PATH | aishare-helper chattr +i|-i PATH..." >&2
+    echo "usage: aishare-helper chown [-R|-h] PATH... | aishare-helper chown PATH | aishare-helper chattr +i|-i PATH... | aishare-helper stop|cont PID..." >&2
     exit 1
 }
 

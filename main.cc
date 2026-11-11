@@ -29,6 +29,7 @@
 #include <ctime>
 #include <algorithm>
 #include <chrono>
+#include <signal.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <pwd.h>
@@ -153,6 +154,24 @@ int main(int argc, char ** argv) {
   atexit([]() {
     if (isatty(STDOUT_FILENO)) cout << "\033[0m";  // Reset terminal colors on exit
     NetworkTools::cleanup_services();
+    // Kill orphaned exec_shell background jobs (their process groups are
+    // recorded in /var/tmp/lim.pgroups).  limServer/searxng/docling are
+    // not in this file (double-forked into their own sessions).
+    {
+      const char* pg_path = "/var/tmp/lim.pgroups";
+      ifstream pf(pg_path);
+      if (pf) {
+        string line;
+        while (getline(pf, line)) {
+          if (line.empty()) continue;
+          pid_t pgrp = (pid_t)atoi(line.c_str());
+          if (pgrp > 0) kill(-pgrp, SIGTERM);
+        }
+        pf.close();
+      }
+      ofstream of(pg_path, ios::trunc);
+      of.close();
+    }
   });
 
   setup_signals();

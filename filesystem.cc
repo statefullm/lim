@@ -892,39 +892,58 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
   // aishare lock: while aishare is re-sharing a directory, wait for it to
   // finish before executing, so the LLM cannot race the ownership changes.
-  // Uses inotify on the home directory for the lock file's removal.
+  // aishare (running as the sharing user) creates /var/tmp/lim.aishare.lock
+  // and removes it in its exit trap; /var/tmp is sticky, so the LLM cannot
+  // remove or replace the lock while aishare runs.  The wait has no
+  // timeout: a stale lock (aishare killed mid-run) is removed by the user
+  // or by the next aishare run.
   {
-    string lock_path = HOME + "/.aishare.lock";
-    struct stat st;
-    if (stat(lock_path.c_str(), &st) == 0) {
-      int ifd = inotify_init();
-      if (ifd >= 0) {
-        int wfd = inotify_add_watch(ifd, HOME.c_str(), IN_DELETE | IN_MOVED_FROM);
-        if (wfd >= 0) {
-          // Block until the lock file is removed (or 10-minute timeout).
-          char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
-          for (;;) {
-            struct pollfd pfd = {ifd, POLLIN, 0};
-            int pr = poll(&pfd, 1, 600000);
-            if (pr < 0 && errno == EINTR) continue;
-            if (pr == 0) break;  // timeout: proceed anyway
-            ssize_t len = read(ifd, buf, sizeof(buf));
-            if (len <= 0) break;
-            for (ssize_t i = 0; i < len; ) {
-              struct inotify_event* ev = (struct inotify_event*)(buf + i);
-              if (ev->len && ev->name && strcmp(ev->name, ".aishare.lock") == 0) {
-                i += sizeof(struct inotify_event) + ev->len;
-                goto aishare_done;
-              }
-              i += sizeof(struct inotify_event) + ev->len;
-            }
-          }
-          inotify_rm_watch(ifd, wfd);
-        }
-        close(ifd);
+    const char* a_lock_dir = "/var/tmp";
+    const char* a_lock_name = "lim.aishare.lock";
+    char a_lock_path[4096];
+    snprintf(a_lock_path, sizeof(a_lock_path), "%s/%s", a_lock_dir, a_lock_name);
+    struct stat a_st;
+    if (stat(a_lock_path, &a_st) == 0) {
+      int a_ifd = inotify_init();
+      if (a_ifd < 0) {
+        return "Error: the aishare lock " + string(a_lock_path) + " exists, but inotify could not be initialized; refusing to run the command while aishare may be running.";
       }
+      int a_wfd = inotify_add_watch(a_ifd, a_lock_dir, IN_DELETE | IN_MOVED_FROM);
+      if (a_wfd < 0) {
+        close(a_ifd);
+        return "Error: the aishare lock " + string(a_lock_path) + " exists, but it could not be watched; refusing to run the command while aishare may be running.";
+      }
+      log_diagnostic("aishare is re-sharing files (lock " + string(a_lock_path) +
+                     " present) -- waiting for it to finish before running this command");
+      char a_buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+      for (;;) {
+        struct pollfd a_pfd = {a_ifd, POLLIN, 0};
+        int a_pr = poll(&a_pfd, 1, -1);  // no timeout
+        if (a_pr < 0) {
+          if (errno == EINTR) continue;
+          close(a_ifd);
+          return "Error: watching the aishare lock " + string(a_lock_path) + " failed; refusing to run the command while aishare may be running.";
+        }
+        ssize_t a_len = read(a_ifd, a_buf, sizeof(a_buf));
+        if (a_len <= 0) {
+          close(a_ifd);
+          return "Error: watching the aishare lock " + string(a_lock_path) + " failed; refusing to run the command while aishare may be running.";
+        }
+        // Proceed only when the deletion event AND a re-stat both say the
+        // lock is gone: a new aishare may have recreated it in the meantime
+        // (the user re-running aishare back to back), and this command must
+        // then keep waiting.
+        bool a_gone = false;
+        for (ssize_t i = 0; i < a_len; ) {
+          struct inotify_event* a_ev = (struct inotify_event*)(a_buf + i);
+          if (a_ev->len && a_ev->name && strcmp(a_ev->name, a_lock_name) == 0) a_gone = true;
+          i += sizeof(struct inotify_event) + a_ev->len;
+        }
+        if (a_gone && stat(a_lock_path, &a_st) != 0) break;
+      }
+      inotify_rm_watch(a_ifd, a_wfd);
+      close(a_ifd);
     }
-    aishare_done:;
   }
 
   string safe_cmd = command;
@@ -1050,6 +1069,27 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
 
   // Parent process: read from pipe incrementally.
   close(pipefd[1]); // Close write end
+
+  // Record this exec_shell's process group so aishare can suspend the whole
+  // command tree -- including background jobs that outlive this call and get
+  // orphaned, which keep their group -- while it re-shares a directory.
+  // The child called setpgid(0, 0), so its pgid is its own pid.  Best
+  // effort: on failure aishare's sweep simply has no coverage for this
+  // group (its lim-descendant leg still catches an in-flight tree).
+  {
+    int a_gfd = open("/var/tmp/lim.pgroups", O_WRONLY | O_CREAT | O_APPEND, 0664);
+    if (a_gfd >= 0) {
+      char a_line[32];
+      int a_n = snprintf(a_line, sizeof(a_line), "%d\n", (int)pid);
+      if (a_n > 0) {
+        ssize_t a_w = write(a_gfd, a_line, (size_t)a_n);
+        (void)a_w;
+      }
+      close(a_gfd);
+    } else {
+      log_diagnostic("WARNING: could not open /var/tmp/lim.pgroups for appending; aishare cannot record this command's process group", true /* logOnly */);
+    }
+  }
 
   // Make the read end non-blocking so we can detect EOF while streaming.
   int flags = fcntl(pipefd[0], F_GETFL, 0);
@@ -1215,6 +1255,33 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   }
   unlink(exit_code_file.c_str());
   unlink(script_path.c_str());
+
+  // Clean up the pgroups entry if the process group is now empty (all
+  // members exited, including any background jobs).  If background jobs
+  // remain (they keep the group), the entry stays so aishare can find them.
+  // Safe: exec_shell is sequential, only one lim process.
+  {
+    if (kill(-(pid_t)pid, 0) != 0) {
+      // Group is empty: remove the entry from /var/tmp/lim.pgroups.
+      const char* pg_path = "/var/tmp/lim.pgroups";
+      FILE* pf = fopen(pg_path, "r");
+      if (pf) {
+        string line, new_content;
+        char buf[256];
+        while (fgets(buf, sizeof(buf), pf)) {
+          line = buf;
+          if (!line.empty() && line.back() == '\n') line.pop_back();
+          if (line != to_string((int)pid)) new_content += line + "\n";
+        }
+        fclose(pf);
+        pf = fopen(pg_path, "w");
+        if (pf) {
+          fwrite(new_content.data(), 1, new_content.size(), pf);
+          fclose(pf);
+        }
+      }
+    }
+  }
 
   // Fallback: if we couldn't read the temp file, try pipe status.  Guarded
   // by pipe_status >= 0: -1 means the child was never reaped (error path)

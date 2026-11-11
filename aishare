@@ -726,54 +726,106 @@ fi
 # until the user removes it; the check runs before any chown, while ownership
 # still reflects the creator (the LLM cannot chown).
 
-# Block exec_shell and suspend stray background processes while aishare
-# runs, so the LLM cannot race the ownership and permission changes below.
-# lim (and its long-lived services: browser server, search, PDF) keeps
-# running; only new exec_shell calls are refused until the lock is removed,
-# and any background jobs a past exec_shell left running are SIGSTOP'd
-# (not killed) and resumed on exit.
-aishare_lock="/home/$group/.aishare.lock"
-if echo "$$" > "$aishare_lock" 2>/dev/null; then
+# Block exec_shell and suspend the LLM's command trees while aishare runs,
+# so the LLM cannot race the ownership and permission changes below.
+#
+# The lock: aishare (as the sharing user) creates /var/tmp/lim.aishare.lock
+# and removes it in the EXIT trap; lim's exec_shell waits (inotify, no
+# timeout) for the removal before executing. /var/tmp is sticky, so the
+# LLM cannot unlink or replace the user's lock mid-run. An existing lock --
+# a concurrent aishare, or one left by an interrupted run -- aborts this
+# run: wait for it to finish and re-run, or remove it if no aishare is
+# running.
+case "$(stat -Lc %a /var/tmp 2>/dev/null)" in
+    1*[2367]) : ;;  # sticky + world-writable
+    *) echo "ERROR: /var/tmp is missing or not sticky and world-writable (mode $(stat -Lc %a /var/tmp 2>/dev/null)): the exec_shell lock cannot be protected there -- make /var/tmp mode 1777 and re-run" >&2
+       exit 1 ;;
+esac
+aishare_lock="/var/tmp/lim.aishare.lock"
+if [ -e "$aishare_lock" ]; then
+    echo "ERROR: $aishare_lock exists: another aishare is running, or a previous run was interrupted and left the lock behind. Wait for it to finish and re-run, or remove it (rm $aishare_lock) if no aishare is running." >&2
+    exit 1
+fi
+if (set -o noclobber; echo "$$" > "$aishare_lock") 2>/dev/null; then
     :
 else
-    echo "WARNING: could not create $aishare_lock: exec_shell is not blocked for this run" >&2
-    aishare_lock=""
+    echo "ERROR: could not write $aishare_lock (another aishare may have created it just now, or it was pre-created): check it and remove it if stale, then re-run" >&2
+    exit 1
 fi
-# Suspend exec_shell children and orphaned background jobs while aishare
-# runs, so the LLM cannot race the ownership and permission changes below.
-# Targets:
-#   1. Direct children of lim and their descendants (in-flight exec_shell
-#      bash wrappers and the commands they are running).
-#   2. Orphaned ai-owned processes (PPID 1) from past exec_shell calls,
-#      excluding the long-lived services (limServer, searxng, docling).
-# Nothing else (lim, the terminal, VS Code, ...) is touched.
-lim_pid=$(pgrep -x lim -u "$group" 2>/dev/null | head -1)
-stopped_pids=""
-if [ -n "$lim_pid" ]; then
-    for child in $(pgrep -P "$lim_pid" 2>/dev/null); do
-        stopped_pids="$stopped_pids $child"
-        for gc in $(pgrep -P "$child" 2>/dev/null); do
-            stopped_pids="$stopped_pids $gc"
+
+# Suspend the LLM's exec_shell command trees while aishare runs. A command
+# tree is the bash wrapper lim spawns for an exec_shell call (its own
+# process group: the wrapper calls setpgid(0,0)) and everything it
+# launched, including background jobs that outlive the call and get
+# orphaned -- orphans keep their process group, so the tree is found by
+# group, at any depth, through any reparenting. lim records each
+# exec_shell's group in /var/tmp/lim.pgroups; aishare stops every $group-
+# owned process in a recorded group, plus all descendants of lim (in-flight
+# trees, also covering a spawn whose group was not recorded), plus any
+# orphaned tree (PPID 1) whose group was never recorded -- e.g. created
+# before the pgroup file existed. Nothing else is touched:
+# lim, the terminal, and lim's long-lived services (double-forked into
+# their own sessions, never recorded) keep running. Stopped processes are
+# resumed (SIGCONT) in the EXIT trap.
+pgroup_file="/var/tmp/lim.pgroups"
+pg_content=""
+[ -r "$pgroup_file" ] && pg_content=$(tr '\n' ' ' < "$pgroup_file" 2>/dev/null)
+
+# All descendants of lim, at any depth (pgrep -P per level).
+lim_pids=$(pgrep -x lim -u "$group" 2>/dev/null)
+sw_pids=""
+if [ -n "$lim_pids" ]; then
+    sw_frontier="$lim_pids"
+    while [ -n "$sw_frontier" ]; do
+        sw_next=""
+        for sw_p in $sw_frontier; do
+            sw_next="$sw_next $(pgrep -P "$sw_p" 2>/dev/null)"
         done
+        sw_pids="$sw_pids $sw_next"
+        sw_frontier="$sw_next"
     done
 fi
-# Orphaned background jobs: owned by $group, PPID 1, not a known service.
-for aip in $(pgrep -u "$group" 2>/dev/null); do
-    # PPID is field 4 of /proc/PID/stat (after "pid (comm) state")
-    aip_ppid=$(awk '{print $4}' "/proc/$aip/stat" 2>/dev/null)
-    [ "$aip_ppid" = "1" ] || continue
-    aicmd=$(cat "/proc/$aip/comm" 2>/dev/null)
-    case "$aicmd" in
-        systemd|systemd--) continue ;;
-    esac
-    if [ "$aicmd" = "python3" ] || [ "$aicmd" = "python" ]; then
-        aicmdline=$(tr '\0' ' ' < "/proc/$aip/cmdline" 2>/dev/null)
-        case "$aicmdline" in
-            *limServer*|*searxng*|*docling*) continue ;;
+
+# Print "ppid pgrp" of $1 from /proc/$1/stat. Split on the last ')': the
+# comm field can contain spaces and parentheses.
+pproc_pids() {
+    pp_line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    pp_rest=${pp_line##*) }            # "state ppid pgrp session ..."
+    pp_rest=${pp_rest#* }              # "ppid pgrp session ..."
+    pp_ppid=${pp_rest%% *}
+    pp_rest=${pp_rest#* }              # "pgrp session ..."
+    pp_pgrp=${pp_rest%% *}
+    printf '%s %s\n' "$pp_ppid" "$pp_pgrp"
+}
+
+stopped_pids=""
+for sw_p in $(pgrep -u "$group" 2>/dev/null); do
+    sw_ids=$(pproc_pids "$sw_p") || continue
+    sw_ppid=${sw_ids%% *}
+    sw_pgrp=${sw_ids#* }
+    sw_comm=$(cat "/proc/$sw_p/comm" 2>/dev/null)
+    [ "$sw_comm" = lim ] && continue   # lim itself
+    sw_stop=no
+    case " $pg_content " in *" $sw_pgrp "*) sw_stop=yes ;; esac  # recorded group
+    case " $sw_pids " in *" $sw_p "*) sw_stop=yes ;; esac        # lim descendant
+    if [ "$sw_stop" = no ] && [ "$sw_ppid" = "1" ]; then
+        # An orphaned tree whose group was never recorded (e.g. created
+        # before the pgroup file existed). Skip lim's own long-lived
+        # services (they are orphans too).
+        sw_skip=no
+        case "$sw_comm" in
+            systemd|systemd--) sw_skip=yes ;;
+            python3|python)
+                sw_cmdline=$(tr '\0' ' ' < "/proc/$sw_p/cmdline" 2>/dev/null)
+                case "$sw_cmdline" in
+                    *limServer*|*searxng*|*docling*) sw_skip=yes ;;
+                esac ;;
         esac
+        [ "$sw_skip" = no ] && sw_stop=yes
     fi
-    stopped_pids="$stopped_pids $aip"
+    [ "$sw_stop" = yes ] && stopped_pids="$stopped_pids $sw_p"
 done
+
 # Signal via the helper (root): a non-root user cannot send signals to
 # another user's processes.
 if [ -n "$stopped_pids" ]; then
@@ -781,7 +833,7 @@ if [ -n "$stopped_pids" ]; then
 fi
 aishare_cleanup() {
     [ -n "$stopped_pids" ] && sudo -n "$helper" cont $stopped_pids 2>/dev/null
-    [ -n "$aishare_lock" ] && rm -f "$aishare_lock"
+    rm -f "$aishare_lock"
 }
 trap aishare_cleanup EXIT
 
