@@ -70,7 +70,22 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
             case "$gd" in
                 "/home/$AI_USER"/.gitstore/*)
                     chmod -R g-w "$gd" 2>/dev/null
-                    _gw_restore() { chmod -R g+w "$gd" 2>/dev/null; }
+                    # Re-grant group write where the LLM's git needs it: on
+                    # the directories (to create and replace files via
+                    # lockfile+rename) and on the files it does not own
+                    # (reflogs, which git appends in place). The plant-surface
+                    # names aishare keeps not group-writable are excluded: a
+                    # blanket 'chmod -R g+w' would re-grant them, letting the
+                    # LLM rewrite a user-owned config (an fsmonitor or
+                    # hooksPath directive) or commondir in place, or create a
+                    # hook. The LLM's git never needs group write on them --
+                    # replacing a file needs only the directory's write bit,
+                    # and hooks are only read and executed.
+                    _gw_restore() {
+                        find "$gd" \( -name config -o -name config.worktree -o \
+                                     -name commondir -o -name gitdir -o -name hooks \) -prune \
+                            -o -exec chmod g+w {} + 2>/dev/null
+                    }
                     trap _gw_restore EXIT
                     trap 'exit 130' INT
                     trap 'exit 143' TERM
@@ -92,8 +107,9 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
         "/home/$AI_USER"/.gitstore/*)
             # Restore group write so the LLM can commit again (the EXIT
             # trap also covers this on interrupt; the explicit call here
-            # restores before the bookkeeping below).
-            chmod -R g+w "$gd" 2>/dev/null
+            # restores before the bookkeeping below).  _gw_restore skips the
+            # plant-surface names aishare keeps not group-writable.
+            _gw_restore
             # Through the sudoers helper: it fixes the identity to
             # $AI_USER:$AI_USER, re-validates every path (must stay
             # under /home/$AI_USER with no symlink component), and
