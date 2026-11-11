@@ -179,7 +179,7 @@ Also copy the `git` wrapper from this repository to `/home/$USER/bin/` (it must 
 cp git /home/$USER/bin/
 ```
 
-In a shared repo the wrapper re-shares the gitdir's volatile state files (`index`, `HEAD`, ...) with `$LIM_AI_USER` after every git command you run there (via the `aishare-helper` sudo rule below), so the LLM is never blocked waiting for an `aishare` re-run; elsewhere it is a plain pass-through -- as is every invocation by the LLM user (never sudo).
+In a shared repo the wrapper removes any symlinks from the gitdir before git runs (git never creates symlinks there; a planted one would let git write through it to a file the LLM chose), and re-shares the gitdir's volatile state files (`index`, `HEAD`, ...) with `$LIM_AI_USER` after every git command you run there (via the `aishare-helper` sudo rule below), so the LLM is never blocked waiting for an `aishare` re-run; elsewhere it is a plain pass-through -- as is every invocation by the LLM user (never sudo).
 
 Then run it on any directory under `/home/$LIM_AI_USER` that you want the AI to access -- or with no argument, on the current directory:
 
@@ -187,11 +187,11 @@ Then run it on any directory under `/home/$LIM_AI_USER` that you want the AI to 
 aishare /home/$LIM_AI_USER/project
 ```
 
-It sets ownership to `$USER:$LIM_AI_USER` (via `sudo`), grants group read/write and setgid, and clears the sticky bit.
+It sets ownership to `$USER:$LIM_AI_USER` (via `sudo`), grants group read/write and setgid, and clears the sticky bit. While running, it temporarily blocks the LLM's `exec_shell` (the LLM's other tools keep working) and suspends any background processes the LLM left running, resuming them when done -- so the LLM cannot race the ownership changes.
 
 Re-run `aishare` in a directory whenever you add new files or directories to it -- a new git repo included. New entries you create inherit the `$LIM_AI_USER` group (via setgid) but usually not the group-write bit (your umask), so the AI can read them but not write until `aishare` re-grants group read/write. For a new repo, the re-run is also what moves its gitdir into the store and applies the protection below.
 
-`aishare` and the wrapper need one passwordless `sudo` rule, added once to your sudoers (`sudo visudo`, or a drop-in file in `/etc/sudoers.d/`). It allows only a small root-owned helper, `aishare-helper` (in the LIM repo), which performs the chown and chattr operations below and re-validates every path itself: it refuses any path that leaves `/home/$LIM_AI_USER` lexically or has a symlink component -- a bare `chown ... /home/$LIM_AI_USER/*` rule cannot, because in sudoers `*` matches `/` and `..` -- and the chown identities it may set are fixed inside it. Install the helper before the first `aishare` run (mode 0700, root-owned, so the LLM user cannot modify its checks):
+`aishare` and the wrapper need one passwordless `sudo` rule, added once to your sudoers (`sudo visudo`, or a drop-in file in `/etc/sudoers.d/`). It allows only a small root-owned helper, `aishare-helper` (in the LIM repo), which performs the operations below and re-validates every path itself: it refuses any path that leaves `/home/$LIM_AI_USER` lexically or has a symlink component -- a bare `chown ... /home/$LIM_AI_USER/*` rule cannot, because in sudoers `*` matches `/` and `..` -- and the chown identities it may set are fixed inside it. Install the helper before the first `aishare` run (mode 0700, root-owned, so the LLM user cannot modify its checks):
 
 ```bash
 sudo install -m 0700 aishare-helper /usr/local/bin/aishare-helper
@@ -203,7 +203,7 @@ Substitute your username for `$USER`:
 $USER ALL=(root) NOPASSWD: /usr/local/bin/aishare-helper
 ```
 
-The helper performs the operations aishare and the wrapper need: setting ownership to `$USER:$LIM_AI_USER` (recursively over the shared trees, including any planted hook aishare re-owns before disabling it, and non-recursively over the home dir itself on a home-level run); handing each gitdir's state files (`HEAD`, `index`, ...) to `$LIM_AI_USER` with `chown -h`, so the `chown` acts on the name itself and cannot follow a symlink the LLM planted under one of those names; and pinning and unpinning `.git` pointer files.
+The helper performs the operations aishare and the wrapper need: setting ownership to `$USER:$LIM_AI_USER` (recursively over the shared trees, including any planted hook aishare re-owns before disabling it, and non-recursively over the home dir itself on a home-level run); handing each gitdir's state files (`HEAD`, `index`, ...) to `$LIM_AI_USER` with `chown -h`, so the `chown` acts on the name itself and cannot follow a symlink the LLM planted under one of those names; pinning and unpinning `.git` pointer files; and suspending/resuming (`stop`/`cont`) the LLM's background processes during an aishare run (only PIDs owned by the LLM user are accepted).
 
 Since git runs code from a gitdir's `config` (core.hooksPath, credential.helper, core.sshCommand, ...) and from its `hooks`, the LLM must never be able to swap a repo's gitdir for one of its own. The git side of aishare:
 
@@ -398,7 +398,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
 | `LIM_WEB_TIMEOUT` | `600` | HTTP request timeout in seconds for fetches and searches |
 | `LIM_BRAVE_API_KEY` | *(empty)* | Brave Search API key. When set, LIM falls back to the [Brave Search API](https://api.search.brave.com/app) if SearXNG fails or returns no results. |
-| `GH_TOKEN` | *(empty)* | Optional GitHub personal access token for higher API rate limits when read_files fetches GitHub URLs (issues, PRs, discussions, files). |
+| `GH_TOKEN` | *(empty)* | Optional GitHub token for higher API rate limits when read_files fetches GitHub URLs (issues, PRs, discussions, files). Use a fine-grained token with read-only access to public repositories only -- the model can read and use this token. |
 | `LIM_SEARCH_COOLDOWN` | `3` | Minimum seconds between web searches to avoid rate-limiting SearxNG |
 | `LIM_DOCLING_CMD` | `~/venv/bin/docling-serve run --enable-ui --host 127.0.0.1` | Command to start the Docling PDF service. Binds to localhost only. Override if installed elsewhere (e.g., via Docker or a different venv). |
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && exec python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
