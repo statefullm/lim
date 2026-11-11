@@ -17,6 +17,7 @@
 #include <fcntl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/inotify.h>
 #include <poll.h>
 #include <pwd.h>
 #include <cstring>
@@ -887,6 +888,44 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
   // Output is now handled by log_tool_diagnostic in tools.cc at dispatch time.
+
+
+  // aishare lock: while aishare is re-sharing a directory, wait for it to
+  // finish before executing, so the LLM cannot race the ownership changes.
+  // Uses inotify on the home directory for the lock file's removal.
+  {
+    string lock_path = HOME + "/.aishare.lock";
+    struct stat st;
+    if (stat(lock_path.c_str(), &st) == 0) {
+      int ifd = inotify_init();
+      if (ifd >= 0) {
+        int wfd = inotify_add_watch(ifd, HOME.c_str(), IN_DELETE | IN_MOVED_FROM);
+        if (wfd >= 0) {
+          // Block until the lock file is removed (or 10-minute timeout).
+          char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+          for (;;) {
+            struct pollfd pfd = {ifd, POLLIN, 0};
+            int pr = poll(&pfd, 1, 600000);
+            if (pr < 0 && errno == EINTR) continue;
+            if (pr == 0) break;  // timeout: proceed anyway
+            ssize_t len = read(ifd, buf, sizeof(buf));
+            if (len <= 0) break;
+            for (ssize_t i = 0; i < len; ) {
+              struct inotify_event* ev = (struct inotify_event*)(buf + i);
+              if (ev->len && ev->name && strcmp(ev->name, ".aishare.lock") == 0) {
+                i += sizeof(struct inotify_event) + ev->len;
+                goto aishare_done;
+              }
+              i += sizeof(struct inotify_event) + ev->len;
+            }
+          }
+          inotify_rm_watch(ifd, wfd);
+        }
+        close(ifd);
+      }
+    }
+    aishare_done:;
+  }
 
   string safe_cmd = command;
   size_t pos = 0;

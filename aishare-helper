@@ -23,6 +23,8 @@
 #   aishare-helper chown PATH         chown -h USER:GROUP PATH (no-dereference)
 #   aishare-helper chattr +i PATH...  chattr +i PATH...
 #   aishare-helper chattr -i PATH...  chattr -i PATH...
+#   aishare-helper stop PID...        kill -STOP (GROUP-owned PIDs only)
+#   aishare-helper cont PID...        kill -CONT (GROUP-owned PIDs only)
 #
 # Install root-owned and unreadable/unwritable by everyone else (the LLM
 # user shares $GROUP and can modify anything the group can write):
@@ -127,7 +129,25 @@ case "$op" in
         esac
         flag="$1"
         shift
+
         check_paths "$@"
+        ;;
+    stop|cont)
+        [ $# -ge 1 ] || usage
+        # Each PID must be numeric and owned by $GROUP.
+
+        for sp_pid in "$@"; do
+            case "$sp_pid" in
+                *[!0-9]*) echo "aishare-helper: refusing: not a PID: $sp_pid" >&2; exit 1 ;;
+            esac
+            sp_uid=$(stat -c %U "/proc/$sp_pid" 2>/dev/null)
+            if [ -z "$sp_uid" ]; then
+                echo "aishare-helper: refusing: PID $sp_pid does not exist" >&2; exit 1
+            fi
+            [ "$sp_uid" = "$GROUP" ] || {
+                echo "aishare-helper: refusing: PID $sp_pid is owned by $sp_uid, not $GROUP" >&2; exit 1
+            }
+        done
         ;;
     *) usage ;;
 esac
@@ -148,8 +168,14 @@ case "$op" in
             *)  exec /usr/bin/chown -h "$USER:$GROUP" "$@" ;;
         esac
         ;;
+
     chattr)
         exec /usr/bin/chattr "$flag" "$@"
+        ;;    stop)
+        for sp_pid in "$@"; do kill -STOP "$sp_pid" 2>/dev/null; done
+        ;;
+    cont)
+        for sp_pid in "$@"; do kill -CONT "$sp_pid" 2>/dev/null; done
         ;;
 esac
 

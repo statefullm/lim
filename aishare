@@ -725,6 +725,66 @@ fi
 # bypass. A blocked plant is left in place, inert under the ownership check,
 # until the user removes it; the check runs before any chown, while ownership
 # still reflects the creator (the LLM cannot chown).
+
+# Block exec_shell and suspend stray background processes while aishare
+# runs, so the LLM cannot race the ownership and permission changes below.
+# lim (and its long-lived services: browser server, search, PDF) keeps
+# running; only new exec_shell calls are refused until the lock is removed,
+# and any background jobs a past exec_shell left running are SIGSTOP'd
+# (not killed) and resumed on exit.
+aishare_lock="/home/$group/.aishare.lock"
+if echo "$$" > "$aishare_lock" 2>/dev/null; then
+    :
+else
+    echo "WARNING: could not create $aishare_lock: exec_shell is not blocked for this run" >&2
+    aishare_lock=""
+fi
+# Suspend exec_shell children and orphaned background jobs while aishare
+# runs, so the LLM cannot race the ownership and permission changes below.
+# Targets:
+#   1. Direct children of lim and their descendants (in-flight exec_shell
+#      bash wrappers and the commands they are running).
+#   2. Orphaned ai-owned processes (PPID 1) from past exec_shell calls,
+#      excluding the long-lived services (limServer, searxng, docling).
+# Nothing else (lim, the terminal, VS Code, ...) is touched.
+lim_pid=$(pgrep -x lim -u "$group" 2>/dev/null | head -1)
+stopped_pids=""
+if [ -n "$lim_pid" ]; then
+    for child in $(pgrep -P "$lim_pid" 2>/dev/null); do
+        stopped_pids="$stopped_pids $child"
+        for gc in $(pgrep -P "$child" 2>/dev/null); do
+            stopped_pids="$stopped_pids $gc"
+        done
+    done
+fi
+# Orphaned background jobs: owned by $group, PPID 1, not a known service.
+for aip in $(pgrep -u "$group" 2>/dev/null); do
+    # PPID is field 4 of /proc/PID/stat (after "pid (comm) state")
+    aip_ppid=$(awk '{print $4}' "/proc/$aip/stat" 2>/dev/null)
+    [ "$aip_ppid" = "1" ] || continue
+    aicmd=$(cat "/proc/$aip/comm" 2>/dev/null)
+    case "$aicmd" in
+        systemd|systemd--) continue ;;
+    esac
+    if [ "$aicmd" = "python3" ] || [ "$aicmd" = "python" ]; then
+        aicmdline=$(tr '\0' ' ' < "/proc/$aip/cmdline" 2>/dev/null)
+        case "$aicmdline" in
+            *limServer*|*searxng*|*docling*) continue ;;
+        esac
+    fi
+    stopped_pids="$stopped_pids $aip"
+done
+# Signal via the helper (root): a non-root user cannot send signals to
+# another user's processes.
+if [ -n "$stopped_pids" ]; then
+    run_sudo "$helper" stop $stopped_pids
+fi
+aishare_cleanup() {
+    [ -n "$stopped_pids" ] && sudo -n "$helper" cont $stopped_pids 2>/dev/null
+    [ -n "$aishare_lock" ] && rm -f "$aishare_lock"
+}
+trap aishare_cleanup EXIT
+
 bad=0
 check_gitfiles "$target" || bad=1
 check_gitdirs "$target" || bad=1
