@@ -760,31 +760,15 @@ fi
 # orphaned -- orphans keep their process group, so the tree is found by
 # group, at any depth, through any reparenting. lim records each
 # exec_shell's group in /var/tmp/lim.pgroups; aishare stops every $group-
-# owned process in a recorded group, plus all descendants of lim (in-flight
-# trees, also covering a spawn whose group was not recorded), plus any
-# orphaned tree (PPID 1) whose group was never recorded -- e.g. created
-# before the pgroup file existed. Nothing else is touched:
+# owned process in a recorded group (and its descendants, via the closure
+# below), plus any orphaned tree (PPID 1) whose group was never recorded
+# -- e.g. created before the pgroup file existed. Nothing else is touched:
 # lim, the terminal, and lim's long-lived services (double-forked into
 # their own sessions, never recorded) keep running. Stopped processes are
 # resumed (SIGCONT) in the EXIT trap.
 pgroup_file="/var/tmp/lim.pgroups"
 pg_content=""
 [ -r "$pgroup_file" ] && pg_content=$(tr '\n' ' ' < "$pgroup_file" 2>/dev/null)
-
-# All descendants of lim, at any depth (pgrep -P per level).
-lim_pids=$(pgrep -x lim -u "$group" 2>/dev/null)
-sw_pids=""
-if [ -n "$lim_pids" ]; then
-    sw_frontier="$lim_pids"
-    while [ -n "$sw_frontier" ]; do
-        sw_next=""
-        for sw_p in $sw_frontier; do
-            sw_next="$sw_next $(pgrep -P "$sw_p" 2>/dev/null)"
-        done
-        sw_pids="$sw_pids $sw_next"
-        sw_frontier="$sw_next"
-    done
-fi
 
 # Print "ppid pgrp" of $1 from /proc/$1/stat. Split on the last ')': the
 # comm field can contain spaces and parentheses.
@@ -807,7 +791,6 @@ for sw_p in $(pgrep -u "$group" 2>/dev/null); do
     [ "$sw_comm" = lim ] && continue   # lim itself
     sw_stop=no
     case " $pg_content " in *" $sw_pgrp "*) sw_stop=yes ;; esac  # recorded group
-    case " $sw_pids " in *" $sw_p "*) sw_stop=yes ;; esac        # lim descendant
     if [ "$sw_stop" = no ] && [ "$sw_ppid" = "1" ]; then
         # An orphaned tree whose group was never recorded (e.g. created
         # before the pgroup file existed). Skip lim's own long-lived
@@ -824,6 +807,23 @@ for sw_p in $(pgrep -u "$group" 2>/dev/null); do
         [ "$sw_skip" = no ] && sw_stop=yes
     fi
     [ "$sw_stop" = yes ] && stopped_pids="$stopped_pids $sw_p"
+done
+
+# Descendant closure: a setsid'd orphan is stopped (PPID 1), but its
+# children have PPID = the orphan (not 1), are not lim descendants, and
+# are not in a recorded pgroup -- yet they must be stopped too, since
+# their parent is frozen and they would otherwise race aishare. Walk the
+# stop set to a fixed point.
+sw_changed=1
+while [ "$sw_changed" = 1 ]; do
+    sw_changed=0
+    for sw_p in $stopped_pids; do
+        for sw_c in $(pgrep -P "$sw_p" 2>/dev/null); do
+            case " $stopped_pids " in *" $sw_c "*) continue ;; esac
+            stopped_pids="$stopped_pids $sw_c"
+            sw_changed=1
+        done
+    done
 done
 
 # Signal via the helper (root): a non-root user cannot send signals to
