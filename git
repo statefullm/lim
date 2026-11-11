@@ -1,16 +1,18 @@
 #!/bin/sh
 # git -- re-share wrapper for shared (aishare'd) repos.
 #
-# After every git command you run in a shared repo (cwd under
-# /home/$LIM_AI_USER, gitdir in the store), re-chown the volatile git
-# state files (index, HEAD, ...) to $LIM_AI_USER: user-side git re-owns
-# them to you, and the sticky store gitdir then blocks the LLM's next
+# After every git command you run in a shared repo (a repo whose gitdir is
+# under /home/$LIM_AI_USER -- the store, or an in-place bare or custom-
+# named gitdir -- however git is pointed at it: your working directory,
+# 'git -C <dir>', '--git-dir', or GIT_DIR / GIT_COMMON_DIR), re-chown the
+# volatile git state files (index, HEAD, ...) to $LIM_AI_USER: user-side
+# git re-owns them to you, and the sticky gitdir then blocks the LLM's next
 # index write until they are chowned back. This is the fallback for the
 # interval between aishare runs, including when aishare's own state-file
-# chown fails. It also reports (backstop) any top-level file in the stored
-# gitdir that is not owned by you and is not one of the state, lock or
-# tmp files git expects there -- a planted commondir or config.worktree,
-# or a name no specific protection covers.
+# chown fails. It also reports (backstop) any top-level file in the gitdir
+# that is not owned by you and is not one of the state, lock or tmp files
+# git expects there -- a planted commondir or config.worktree, or a name no
+# specific protection covers.
 #
 # A plain pass-through everywhere else -- in particular when run as
 # $LIM_AI_USER: same command, output, and exit code, and no sudo attempt
@@ -54,100 +56,181 @@ fi
 AI_USER=${LIM_AI_USER:-ai}
 user=$(id -un 2>/dev/null)
 
-# Pre-check: resolve the gitdir, remove group write, and remove any symlinks
-# the LLM planted. Git never creates symlinks in a gitdir; a planted one would
-# let git write through it (reflogs, MERGE_MSG, ...) to a file the LLM chose.
-# Removing group write first means the LLM cannot plant a new symlink between
-# our removal and git's in-place write (the pre-check alone is a race the LLM
-# can win with inotify). Git runs as the directory owner and is unaffected by
-# the temporary permission change.
+# Pre-check: resolve the gitdirs, remove group write, and remove any
+# symlinks the LLM planted. Git never creates symlinks in a gitdir; a
+# planted one would let git write through it (reflogs, MERGE_MSG, ...) to a
+# file the LLM chose. Removing group write first means the LLM cannot plant
+# a new symlink between our removal and git's in-place write (the pre-check
+# alone is a race the LLM can win with inotify). Git runs as the directory
+# owner and is unaffected by the temporary permission change.
+#
+# Which gitdirs can the invocation reach? Git is steered to a repo by the
+# working directory, -C <dir> (a chdir before the subcommand), --git-dir
+# (which overrides discovery), and the GIT_DIR / GIT_COMMON_DIR
+# environment. The command line is scanned below; -c and --work-tree take
+# values that would otherwise be mistaken for the subcommand and stop the
+# scan (-c commonly precedes -C, 'git -c <v> -C <dir>'). The environment
+# needs no parsing: the gate string-checks it, and the probe inherits it,
+# so the probe resolves exactly as git will. A linked worktree writes into
+# two gitdirs (its admin dir and the common dir), so both are protected.
 gd=""
+gdc=""
+gw_d1=""
+gw_d2=""
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
-    pdir=$(CDPATH= cd -- "$PWD" 2>/dev/null && pwd -P)
-    case $pdir in
-        "/home/$AI_USER" | "/home/$AI_USER"/*)
-            gd=$("$GIT_BIN" rev-parse --absolute-git-dir 2>/dev/null)
-            case "$gd" in
-                "/home/$AI_USER"/.gitstore/*)
-                    chmod -R g-w "$gd" 2>/dev/null
-                    # Re-grant group write where the LLM's git needs it: on
-                    # the directories (to create and replace files via
-                    # lockfile+rename) and on the files it does not own
-                    # (reflogs, which git appends in place). The plant-surface
-                    # names aishare keeps not group-writable are excluded: a
-                    # blanket 'chmod -R g+w' would re-grant them, letting the
-                    # LLM rewrite a user-owned config (an fsmonitor or
-                    # hooksPath directive) or commondir in place, or create a
-                    # hook. The LLM's git never needs group write on them --
-                    # replacing a file needs only the directory's write bit,
-                    # and hooks are only read and executed.
-                    _gw_restore() {
-                        find "$gd" \( -name config -o -name config.worktree -o \
-                                     -name commondir -o -name gitdir -o -name hooks \) -prune \
-                            -o -exec chmod g+w {} + 2>/dev/null
-                    }
-                    trap _gw_restore EXIT
-                    trap 'exit 130' INT
-                    trap 'exit 143' TERM
-                    find "$gd" -type l 2>/dev/null | while IFS= read -r gw_link; do
-                        echo "git: wrapper: removing symlink $gw_link in the shared gitdir (git does not create symlinks there -- it may be a plant the $AI_USER user created; review its target)"
-                        rm -f "$gw_link"
-                    done
-                    ;;
+    gw_cdir=""
+    gw_gd=""
+    gw_prev=""
+    for gw_a in "$@"; do
+        if [ -n "$gw_prev" ]; then
+            case $gw_prev in
+                -C) gw_cdir=$gw_a ;;
+                --git-dir) gw_gd=$gw_a ;;
             esac
-            ;;
+            gw_prev=""
+            continue
+        fi
+        case $gw_a in
+            -c) gw_prev=-c ;;
+            -C) gw_prev=-C ;;
+            --git-dir) gw_prev=--git-dir ;;
+            --git-dir=*) gw_gd=${gw_a#--git-dir=} ;;
+            --work-tree) gw_prev=--work-tree ;;
+            --) break ;;
+            -*) : ;;
+            *) break ;;
+        esac
+    done
+    # Probe when the invocation can reach a gitdir under /home/$AI_USER:
+    # the working directory (or the -C target) is there, --git-dir names
+    # one, or GIT_DIR / GIT_COMMON_DIR names one. Relative values are
+    # resolved lexically against $PWD; the probe itself resolves exactly,
+    # so a gate miss only means 'no protection', as before this wrapper.
+    gw_probe=no
+    gw_wdir=$(CDPATH= cd -- "${gw_cdir:-$PWD}" 2>/dev/null && pwd -P)
+    case $gw_wdir in
+        "/home/$AI_USER"|"/home/$AI_USER"/*) gw_probe=yes ;;
     esac
+    if [ "$gw_probe" = no ]; then
+        for gw_v in "$gw_gd" "$GIT_DIR" "$GIT_COMMON_DIR"; do
+            [ -n "$gw_v" ] || continue
+            gw_res=$(realpath -sm -- "$gw_v" 2>/dev/null)
+            case $gw_res in
+                "/home/$AI_USER"|"/home/$AI_USER"/*) gw_probe=yes; break ;;
+            esac
+        done
+    fi
+    if [ "$gw_probe" = yes ]; then
+        # Resolve the gitdirs exactly as git will: the same -C / --git-dir
+        # options and the same inherited environment. --absolute-git-dir is
+        # always absolute; --git-common-dir is absolute except for '.git'
+        # at $PWD, resolved there.
+        gw_res=$(
+            set --
+            [ -n "$gw_cdir" ] && set -- "$@" -C "$gw_cdir"
+            [ -n "$gw_gd" ] && set -- "$@" --git-dir "$gw_gd"
+            "$GIT_BIN" "$@" rev-parse --absolute-git-dir --git-common-dir
+        ) 2>/dev/null
+        gd=$(printf '%s\n' "$gw_res" | sed -n 1p)
+        gdc=$(printf '%s\n' "$gw_res" | sed -n 2p)
+        case $gdc in
+            "") ;;
+            /*) ;;
+            *) gdc=$(CDPATH= cd -- "$gdc" 2>/dev/null && pwd -P) ;;
+        esac
+        for gw_d in "$gd" "$gdc"; do
+            [ -n "$gw_d" ] || continue
+            [ "$gw_d" = "$gw_d1" ] && continue
+            case $gw_d in
+                "/home/$AI_USER"|"/home/$AI_USER"/*) ;;
+                *) continue ;;
+            esac
+            if [ -n "$gw_d1" ]; then gw_d2=$gw_d; else gw_d1=$gw_d; fi
+            chmod -R g-w "$gw_d" 2>/dev/null
+            # Re-grant group write where the LLM's git needs it: on the
+            # directories (to create and replace files via lockfile+rename)
+            # and on the files it does not own (reflogs, which git appends
+            # in place). The plant-surface names aishare keeps not
+            # group-writable are excluded: a blanket 'chmod -R g+w' would
+            # re-grant them, letting the LLM rewrite a user-owned config
+            # (an fsmonitor or hooksPath directive) or commondir in place,
+            # or create a hook. The LLM's git never needs group write on
+            # them -- replacing a file needs only the directory's write
+            # bit, and hooks are only read and executed.
+            _gw_restore() {
+                [ -n "$1" ] && find "$1" \( -name config -o -name config.worktree -o \
+                    -name commondir -o -name gitdir -o -name hooks \) -prune \
+                    -o -exec chmod g+w {} + 2>/dev/null
+            }
+            find "$gw_d" -type l 2>/dev/null | while IFS= read -r gw_link; do
+                echo "git: wrapper: removing symlink $gw_link in the shared gitdir (git does not create symlinks there -- it may be a plant the $AI_USER user created; review its target)"
+                rm -f "$gw_link"
+            done
+        done
+        if [ -n "$gw_d1" ]; then
+            trap '_gw_restore "$gw_d1"; [ -n "$gw_d2" ] && _gw_restore "$gw_d2"' EXIT
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+        fi
+    fi
 fi
 
 "$GIT_BIN" "$@"
 rc=$?
 
-if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
-    case "$gd" in
-        "/home/$AI_USER"/.gitstore/*)
-            # Restore group write so the LLM can commit again (the EXIT
-            # trap also covers this on interrupt; the explicit call here
-            # restores before the bookkeeping below).  _gw_restore skips the
-            # plant-surface names aishare keeps not group-writable.
-            _gw_restore
-            # Through the sudoers helper: it fixes the identity to
-            # $AI_USER:$AI_USER, re-validates every path (must stay
-            # under /home/$AI_USER with no symlink component), and
-            # exposes only the -h (no-dereference) form for
-            # group-chown, so a state-file name the LLM has made a
-            # symlink is chowned itself, never its target.
-            sudo -n /usr/local/bin/aishare-helper chown -h \
-                "$gd/HEAD" "$gd/index" "$gd/packed-refs" "$gd/ORIG_HEAD" \
-                "$gd/FETCH_HEAD" "$gd/MERGE_HEAD" "$gd/MERGE_MSG" \
-                "$gd/COMMIT_EDITMSG" "$gd/AUTO_MERGE" "$gd/CHERRY_PICK_HEAD" \
-                "$gd/REVERT_HEAD" "$gd/REVERT_MSG" "$gd/TAG_EDITMSG" \
-                "$gd/BISECT_LOG" "$gd/BISECT_START" "$gd/BISECT_NEXT" \
-                "$gd/BISECT_BAD" "$gd/BISECT_GOOD" "$gd/BISECT_LEFT" \
-                "$gd/BISECT_RIGHT" "$gd/shallow" 2>/dev/null
-            # Backstop: the LLM can create any top-level file name in
-            # the group-writable gitdir, and git only expects the
-            # state files and its own lock/tmp files there, so
-            # report anything else that is not yours. The specific
-            # protections (placeholder commondir and config.worktree,
-            # pinned pointer, ...) cover the known redirect names;
-            # this catches the rest. Directories are not reported:
-            # git-created ones (logs/, worktrees/, ...) are expected
-            # LLM-owned, and a directory git does not know is inert.
-            state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
-            find "$gd" -maxdepth 1 -type f ! -user "$user" 2>/dev/null | while IFS= read -r gw_f; do
-                gw_b=$(basename "$gw_f")
-                gw_allowed=no
-                for gw_n in $state_files; do
-                    [ "$gw_b" = "$gw_n" ] && gw_allowed=yes
-                done
-                case "$gw_b" in
-                    *.lock|*.tmp) gw_allowed=yes ;;
-                esac
-                [ "$gw_allowed" = yes ] && continue
-                echo "git: wrapper: $gw_f is a top-level file in the shared gitdir not owned by you and not a git state, lock or tmp file: git does not expect it there -- review it (it may be a plant the $AI_USER user created)" >&2
+# The gitdir top-level state files git rewrites when committing (via
+# lockfile+rename or in place). The LLM is the committer of a shared repo,
+# so it must own them (aishare's protect_gitdirs chowns them to the group),
+# and the unexpected-entry reports below treat them as expected LLM-owned
+# entries. One list, used for both the chown and the reports; aishare has
+# the same list as state_files.
+state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
+
+if [ -n "$user" ] && [ "$user" != "$AI_USER" ] && [ -n "$gw_d1" ]; then
+    # Restore group write so the LLM can commit again (the EXIT trap also
+    # covers this on interrupt; the explicit call here restores before the
+    # bookkeeping below). _gw_restore skips the plant-surface names aishare
+    # keeps not group-writable.
+    _gw_restore "$gw_d1"
+    [ -n "$gw_d2" ] && _gw_restore "$gw_d2"
+    # Re-share the state files of every protected gitdir (a linked
+    # worktree's writes span the admin dir and the common dir). Through
+    # the sudoers helper: it fixes the identity to $AI_USER:$AI_USER,
+    # re-validates every path (must stay under /home/$AI_USER with no
+    # symlink component), and exposes only the -h (no-dereference) form
+    # for group-chown, so a state-file name the LLM has made a symlink is
+    # chowned itself, never its target.
+    (
+        set --
+        for gw_d in "$gw_d1" "$gw_d2"; do
+            [ -n "$gw_d" ] || continue
+            for gw_n in $state_files; do set -- "$@" "$gw_d/$gw_n"; done
+        done
+        sudo -n /usr/local/bin/aishare-helper chown -h "$@"
+    ) 2>/dev/null
+    # Backstop: the LLM can create any top-level file name in the
+    # group-writable gitdir, and git only expects the state files and its
+    # own lock/tmp files there, so report anything else that is not yours.
+    # The specific protections (placeholder commondir and config.worktree,
+    # pinned pointer, ...) cover the known redirect names; this catches the
+    # rest. Directories are not reported: git-created ones (logs/,
+    # worktrees/, ...) are expected LLM-owned, and a directory git does not
+    # know is inert.
+    for gw_d in "$gw_d1" "$gw_d2"; do
+        [ -n "$gw_d" ] || continue
+        find "$gw_d" -maxdepth 1 -type f ! -user "$user" 2>/dev/null | while IFS= read -r gw_f; do
+            gw_b=$(basename "$gw_f")
+            gw_allowed=no
+            for gw_n in $state_files; do
+                [ "$gw_b" = "$gw_n" ] && gw_allowed=yes
             done
-            ;;
-    esac
+            case "$gw_b" in
+                *.lock|*.tmp) gw_allowed=yes ;;
+            esac
+            [ "$gw_allowed" = yes ] && continue
+            echo "git: wrapper: $gw_f is a top-level file in the shared gitdir not owned by you and not a git state, lock or tmp file: git does not expect it there -- review it (it may be a plant the $AI_USER user created)" >&2
+        done
+    done
 fi
 exit $rc
 
