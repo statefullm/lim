@@ -532,12 +532,13 @@ check_config_content() {
 # repos, custom-named gitdirs, and any gitdir swapped in place of a stored
 # one -- swapped pointers are caught by check_gitfiles) and the store
 # itself, which fix_store chowns on every run regardless of $1. $owner-owned
-# gitdirs are trusted as-is; an LLM-owned gitdir is unsafe only when it
-# carries an executable plant surface -- a non-sample executable hook or a
-# config directive that runs a command -- which the chown would make run as
-# the user. A LLM-owned gitdir with clean content (a normal clone, normal
-# LLM work) is safe and is shared as before. Each plant is reported as an
-# ERROR naming the hook or config key. Returns 0 if nothing is unsafe, 1 if
+# gitdirs are trusted as-is; $group-owned gitdirs are skipped because fix()
+# resets their config and hooks (unlinking the inodes the LLM may have open
+# and recreating them fresh -- issue 3). A gitdir owned by anyone else is
+# unsafe only when it carries an executable plant surface -- a non-sample
+# executable hook or a config directive that runs a command -- which the
+# chown would make run as the user. Each plant is reported as an ERROR
+# naming the hook or config key. Returns 0 if nothing is unsafe, 1 if
 # anything is or the check itself cannot report.
 check_gitdirs() {
     # Marker file as in check_gitfiles; fail closed if it cannot be created.
@@ -553,7 +554,12 @@ check_gitdirs() {
     for root in "$1" $second; do
         [ -n "$root" ] && [ -d "$root" ] || continue
         gitdirs "$root" | while IFS= read -r d; do
-            [ "$(stat -c %U "$d" 2>/dev/null)" = "$owner" ] && continue
+            d_cg_own="$(stat -c %U "$d" 2>/dev/null)"
+            [ "$d_cg_own" = "$owner" ] && continue
+            # $group-owned gitdirs are reset in fix() (issue 3): config and
+            # hooks are unlinked and recreated with fresh inodes, so any
+            # plant the LLM left is removed.
+            [ "$d_cg_own" = "$group" ] && continue
             exec_hooks "$d" | while IFS= read -r h; do
                 echo "ERROR: $h is a planted git hook in $d, a gitdir not owned by you -- git would run it as you once aishare re-owns it: remove it, then re-run aishare" >&2
                 echo x >> "$unsafe"
@@ -605,18 +611,85 @@ chattr_probe() {
 }
 
 fix() {
+    # Issue 3: chown does not revoke file descriptors the LLM opened before
+    # the chown, so the LLM could still write through them into the re-owned
+    # config. For gitdirs the LLM created, save the remote.* and branch.*
+    # settings (dropping ext:: URLs, which run a command), unlink config,
+    # config.worktree, and hooks after the chown so the LLM's fds point to
+    # deleted inodes, and restore the saved settings after protect_gitdirs
+    # recreates the files with fresh inodes.
+    fx_llm_tmp="$(mktemp -d 2>/dev/null)" || {
+        fx_llm_tmp=""
+        echo "WARNING: could not create a temp dir for the config/hook reset (issue 3): the fd-write-after-chown bypass is not closed for LLM-owned gitdirs this run" >&2
+    }
+    if [ -n "$fx_llm_tmp" ]; then
+        gitdirs "$1" | while IFS= read -r d; do
+            [ "$(stat -c %U "$d" 2>/dev/null)" = "$group" ] && printf '%s\n' "$d"
+        done > "$fx_llm_tmp/list"
+        fx_n=0
+        while IFS= read -r d; do
+            fx_n=$((fx_n+1))
+            [ -f "$d/config" ] && [ -r "$d/config" ] || continue
+            git config --file "$d/config" --get-regexp '^(remote\..+\..+|branch\..+\..+)$' 2>/dev/null | \
+            while IFS= read -r line; do
+                key="${line%% *}"; val="${line#* }"
+                case "$key" in
+                    remote.*.url|remote.*.pushurl)
+                        case "$val" in 'ext::'*) continue ;; esac ;;
+                esac
+                printf '%s\n' "$line"
+            done > "$fx_llm_tmp/cfg.$fx_n"
+        done < "$fx_llm_tmp/list"
+    fi
+
     disable_planted_hooks "$1"
     unpin_gitfiles "$1"
     # The rest of the setup -- and the protection it sets up -- only holds if
     # the owner owns the tree, so abort instead of leaving it half-protected.
     if ! run_sudo "$helper" chown -R "$1"; then
         echo "ERROR: aborting: $1 is not fully owned by $owner:$group (see the error above); the remaining steps would not hold -- fix the sudo problem and re-run aishare" >&2
+        [ -n "$fx_llm_tmp" ] && rm -rf "$fx_llm_tmp"
         exit 1
+    fi
+    # Unlink the LLM's config, config.worktree, and hooks so the LLM's open
+    # fds (not revoked by chown) point to deleted inodes; protect_gitdirs
+    # below recreates them with fresh inodes and verified content.
+    if [ -n "$fx_llm_tmp" ] && [ -s "$fx_llm_tmp/list" ]; then
+        while IFS= read -r d; do
+            [ -d "$d" ] || continue
+            rm -f "$d/config" "$d/config.worktree" "$d/commondir" 2>/dev/null
+            rm -rf "$d/hooks" 2>/dev/null
+            echo "NOTE: $d was created by $group: config and hooks reset (chown does not revoke file descriptors $group may have held open); remotes and branch tracking restored" >&2
+        done < "$fx_llm_tmp/list"
     fi
     chmod -R g+rw "$1"
     chmod -R -t "$1"
     find "$1" -type d -exec chmod g+s {} +
     protect_gitdirs "$1"
+    # Restore the saved remote.* and branch.* settings into the fresh configs
+    # that protect_gitdirs just created.
+    if [ -n "$fx_llm_tmp" ] && [ -s "$fx_llm_tmp/list" ]; then
+        fx_n=0
+        while IFS= read -r d; do
+            fx_n=$((fx_n+1))
+            cf="$fx_llm_tmp/cfg.$fx_n"
+            [ -f "$cf" ] && [ -s "$cf" ] || continue
+            # The gitdir may have been moved into the store by
+            # protect_gitdirs; resolve the pointer to the real path.
+            if [ -f "$d" ] && [ ! -d "$d" ]; then
+                d_res="$(pointer_target "$d")"
+                [ -n "$d_res" ] && [ -d "$d_res" ] && d="$d_res"
+            fi
+            [ -f "$d/config" ] || continue
+            while IFS= read -r line; do
+                key="${line%% *}"
+                val="${line#* }"
+                git config --file "$d/config" "$key" "$val" 2>/dev/null || \
+                    echo "WARNING: could not restore $key in $d/config" >&2
+            done < "$cf"
+        done < "$fx_llm_tmp/list"
+    fi
+    [ -n "$fx_llm_tmp" ] && rm -rf "$fx_llm_tmp"
     pin_gitfiles "$1"
 }
 
@@ -640,19 +713,23 @@ if ! chattr_probe; then
 fi
 
 # Refuse to share (no chown anywhere) if any git ownership check fails: the
-# chowns below would re-own a gitdir carrying an LLM plant (a .git pointer to
-# a non-$owner gitdir, or an LLM-owned gitdir -- in-tree under $target or in
-# the store that fix_store always chowns -- with an executable hook or config
-# directive) and disarm git's ownership check (safe.directory) -- after it,
-# the user's git runs in the LLM's gitdir and the plant runs as the user.
-# Check before any chown, while ownership still reflects the creator (the
-# LLM cannot chown); the plant is then left LLM-owned, where git keeps it
-# inert, until the user removes it.
+# chowns below would re-own a gitdir and disarm git's ownership check
+# (safe.directory), letting a plant in it run as the user. The gate blocks
+# only what fix() does not itself neutralize -- a .git pointer to a non-$owner
+# gitdir (check_gitfiles), or a gitdir owned by neither $owner nor $group
+# (in-tree under $target or in the store) carrying an executable plant: a
+# non-sample hook or a config directive that runs a command (check_gitdirs).
+# $group-owned (LLM-created) gitdirs are deliberately not blocked: fix()
+# re-owns them, then resets their config, config.worktree, commondir and hooks
+# (issue 3), removing any such plant and closing the fd-write-after-chown
+# bypass. A blocked plant is left in place, inert under the ownership check,
+# until the user removes it; the check runs before any chown, while ownership
+# still reflects the creator (the LLM cannot chown).
 bad=0
 check_gitfiles "$target" || bad=1
 check_gitdirs "$target" || bad=1
 if [ "$bad" = 1 ]; then
-    echo "ERROR: refusing to share $target: git ownership verification failed (see above); chowning would re-own a gitdir the LLM controls and let its hooks or config run as you. Remove the flagged plant(s) -- or scope aishare to a subdirectory that does not contain them -- then re-run aishare" >&2
+    echo "ERROR: refusing to share $target: git ownership verification failed (see above); chowning would re-own a gitdir you do not own and let its hooks or config run as you. Remove the flagged plant(s) -- or scope aishare to a subdirectory that does not contain them -- then re-run aishare" >&2
     exit 1
 fi
 
