@@ -1,4 +1,3 @@
-
 #include "tool_executor.h"
 #include "model.h"
 #include "session_utils.h"

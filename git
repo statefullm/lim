@@ -1,4 +1,3 @@
-
 #!/bin/sh
 # git -- re-share wrapper for shared (aishare'd) repos.
 #
@@ -59,7 +58,7 @@ AI_USER=${LIM_AI_USER:-ai}
 user=$(id -un 2>/dev/null)
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
     # Resolve the physical path before the gate: the checkout may be reached
-    # via a symlink (e.g. /home/bowman/lim/ai -> /home/ai/lim), and a logical
+    # via a symlink, and a logical
     # $PWD outside /home/ai would silently skip the re-share.
     pdir=$(CDPATH= cd -- "$PWD" 2>/dev/null && pwd -P)
     case $pdir in

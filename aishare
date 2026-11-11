@@ -534,7 +534,7 @@ check_config_content() {
 # itself, which fix_store chowns on every run regardless of $1. $owner-owned
 # gitdirs are trusted as-is; $group-owned gitdirs are skipped because fix()
 # resets their config and hooks (unlinking the inodes the LLM may have open
-# and recreating them fresh -- issue 3). A gitdir owned by anyone else is
+# and recreating them fresh). A gitdir owned by anyone else is
 # unsafe only when it carries an executable plant surface -- a non-sample
 # executable hook or a config directive that runs a command -- which the
 # chown would make run as the user. Each plant is reported as an ERROR
@@ -556,7 +556,7 @@ check_gitdirs() {
         gitdirs "$root" | while IFS= read -r d; do
             d_cg_own="$(stat -c %U "$d" 2>/dev/null)"
             [ "$d_cg_own" = "$owner" ] && continue
-            # $group-owned gitdirs are reset in fix() (issue 3): config and
+            # $group-owned gitdirs are reset in fix(): config and
             # hooks are unlinked and recreated with fresh inodes, so any
             # plant the LLM left is removed.
             [ "$d_cg_own" = "$group" ] && continue
@@ -611,7 +611,7 @@ chattr_probe() {
 }
 
 fix() {
-    # Issue 3: chown does not revoke file descriptors the LLM opened before
+    # chown does not revoke file descriptors the LLM opened before
     # the chown, so the LLM could still write through them into the re-owned
     # config. For gitdirs the LLM created, save the remote.* and branch.*
     # settings (dropping ext:: URLs, which run a command), unlink config,
@@ -620,7 +620,7 @@ fix() {
     # recreates the files with fresh inodes.
     fx_llm_tmp="$(mktemp -d 2>/dev/null)" || {
         fx_llm_tmp=""
-        echo "WARNING: could not create a temp dir for the config/hook reset (issue 3): the fd-write-after-chown bypass is not closed for LLM-owned gitdirs this run" >&2
+        echo "WARNING: could not create a temp dir for the config/hook reset: the fd-write-after-chown bypass is not closed for LLM-owned gitdirs this run" >&2
     }
     if [ -n "$fx_llm_tmp" ]; then
         gitdirs "$1" | while IFS= read -r d; do
@@ -721,7 +721,7 @@ fi
 # non-sample hook or a config directive that runs a command (check_gitdirs).
 # $group-owned (LLM-created) gitdirs are deliberately not blocked: fix()
 # re-owns them, then resets their config, config.worktree, commondir and hooks
-# (issue 3), removing any such plant and closing the fd-write-after-chown
+# removing any such plant and closing the fd-write-after-chown
 # bypass. A blocked plant is left in place, inert under the ownership check,
 # until the user removes it; the check runs before any chown, while ownership
 # still reflects the creator (the LLM cannot chown).

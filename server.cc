@@ -1,4 +1,3 @@
-
 #include "server.h"
 #include "output.h"
 #include "filesystem.h"
