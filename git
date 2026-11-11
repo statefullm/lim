@@ -54,9 +54,13 @@ fi
 AI_USER=${LIM_AI_USER:-ai}
 user=$(id -un 2>/dev/null)
 
-# Pre-check: resolve the gitdir and remove any symlinks the LLM planted.
-# Git never creates symlinks in a gitdir; any symlink there would let git
-# write through it (reflogs, MERGE_MSG, ...) to a file the LLM chose.
+# Pre-check: resolve the gitdir, remove group write, and remove any symlinks
+# the LLM planted. Git never creates symlinks in a gitdir; a planted one would
+# let git write through it (reflogs, MERGE_MSG, ...) to a file the LLM chose.
+# Removing group write first means the LLM cannot plant a new symlink between
+# our removal and git's in-place write (the pre-check alone is a race the LLM
+# can win with inotify). Git runs as the directory owner and is unaffected by
+# the temporary permission change.
 gd=""
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
     pdir=$(CDPATH= cd -- "$PWD" 2>/dev/null && pwd -P)
@@ -65,6 +69,11 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
             gd=$("$GIT_BIN" rev-parse --absolute-git-dir 2>/dev/null)
             case "$gd" in
                 "/home/$AI_USER"/.gitstore/*)
+                    chmod -R g-w "$gd" 2>/dev/null
+                    _gw_restore() { chmod -R g+w "$gd" 2>/dev/null; }
+                    trap _gw_restore EXIT
+                    trap 'exit 130' INT
+                    trap 'exit 143' TERM
                     find "$gd" -type l 2>/dev/null | while IFS= read -r gw_link; do
                         echo "git: wrapper: removing symlink $gw_link in the shared gitdir (git does not create symlinks there -- it may be a plant the $AI_USER user created; review its target)"
                         rm -f "$gw_link"
@@ -81,6 +90,10 @@ rc=$?
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
     case "$gd" in
         "/home/$AI_USER"/.gitstore/*)
+            # Restore group write so the LLM can commit again (the EXIT
+            # trap also covers this on interrupt; the explicit call here
+            # restores before the bookkeeping below).
+            chmod -R g+w "$gd" 2>/dev/null
             # Through the sudoers helper: it fixes the identity to
             # $AI_USER:$AI_USER, re-validates every path (must stay
             # under /home/$AI_USER with no symlink component), and
