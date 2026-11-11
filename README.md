@@ -156,7 +156,18 @@ The LLM account needs its own entry so LIM can run git in your user-owned repos 
     directory = /home/$USER/*
 ```
 
-### 3. Directory Permissions
+### 3. Deny Cron and At
+
+The LLM must not be able to schedule delayed jobs (a cron job could fire during an `aishare` run and race its ownership changes, since its process is a child of `crond` and invisible to the sweep). Add the LLM user to the system deny lists:
+
+```bash
+echo $LIM_AI_USER | sudo tee /etc/cron.deny
+echo $LIM_AI_USER | sudo tee /etc/at.deny
+```
+
+This is enforced by the `crontab`/`at` binaries themselves (root-owned files in `/etc`); the LLM cannot bypass it.
+
+### 4. Directory Permissions
 
 Your project directories should be group-writable by the `$LIM_AI_USER` group so the LLM can read and write files. Because you added your personal user to the `$LIM_AI_USER` group (step 1), access is symmetric: you can read files the LLM creates, and the LLM can read your files. The recommended layout for `/home/$LIM_AI_USER`:
 
@@ -216,7 +227,7 @@ Since git runs code from a gitdir's `config` (core.hooksPath, credential.helper,
 
 It refuses targets outside `/home/$LIM_AI_USER` and the store itself. When run on `/home/$LIM_AI_USER`, it fixes permissions on the home directory itself plus all top-level entries, skipping `.ssh` and `.gitstore`.
 
-### 4. Connecting and Running LIM
+### 5. Connecting and Running LIM
 
 LIM must be run as user `$LIM_AI_USER`. The simplest approach is to SSH into the host as that user, then launch `lim` directly. This keeps the workflow consistent whether you're using VS Code or a standalone terminal.
 
@@ -291,7 +302,7 @@ Or write a custom wrapper script and set `LIM_TASKSET_CMD` to its path. If the c
 
 The detected topology and pinning status are logged to stderr at startup when `LIM_DEBUG=1`.
 
-### 5. Setting Up `$HOME/.bashrc` for `$LIM_AI_USER`
+### 6. Setting Up `$HOME/.bashrc` for `$LIM_AI_USER`
 
 Add these lines to `/home/$LIM_AI_USER/.bashrc`:
 
@@ -329,7 +340,7 @@ LIM resolves relative paths -- in the file tools and in `exec_shell` -- against 
 
 Note: `relim` needs a patched `reptyr`: vanilla 0.10.0 can hang silently while attaching a multithreaded target, because it sends SIGCONT before reaping the attach stop, which can cancel that stop so the unbounded wait never returns. `reptyr-attach-retry.patch` (this repository) sends the SIGCONT only after the attach stop is reaped and bounds the wait (a real failure reports `Connection timed out` instead of hanging), making reattach reliable. Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
-### 6. The System Prompt
+### 7. The System Prompt
 
 The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read at startup and baked into the KV-cache (and re-read from disk on `/clear` and `/reincarnate`). It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.). An optional directory-specific file `localprompt` (with a fallback to `$LIM_CONFIG_DIR/localprompt`) will be prepended to the system prompt.
 
@@ -342,7 +353,7 @@ Omitting any such instruction leaves the model at its baseline behavior.
 For a full setup -- mode files, per-mode sampling env, and a login hook
 that keeps the two consistent -- see [REASONING.md](REASONING.md).
 
-### 7. Message Shortcuts
+### 8. Message Shortcuts
 
 Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `>>>` prompt:
 
