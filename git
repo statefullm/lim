@@ -51,59 +51,72 @@ if [ -z "$GIT_BIN" ] || [ ! -x "$GIT_BIN" ]; then
     echo "git: wrapper could not locate the real git in PATH -- set LIM_GIT_BIN to its path" >&2
     exit 127
 fi
-
-"$GIT_BIN" "$@"
-rc=$?
 AI_USER=${LIM_AI_USER:-ai}
 user=$(id -un 2>/dev/null)
+
+# Pre-check: resolve the gitdir and remove any symlinks the LLM planted.
+# Git never creates symlinks in a gitdir; any symlink there would let git
+# write through it (reflogs, MERGE_MSG, ...) to a file the LLM chose.
+gd=""
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
-    # Resolve the physical path before the gate: the checkout may be reached
-    # via a symlink, and a logical
-    # $PWD outside /home/ai would silently skip the re-share.
     pdir=$(CDPATH= cd -- "$PWD" 2>/dev/null && pwd -P)
     case $pdir in
         "/home/$AI_USER" | "/home/$AI_USER"/*)
             gd=$("$GIT_BIN" rev-parse --absolute-git-dir 2>/dev/null)
             case "$gd" in
                 "/home/$AI_USER"/.gitstore/*)
-                    # Through the sudoers helper: it fixes the identity to
-                    # $AI_USER:$AI_USER, re-validates every path (must stay
-                    # under /home/$AI_USER with no symlink component), and
-                    # exposes only the -h (no-dereference) form for
-                    # group-chown, so a state-file name the LLM has made a
-                    # symlink is chowned itself, never its target.
-                    sudo -n /usr/local/bin/aishare-helper chown -h \
-                        "$gd/HEAD" "$gd/index" "$gd/packed-refs" "$gd/ORIG_HEAD" \
-                        "$gd/FETCH_HEAD" "$gd/MERGE_HEAD" "$gd/MERGE_MSG" \
-                        "$gd/COMMIT_EDITMSG" "$gd/AUTO_MERGE" "$gd/CHERRY_PICK_HEAD" \
-                        "$gd/REVERT_HEAD" "$gd/REVERT_MSG" "$gd/TAG_EDITMSG" \
-                        "$gd/BISECT_LOG" "$gd/BISECT_START" "$gd/BISECT_NEXT" \
-                        "$gd/BISECT_BAD" "$gd/BISECT_GOOD" "$gd/BISECT_LEFT" \
-                        "$gd/BISECT_RIGHT" "$gd/shallow" 2>/dev/null
-                    # Backstop: the LLM can create any top-level file name in
-                    # the group-writable gitdir, and git only expects the
-                    # state files and its own lock/tmp files there, so
-                    # report anything else that is not yours. The specific
-                    # protections (placeholder commondir and config.worktree,
-                    # pinned pointer, ...) cover the known redirect names;
-                    # this catches the rest. Directories are not reported:
-                    # git-created ones (logs/, worktrees/, ...) are expected
-                    # LLM-owned, and a directory git does not know is inert.
-                    state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
-                    find "$gd" -maxdepth 1 -type f ! -user "$user" 2>/dev/null | while IFS= read -r gw_f; do
-                        gw_b=$(basename "$gw_f")
-                        gw_allowed=no
-                        for gw_n in $state_files; do
-                            [ "$gw_b" = "$gw_n" ] && gw_allowed=yes
-                        done
-                        case "$gw_b" in
-                            *.lock|*.tmp) gw_allowed=yes ;;
-                        esac
-                        [ "$gw_allowed" = yes ] && continue
-                        echo "git: wrapper: $gw_f is a top-level file in the shared gitdir not owned by you and not a git state, lock or tmp file: git does not expect it there -- review it (it may be a plant the $AI_USER user created)" >&2
+                    find "$gd" -type l 2>/dev/null | while IFS= read -r gw_link; do
+                        echo "git: wrapper: removing symlink $gw_link in the shared gitdir (git does not create symlinks there -- it may be a plant the $AI_USER user created; review its target)"
+                        rm -f "$gw_link"
                     done
                     ;;
             esac
+            ;;
+    esac
+fi
+
+"$GIT_BIN" "$@"
+rc=$?
+
+if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
+    case "$gd" in
+        "/home/$AI_USER"/.gitstore/*)
+            # Through the sudoers helper: it fixes the identity to
+            # $AI_USER:$AI_USER, re-validates every path (must stay
+            # under /home/$AI_USER with no symlink component), and
+            # exposes only the -h (no-dereference) form for
+            # group-chown, so a state-file name the LLM has made a
+            # symlink is chowned itself, never its target.
+            sudo -n /usr/local/bin/aishare-helper chown -h \
+                "$gd/HEAD" "$gd/index" "$gd/packed-refs" "$gd/ORIG_HEAD" \
+                "$gd/FETCH_HEAD" "$gd/MERGE_HEAD" "$gd/MERGE_MSG" \
+                "$gd/COMMIT_EDITMSG" "$gd/AUTO_MERGE" "$gd/CHERRY_PICK_HEAD" \
+                "$gd/REVERT_HEAD" "$gd/REVERT_MSG" "$gd/TAG_EDITMSG" \
+                "$gd/BISECT_LOG" "$gd/BISECT_START" "$gd/BISECT_NEXT" \
+                "$gd/BISECT_BAD" "$gd/BISECT_GOOD" "$gd/BISECT_LEFT" \
+                "$gd/BISECT_RIGHT" "$gd/shallow" 2>/dev/null
+            # Backstop: the LLM can create any top-level file name in
+            # the group-writable gitdir, and git only expects the
+            # state files and its own lock/tmp files there, so
+            # report anything else that is not yours. The specific
+            # protections (placeholder commondir and config.worktree,
+            # pinned pointer, ...) cover the known redirect names;
+            # this catches the rest. Directories are not reported:
+            # git-created ones (logs/, worktrees/, ...) are expected
+            # LLM-owned, and a directory git does not know is inert.
+            state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
+            find "$gd" -maxdepth 1 -type f ! -user "$user" 2>/dev/null | while IFS= read -r gw_f; do
+                gw_b=$(basename "$gw_f")
+                gw_allowed=no
+                for gw_n in $state_files; do
+                    [ "$gw_b" = "$gw_n" ] && gw_allowed=yes
+                done
+                case "$gw_b" in
+                    *.lock|*.tmp) gw_allowed=yes ;;
+                esac
+                [ "$gw_allowed" = yes ] && continue
+                echo "git: wrapper: $gw_f is a top-level file in the shared gitdir not owned by you and not a git state, lock or tmp file: git does not expect it there -- review it (it may be a plant the $AI_USER user created)" >&2
+            done
             ;;
     esac
 fi
