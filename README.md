@@ -347,11 +347,12 @@ git() {
 
 # Reattach a detached lim (terminal disconnected, session still alive).
 relim() {
-    local p rp
+    local p rp s
     p=$(pgrep -u "$USER" -x lim | head -1)
     if [ -z "$p" ]; then echo "no lim process found"; return 1; fi
     rp=$(command -v reptyr) || { echo "reptyr not found" >&2; return 1; }
-    su -c "echo 0 | tee /proc/sys/kernel/yama/ptrace_scope; ( sleep 3; echo 1 > /proc/sys/kernel/yama/ptrace_scope ) &"
+    s=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null); [ -n "$s" ] || s=0
+    [ "$s" = 0 ] || su -c "echo 0 | tee /proc/sys/kernel/yama/ptrace_scope; ( sleep 3; echo $s > /proc/sys/kernel/yama/ptrace_scope ) &"
     "$rp" -s "$p"
 }
 
