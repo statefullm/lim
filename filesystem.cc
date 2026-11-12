@@ -884,66 +884,336 @@ static void exec_shell_sigchld_handler(int) {
   // A full buffer (EAGAIN) is fine: a wake byte is already queued.
 }
 
+// --- aishare coordination: LOCK/UNLOCK over a Unix socket -----------------
+//
+// aishare (running as the sharing user) suspends the LLM's exec_shell
+// command trees while it re-shares a directory, so they cannot race its
+// ownership and permission changes.  Two mechanisms cooperate:
+//
+//  - the gate: while aishare holds the lock (LOCK below), new exec_shell
+//    calls wait on g_aishare_locked (see exec_shell);
+//  - the suspension: LOCK makes lim SIGSTOP the exec_shell process groups
+//    it records in memory (idempotent), and aishare itself stops every
+//    process carrying the exec_shell marker fd (aishare-helper sweep-stop;
+//    see the marker note in exec_shell).
+//
+// The record of live exec_shell process groups lives in lim's memory, not
+// in a file: every file lim writes is writable by the LLM's own commands
+// (same uid), so a file-based record could be emptied by an in-flight
+// command to hide its own tree from the suspension.  lim's memory is only
+// reachable by ptrace, which kernel.yama.ptrace_scope >= 1 forbids the LLM
+// (lim is its ancestor, not a descendant); main() warns when the scope is
+// 0 and aishare refuses to run while lim is active unless it is 1-3.
+//
+// Protocol (one line each way): aishare connects to kAishareQueryPath and
+// sends "LOCK\n" or "UNLOCK\n"; lim replies "OK\n" or "ERROR <reason>\n".
+// No pids travel over the wire; the record is lim-internal.  Client auth
+// is kernel-attested: lim compares the SO_PEERCRED uid of every
+// connection with the sharing user's uid -- the owner of
+// /home/$LIM_AI_USER (the LLM is the ai user and cannot chown it, so the
+// uid is unforgeable).  The LLM can open the socket (it owns the path),
+// but every command of its is rejected, so it cannot release a suspension
+// it cannot create.  The socket's open mode is not an auth boundary.
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/epoll.h>
+#include <sys/syscall.h>
+#include <mutex>
+#include <set>
+#include <thread>
+#include <condition_variable>
+#include <chrono>
+
+static const char* const kAishareQueryPath = "/var/tmp/lim.query";
+
+static std::set<pid_t> g_exec_shell_pgroups;
+static std::mutex g_exec_shell_pgroups_mu;
+
+// The exec_shell gate: set by LOCK, cleared by UNLOCK; exec_shell waits
+// on it while it is set (bounded by a deadline, woken by UNLOCK).
+static bool g_aishare_locked = false;
+static std::mutex g_aishare_mu;
+static std::condition_variable g_aishare_cv;
+
+// The listener thread and its stop pipe (write end kept by main).
+static std::thread g_query_thread;
+static int g_query_stop_w = -1;
+
+static void record_exec_shell_pgroup(pid_t pgrp) {
+  std::lock_guard<std::mutex> lk(g_exec_shell_pgroups_mu);
+  g_exec_shell_pgroups.insert(pgrp);
+}
+
+static void forget_exec_shell_pgroup(pid_t pgrp) {
+  std::lock_guard<std::mutex> lk(g_exec_shell_pgroups_mu);
+  g_exec_shell_pgroups.erase(pgrp);
+}
+
+// SIGSTOP/SIGCONT/SIGTERM every recorded exec_shell process group (a
+// no-op for groups that have died; the groups are the LLM user's own, so
+// no privilege is needed).
+static void signal_recorded_groups(int sig) {
+  vector<pid_t> pg;
+  {
+    std::lock_guard<std::mutex> lk(g_exec_shell_pgroups_mu);
+    pg.assign(g_exec_shell_pgroups.begin(), g_exec_shell_pgroups.end());
+  }
+  for (pid_t pgrp : pg) kill(-pgrp, sig);
+}
+
+// Bind the listener, or report the outcome: the fd, -1 = failed,
+// -2 = another running lim already owns the path.  Tries bind first
+// (never unlinks before binding): on EADDRINUSE a connect probe
+// distinguishes a live listener (another lim: this process gets no
+// listener) from a stale socket of a dead lim (unlink and bind).  A live
+// lim's socket is therefore never deleted.  On success, records the
+// socket's path ino/dev in *ino/*dev (a unix socket's fd reports the
+// kernel sock object, not the path's inode, so the ownership test below
+// compares the path against this record).
+static int open_query_listener(uint64_t* ino, uint64_t* dev) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    int lfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (lfd < 0) return -1;
+    sockaddr_un addr{};
+    addr.sun_family = AF_UNIX;
+    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", kAishareQueryPath);
+    if (bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
+      if (listen(lfd, 4) < 0) { close(lfd); return -1; }
+      // The sharing user (a member of the LLM user's group) must connect;
+      // the LLM owns the path and can open it too, but is rejected by the
+      // uid check below, so the mode is not an auth boundary.
+      chmod(kAishareQueryPath, 0660);
+      struct stat st;
+      *ino = *dev = 0;
+      if (stat(kAishareQueryPath, &st) == 0) {
+        *ino = st.st_ino;
+        *dev = (uint64_t)st.st_dev;
+      }
+      return lfd;
+    }
+    if (errno != EADDRINUSE) { close(lfd); return -1; }
+    int pfd = socket(AF_UNIX, SOCK_STREAM, 0);
+    int cr = -1, ce = 0;
+    if (pfd >= 0) {
+      cr = connect(pfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
+      ce = errno;
+      close(pfd);
+    }
+    if (cr == 0) { close(lfd); return -2; }   // a live lim owns the path
+    if (pfd < 0 || ce != ECONNREFUSED) { close(lfd); return -1; }
+    unlink(kAishareQueryPath);                 // stale socket of a dead lim
+  }
+  return -1;
+}
+
+// One aishare exchange: authenticate, read one line, dispatch, reply,
+// close.  Short-lived by design: aishare makes a fresh connection for
+// LOCK and for UNLOCK (its single-instance lock keeps them unambiguous).
+static void handle_aishare_connection(int cfd, uid_t owner_uid) {
+  auto reply = [&](const char* line) {
+    size_t off = 0, len = strlen(line);
+    while (off < len) {
+      ssize_t n = write(cfd, line + off, len - off);
+      if (n <= 0) return;  // EPIPE/EINTR (SIGPIPE is ignored): peer gone
+      off += (size_t)n;
+    }
+  };
+  if (owner_uid == (uid_t)-1) {
+    reply("ERROR not-configured\n");  // sharing user undetermined at startup
+    close(cfd);
+    return;
+  }
+  ucred cr{};
+  socklen_t crlen = sizeof(cr);
+  if (getsockopt(cfd, SOL_SOCKET, SO_PEERCRED, &cr, &crlen) < 0 || cr.uid != owner_uid) {
+    reply("ERROR forbidden\n");  // the LLM (or anyone but the sharing user)
+    close(cfd);
+    return;
+  }
+  // One line, bounded wait (the client is the sharing user's aishare).
+  timeval tv{5, 0};
+  setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  char buf[256];
+  size_t off = 0;
+  for (;;) {
+    ssize_t n = read(cfd, buf + off, sizeof(buf) - 1 - off);
+    if (n <= 0) { close(cfd); return; }  // EOF, timeout, or error
+    off += (size_t)n;
+    buf[off] = '\0';
+    if (memchr(buf, '\n', off)) { buf[strcspn(buf, "\r\n")] = '\0'; break; }
+    if (off == sizeof(buf) - 1) { reply("ERROR unknown\n"); close(cfd); return; }
+  }
+  if (strcmp(buf, "LOCK") == 0) {
+    {
+      std::lock_guard<std::mutex> lk(g_aishare_mu);
+      g_aishare_locked = true;
+    }
+    g_aishare_cv.notify_all();
+    signal_recorded_groups(SIGSTOP);
+    reply("OK\n");
+  } else if (strcmp(buf, "UNLOCK") == 0) {
+    signal_recorded_groups(SIGCONT);
+    {
+      std::lock_guard<std::mutex> lk(g_aishare_mu);
+      g_aishare_locked = false;
+    }
+    g_aishare_cv.notify_all();
+    reply("OK\n");
+  } else {
+    reply("ERROR unknown\n");
+  }
+  close(cfd);
+}
+
+void start_query_listener(uid_t owner_uid) {
+  int stop_pipe[2];
+  if (pipe(stop_pipe) < 0) {
+    fprintf(stderr, "WARNING: could not create the aishare listener's stop pipe; "
+                    "the aishare protocol is disabled\n");
+    return;
+  }
+  g_query_stop_w = stop_pipe[1];
+  g_query_thread = std::thread([owner_uid, stop_r = stop_pipe[0]]() {
+    uint64_t my_ino = 0, my_dev = 0;
+    int lfd = open_query_listener(&my_ino, &my_dev);
+    if (lfd == -2) {
+      fprintf(stderr, "WARNING: the aishare query socket %s is owned by another "
+                      "running lim; this process runs no listener (aishare "
+                      "refuses to run with two live lims)\n", kAishareQueryPath);
+      close(stop_r);
+      return;
+    }
+    if (lfd < 0) {
+      fprintf(stderr, "WARNING: could not create the aishare query socket %s; "
+                      "aishare will refuse to run while lim is active\n",
+              kAishareQueryPath);
+      close(stop_r);
+      return;
+    }
+    // epoll_create1: the legacy epoll_create(0) is rejected with EINVAL
+    // on current kernels (>= 6.13 removed the old epoll_create syscall).
+    int ep = (int)syscall(SYS_epoll_create1, 0);
+    if (ep < 0) {
+      fprintf(stderr, "WARNING: could not create the aishare listener's "
+                      "epoll instance; the aishare protocol is disabled\n");
+      close(lfd);
+      close(stop_r);
+      return;
+    }
+    auto add_fd = [&](int fd) {
+      epoll_event e{};
+      e.events = EPOLLIN;
+      e.data.fd = fd;
+      epoll_ctl(ep, EPOLL_CTL_ADD, fd, &e);
+    };
+    add_fd(lfd);
+    add_fd(stop_r);
+    // Self-heal is event-driven: watch /var/tmp (the LLM user owns the
+    // socket inode and can remove or rename it) and rebind when the path
+    // stops naming our inode -- a rebind takes the path back from any
+    // replacement.  While lim listens, the LLM cannot bind the path
+    // itself (EADDRINUSE), and a fake server of its is useless to
+    // aishare, which verifies the peer's pid against lim's (see aishare).
+    int infd = -1, iwd = -1;
+    if ((infd = inotify_init()) >= 0 &&
+        (iwd = inotify_add_watch(infd, "/var/tmp", IN_DELETE | IN_MOVED_FROM)) >= 0)
+      add_fd(infd);
+    char ibuf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+    // The path is ours while it names the inode we bound (recorded at
+    // bind time: a unix socket's fd does not report the path's inode).
+    // Unrelated /var/tmp churn (other users' temp files) then never
+    // triggers a rebind, and our own rebind's unlink event does not
+    // trigger another one.
+    auto path_is_ours = [&]() {
+      struct stat st;
+      return my_ino != 0 && stat(kAishareQueryPath, &st) == 0 &&
+             (uint64_t)st.st_ino == my_ino && (uint64_t)st.st_dev == my_dev;
+    };
+    bool running = true;
+    while (running) {
+      epoll_event evs[8];
+      int n = epoll_wait(ep, evs, 8, -1);
+      if (n < 0) {
+        if (errno == EINTR) continue;
+        break;
+      }
+      for (int i = 0; i < n; ++i) {
+        int fd = evs[i].data.fd;
+        if (fd == stop_r) {
+          char b;
+          while (read(stop_r, &b, 1) > 0) {}  // drain
+          running = false;
+          break;
+        } else if (fd == lfd) {
+          int cfd = accept(lfd, nullptr, nullptr);
+          if (cfd >= 0) handle_aishare_connection(cfd, owner_uid);
+        } else if (fd == infd) {
+          read(infd, ibuf, sizeof(ibuf));  // consume
+          if (!path_is_ours()) {
+            unlink(kAishareQueryPath);
+            int nfd = open_query_listener(&my_ino, &my_dev);
+            if (nfd >= 0) {
+              epoll_ctl(ep, EPOLL_CTL_DEL, lfd, nullptr);
+              close(lfd);
+              lfd = nfd;
+              add_fd(lfd);
+            }
+          }
+        }
+      }
+    }
+    // Remove the socket only if the path still names it, so a socket
+    // someone else rebound in the meantime is never deleted.
+    if (path_is_ours()) unlink(kAishareQueryPath);
+    if (iwd >= 0) inotify_rm_watch(infd, iwd);
+    if (infd >= 0) close(infd);
+    close(lfd);
+    close(ep);
+    close(stop_r);
+  });
+}
+
+// At exit (atexit): stop the listener thread (it removes its own socket
+// if it bound one), then SIGTERM the recorded groups so orphaned
+// background jobs do not outlive the session (limServer/searxng/docling
+// are never recorded -- launched directly, not through exec_shell).
+void cleanup_exec_shell_pgroups() {
+  if (g_query_stop_w >= 0) {
+    char b = 1;
+    ssize_t r;
+    do { r = write(g_query_stop_w, &b, 1); } while (r < 0 && errno == EINTR);
+    close(g_query_stop_w);
+    g_query_stop_w = -1;
+  }
+  if (g_query_thread.joinable()) g_query_thread.join();
+  signal_recorded_groups(SIGTERM);
+}
+
 string FileSystemTools::exec_shell(const string& command, function<void()> on_open,
                                    function<void(const string&)> on_chunk,
                                    function<void(const string&)> on_close) {
   // Output is now handled by log_tool_diagnostic in tools.cc at dispatch time.
 
 
-  // aishare lock: while aishare is re-sharing a directory, wait for it to
-  // finish before executing, so the LLM cannot race the ownership changes.
-  // aishare (running as the sharing user) creates /var/tmp/lim.aishare.lock
-  // and removes it in its exit trap; /var/tmp is sticky, so the LLM cannot
-  // remove or replace the lock while aishare runs.  The wait has no
-  // timeout: a stale lock (aishare killed mid-run) is removed by the user
-  // or by the next aishare run.
+  // aishare gate: while aishare is re-sharing a directory (it sent LOCK
+  // over the query socket; see start_query_listener), wait for it to
+  // finish (UNLOCK) before executing, so a new command cannot race the
+  // ownership changes.  The wait is a single bounded kernel wait, woken
+  // by the UNLOCK; the deadline bounds a stale lock (aishare killed
+  // mid-run leaves lim locked until the next aishare run): the user
+  // removes /var/tmp/lim.aishare.lock -- aishare's mutual-exclusion lock,
+  // which lim does not read -- and re-runs aishare, which LOCKs
+  // (idempotent) and UNLOCKs on exit.
   {
-    const char* a_lock_dir = "/var/tmp";
-    const char* a_lock_name = "lim.aishare.lock";
-    char a_lock_path[4096];
-    snprintf(a_lock_path, sizeof(a_lock_path), "%s/%s", a_lock_dir, a_lock_name);
-    struct stat a_st;
-    if (stat(a_lock_path, &a_st) == 0) {
-      int a_ifd = inotify_init();
-      if (a_ifd < 0) {
-        return "Error: the aishare lock " + string(a_lock_path) + " exists, but inotify could not be initialized; refusing to run the command while aishare may be running.";
-      }
-      int a_wfd = inotify_add_watch(a_ifd, a_lock_dir, IN_DELETE | IN_MOVED_FROM);
-      if (a_wfd < 0) {
-        close(a_ifd);
-        return "Error: the aishare lock " + string(a_lock_path) + " exists, but it could not be watched; refusing to run the command while aishare may be running.";
-      }
-      log_diagnostic("aishare is re-sharing files (lock " + string(a_lock_path) +
-                     " present) -- waiting for it to finish before running this command");
-      char a_buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
-      for (;;) {
-        struct pollfd a_pfd = {a_ifd, POLLIN, 0};
-        int a_pr = poll(&a_pfd, 1, -1);  // no timeout
-        if (a_pr < 0) {
-          if (errno == EINTR) continue;
-          close(a_ifd);
-          return "Error: watching the aishare lock " + string(a_lock_path) + " failed; refusing to run the command while aishare may be running.";
-        }
-        ssize_t a_len = read(a_ifd, a_buf, sizeof(a_buf));
-        if (a_len <= 0) {
-          close(a_ifd);
-          return "Error: watching the aishare lock " + string(a_lock_path) + " failed; refusing to run the command while aishare may be running.";
-        }
-        // Proceed only when the deletion event AND a re-stat both say the
-        // lock is gone: a new aishare may have recreated it in the meantime
-        // (the user re-running aishare back to back), and this command must
-        // then keep waiting.
-        bool a_gone = false;
-        for (ssize_t i = 0; i < a_len; ) {
-          struct inotify_event* a_ev = (struct inotify_event*)(a_buf + i);
-          if (a_ev->len && a_ev->name && strcmp(a_ev->name, a_lock_name) == 0) a_gone = true;
-          i += sizeof(struct inotify_event) + a_ev->len;
-        }
-        if (a_gone && stat(a_lock_path, &a_st) != 0) break;
-      }
-      inotify_rm_watch(a_ifd, a_wfd);
-      close(a_ifd);
+    std::unique_lock lk(g_aishare_mu);
+    if (g_aishare_locked) {
+      lk.unlock();
+      log_diagnostic("aishare is re-sharing files -- exec_shell is suspended; waiting for it to finish before running this command");
+      lk.lock();
     }
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(15);
+    if (!g_aishare_cv.wait_until(lk, deadline, [] { return !g_aishare_locked; }))
+      return "Error: aishare has been re-sharing files for 15 minutes without finishing -- it was probably interrupted. Ask the user to remove /var/tmp/lim.aishare.lock and re-run aishare (it will resume the suspended trees), then retry this command.";
   }
 
   string safe_cmd = command;
@@ -960,18 +1230,42 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   int fd = mkstemp(const_cast<char*>(exit_code_file.c_str()));
   if (fd >= 0) close(fd); // Close so bash can write to it
 
+  // The exec_shell tree marker: the script opens this file on its first
+  // line (fd 250), so every process of the command tree carries an open
+  // fd to it -- background jobs, setsid'd and orphaned descendants
+  // included (the fd survives exec; only a process that closes fd 250
+  // itself, e.g. a daemon that closes all fds, escapes, and only once
+  // orphaned: while lim runs, LOCK stops the recorded groups).  aishare's
+  // sweep (aishare-helper sweep-stop) stops every process of the LLM
+  // user's group carrying the marker; nothing outside an exec_shell tree
+  // can carry it (lim's own services are launched without the script).
+  string marker_path = "/tmp/lim_execfd_XXXXXX";
+  int mfd = mkstemps(const_cast<char*>(marker_path.c_str()), 0);
+  string marker_line;
+  if (mfd >= 0) {
+    close(mfd);  // the script's inner bash opens it (fd 250)
+    marker_line = "exec 250>\"" + marker_path + "\"\n";
+  } else {
+    log_diagnostic("WARNING: could not create the exec_shell marker file; aishare's sweep cannot identify this command's processes", true /* logOnly */);
+  }
+
   // Write the user command to a temp script to avoid shell-escaping issues
   // with parentheses, dollar signs, backticks, etc. inside bash -c '...'.
   string script_path = "/tmp/lim_cmd_XXXXXX";
   int sfd = mkstemps(const_cast<char*>(script_path.c_str()), 0);
-  if (sfd < 0) {
+  auto cleanup_exec_files = [&] {
     unlink(exit_code_file.c_str());
+    if (mfd >= 0) unlink(marker_path.c_str());
+    if (sfd >= 0) unlink(script_path.c_str());
+  };
+  if (sfd < 0) {
+    cleanup_exec_files();
     return "Error: Failed to create temp script for shell execution.";
   }
   {
     // The child inherits lim's cwd (the launch directory); a cd inside the
     // command is local to that command and never changes it.
-    string script_content = "#!/bin/bash\nsource ~/.bashrc 2>/dev/null\n" + command + "\necho \"$?\" > \"" + exit_code_file + "\"\n";
+    string script_content = "#!/bin/bash\n" + marker_line + "source ~/.bashrc 2>/dev/null\n" + command + "\necho \"$?\" > \"" + exit_code_file + "\"\n";
     ssize_t written = write(sfd, script_content.c_str(), script_content.size());
     (void)written; // Best effort; if it fails, the script will just be empty
   }
@@ -983,8 +1277,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   // Use fork + pipe to stream output as it becomes available.
   int pipefd[2];
   if (pipe(pipefd) == -1) {
-    unlink(exit_code_file.c_str());
-    unlink(script_path.c_str());
+    cleanup_exec_files();
     return "Error: Failed to create pipe for shell execution.";
   }
 
@@ -998,8 +1291,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   if (pipe(spipe) == -1) {
     close(pipefd[0]);
     close(pipefd[1]);
-    unlink(exit_code_file.c_str());
-    unlink(script_path.c_str());
+    cleanup_exec_files();
     return "Error: Failed to create wake pipe for shell execution.";
   }
   fcntl(spipe[0], F_SETFL, O_NONBLOCK);
@@ -1021,8 +1313,7 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     close(pipefd[1]);
     close(spipe[0]);
     close(spipe[1]);
-    unlink(exit_code_file.c_str());
-    unlink(script_path.c_str());
+    cleanup_exec_files();
     return "Error: Failed to spawn shell process. The exec_shell tool may be temporarily unavailable.";
   }
 
@@ -1070,26 +1361,13 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
   // Parent process: read from pipe incrementally.
   close(pipefd[1]); // Close write end
 
-  // Record this exec_shell's process group so aishare can suspend the whole
-  // command tree -- including background jobs that outlive this call and get
-  // orphaned, which keep their group -- while it re-shares a directory.
-  // The child called setpgid(0, 0), so its pgid is its own pid.  Best
-  // effort: on failure aishare's sweep simply has no coverage for this
-  // group (its lim-descendant leg still catches an in-flight tree).
-  {
-    int a_gfd = open("/var/tmp/lim.pgroups", O_WRONLY | O_CREAT | O_APPEND, 0664);
-    if (a_gfd >= 0) {
-      char a_line[32];
-      int a_n = snprintf(a_line, sizeof(a_line), "%d\n", (int)pid);
-      if (a_n > 0) {
-        ssize_t a_w = write(a_gfd, a_line, (size_t)a_n);
-        (void)a_w;
-      }
-      close(a_gfd);
-    } else {
-      log_diagnostic("WARNING: could not open /var/tmp/lim.pgroups for appending; aishare cannot record this command's process group", true /* logOnly */);
-    }
-  }
+  // Record this exec_shell's process group so LOCK (aishare's suspension,
+  // see start_query_listener) and the exit cleanup (SIGTERM) can reach the
+  // whole command tree -- including background jobs that outlive this call
+  // and get orphaned, which keep their group.  The child called
+  // setpgid(0, 0), so its pgid is its own pid.  The record is in lim's
+  // memory (a file would be writable by the LLM's own commands).
+  record_exec_shell_pgroup(pid);
 
   // Make the read end non-blocking so we can detect EOF while streaming.
   int flags = fcntl(pipefd[0], F_GETFL, 0);
@@ -1253,34 +1531,16 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
       exit_code = atoi(ec_str.c_str());
     }
   }
-  unlink(exit_code_file.c_str());
-  unlink(script_path.c_str());
+  cleanup_exec_files();
 
-  // Clean up the pgroups entry if the process group is now empty (all
-  // members exited, including any background jobs).  If background jobs
-  // remain (they keep the group), the entry stays so aishare can find them.
-  // Safe: exec_shell is sequential, only one lim process.
-  {
-    if (kill(-(pid_t)pid, 0) != 0) {
-      // Group is empty: remove the entry from /var/tmp/lim.pgroups.
-      const char* pg_path = "/var/tmp/lim.pgroups";
-      FILE* pf = fopen(pg_path, "r");
-      if (pf) {
-        string line, new_content;
-        char buf[256];
-        while (fgets(buf, sizeof(buf), pf)) {
-          line = buf;
-          if (!line.empty() && line.back() == '\n') line.pop_back();
-          if (line != to_string((int)pid)) new_content += line + "\n";
-        }
-        fclose(pf);
-        pf = fopen(pg_path, "w");
-        if (pf) {
-          fwrite(new_content.data(), 1, new_content.size(), pf);
-          fclose(pf);
-        }
-      }
-    }
+  // Clean up the record if the process group is now empty (all members
+  // exited, including any background jobs).  If background jobs remain
+  // (they keep the group), the entry stays so LOCK and the exit cleanup
+  // can reach them.  Prune only on ESRCH (the group is provably empty);
+  // any other error, e.g. EPERM, means members we may not signal still
+  // exist -- keep it.
+  if (kill(-(pid_t)pid, 0) != 0 && errno == ESRCH) {
+    forget_exec_shell_pgroup(pid);
   }
 
   // Fallback: if we couldn't read the temp file, try pipe status.  Guarded

@@ -23,6 +23,8 @@
 #include <vector>
 #include <string>
 #include <cstdlib>
+#include <cstdio>
+#include <climits>
 #include <cctype>
 #include <cstring>
 #include <clocale>
@@ -155,24 +157,49 @@ int main(int argc, char ** argv) {
     if (isatty(STDOUT_FILENO)) cout << "\033[0m";  // Reset terminal colors on exit
     NetworkTools::cleanup_services();
     // Kill orphaned exec_shell background jobs (their process groups are
-    // recorded in /var/tmp/lim.pgroups).  limServer/searxng/docling are
-    // not in this file (double-forked into their own sessions).
-    {
-      const char* pg_path = "/var/tmp/lim.pgroups";
-      ifstream pf(pg_path);
-      if (pf) {
-        string line;
-        while (getline(pf, line)) {
-          if (line.empty()) continue;
-          pid_t pgrp = (pid_t)atoi(line.c_str());
-          if (pgrp > 0) kill(-pgrp, SIGTERM);
-        }
-        pf.close();
-      }
-      ofstream of(pg_path, ios::trunc);
-      of.close();
-    }
+    // recorded in lim's memory; limServer/searxng/docling are never
+    // recorded -- double-forked into their own sessions) and remove the
+    // aishare query socket.
+    cleanup_exec_shell_pgroups();
   });
+
+
+  // aishare coordinates with this process over the query socket: while it
+  // re-shares a directory it suspends our exec_shell command trees (LOCK/
+  // UNLOCK; start_query_listener).  The suspension record and the gate
+  // live in lim's memory, which is only trustworthy if the 'required_user'
+  // user cannot ptrace lim: at kernel.yama.ptrace_scope 0 (or without the
+  // Yama LSM), a model command could attach and rewrite them in place.
+  // aishare refuses to run while lim is active unless the scope is 1-3.
+  {
+    int yama_scope = -1;
+    ifstream yf("/proc/sys/kernel/yama/ptrace_scope");
+    yf >> yama_scope;
+    if (yama_scope < 1 || yama_scope > 3) {
+      cerr << "WARNING: kernel.yama.ptrace_scope is not 1-3: the '" << required_user
+           << "' user can then ptrace lim and alter its memory, so aishare "
+           << "cannot trust the exec_shell suspension record and will refuse "
+           << "to run while lim is active. Fix: echo \"kernel.yama.ptrace_scope = 1\" | sudo tee /etc/sysctl.d/60-yama-ptrace.conf && sudo sysctl --system\n"
+           << endl;
+    }
+  }
+  // The sharing user is the owner of /home/$required_user: aishare chowns
+  // to that identity by construction, and the LLM (the required user)
+  // cannot chown the directory, so the uid it learns here is unforgeable
+  // -- the socket's SO_PEERCRED check against it is the protocol's auth.
+  uid_t owner_uid = (uid_t)-1;
+  {
+    char home_path[PATH_MAX];
+    snprintf(home_path, sizeof(home_path), "/home/%s", required_user);
+    struct stat home_st;
+    if (stat(home_path, &home_st) == 0) owner_uid = home_st.st_uid;
+  }
+  if (owner_uid == (uid_t)-1) {
+    cerr << "WARNING: could not determine the sharing user (owner of /home/"
+         << required_user << "): the aishare protocol is disabled and "
+         << "aishare will refuse to run while lim is active\n" << endl;
+  }
+  start_query_listener(owner_uid);
 
   setup_signals();
 

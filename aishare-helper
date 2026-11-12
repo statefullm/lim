@@ -25,6 +25,9 @@
 #   aishare-helper chattr -i PATH...  chattr -i PATH...
 #   aishare-helper stop PID...        kill -STOP (GROUP-owned PIDs only)
 #   aishare-helper cont PID...        kill -CONT (GROUP-owned PIDs only)
+#   aishare-helper sweep-stop         stop every GROUP process carrying an
+#                                     exec_shell marker fd (/tmp/lim_execfd_*),
+#                                     print the pids it stopped
 #
 # Install root-owned and unreadable/unwritable by everyone else (the LLM
 # user shares $GROUP and can modify anything the group can write):
@@ -52,7 +55,7 @@ USER=${SUDO_USER:-}
 GROUP=ai
 
 usage() {
-    echo "usage: aishare-helper chown [-R|-h] PATH... | aishare-helper chown PATH | aishare-helper chattr +i|-i PATH... | aishare-helper stop|cont PID..." >&2
+    echo "usage: aishare-helper chown [-R|-h] PATH... | aishare-helper chown PATH | aishare-helper chattr +i|-i PATH... | aishare-helper stop|cont PID... | aishare-helper sweep-stop" >&2
     exit 1
 }
 
@@ -105,7 +108,8 @@ check_paths() {
     done
 }
 
-[ $# -ge 2 ] || usage
+[ $# -ge 1 ] || usage   # sweep-stop takes no further arguments; the per-op
+                        # checks below enforce each op's arity
 op="$1"
 shift
 case "$op" in
@@ -149,6 +153,9 @@ case "$op" in
             }
         done
         ;;
+    sweep-stop)
+        [ $# -eq 0 ] || usage
+        ;;
     *) usage ;;
 esac
 
@@ -176,6 +183,37 @@ case "$op" in
         ;;
     cont)
         for sp_pid in "$@"; do kill -CONT "$sp_pid" 2>/dev/null; done
+        ;;
+    sweep-stop)
+        # Stop every $GROUP process carrying an open fd to a lim
+        # exec_shell marker file (/tmp/lim_execfd_*) and print the pids
+        # (the aishare EXIT trap CONTs them). The marker is opened as the
+        # first line of every exec_shell script, so every process of an
+        # exec_shell command tree carries it -- background jobs,
+        # setsid'd and orphaned descendants included; nothing outside
+        # such a tree can. Residual: a process that closed the fd (a
+        # daemon that closes all fds) is not seen -- covered while lim
+        # runs by lim's own group stop.
+
+        sp_stopped=""
+        for sp_d in /proc/[0-9]*; do
+            sp_p=${sp_d#/proc/}
+            [ "$(stat -c %U "$sp_d" 2>/dev/null)" = "$GROUP" ] || continue
+            [ "$(cat "$sp_d/comm" 2>/dev/null)" = "lim" ] && continue
+            sp_line=$(cat "$sp_d/stat" 2>/dev/null) || continue
+            sp_state=${sp_line##*) }
+            [ "${sp_state%% *}" = Z ] && continue   # zombie: nothing to stop
+            for sp_f in "$sp_d"/fd/*; do
+                [ -L "$sp_f" ] || continue
+                case "$(readlink "$sp_f" 2>/dev/null)" in
+                    /tmp/lim_execfd_*) sp_stopped="$sp_stopped $sp_p"; break ;;
+                esac
+            done
+        done
+        for sp_p in $sp_stopped; do
+            kill -STOP "$sp_p" 2>/dev/null
+        done
+        echo $sp_stopped
         ;;
 esac
 

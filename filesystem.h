@@ -90,6 +90,25 @@ std::string append_save_ext(std::string path);
 // Absolute paths are returned unchanged.
 std::string apply_save_dir(const std::string& path);
 
+// --- aishare coordination ---
+// While aishare re-shares a directory it suspends lim's exec_shell command
+// trees so they cannot race its ownership and permission changes: over the
+// Unix socket below it sends LOCK (new exec_shell calls wait on the in-
+// memory gate, lim SIGSTOPs the recorded exec_shell process groups) and
+// UNLOCK (the reverse), and stops the marker-carrying processes itself.
+// The socket is authenticated server-side with the kernel-attested
+// SO_PEERCRED uid of the peer, compared with the sharing user's uid
+// (owner_uid, the owner of /home/$LIM_AI_USER -- (uid_t)-1 disables the
+// protocol).  The record of live process groups lives in lim's memory (any
+// file lim writes is writable by the LLM's own commands, so a file-based
+// record could be emptied by an in-flight command to hide its own tree).
+// See filesystem.cc.
+void start_query_listener(uid_t owner_uid);
+// At exit: stop the listener thread (it removes the socket if it bound
+// one) and SIGTERM any exec_shell command trees still alive (orphaned
+// background jobs do not outlive the session).
+void cleanup_exec_shell_pgroups();
+
 class FileSystemTools {
 public:
   FileSystemTools();

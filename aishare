@@ -726,16 +726,16 @@ fi
 # until the user removes it; the check runs before any chown, while ownership
 # still reflects the creator (the LLM cannot chown).
 
-# Block exec_shell and suspend the LLM's command trees while aishare runs,
-# so the LLM cannot race the ownership and permission changes below.
+# Suspend the LLM's exec_shell command trees while aishare runs, so the
+# LLM cannot race the ownership and permission changes below.
 #
 # The lock: aishare (as the sharing user) creates /var/tmp/lim.aishare.lock
-# and removes it in the EXIT trap; lim's exec_shell waits (inotify, no
-# timeout) for the removal before executing. /var/tmp is sticky, so the
-# LLM cannot unlink or replace the user's lock mid-run. An existing lock --
-# a concurrent aishare, or one left by an interrupted run -- aborts this
-# run: wait for it to finish and re-run, or remove it if no aishare is
-# running.
+# and removes it in the EXIT trap -- pure mutual exclusion between
+# aishares (lim never reads it; the exec_shell block is the suspension
+# below). /var/tmp is sticky, so the LLM cannot unlink or replace the
+# user's lock mid-run. An existing lock -- a concurrent aishare, or one
+# left by an interrupted run -- aborts this run: wait for it to finish
+# and re-run, or remove it if no aishare is running.
 case "$(stat -Lc %a /var/tmp 2>/dev/null)" in
     1*[2367]) : ;;  # sticky + world-writable
     *) echo "ERROR: /var/tmp is missing or not sticky and world-writable (mode $(stat -Lc %a /var/tmp 2>/dev/null)): the exec_shell lock cannot be protected there -- make /var/tmp mode 1777 and re-run" >&2
@@ -753,86 +753,178 @@ else
     exit 1
 fi
 
-# Suspend the LLM's exec_shell command trees while aishare runs. A command
-# tree is the bash wrapper lim spawns for an exec_shell call (its own
-# process group: the wrapper calls setpgid(0,0)) and everything it
-# launched, including background jobs that outlive the call and get
-# orphaned -- orphans keep their process group, so the tree is found by
-# group, at any depth, through any reparenting. lim records each
-# exec_shell's group in /var/tmp/lim.pgroups; aishare stops every $group-
-# owned process in a recorded group (and its descendants, via the closure
-# below), plus any orphaned tree (PPID 1) whose group was never recorded
-# -- e.g. created before the pgroup file existed. Nothing else is touched:
-# lim, the terminal, and lim's long-lived services (double-forked into
-# their own sessions, never recorded) keep running. Stopped processes are
-# resumed (SIGCONT) in the EXIT trap.
-pgroup_file="/var/tmp/lim.pgroups"
-pg_content=""
-[ -r "$pgroup_file" ] && pg_content=$(tr '\n' ' ' < "$pgroup_file" 2>/dev/null)
+# The suspension. Every process an exec_shell call started carries an
+# open fd to that call's marker file (/tmp/lim_execfd_*, opened as the
+# script's first line before any command runs; the fd survives setsid,
+# orphaning and exec), so the sweep below (aishare-helper sweep-stop, run
+# as root -- under ptrace_scope >= 1 the kernel would not let the sharing
+# user read the LLM's /proc/*/fd) stops exactly the processes started by
+# exec_shell or its subprocesses and nothing else: lim, the terminal, and
+# lim's long-lived services (launched without the script) keep running.
+# With lim not running, the sweep is the whole suspension (trees a
+# crashed lim left behind, in flight or backgrounded); with lim live it
+# adds the setsid'd and orphaned trees that left lim's record. Stopped
+# processes are resumed (SIGCONT) in the EXIT trap.
+#
+# While lim is live, aishare also sends LOCK over lim's Unix socket
+# (/var/tmp/lim.query): lim refuses new exec_shell calls (its in-memory
+# gate, a bounded wait) and SIGSTOPs the process groups it records in
+# memory. The record and the gate live in lim's memory, trustworthy only
+# if the LLM cannot ptrace lim, so the run requires
+# kernel.yama.ptrace_scope 1-3 (lim warns at startup when it is not). The
+# exchange is authenticated both ways: lim requires the peer's
+# kernel-attested uid (SO_PEERCRED) to be the sharing user's -- the LLM
+# cannot release a suspension it cannot create; aishare requires the
+# socket peer to be lim's pid with the starttime snapshotted here -- a
+# socket the LLM bound at the same path cannot answer. UNLOCK (EXIT trap)
+# reverses the gate and the group stop; if it fails, the trees stay
+# suspended until the next aishare run (while lim is running) or a manual
+# resume.
 
-# Print "ppid pgrp" of $1 from /proc/$1/stat. Split on the last ')': the
-# comm field can contain spaces and parentheses.
+# Print "state ppid pgrp" of $1 from /proc/$1/stat. Split on the last ')':
+# the comm field can contain spaces and parentheses.
 pproc_pids() {
     pp_line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
     pp_rest=${pp_line##*) }            # "state ppid pgrp session ..."
+    pp_state=${pp_rest%% *}
     pp_rest=${pp_rest#* }              # "ppid pgrp session ..."
     pp_ppid=${pp_rest%% *}
     pp_rest=${pp_rest#* }              # "pgrp session ..."
     pp_pgrp=${pp_rest%% *}
-    printf '%s %s\n' "$pp_ppid" "$pp_pgrp"
+    printf '%s %s %s\n' "$pp_state" "$pp_ppid" "$pp_pgrp"
 }
 
-stopped_pids=""
-for sw_p in $(pgrep -u "$group" 2>/dev/null); do
-    sw_ids=$(pproc_pids "$sw_p") || continue
-    sw_ppid=${sw_ids%% *}
-    sw_pgrp=${sw_ids#* }
-    sw_comm=$(cat "/proc/$sw_p/comm" 2>/dev/null)
-    [ "$sw_comm" = lim ] && continue   # lim itself
-    sw_stop=no
-    case " $pg_content " in *" $sw_pgrp "*) sw_stop=yes ;; esac  # recorded group
-    if [ "$sw_stop" = no ] && [ "$sw_ppid" = "1" ]; then
-        # An orphaned tree whose group was never recorded (e.g. created
-        # before the pgroup file existed). Skip lim's own long-lived
-        # services (they are orphans too).
-        sw_skip=no
-        case "$sw_comm" in
-            systemd|systemd--) sw_skip=yes ;;
-            python3|python)
-                sw_cmdline=$(tr '\0' ' ' < "/proc/$sw_p/cmdline" 2>/dev/null)
-                case "$sw_cmdline" in
-                    *limServer*|*searxng*|*docling*) sw_skip=yes ;;
-                esac ;;
-        esac
-        [ "$sw_skip" = no ] && sw_stop=yes
+# Print field 22 (starttime) of /proc/$1/stat: the clock ticks since boot
+# the process began, which a process that later reuses the same pid cannot
+# share. The reference is braced: this host's /bin/sh (bash) expands a bare
+# two-digit positional reference as the one-digit parameter plus the literal
+# rest, so bare $20 would return field 2 (ppid) with a "0" appended.
+proc_starttime() {
+    pst_line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+    pst_rest=${pst_line##*) }
+    set -- $pst_rest
+    [ $# -ge 20 ] || return 1
+    printf '%s\n' "${20}"
+}
+
+# Send $1 (LOCK or UNLOCK) to lim (pid $2, whose starttime was snapshotted
+# to $3 when aishare started) over lim's Unix socket. Verifies the socket
+# peer is the real lim before trusting the answer: the kernel-attested
+# SO_PEERCRED pid/uid must match lim's -- a socket the LLM bound at the
+# same path cannot pass -- and lim's /proc starttime must still be the
+# snapshot -- a killed-and-replaced lim (or a recycled pid) cannot keep
+# it. Prints lim's reply line ("OK" or an "ERROR ..." reason); any
+# failure prints an ERROR line of its own.
+aishare_lim_cmd() {
+    python3 - "$1" "$2" "$3" <<'LIM_CMD_PY'
+import os, socket, struct, sys
+
+cmd, lim_pid, want_st = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+try:
+    with open("/proc/%d/stat" % lim_pid) as f:
+        data = f.read()
+    if int(data[data.rfind(")") + 2:].split()[19]) != want_st:
+        print("ERROR lim (pid %d) is no longer the lim that started (it was restarted or the pid was reused)" % lim_pid)
+        sys.exit(0)
+    lim_uid = os.stat("/proc/%d" % lim_pid).st_uid
+except Exception:
+    print("ERROR lim (pid %d) is gone" % lim_pid)
+    sys.exit(0)
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    s.connect("/var/tmp/lim.query")
+    p_pid, p_uid, p_gid = struct.unpack(
+        "iii", s.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                            struct.calcsize("iii")))
+    if (p_pid, p_uid) != (lim_pid, lim_uid):
+        print("ERROR the socket peer (pid %d uid %d) is not lim (pid %d uid %d)" % (p_pid, p_uid, lim_pid, lim_uid))
+        sys.exit(0)
+    s.sendall(cmd.encode("ascii") + b"\n")
+    buf = b""
+    while not buf.endswith(b"\n"):
+        b = s.recv(4096)
+        if not b:
+            break
+        buf += b
+    s.close()
+    print(buf.decode("ascii", "replace").strip() or "ERROR lim closed the connection without replying")
+except OSError as e:
+    print("ERROR lim is not reachable at /var/tmp/lim.query (%s)" % (e.strerror or e))
+LIM_CMD_PY
+}
+
+# Find the live lim (exactly one, or abort) and, while it is live, take
+# the LOCK over the query socket: lim then refuses new exec_shell calls at
+# its gate and SIGSTOPs the process groups it records in memory. The record
+# and the gate are trustworthy only while the LLM cannot ptrace lim, so a
+# live lim requires kernel.yama.ptrace_scope 1-3 (lim itself warns at
+# startup when it is not). With no live lim there is nothing to LOCK: the
+# marker sweep below is the whole suspension -- the trees a dead lim left
+# behind (its exit cleanup then did not run).
+lim_live=""
+for l_p in $(pgrep -u "$group" -x lim 2>/dev/null); do
+    l_ids=$(pproc_pids "$l_p") || continue
+    [ "${l_ids%% *}" = Z ] && continue
+    if [ -n "$lim_live" ]; then
+        echo "ERROR: more than one live lim process ($lim_live and $l_p): the stateful design assumes one -- stop the extras and re-run aishare" >&2
+        exit 1
     fi
-    [ "$sw_stop" = yes ] && stopped_pids="$stopped_pids $sw_p"
+    lim_live="$l_p"
 done
+lim_st=""
+aishare_locked=no
+if [ -n "$lim_live" ]; then
+    l_scope=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null)
+    case "$l_scope" in
+        1|2|3) : ;;
+        *)
+            echo "ERROR: kernel.yama.ptrace_scope is '${l_scope:-unset}' (need 1-3): the $group user can then ptrace lim and rewrite the suspension record and gate in lim's memory, so aishare cannot trust the LOCK. Set it (sudo sysctl kernel.yama.ptrace_scope=1) and re-run" >&2
+            exit 1 ;;
+    esac
+    lim_st=$(proc_starttime "$lim_live") || {
+        echo "ERROR: could not read lim's starttime from /proc/$lim_live/stat (lim may have just died): re-run aishare" >&2
+        exit 1; }
+    aishare_lock_reply=$(aishare_lim_cmd LOCK "$lim_live" "$lim_st")
+    case "$aishare_lock_reply" in
+        OK) aishare_locked=yes ;;
+        *)
+            echo "ERROR: lim did not lock: $aishare_lock_reply -- the exec_shell command trees could not be suspended, so aishare is aborting" >&2
+            exit 1 ;;
+    esac
+fi
 
-# Descendant closure: a setsid'd orphan is stopped (PPID 1), but its
-# children have PPID = the orphan (not 1), are not lim descendants, and
-# are not in a recorded pgroup -- yet they must be stopped too, since
-# their parent is frozen and they would otherwise race aishare. Walk the
-# stop set to a fixed point.
-sw_changed=1
-while [ "$sw_changed" = 1 ]; do
-    sw_changed=0
-    for sw_p in $stopped_pids; do
-        for sw_c in $(pgrep -P "$sw_p" 2>/dev/null); do
-            case " $stopped_pids " in *" $sw_c "*) continue ;; esac
-            stopped_pids="$stopped_pids $sw_c"
-            sw_changed=1
-        done
-    done
-done
-
-# Signal via the helper (root): a non-root user cannot send signals to
-# another user's processes.
-if [ -n "$stopped_pids" ]; then
-    run_sudo "$helper" stop $stopped_pids
+# Stop the marker-carrying processes, via the helper (root): under
+# ptrace_scope >= 1 the kernel would not let the sharing user read the
+# LLM's /proc/*/fd. The helper prints the pids it stopped, for the EXIT
+# trap's resume.
+if ! stopped_pids="$(sudo -n "$helper" sweep-stop)"; then
+    echo "ERROR: the exec_shell suspension sweep failed ('sudo $helper sweep-stop' -- check the sudo setup, the helper's error is above): the command trees would race the ownership changes, so aishare is aborting" >&2
+    exit 1
 fi
 aishare_cleanup() {
-    [ -n "$stopped_pids" ] && sudo -n "$helper" cont $stopped_pids 2>/dev/null
+    if [ "$aishare_locked" = yes ]; then
+        aishare_unlock_reply=$(aishare_lim_cmd UNLOCK "$lim_live" "$lim_st")
+        case "$aishare_unlock_reply" in
+            OK) : ;;
+            *)
+                echo "WARNING: lim did not resume the exec_shell command trees (${aishare_unlock_reply:-no reply}): they stay suspended until the next aishare run while lim is running, or resume them manually: sudo /usr/local/bin/aishare-helper cont \$(pgrep -u $group)" >&2
+                ;;
+        esac
+    fi
+    # Resume what the sweep stopped.  Only the pids still alive: the list
+    # was taken before aishare's work, and the short-lived marker-carriers
+    # it caught (command subshells, their sleep/date children) may have
+    # exited since -- a dead pid needs no resume, and the helper refuses a
+    # batch that names one, which would strand every live pid in the batch.
+    live_pids=""
+    for sp_pid in $stopped_pids; do
+        [ -d "/proc/$sp_pid" ] && live_pids="$live_pids $sp_pid"
+    done
+    if [ -n "$live_pids" ]; then
+        sudo -n "$helper" cont $live_pids 2>/dev/null ||
+            echo "WARNING: some suspended exec_shell processes could not be resumed: they stay suspended until the next aishare run (while lim is running) or 'sudo /usr/local/bin/aishare-helper cont <pids>'" >&2
+    fi
     rm -f "$aishare_lock"
 }
 trap aishare_cleanup EXIT
