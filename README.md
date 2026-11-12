@@ -134,7 +134,10 @@ Create the user and group if they don't exist:
 export LIM_AI_USER=ai
 sudo groupadd -f $LIM_AI_USER
 sudo useradd -m -g $LIM_AI_USER -s /bin/bash $LIM_AI_USER
+sudo passwd -l $LIM_AI_USER
 ```
+
+The account is intentionally passwordless -- do not set a password (`sudo passwd -S $LIM_AI_USER` should show `L`).
 
 Then add your personal user to the `$LIM_AI_USER` group so you can read and write files the LLM creates without needing `sudo chown`:
 
@@ -231,7 +234,7 @@ It refuses targets outside `/home/$LIM_AI_USER` and the store itself. When run o
 
 ### 5. Connecting and Running LIM
 
-LIM must be run as user `$LIM_AI_USER`. The simplest approach is to SSH into the host as that user, then launch `lim` directly. This keeps the workflow consistent whether you're using VS Code or a standalone terminal.
+LIM must be run as user `$LIM_AI_USER`. The simplest approach is to SSH into the host as that user, then launch `lim` directly. This keeps the workflow consistent whether you're using VS Code or a standalone terminal. SSH is key-based only (the account has no password): add your public key to `/home/$LIM_AI_USER/.ssh/authorized_keys`.
 
 Add this to the `~/.bashrc` of `$LIM_AI_USER`:
 
@@ -251,7 +254,7 @@ If running locally (no SSH needed), you have two options:
 **Option A: Switch users fully**
 
 ```bash
-su - $LIM_AI_USER
+sudo -iu $LIM_AI_USER
 coder
 ```
 
@@ -344,10 +347,12 @@ git() {
 
 # Reattach a detached lim (terminal disconnected, session still alive).
 relim() {
-    local p
+    local p rp
     p=$(pgrep -u "$USER" -x lim | head -1)
-    if [ -z "$p" ]; then echo "relim: no lim process found"; return 1; fi
-    reptyr -s "$p"
+    if [ -z "$p" ]; then echo "no lim process found"; return 1; fi
+    rp=$(command -v reptyr) || { echo "reptyr not found" >&2; return 1; }
+    su -c "echo 0 | tee /proc/sys/kernel/yama/ptrace_scope; ( sleep 3; echo 1 > /proc/sys/kernel/yama/ptrace_scope ) &"
+    "$rp" -s "$p"
 }
 
 # Optional: add custom paths
