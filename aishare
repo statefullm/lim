@@ -752,6 +752,39 @@ else
     echo "ERROR: could not write $aishare_lock (another aishare may have created it just now, or it was pre-created): check it and remove it if stale, then re-run" >&2
     exit 1
 fi
+# Trap the cleanup as soon as the lock exists, not after the last step that
+# needs it: every exit from here on -- the ptrace_scope gate, the LOCK
+# exchange, the sweep, or an interrupted run -- must release the lock and
+# undo the suspension already taken (lim's gate and the stopped trees), or
+# the run leaves a stale lock and, once lim has locked, lim itself locked.
+# Before the suspension starts the cleanup only removes the lock: the
+# aishare_locked gate is not yet "yes" and stopped_pids is still empty.
+aishare_cleanup() {
+    if [ "$aishare_locked" = yes ]; then
+        aishare_unlock_reply=$(aishare_lim_cmd UNLOCK "$lim_live" "$lim_st")
+        case "$aishare_unlock_reply" in
+            OK) : ;;
+            *)
+                echo "WARNING: lim did not resume the exec_shell command trees (${aishare_unlock_reply:-no reply}): they stay suspended until the next aishare run while lim is running, or resume them manually: sudo /usr/local/bin/aishare-helper cont \$(pgrep -u $group)" >&2
+                ;;
+        esac
+    fi
+    # Resume what the sweep stopped.  Only the pids still alive: the list
+    # was taken before aishare's work, and the short-lived marker-carriers
+    # it caught (command subshells, their sleep/date children) may have
+    # exited since -- a dead pid needs no resume, and the helper refuses a
+    # batch that names one, which would strand every live pid in the batch.
+    live_pids=""
+    for sp_pid in $stopped_pids; do
+        [ -d "/proc/$sp_pid" ] && live_pids="$live_pids $sp_pid"
+    done
+    if [ -n "$live_pids" ]; then
+        sudo -n "$helper" cont $live_pids 2>/dev/null ||
+            echo "WARNING: some suspended exec_shell processes could not be resumed: they stay suspended until the next aishare run (while lim is running) or 'sudo /usr/local/bin/aishare-helper cont <pids>'" >&2
+    fi
+    rm -f "$aishare_lock"
+}
+trap aishare_cleanup EXIT
 
 # The suspension. Every process an exec_shell call started carries an
 # open fd to that call's marker file (/tmp/lim_execfd_*, opened as the
@@ -902,32 +935,6 @@ if ! stopped_pids="$(sudo -n "$helper" sweep-stop)"; then
     echo "ERROR: the exec_shell suspension sweep failed ('sudo $helper sweep-stop' -- check the sudo setup, the helper's error is above): the command trees would race the ownership changes, so aishare is aborting" >&2
     exit 1
 fi
-aishare_cleanup() {
-    if [ "$aishare_locked" = yes ]; then
-        aishare_unlock_reply=$(aishare_lim_cmd UNLOCK "$lim_live" "$lim_st")
-        case "$aishare_unlock_reply" in
-            OK) : ;;
-            *)
-                echo "WARNING: lim did not resume the exec_shell command trees (${aishare_unlock_reply:-no reply}): they stay suspended until the next aishare run while lim is running, or resume them manually: sudo /usr/local/bin/aishare-helper cont \$(pgrep -u $group)" >&2
-                ;;
-        esac
-    fi
-    # Resume what the sweep stopped.  Only the pids still alive: the list
-    # was taken before aishare's work, and the short-lived marker-carriers
-    # it caught (command subshells, their sleep/date children) may have
-    # exited since -- a dead pid needs no resume, and the helper refuses a
-    # batch that names one, which would strand every live pid in the batch.
-    live_pids=""
-    for sp_pid in $stopped_pids; do
-        [ -d "/proc/$sp_pid" ] && live_pids="$live_pids $sp_pid"
-    done
-    if [ -n "$live_pids" ]; then
-        sudo -n "$helper" cont $live_pids 2>/dev/null ||
-            echo "WARNING: some suspended exec_shell processes could not be resumed: they stay suspended until the next aishare run (while lim is running) or 'sudo /usr/local/bin/aishare-helper cont <pids>'" >&2
-    fi
-    rm -f "$aishare_lock"
-}
-trap aishare_cleanup EXIT
 
 bad=0
 check_gitfiles "$target" || bad=1
