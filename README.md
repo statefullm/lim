@@ -190,7 +190,7 @@ Also copy the `git` wrapper from this repository to `/home/$USER/bin/` (it must 
 cp git /home/$USER/bin/
 ```
 
-In a shared repo -- its gitdir under `/home/$LIM_AI_USER`, in the store or an in-place bare/custom-named gitdir, however git is pointed at it (your working directory, `git -C <dir>`, `--git-dir`, or `GIT_DIR` from anywhere) -- the wrapper temporarily removes group write from the gitdir and deletes any symlinks the LLM planted (git never creates symlinks there; a planted one would let git write through it to a file the LLM chose). Removing group write first means the LLM cannot re-plant a symlink between the removal and git's in-place write (reflogs, `MERGE_MSG`, ...). Group write is restored as soon as git exits -- except on the `config`, `config.worktree`, `commondir`, `gitdir` and `hooks` names that `aishare` keeps not group-writable, which stay protected -- so the LLM is only blocked for the duration of your command. The wrapper then re-shares the gitdir's volatile state files (`index`, `HEAD`, ...) with `$LIM_AI_USER` (via the `aishare-helper` sudo rule below), so the LLM is never blocked waiting for an `aishare` re-run; elsewhere it is a plain pass-through -- as is every invocation by the LLM user (never sudo).
+In a shared repo -- its gitdir under `/home/$LIM_AI_USER`, in the store or an in-place bare/custom-named gitdir, however git is pointed at it (your working directory, `git -C <dir>`, `--git-dir`, or `GIT_DIR` from anywhere) -- the wrapper temporarily removes group write from the gitdir and deletes any symlinks the LLM planted (git never creates symlinks there; a planted one would let git write through it to a file the LLM chose). Removing group write first means the LLM cannot re-plant a symlink between the removal and git's in-place write (reflogs, `MERGE_MSG`, ...). Group write is restored as soon as git exits -- except on the `config`, `config.worktree`, `commondir`, `gitdir` and `hooks` names that `aishare` keeps not group-writable, which stay protected -- so the LLM is only blocked for the duration of your command. The window is announced to the LLM with `/var/tmp/lim.gw.lock` (pid + starttime inside; the same mechanism as `aishare`'s lock -- created before the removal, removed after the restore, on every exit path): the LLM's git (the `git()` function in its `~/.bashrc`) waits on it, so a concurrent LLM git write no longer fails with `Permission denied` on a git lock file as if the share were broken; a stale lock (dead or reused pid), or one held by a process that is not a live wrapper of yours, is taken over, and only a lock naming a live wrapper of yours is joined -- so the run always proceeds protected, never unprotected. The wrapper then re-shares the gitdir's volatile state files (`index`, `HEAD`, ...) with `$LIM_AI_USER` (via the `aishare-helper` sudo rule below), so the LLM is never blocked waiting for an `aishare` re-run; elsewhere it is a plain pass-through -- as is every invocation by the LLM user (never sudo).
 
 Then run it on any directory under `/home/$LIM_AI_USER` that you want the AI to access -- or with no argument, on the current directory:
 
@@ -323,6 +323,22 @@ git() {
             fi
         done
     fi
+    # Wait for the git wrapper's group-write-removed window (its /var/tmp/lim.gw.lock) to close before running git, so a concurrent LLM write doesn't fail on a git lock file.
+    while [ -e /var/tmp/lim.gw.lock ]; do
+        gw_h=$(cat /var/tmp/lim.gw.lock 2>/dev/null)
+        gw_pid=${gw_h%% *}
+        gw_st=${gw_h#* }
+        case $gw_pid in ''|*[!0-9]*) break ;; esac
+        [ "$gw_st" != "$gw_h" ] || break
+        [ -e "/proc/$gw_pid" ] || break
+        gw_my_st=$(gw_s=$(cat "/proc/$gw_pid/stat" 2>/dev/null) || exit 1
+            gw_s=${gw_s##*) }
+            set -- $gw_s
+            [ $# -ge 20 ] || exit 1
+            printf '%s' "${20}")
+        [ "$gw_my_st" = "$gw_st" ] || break
+        sleep 0.2
+    done
     command git "$@"
 }
 

@@ -64,6 +64,20 @@ user=$(id -un 2>/dev/null)
 # alone is a race the LLM can win with inotify). Git runs as the directory
 # owner and is unaffected by the temporary permission change.
 #
+# The removed-group-write window is announced to the LLM with
+# /var/tmp/lim.gw.lock (pid + starttime inside; the same mechanism as
+# aishare's /var/tmp/lim.aishare.lock): the LLM's git (the git() function
+# in the LLM user's ~/.bashrc) waits on it, so a concurrent LLM git write
+# no longer meets the removed group write with "Permission denied" on a git
+# lock file (which used to look like a broken share that needed an aishare
+# re-run). The lock is created before the removal and removed after the
+# restore, on every exit path (HUP/QUIT are trapped too, so an interrupted
+# run still restores and releases). Sticky /var/tmp keeps the LLM from
+# removing our lock; it can only pre-create the file, which the holder
+# check handles: a live holder owned by this user is a concurrent wrapper
+# (join its window), a stale holder (dead or reused pid) is taken over, and
+# any other holder aborts the run rather than run unprotected.
+#
 # Which gitdirs can the invocation reach? Git is steered to a repo by the
 # working directory, -C <dir> (a chdir before the subcommand), --git-dir
 # (which overrides discovery), and the GIT_DIR / GIT_COMMON_DIR
@@ -77,6 +91,8 @@ gd=""
 gdc=""
 gw_d1=""
 gw_d2=""
+gw_lock="/var/tmp/lim.gw.lock"
+gw_lock_taken=no
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
     gw_cdir=""
     gw_gd=""
@@ -122,14 +138,28 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
     fi
     if [ "$gw_probe" = yes ]; then
         # Resolve the gitdirs exactly as git will: the same -C / --git-dir
-        # options and the same inherited environment. --absolute-git-dir is
-        # always absolute; --git-common-dir is absolute except for '.git'
-        # at $PWD, resolved there.
+        # options and the same inherited environment (GIT_DIR /
+        # GIT_COMMON_DIR), as a bare rev-parse. The original command is not
+        # re-appended: git runs one subcommand per invocation, so with it
+        # prepended the rev-parse never ran and the probe failed for every
+        # real command, leaving the protection a silent pass-through.
+        # --absolute-git-dir is always absolute; --git-common-dir is
+        # absolute except for '.git' at $PWD, resolved there.
         gw_res=$(
-            set --
-            [ -n "$gw_cdir" ] && set -- "$@" -C "$gw_cdir"
-            [ -n "$gw_gd" ] && set -- "$@" --git-dir "$gw_gd"
-            "$GIT_BIN" "$@" rev-parse --absolute-git-dir --git-common-dir
+            if [ -n "$gw_cdir" ]; then
+                if [ -n "$gw_gd" ]; then
+                    "$GIT_BIN" -C "$gw_cdir" --git-dir "$gw_gd" \
+                        rev-parse --absolute-git-dir --git-common-dir
+                else
+                    "$GIT_BIN" -C "$gw_cdir" \
+                        rev-parse --absolute-git-dir --git-common-dir
+                fi
+            elif [ -n "$gw_gd" ]; then
+                "$GIT_BIN" --git-dir "$gw_gd" \
+                    rev-parse --absolute-git-dir --git-common-dir
+            else
+                "$GIT_BIN" rev-parse --absolute-git-dir --git-common-dir
+            fi
         ) 2>/dev/null
         gd=$(printf '%s\n' "$gw_res" | sed -n 1p)
         gdc=$(printf '%s\n' "$gw_res" | sed -n 2p)
@@ -146,31 +176,100 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
                 *) continue ;;
             esac
             if [ -n "$gw_d1" ]; then gw_d2=$gw_d; else gw_d1=$gw_d; fi
-            chmod -R g-w "$gw_d" 2>/dev/null
-            # Re-grant group write where the LLM's git needs it: on the
-            # directories (to create and replace files via lockfile+rename)
-            # and on the files it does not own (reflogs, which git appends
-            # in place). The plant-surface names aishare keeps not
-            # group-writable are excluded: a blanket 'chmod -R g+w' would
-            # re-grant them, letting the LLM rewrite a user-owned config
-            # (an fsmonitor or hooksPath directive) or commondir in place,
-            # or create a hook. The LLM's git never needs group write on
-            # them -- replacing a file needs only the directory's write
-            # bit, and hooks are only read and executed.
-            _gw_restore() {
-                [ -n "$1" ] && find "$1" \( -name config -o -name config.worktree -o \
-                    -name commondir -o -name gitdir -o -name hooks \) -prune \
-                    -o -exec chmod g+w {} + 2>/dev/null
-            }
-            find "$gw_d" -type l 2>/dev/null | while IFS= read -r gw_link; do
-                echo "git: wrapper: removing symlink $gw_link in the shared gitdir (git does not create symlinks there -- it may be a plant the $AI_USER user created; review its target)"
-                rm -f "$gw_link"
-            done
         done
+        # Re-grant group write where the LLM's git needs it: on the
+        # directories (to create and replace files via lockfile+rename)
+        # and on the files it does not own (reflogs, which git appends
+        # in place). The plant-surface names aishare keeps not
+        # group-writable are excluded: a blanket 'chmod -R g+w' would
+        # re-grant them, letting the LLM rewrite a user-owned config
+        # (an fsmonitor or hooksPath directive) or commondir in place,
+        # or create a hook. The LLM's git never needs group write on
+        # them -- replacing a file needs only the directory's write
+        # bit, and hooks are only read and executed.
+        _gw_restore() {
+            [ -n "$1" ] && find "$1" \( -name config -o -name config.worktree -o \
+                -name commondir -o -name gitdir -o -name hooks \) -prune \
+                -o -exec chmod g+w {} + 2>/dev/null
+        }
+        # Print field 22 (starttime) of /proc/$1/stat -- the boot-clock
+        # ticks the process began at, which a later process that reuses
+        # the pid cannot share (aishare verifies its lock holder the same
+        # way). Use it only through $(): its 'set --' would otherwise
+        # clobber this script's arguments.
+        gw_starttime() {
+            gw_st_line=$(cat "/proc/$1/stat" 2>/dev/null) || return 1
+            gw_st_rest=${gw_st_line##*) }
+            set -- $gw_st_rest
+            [ $# -ge 20 ] || return 1
+            printf '%s\n' "${20}"
+        }
+        # 0 if $gw_lock names a live process of this user: pid alive,
+        # starttime matching (a reused pid fails), uid ours. The LLM can
+        # pre-create the file in sticky /var/tmp (it cannot remove ours),
+        # but not a process of ours, so this distinguishes a concurrent
+        # sharing-user wrapper from an LLM plant.
+        _gw_lock_live() {
+            gl_h=$(cat "$gw_lock" 2>/dev/null)
+            gl_pid=${gl_h%% *}
+            gl_st=${gl_h#* }
+            case $gl_pid in
+                ''|*[!0-9]*) return 1 ;;
+            esac
+            [ "$gl_st" != "$gl_h" ] || return 1
+            [ "$(gw_starttime "$gl_pid")" = "$gl_st" ] || return 1
+            kill -0 "$gl_pid" 2>/dev/null || return 1
+            [ "$(stat -c %u "/proc/$gl_pid" 2>/dev/null)" = "$(id -u)" ] || return 1
+            return 0
+        }
         if [ -n "$gw_d1" ]; then
-            trap '_gw_restore "$gw_d1"; [ -n "$gw_d2" ] && _gw_restore "$gw_d2"' EXIT
-            trap 'exit 130' INT
-            trap 'exit 143' TERM
+            # Announce the window before removing group write: the LLM's
+            # git waits on the lock, so it never meets the g-w state.
+            case "$(stat -Lc %a /var/tmp 2>/dev/null)" in
+                1*[2367]) : ;;
+                *)
+                    echo "git: wrapper: WARNING: /var/tmp is not sticky and world-writable (mode $(stat -Lc %a /var/tmp 2>/dev/null)): the LLM can remove $gw_lock, so its git cannot reliably wait on the window below" >&2
+                    ;;
+            esac
+            gw_try=0
+            while [ "$gw_try" -lt 2 ]; do
+                gw_try=$((gw_try + 1))
+                if [ -e "$gw_lock" ]; then
+                    if _gw_lock_live; then
+                        break                      # join the live wrapper's window
+                    fi
+                    rm -f "$gw_lock" 2>/dev/null  # stale: take over and retry
+                    continue
+                fi
+                if (set -o noclobber; printf '%s %s\n' "$$" "$(gw_starttime $$)" > "$gw_lock") 2>/dev/null; then
+                    gw_lock_taken=yes
+                fi
+                break
+            done
+            if [ -e "$gw_lock" ] && [ "$gw_lock_taken" = no ] && ! _gw_lock_live; then
+                echo "git: wrapper: $gw_lock is held by a process that is not a live git wrapper of yours (the LLM can pre-create the file in sticky /var/tmp): re-run the command, or rm $gw_lock if no git wrapper is running" >&2
+                exit 1
+            fi
+            if [ ! -e "$gw_lock" ]; then
+                echo "git: wrapper: WARNING: could not create $gw_lock: the LLM's git cannot wait on the protection window, so group write is not removed for this run -- a concurrent LLM symlink plant is possible while git runs" >&2
+            fi
+            if [ -e "$gw_lock" ] && [ "$gw_lock_taken" = yes ]; then
+                for gw_d in "$gw_d1" "$gw_d2"; do
+                    [ -n "$gw_d" ] || continue
+                    chmod -R g-w "$gw_d" 2>/dev/null
+                    find "$gw_d" -type l 2>/dev/null | while IFS= read -r gw_link; do
+                        echo "git: wrapper: removing symlink $gw_link in the shared gitdir (git does not create symlinks there -- it may be a plant the $AI_USER user created; review its target)"
+                        rm -f "$gw_link"
+                    done
+                done
+                trap '_gw_restore "$gw_d1"; [ -n "$gw_d2" ] && _gw_restore "$gw_d2"; rm -f "$gw_lock"' EXIT
+                trap 'exit 130' INT
+                trap 'exit 143' TERM
+                trap 'exit 129' HUP
+                trap 'exit 129' QUIT
+            fi
+            # A lock we did not take: a concurrent wrapper of ours holds
+            # the window; its removal/restore/release covers this run.
         fi
     fi
 fi
@@ -187,12 +286,15 @@ rc=$?
 state_files="HEAD index packed-refs ORIG_HEAD FETCH_HEAD MERGE_HEAD MERGE_MSG COMMIT_EDITMSG AUTO_MERGE CHERRY_PICK_HEAD REVERT_HEAD REVERT_MSG TAG_EDITMSG BISECT_LOG BISECT_START BISECT_NEXT BISECT_BAD BISECT_GOOD BISECT_LEFT BISECT_RIGHT shallow"
 
 if [ -n "$user" ] && [ "$user" != "$AI_USER" ] && [ -n "$gw_d1" ]; then
-    # Restore group write so the LLM can commit again (the EXIT trap also
-    # covers this on interrupt; the explicit call here restores before the
-    # bookkeeping below). _gw_restore skips the plant-surface names aishare
-    # keeps not group-writable.
-    _gw_restore "$gw_d1"
-    [ -n "$gw_d2" ] && _gw_restore "$gw_d2"
+    if [ "$gw_lock_taken" = yes ]; then
+        # Restore group write so the LLM can commit again, then release
+        # the window (the LLM's git wakes on the lock's removal). The EXIT
+        # trap repeats both on interrupt. _gw_restore skips the
+        # plant-surface names aishare keeps not group-writable.
+        _gw_restore "$gw_d1"
+        [ -n "$gw_d2" ] && _gw_restore "$gw_d2"
+        rm -f "$gw_lock"
+    fi
     # Re-share the state files of every protected gitdir (a linked
     # worktree's writes span the admin dir and the common dir). Through
     # the sudoers helper: it fixes the identity to $AI_USER:$AI_USER,
