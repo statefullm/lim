@@ -109,7 +109,14 @@ std::string build_user_assistant_turn_text(const std::string &user_content);
 
 // Build a tool result injection:
 //   user_turn_start + "[Tool Result]\n" + content + turn_end + "\n" + assistant_turn_start
+// Content is tokenized with parse_special=false so any <|...|> strings in
+// fetched/tool output are plain text, not control tokens.
 std::vector<llama_token> build_tool_result_turn(llama_context *ctx, const std::string &tool_output);
+
+// General form: the caller supplies the content (which may or may not carry
+// the "[Tool Result]\n" prefix). Structural markers are tokenized with
+// parse_special=true; the content uses parse_special=false.
+std::vector<llama_token> build_user_turn_safe(llama_context *ctx, const std::string &content, bool with_tool_prefix);
 
 // Text-only variant of build_tool_result_turn (no tokenization, no escaping):
 // assembles the turn-delimiter-wrapped message so callers can apply their own

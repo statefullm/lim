@@ -543,13 +543,40 @@ string build_tool_result_turn_text(const string &tool_output) {
   return msg;
 }
 
-vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output) {
-  // Escape model turn tokens in the tool output so they don't get
-  // misinterpreted as structural boundaries during tokenization.
-  string escaped_output = tool_output;
-  escape_turn_tags(escaped_output);
+vector<llama_token> build_user_turn_safe(llama_context *ctx, const string &content, bool with_tool_prefix) {
+  // Structural markers are tokenized with parse_special=true (special token
+  // IDs). The content uses parse_special=false so any <|...|> strings in
+  // tool output that are NOT in the escape contract's reserved set are
+  // tokenized as plain text. The reserved tokens themselves are escaped by
+  // the caller (escape_turn_tags / escape_parameter_tags) per the contract's
+  // "SYSTEM -> LLM" direction.
+  vector<llama_token> tokens;
 
-  return common_tokenize(ctx, build_tool_result_turn_text(escaped_output), false, true);
+  string prefix = g_model_tokens.user_turn_start.text;
+  if (with_tool_prefix) prefix += "[Tool Result]\n";
+  auto p = common_tokenize(ctx, prefix, false, true);
+  tokens.insert(tokens.end(), p.begin(), p.end());
+
+  if (!content.empty()) {
+    auto c = common_tokenize(ctx, content, false, false);
+    tokens.insert(tokens.end(), c.begin(), c.end());
+  }
+
+  string suffix;
+  if (g_model_tokens.has_explicit_turn_end())
+    suffix += g_model_tokens.turn_end.text;
+  suffix += g_model_tokens.assistant_turn_start.text;
+  auto s = common_tokenize(ctx, suffix, false, true);
+  tokens.insert(tokens.end(), s.begin(), s.end());
+
+  return tokens;
+}
+
+vector<llama_token> build_tool_result_turn(llama_context *ctx, const string &tool_output) {
+  string escaped = tool_output;
+  escape_parameter_tags(escaped);
+  escape_turn_tags(escaped);
+  return build_user_turn_safe(ctx, escaped, true);
 }
 
 // --- Decode Error Handling ---

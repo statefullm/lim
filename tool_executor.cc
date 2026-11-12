@@ -278,15 +278,13 @@ ToolExecutor::Result ToolExecutor::execute(
     // so the non-operator path is byte-identical to before.
     vector<llama_token> t_tokens;
     {
-      // User turn + assistant prefill.
-      string turn_content = operator_turn ? tool_out.content : "[Tool Result]\n" + tool_out.content;
-
-      // Escape PARAM_END and model turn tokens in the content so they
-      // don't get misinterpreted as structural boundaries during tokenization.
-      escape_parameter_tags(turn_content);
-      escape_turn_tags(turn_content);
-
-      t_tokens = tokenize(build_user_assistant_turn_text(turn_content));
+      // Escape reserved tokens per the contract (SYSTEM -> LLM direction),
+      // then tokenize with parse_special=false on the content so any other
+      // special tokens in tool output are plain text, not control tokens.
+      string safe_content = tool_out.content;
+      escape_parameter_tags(safe_content);
+      escape_turn_tags(safe_content);
+      t_tokens = build_user_turn_safe(ctx, safe_content, !operator_turn);
     }
     // If the result doesn't fit in the remaining context, replace it with a
     // compact error so the LLM can adapt (narrow the request, paginate, or
@@ -299,10 +297,8 @@ ToolExecutor::Result ToolExecutor::execute(
       snprintf(buf, sizeof(buf), "%.1f%%", pct);
       diag("Tool result too large to fit in context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). Context usage: " + string(buf) + ". Reporting error to LLM.", "\033[1;33m");
 
-      string too_large_content = "[Tool Result]\nSystem Error: Tool output too large to fit in remaining context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). It was discarded. Request a smaller output (e.g., a line range, head/tail, or a narrower query) or proceed without it.";
-      escape_parameter_tags(too_large_content);
-      escape_turn_tags(too_large_content);
-      t_tokens = tokenize(build_tool_result_turn_text(too_large_content));
+      string too_large_content = "System Error: Tool output too large to fit in remaining context (" + std::to_string(t_tokens.size()) + " tokens needed, " + std::to_string(cparams.n_ctx - n_past) + " available). It was discarded. Request a smaller output (e.g., a line range, head/tail, or a narrower query) or proceed without it.";
+      t_tokens = build_user_turn_safe(ctx, too_large_content, true);
     }
     if (!feed_tokens(t_tokens)) {
       abort_auto = true;
