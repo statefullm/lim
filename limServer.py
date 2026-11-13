@@ -285,7 +285,12 @@ async def main():
         if not base:
             base = 'http://localhost:%d/viewer.html' % LIM_PORT
         url_tmp = VIEWER_URL_PATH + '.tmp'
-        with open(url_tmp, 'w') as f:
+        # Create the temp file at 0640 from the start so it is never
+        # world-readable, even for the instant before the chmod below
+        # (umask here is 0002, so O_CREAT already yields 0640; the explicit
+        # chmod keeps the final mode umask-independent either way).
+        fd = os.open(url_tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+        with os.fdopen(fd, 'w') as f:
             f.write(base + '#token=' + WS_TOKEN + '\n')
         os.chmod(url_tmp, 0o640)
         os.replace(url_tmp, VIEWER_URL_PATH)
