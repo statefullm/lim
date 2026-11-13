@@ -2031,8 +2031,9 @@
 
             // Minimal inline script to keep think-block toggling and copy buttons working
             // in the exported file without needing the full viewer JS or WebSocket connection.
-            // (The export has no CSP, and the live viewer's delegated think-header
-            // listener is not serialized, so the headers are wired here.)
+            // (The export has a CSP that blocks remote images (issue 10), and the
+            // live viewer's delegated think-header listener is not serialized, so the
+            // headers are wired here.)
             var exportScript = '<script>\n' +
                 'function toggleThinkBlock(headerEl){var b=headerEl.nextElementSibling;var bl=headerEl.parentElement;var c=b.classList.toggle("hidden");headerEl.classList.toggle("collapsed",c);bl.setAttribute("data-think-collapsed",c?"1":"0")}\n' +
                 'document.querySelectorAll(".think-header").forEach(function(h){h.addEventListener("click",function(){toggleThinkBlock(h)})});\n' +
@@ -2046,6 +2047,7 @@
                 '<html lang="en">\n<head>\n' +
                 '  <meta charset="UTF-8">\n' +
                 '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
+                "  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;\">\n" +
                 '  <title>LIM Session Export</title>\n' +
                 '  <style>\n' + cssText + '\n  </style>\n' +
                 '</head>\n<body>\n' +
