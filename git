@@ -38,7 +38,8 @@ find_real_git() {
     (
         IFS=:
         for d in $PATH; do
-            [ -n "$d" ] || d=.
+            [ -n "$d" ] || continue
+            case $d in /*) ;; *) continue ;; esac
             nd=$(CDPATH= cd -- "$d" 2>/dev/null && pwd -P) || continue
             [ "$nd" = "$self_dir" ] && continue
             [ -x "$nd/git" ] && { printf '%s' "$nd/git"; exit 0; }
