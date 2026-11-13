@@ -274,6 +274,9 @@ protect_config_worktree() {
     if [ -L "$pcw_f" ]; then
         echo "WARNING: $pcw_f is a symlink: git would read its target as this gitdir's per-worktree config, which the LLM could point at a config of its own -- aishare removed it" >&2
         rm -f "$pcw_f"
+    elif [ -p "$pcw_f" ] || [ -S "$pcw_f" ]; then
+        echo "WARNING: $pcw_f is a pipe or socket, not a regular file: opening it would block this run and git would not read a config from it -- aishare removed it" >&2
+        rm -f "$pcw_f"
     fi
     if [ -f "$pcw_f" ]; then
         pcw_keys=$(exec_config_keys "$pcw_f"); pcw_krc=$?
@@ -335,6 +338,13 @@ protect_gitdirs() {
                 fi
                 ;;
         esac
+        # A pipe or socket planted at the config name is removed first:
+        # git would open it for reading and block on it, and the name must
+        # end up a regular file for git to parse.
+        if [ -p "$d/config" ] || [ -S "$d/config" ]; then
+            echo "WARNING: $d/config is a pipe or socket, not a regular file: git would block reading it -- aishare removed it" >&2
+            rm -f "$d/config"
+        fi
         touch "$d/config" 2>/dev/null && chmod g-w "$d/config"
         # Pre-create hooks/ if it is absent (mirroring the config touch above)
         # so the LLM cannot create it and plant an executable hook there; then
@@ -356,9 +366,13 @@ protect_gitdirs() {
             # replace its content with ".", which makes the common directory
             # the gitdir itself, exactly as when the file is absent. A
             # symlink is removed rather than written through (its target
-            # might be outside the store).
+            # might be outside the store); a pipe or socket is removed too,
+            # since opening it for writing would block the run.
             if [ -L "$d/commondir" ]; then
                 echo "WARNING: $d/commondir is a symlink: git would take its config, hooks and objects from wherever its target points, which the LLM could control -- aishare removed it" >&2
+                rm -f "$d/commondir"
+            elif [ -p "$d/commondir" ] || [ -S "$d/commondir" ]; then
+                echo "WARNING: $d/commondir is a pipe or socket, not a regular file: opening it would block this run and git would not read a config from it -- aishare removed it" >&2
                 rm -f "$d/commondir"
             elif [ -f "$d/commondir" ] && [ "$(cat "$d/commondir" 2>/dev/null)" != "." ]; then
                 echo "WARNING: $d/commondir would make git take its config, hooks and objects from a different gitdir (not $d) -- it may be a plant the LLM created -- aishare replaced its content with '.'; remove any gitdir it named" >&2
