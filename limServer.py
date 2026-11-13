@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import os
+import re
 import secrets
 import socket
 from pathlib import Path
@@ -18,13 +19,20 @@ FIFO_PATH = os.path.join(LIM_CONFIG_DIR, "lim.fifo")
 # Configurable port via environment variable (default: 8765)
 LIM_PORT = int(os.environ.get('LIM_PORT', '8765'))
 
-# Random token: only the viewer page served by this server knows it.
-# Prevents other local users from connecting to /ws (issue 8).
+# Random token: delivered in the page URL's fragment (#token=...), which the
+# browser never sends to the server, and required for the /ws upgrade.  It is
+# written to LIM_CONFIG_DIR/lim.viewer_url (mode 0640, readable only by lim
+# and the sharing user); lim reads it to print the URL and the VS Code
+# extension reads it to open the page.  The served page and JS stay token-free,
+# so other local users cannot obtain it and cannot connect to /ws (issue 8).
 WS_TOKEN = secrets.token_hex(16)
+VIEWER_URL_PATH = os.path.join(LIM_CONFIG_DIR, "lim.viewer_url")
 
 def allowed_ws_origins():
     """Origins the viewer page itself can have when it connects to /ws:
-    the loopback names and this machine's own name, all on LIM_PORT.
+    the loopback names and this machine's own name, all on LIM_PORT, plus
+    the origin of LIM_VIEWER_URL when set (a custom tunnel local port
+    changes the page's origin; lim and the server read the same env var).
     viewer.html is served by this server and connects back to the same
     host (window.location.host), so no other origin is legitimate.
     WebSockets are not covered by CORS, so without this check JavaScript
@@ -37,7 +45,11 @@ def allowed_ws_origins():
         hosts.add(name.split('.')[0])
     except OSError:
         pass
-    return {'http://' + h + ':' + str(LIM_PORT) for h in hosts}
+    origins = {'http://' + h + ':' + str(LIM_PORT) for h in hosts}
+    m = re.match(r'https?://[^/]+', os.environ.get('LIM_VIEWER_URL', ''))
+    if m:
+        origins.add(m.group(0))
+    return origins
 
 # Keep track of connected browsers
 clients = set()
@@ -132,11 +144,17 @@ async def websocket_handler(request):
     """Handles WebSocket connections for LLM streaming.
 
     Two layers of authentication:
-    1. Origin check: browsers must present a matching Origin header.
-       (Non-browser clients are rejected -- they cannot know the token.)
+    1. Origin check: a present Origin must be the viewer's own; a website
+       the user has open presents a foreign one and is rejected (the browser
+       sets Origin automatically, so a page cannot bypass this).  A missing
+       Origin is accepted: it only happens off a normal web page (embedded
+       browsers, raw clients), and the token below is the barrier there.
     2. Token check: the ?token= query parameter must match the server's
-       random token.  Only the viewer page served by this server knows it,
-       so other local users cannot connect (issue 8).
+       random token.  The token reaches the browser only in the page URL's
+       fragment (#token=...), which the browser never sends to the server,
+       and in lim.viewer_url (mode 0640) for lim to print and the VS Code
+       extension to open -- so other local users cannot obtain it and
+       cannot connect (issue 8).
     """
     origin = request.headers.get('Origin')
     if origin is not None and origin not in allowed_ws_origins():
@@ -213,6 +231,8 @@ async def serve_viewer_js(request):
     The app script was moved out of viewer.html so the page's script-src can
     be 'self' (no 'unsafe-inline').  The LIM_INLINE_LATEX_ENABLED default in
     the file is overridden here, exactly as serve_viewer used to do for HTML.
+    The /ws token is deliberately not injected here: it rides in the page
+    URL's fragment, so the served JS stays token-free (issue 8).
     """
     script_path = Path(__file__).resolve()
     viewer_js_path = script_path.parent / 'viewer.js'
@@ -228,12 +248,6 @@ async def serve_viewer_js(request):
     content = content.replace(
         "var LIM_INLINE_LATEX_ENABLED = 1;",
         "var LIM_INLINE_LATEX_ENABLED = " + latex_val + ";",
-    )
-
-    # Inject the WebSocket token so the viewer can authenticate to /ws.
-    content = content.replace(
-        'var LIM_WS_TOKEN = "";',
-        'var LIM_WS_TOKEN = "' + WS_TOKEN + '";',
     )
 
     return web.Response(
@@ -262,6 +276,19 @@ async def main():
     await site.start()
 
     try:
+        # The tokenized viewer URL, written before the ready marker so a
+        # reader that waits for the marker (lim) always sees the finished
+        # file.  Mode 0640 via chmod (umask-independent): owner + group read,
+        # no others -- lim (the ai user) and the sharing user can read it,
+        # other local users cannot (issue 8).
+        base = os.environ.get('LIM_VIEWER_URL', '')
+        if not base:
+            base = 'http://localhost:%d/viewer.html' % LIM_PORT
+        url_tmp = VIEWER_URL_PATH + '.tmp'
+        with open(url_tmp, 'w') as f:
+            f.write(base + '#token=' + WS_TOKEN + '\n')
+        os.chmod(url_tmp, 0o640)
+        os.replace(url_tmp, VIEWER_URL_PATH)
         with open(os.path.join(LIM_CONFIG_DIR, "lim.server_ready"), 'w') as f:
             f.write(str(LIM_PORT))
         with open(os.path.join(LIM_CONFIG_DIR, "lim.server.pid"), 'w') as f:

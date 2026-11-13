@@ -8,11 +8,15 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand('lim.workspace.start', startWorkspace)
     );
 
-    // Reload the Simple (integrated) Browser: close all tabs, open a fresh one.
+    // Reload the Simple (integrated) Browser: re-read the tokenized viewer
+    // URL (picking up a fresh token after a server replacement), close all
+    // tabs, open a fresh one.
     context.subscriptions.push(
         vscode.commands.registerCommand('lim.workspace.reload', async () => {
-            if (!currentViewerUrl) return;
+            const limHost = process.env.LIM_HOST;
+            const aiUser = process.env.LIM_AI_USER || 'ai';
 
+            currentViewerUrl = await fetchViewerUrl(limHost, aiUser);
             await closeAllWebviewTabs();
 
             const activeTerminal = vscode.window.activeTerminal;
@@ -63,30 +67,16 @@ async function closeAllWebviewTabs(): Promise<void> {
 function startWorkspace() {
     const config = vscode.workspace.getConfiguration('lim.workspace');
     const browserPort = config.get<number>('browserPort', 8765);
-
-    // The server binds to loopback only, so the viewer is always reached via
-    // localhost: directly on the machine, or remotely through the -L port
-    // forward in the SSH command below.
-    const viewerUrl = `http://localhost:${browserPort}/viewer.html`;
-    currentViewerUrl = viewerUrl;
-
-    // Wait for the server to be up before opening the browser. Uses an async
-    // fetch that resolves on first success -- not a busy loop, just event-driven
-    // retries via setTimeout. Opens the browser only when viewer.html will load.
-    waitForServer(browserPort).then(() => {
-        vscode.commands.executeCommand('simpleBrowser.api.open', viewerUrl);
-        setTimeout(() => terminal.show(false), 200);
-    });
+    const limHost = process.env.LIM_HOST;
+    const aiUser = process.env.LIM_AI_USER || 'ai';
 
     // Create an integrated terminal for the LIM REPL and show it at the bottom.
-    const limHost = process.env.LIM_HOST;
     const terminal = vscode.window.createTerminal({
         name: 'LIM',
         cwd: process.env.HOME
     });
 
     if (limHost && limHost !== getHostname()) {
-        const aiUser = process.env.LIM_AI_USER || 'ai';
         // Plain interactive SSH: the remote side starts a login shell, which
         // loads the coder alias and LIM environment from the user's rc files.
         // The -L forward makes the loopback-only viewer reachable from the
@@ -96,6 +86,81 @@ function startWorkspace() {
     }
 
     terminal.show();
+
+    // The server binds to loopback only, so the viewer is always reached via
+    // localhost: directly on the machine, or remotely through the -L port
+    // forward above. Wait for the server to be up, then open the tokenized
+    // viewer URL (the bare page cannot connect to /ws without its token).
+    // Uses an async fetch that resolves on first success -- not a busy loop,
+    // just event-driven retries via setTimeout.
+    waitForServer(browserPort).then(() => fetchViewerUrl(limHost, aiUser)).then(url => {
+        currentViewerUrl = url;
+        vscode.commands.executeCommand('simpleBrowser.api.open', url);
+        setTimeout(() => terminal.show(false), 200);
+    });
+}
+
+function localRead(path: string): string {
+    const { readFileSync } = require('fs');
+    return readFileSync(path, 'utf-8');
+}
+
+// Run `cat <path>` on the LIM host as aiUser and return the output.
+function sshCat(limHost: string, aiUser: string, path: string): Promise<string> {
+    const { execFile } = require('child_process');
+    const quoted = `'${path.replace(/'/g, `'\\''`)}'`;
+    return new Promise<string>((resolve, reject) => {
+        execFile('ssh', ['-o', 'BatchMode=yes', `${aiUser}@${limHost}`, `cat ${quoted}`],
+            { encoding: 'utf-8', timeout: 10000 },
+            (err: Error | null, stdout: string) => (err ? reject(err) : resolve(stdout)));
+    });
+}
+
+// Resolve the ai user's LIM_CONFIG_DIR: this process's own environment (if
+// exported), else the `LIM_CONFIG_DIR=...` line in the ai user's ~/.bashrc
+// (the README's documented override; the last assignment wins), else the
+// default ~/.config/lim under the ai user's home.
+async function resolveConfigDir(limHost: string | undefined, aiUser: string): Promise<string> {
+    const def = `/home/${aiUser}/.config/lim`;
+    const fromEnv = process.env.LIM_CONFIG_DIR;
+    if (fromEnv && fromEnv.length > 0) return fromEnv;
+    try {
+        const rc = limHost && limHost !== getHostname()
+            ? await sshCat(limHost, aiUser, `/home/${aiUser}/.bashrc`)
+            : localRead(`/home/${aiUser}/.bashrc`);
+        let value: string | undefined;
+        for (const raw of rc.split('\n')) {
+            const t = raw.trim().replace(/^export\s+/, '');
+            if (!t.startsWith('LIM_CONFIG_DIR=')) continue;
+            const v = t.slice('LIM_CONFIG_DIR='.length).trim();
+            const q = v.match(/^(["'])([^"']*)\1/);
+            value = q ? q[2] : v.split(/\s/)[0];
+        }
+        if (value && value.length > 0) return value;
+    } catch {
+        // rc file missing or unreadable: fall back to the default.
+    }
+    return def;
+}
+
+// The server writes the tokenized viewer URL (mode 0640, readable by the
+// sharing user) to LIM_CONFIG_DIR/lim.viewer_url at startup. Read it:
+// directly from disk when local, over SSH when remote. Falls back to the
+// bare page, which tells the user to load the URL lim printed.
+async function fetchViewerUrl(limHost: string | undefined, aiUser: string): Promise<string> {
+    const config = vscode.workspace.getConfiguration('lim.workspace');
+    const bare = `http://localhost:${config.get<number>('browserPort', 8765)}/viewer.html`;
+    try {
+        const file = `${await resolveConfigDir(limHost, aiUser)}/lim.viewer_url`;
+        const content = limHost && limHost !== getHostname()
+            ? await sshCat(limHost, aiUser, file)
+            : localRead(file);
+        const url = content.trim();
+        if (url.includes('#token=')) return url;
+    } catch {
+        // File missing or unreadable: fall through to the bare page.
+    }
+    return bare;
 }
 
 function getHostname(): string {

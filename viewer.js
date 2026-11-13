@@ -1855,6 +1855,13 @@
         function connect() {
             const pageHost = window.location.host;
             const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            if (!LIM_WS_TOKEN) {
+                // Loaded without the #token= fragment: the server rejects the
+                // /ws upgrade.  Point at the URL lim prints.
+                statusDiv.textContent = 'No connection token: load the URL lim printed (or lim.viewer_url in the LIM config dir)';
+                statusDiv.className = 'status disconnected';
+                return;
+            }
             let ws = new WebSocket(proto + '//' + pageHost + '/ws?token=' + encodeURIComponent(LIM_WS_TOKEN));
 
             ws.onopen = () => {
@@ -2077,9 +2084,15 @@
         // inline $...$.  Code regions are never treated as math in either mode.
         var LIM_INLINE_LATEX_ENABLED = 1;
 
-        // LIM_WS_TOKEN: overridden by limServer.py.  Required for the /ws
+        // LIM_WS_TOKEN: read from the page URL's fragment (#token=...).
+        // The browser never sends fragments to the server, so the token is
+        // known only to this page.  lim prints this URL; the server also
+        // stores it in lim.viewer_url (mode 0640).  Required for the /ws
         // upgrade so other local users cannot read the stream (issue 8).
-        var LIM_WS_TOKEN = "";
+        var LIM_WS_TOKEN = (function () {
+            var m = /[#&]token=([^&]+)/.exec(window.location.hash);
+            return m ? m[1] : "";
+        })();
 
         // Wire the export button now that the page's script-src no longer
         // permits inline onclick="..." handlers.  The button is in the DOM

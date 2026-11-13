@@ -44,7 +44,7 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 ```
 
 - **`lim`**: The C++ binary. Handles the REPL, KV-cache management, tool dispatch, and signal handling.
-- **`limServer.py`**: An optional Python WebSocket server that streams output to a browser via `/tmp/lim.fifo`. It is a long-lived service: the first lim session that needs it starts it on demand, and it survives across lim sessions (exit or crash) so the browser connection persists.
+- **`limServer.py`**: An optional Python WebSocket server that streams output to a browser via the FIFO in `$LIM_CONFIG_DIR`. It is a long-lived service: the first lim session that needs it starts it on demand, and it survives across lim sessions (exit or crash) so the browser connection persists.
 
 ---
 
@@ -244,7 +244,7 @@ Add this to the `~/.bashrc` of `$LIM_AI_USER`:
 alias coder='lim ~/models/Qwen3.8-27B-Q6_K.gguf'
 ```
 
-Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`. The `-L` forward carries the browser viewer: the server listens on `127.0.0.1` only, so from your laptop the viewer is at `http://localhost:8765/viewer.html` (see **Browser Output**):
+Replace the model path with whichever GGUF you want to use. Then, before running `coder`, connect to the LIM server `$LIM_HOST`. The `-L` forward carries the browser viewer: the server listens on `127.0.0.1` only, so from your laptop the viewer is at the URL lim prints (see **Browser Output** -- the page needs a per-server-start connection token, so the bare `viewer.html` no longer connects):
 
 ```bash
 ssh -a -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST
@@ -423,13 +423,13 @@ Set via `LIM_OUTPUT`:
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
 | `LIM_GIT_SANDBOX` | `1` | `git` wrapper: run your git in a Landlock sandbox (writes only under `/home/$LIM_AI_USER`, no new privileges) when a command reaches a shared repo, confining code git is tricked into running. Set to `0` to disable; see **User Setup** for the requirements and consequences. |
 | `LIM_CACHE_DIR` | `.cache` | Directory for fast restore KV-cache files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
-| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
+| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`). Runtime files are also created here: `lim.fifo`, `lim.server_ready`, `lim.browser_ready`, `lim.server.pid`, and `lim.viewer_url` (the tokenized viewer URL, mode 0640; see **Browser Output**). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory for session logs, token traces, and autosave files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for the SSH connection; the viewer is always reached via localhost (through the SSH port forward when remote). |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server (listens on `127.0.0.1` only; the SSH tunnel's remote side uses the same port) |
 | `LIM_OUTPUT` | `2` | Output mode: `0` = none, `1` = stdout only, `2` = browser only (default), `3` = both |
-| `LIM_VIEWER_URL` | *(auto: `http://localhost:<port>/viewer.html`)* | Override the auto-generated viewer URL, e.g. when the SSH tunnel's local side uses a different port |
+| `LIM_VIEWER_URL` | *(auto: `http://localhost:<port>/viewer.html`)* | Override the base viewer URL, e.g. when the SSH tunnel's local side uses a different port. The connection token (see **Browser Output**) is appended automatically, and the `/ws` Origin check accepts this URL's origin |
 | `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget. Set between `0.0` and `1.0` (0.0 means the default value of `0.75`). |
 | `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget. Set explicitly to override. |
 | `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
@@ -635,24 +635,28 @@ When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn 
 
 ### Browser Output
 
-By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. The server listens on `127.0.0.1` only, so the viewer is reachable from the machine itself, or from another machine through an SSH tunnel. Load:
+By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. The server listens on `127.0.0.1` only, so the viewer is reachable from the machine itself, or from another machine through an SSH tunnel.
+
+The page requires a per-server-start connection token, so you load the tokenized URL that lim prints (also stored at `$LIM_CONFIG_DIR/lim.viewer_url`, mode 0640, readable only by you and `$LIM_AI_USER`):
 
 ```
-http://localhost:8765/viewer.html
+http://localhost:8765/viewer.html#token=...
 ```
 
-whenever the server is running -- in your local browser when connected via `ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST` (the port follows `LIM_PORT`; if the tunnel's local side uses a different port, set `LIM_VIEWER_URL`). Only on the first session after a machine reboot (when the server does not exist yet) must you start lim first and then load the page; on every later restart the server is already running, so the page can be loaded -- or left open -- before lim starts.
+whenever the server is running -- in your local browser when connected via `ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST` (the port follows `LIM_PORT`; if the tunnel's local side uses a different port, set `LIM_VIEWER_URL` and the printed URL already uses it). The token rides in the URL's `#` fragment, which the browser never sends to the server; the `/ws` handshake must present it together with a matching `Origin` (a missing `Origin` is accepted -- it only happens off a normal web page, and the token is the barrier there). A bare `viewer.html` cannot subscribe, and other local users -- who cannot read the 0640 URL file and never see the fragment -- cannot connect to the stream.
+
+The token changes each time the server starts (machine reboot, `/reset`, or a FIFO-node mismatch that replaces it) -- that is the only time you load a fresh printed URL; an old page or an old token no longer connects. Only on the first session after a machine reboot (when the server does not exist yet) must you start lim first and then load the URL; on every later restart the server is already running, so the page can be loaded -- or left open -- before lim starts.
 
 When lim starts and the viewer is not connected, lim prints the URL and waits before the first decode; the session proceeds as soon as the viewer loads the page. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables itself if the viewer connects later.
 
-The Python server (`limServer.py`) is a persistent service: it is started on first need by the first lim session (pinned to efficiency cores when a hybrid CPU is detected, unpinned on non-hybrid CPUs) and then outlives lim sessions. It reads from a named FIFO at `/tmp/lim.fifo` and broadcasts to all connected WebSocket clients. Because the server survives lim's exit and crashes, the browser tab stays connected across lim restarts -- no reload needed; each new session (restart or `/clear`) streams a dashed `-- Session N --` divider, and the previous session's output remains readable above it. The only reload is after a machine reboot or a closed tab: start lim first, then load the URL (as above). If the server stops -- or is left reading a deleted/replaced FIFO node -- a fresh server takes its place and the page needs to be reloaded once.
+The Python server (`limServer.py`) is a persistent service: it is started on first need by the first lim session (pinned to efficiency cores when a hybrid CPU is detected, unpinned on non-hybrid CPUs) and then outlives lim sessions. It reads from a named FIFO at `$LIM_CONFIG_DIR/lim.fifo` and broadcasts to all connected WebSocket clients. Because the server survives lim's exit and crashes, the browser tab stays connected across lim restarts -- no reload needed; each new session (restart or `/clear`) streams a dashed `-- Session N --` divider, and the previous session's output remains readable above it. The only reload is after a machine reboot or a closed tab: start lim first, then load the URL (as above). If the server stops -- or is left reading a deleted/replaced FIFO node -- a fresh server takes its place with a fresh token, so load the URL the new server's lim prints (or `cat $LIM_CONFIG_DIR/lim.viewer_url`).
 
 ### VS Code Extension
 
 The LIM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
 
 The extension does two things:
-- **Opens a browser** at `http://localhost:<port>/viewer.html` (the `lim.workspace.browserPort` setting, default 8765), after waiting for the server to respond. The server binds to loopback only, so it is reached directly on the machine and, when remote, through the tunnel below.
+- **Opens a browser** at the tokenized viewer URL (see **Browser Output**). It locates the file `lim.viewer_url` in the server's `$LIM_CONFIG_DIR` -- resolved from its own environment, else the `LIM_CONFIG_DIR=...` line in `$LIM_AI_USER`'s `~/.bashrc`, else the default `~/.config/lim` -- and reads it directly from disk when local, over SSH when remote, after waiting for the server to respond. The server binds to loopback only, so it is reached directly on the machine and, when remote, through the tunnel below. If it cannot read the file, it opens the bare page, which tells you to load the URL lim printed.
 - **Creates a terminal** at `$HOME`. If `$LIM_HOST` is set and remote, it SSHs into that host as user `$LIM_AI_USER` with a port forward for the viewer (`ssh -L <port>:localhost:<port>`); otherwise it opens a local shell.
 
 You then run your `coder` alias in that terminal as usual.
@@ -675,7 +679,7 @@ make uninstall-all      # removes installed files and uninstalls the extension
 
 Then in VS Code, click the LIM rocket icon in the status bar (or **Ctrl+Shift+P** -- `LIM: Open Workspace`). This opens a terminal panel and waits for the browser server. Run your `coder` alias in that terminal, and the viewer will connect automatically once the server is ready (immediately, if the persistent server is already running).
 
-To reset the browser viewer (close and reopen its tab), press **Ctrl+2** or **Ctrl+Shift+R** -- the extension's `LIM: Reload Browser` command. Useful when the viewer needs a fresh page, e.g. after a machine reboot or a server replacement by `/reset`.
+To reset the browser viewer (close and reopen its tab), press **Ctrl+2** or **Ctrl+Shift+R** -- the extension's `LIM: Reload Browser` command. It re-reads the tokenized URL, so it is also how you pick up a fresh token after a machine reboot or a server replacement by `/reset`.
 
 To rebuild both the C++ binary and the extension:
 
@@ -736,7 +740,7 @@ LIM expects the Docling binary at `~/venv/bin/docling-serve` and starts it on po
 
 ### "FIFO not found" or browser output fails
 
-The FIFO at `/tmp/lim.fifo` persists across sessions: it is owned by the persistent browser server (started on first use), which keeps the FIFO open for as long as it is running. If the node is removed while the server is alive (manually, or by `/tmp` cleanup), the server keeps reading the old, deleted inode and browser output goes nowhere -- but lim detects this: at startup and on `/reset` it compares the FIFO inode it writes to against the inodes the server holds open (via `/proc/<pid>/fd`), and when they differ it tears the stale server down and starts a fresh one on the current node. Reload the viewer page once afterwards to reconnect. Ensure `aiohttp` is installed: `pip3 install aiohttp`.
+The FIFO at `$LIM_CONFIG_DIR/lim.fifo` persists across sessions: it is owned by the persistent browser server (started on first use), which keeps the FIFO open for as long as it is running. If the node is removed while the server is alive, the server keeps reading the old, deleted inode and browser output goes nowhere -- but lim detects this: at startup and on `/reset` it compares the FIFO inode it writes to against the inodes the server holds open (via `/proc/<pid>/fd`), and when they differ it tears the stale server down and starts a fresh one on the current node. Afterwards, reconnect by loading the URL the new server's lim prints (the fresh server uses a fresh token). Ensure `aiohttp` is installed: `pip3 install aiohttp`.
 
 ### "SearxNG connection failed"
 
@@ -758,9 +762,10 @@ make GGML_CUDA=off
 
 ### Browser viewer shows nothing / won't connect
 
-1. The page is served by the persistent browser server, so it must be running before the page can load. If it is (the common case), just load or reload the viewer page (or press **Ctrl+2** / **Ctrl+Shift+R** in VS Code). If it is not -- only right after a machine reboot -- start lim first; it starts the server on first need and prints the URL.
+1. The page is served by the persistent browser server, so it must be running before the page can load. If it is (the common case), just load or reload the viewer page using the URL lim printed (or `cat $LIM_CONFIG_DIR/lim.viewer_url`), or press **Ctrl+2** / **Ctrl+Shift+R** in VS Code (which re-reads the token). If it is not -- only right after a machine reboot -- start lim first; it starts the server on first need and prints the URL.
 2. Check that nothing else is using port 8765 (or your custom `LIM_PORT`) -- on the LIM host for the server, or locally when using a tunnel.
-3. The server binds to `127.0.0.1` only: from another machine, establish the tunnel (`ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST`) and load `http://localhost:8765/viewer.html`. If the tunnel's local side uses a different port, set `LIM_VIEWER_URL`.
+3. The server binds to `127.0.0.1` only: from another machine, establish the tunnel (`ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST`) and load the URL lim printed. If the tunnel's local side uses a different port, set `LIM_VIEWER_URL` (the printed URL already uses it).
+4. A page loaded without the token -- a bare `viewer.html`, or a URL from before the last server start -- reports that it cannot connect: load the current URL lim prints, or `cat $LIM_CONFIG_DIR/lim.viewer_url`.
 
 ### "detected dubious ownership in repository"
 

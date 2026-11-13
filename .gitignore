@@ -19,6 +19,14 @@ node_modules/
 # Generated artifacts
 vscode-extension/*.vsix
 
+# Runtime files (land here when LIM_CONFIG_DIR points at the repo)
+lim.fifo
+lim.viewer_url
+lim.viewer_url.tmp
+lim.server_ready
+lim.browser_ready
+lim.server.pid
+
 # LIM runtime data (generated during use)
 *.save
 *.tokens

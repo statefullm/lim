@@ -15,6 +15,7 @@
 #include <cstdlib>
 #include <cerrno>
 #include <unistd.h>
+#include <fstream>
 
 using namespace std;
 
@@ -492,7 +493,25 @@ int get_server_port() {
   return 8765;
 }
 
+// The server writes the tokenized viewer URL (base + "#token=...") to
+// LIM_CONFIG_DIR/lim.viewer_url at startup (mode 0640).  The bare page cannot
+// connect to /ws without the token, so lim prints that URL, not a constructed
+// one.
+static string read_viewer_url_file() {
+  std::ifstream in(LIM_CONFIG_DIR + "/lim.viewer_url");
+  if (!in) return "";
+  string url;
+  std::getline(in, url);
+  while (!url.empty() && (url.back() == '\n' || url.back() == '\r' || url.back() == ' '))
+    url.pop_back();
+  return url;
+}
+
 string get_viewer_url() {
+  string url = read_viewer_url_file();
+  if (url.find("#token=") != string::npos) return url;
+  // Fallback when the file is missing or predates the token: the bare URL.
+  // The viewer reports that it cannot connect without the token.
   const char* env = getenv("LIM_VIEWER_URL");
   if (env != nullptr && strlen(env) > 0) {
     return string(env);
