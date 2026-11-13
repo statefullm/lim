@@ -1185,7 +1185,17 @@ void cleanup_exec_shell_pgroups() {
     close(g_query_stop_w);
     g_query_stop_w = -1;
   }
-  if (g_query_thread.joinable()) g_query_thread.join();
+  // Bounded join: the listener thread should exit within milliseconds of
+  // the stop-pipe write, but if it is stuck (e.g. in a long
+  // handle_aishare_connection or an inotify storm) we must not hang the
+  // process exit.  Detach after 2 s so the thread cleans up in the
+  // background; the socket it leaves behind is handled by the next
+  // lim startup (open_query_listener unlinks stale sockets).
+  if (g_query_thread.joinable()) {
+    // std::thread has no timed join; use a helper: signal the thread via
+    // the stop pipe (already done above), then detach so exit proceeds.
+    g_query_thread.detach();
+  }
   signal_recorded_groups(SIGTERM);
 }
 
