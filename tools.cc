@@ -460,6 +460,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         }
       }
       prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
+      prepend_edge_newline_note(result, tool_call, "content", EdgeHandling::Passed);
     } else {
       result = "Error: No path provided to write_file";
     }
@@ -508,6 +509,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         result = error_line;
       }
       prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
+      prepend_edge_newline_note(result, tool_call, "new", EdgeHandling::Passed);
     } else {
       result = "Error: No path provided to edit_file";
     }
