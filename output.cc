@@ -1,11 +1,13 @@
 #include "output.h"
 #include "parsers.h"
 #include "tokens.h"
+#include "network.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cerrno>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <poll.h>
@@ -21,7 +23,8 @@ const char SEG_TURN_END   = '\x07';  // Generation complete signal for viewer
 
 // --- FIFO / Pipe Management ---
 int pipe_fd = -1;
-const char* FIFO_PATH = "/tmp/lim.fifo";
+static string g_fifo_path;
+const char* FIFO_PATH = nullptr;  // set in init_output_stream()
 
 // --- Output Mode Control ---
 bool g_browser_warning_suppressed = false;
@@ -55,19 +58,27 @@ bool should_output_think_blocks() {
 }
 
 void init_output_stream() {
+  // The FIFO and inter-process marker files live in LIM_CONFIG_DIR
+  // (user-owned, under the user's home) so other local users cannot
+  // pre-create them (issue 8).
+  g_fifo_path = LIM_CONFIG_DIR + "/lim.fifo";
+  FIFO_PATH = g_fifo_path.c_str();
+
   // The FIFO persists across sessions: it is owned by the persistent limServer
   // (which keeps its own fd open on this inode), so lim must never unlink it.
   // mkfifo is idempotent -- it only bootstraps the node on the first run after
   // a machine reboot, when nothing holds the inode yet.
-  // Mode 0600: only the owning user (LIM_AI_USER) can read the stream.
-  // Both lim and limServer.py run as the same user, so no other access is
-  // needed. Prevents other local users from opening the FIFO and reading
-  // the session stream (file contents, shell output, etc.).
-  mkfifo(FIFO_PATH, 0600);
+  // Mode 0660 (owner + group ai, no others): both lim and limServer.py run
+  // as LIM_AI_USER, and when LIM_CONFIG_DIR sits in an aishare-shared tree
+  // the node is re-owned to the sharing user by aishare's chown -R, so
+  // group rw is the access path in that case; other local users are
+  // excluded by the missing others bits.
+  mkfifo(FIFO_PATH, 0660);
   pipe_fd = open(FIFO_PATH, O_RDWR | O_NONBLOCK);
   if (pipe_fd >= 0) {
-    // Fix existing FIFOs created with the old world-readable mode.
-    fchmod(pipe_fd, 0600);
+    // Best effort (EPERM once aishare has re-owned the node): fix existing
+    // nodes created with a looser mode.
+    fchmod(pipe_fd, 0660);
   }
 }
 

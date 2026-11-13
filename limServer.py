@@ -1,14 +1,26 @@
 #!/usr/bin/env python3
 import asyncio
 import os
+import secrets
 import socket
 from pathlib import Path
 from aiohttp import web
 
-FIFO_PATH = "/tmp/lim.fifo"
+# The FIFO and inter-process marker files live in LIM_CONFIG_DIR
+# (user-owned, under the user's home) so other local users cannot
+# pre-create them (issue 8).
+LIM_CONFIG_DIR = os.environ.get('LIM_CONFIG_DIR',
+                                os.path.join(os.environ.get('HOME', '/tmp'), '.config', 'lim'))
+os.makedirs(LIM_CONFIG_DIR, exist_ok=True)
+
+FIFO_PATH = os.path.join(LIM_CONFIG_DIR, "lim.fifo")
 
 # Configurable port via environment variable (default: 8765)
 LIM_PORT = int(os.environ.get('LIM_PORT', '8765'))
+
+# Random token: only the viewer page served by this server knows it.
+# Prevents other local users from connecting to /ws (issue 8).
+WS_TOKEN = secrets.token_hex(16)
 
 def allowed_ws_origins():
     """Origins the viewer page itself can have when it connects to /ws:
@@ -35,7 +47,7 @@ _last_speed = [""]
 
 # Marker file for browser connection signaling.
 
-BROWSER_READY_PATH = "/tmp/lim.browser_ready"
+BROWSER_READY_PATH = os.path.join(LIM_CONFIG_DIR, "lim.browser_ready")
 
 def _update_browser_ready():
     """Write/remove the browser-ready marker file."""
@@ -57,7 +69,7 @@ async def broadcast_llm_stream():
     data is actually available -- no polling, no wasted cycles.
     """
     if not os.path.exists(FIFO_PATH):
-        os.mkfifo(FIFO_PATH)
+        os.mkfifo(FIFO_PATH, 0o660)
 
     # Open non-blocking; add_reader will notify us when readable.
     # O_RDWR: the server itself always holds a write end, so the FIFO can never
@@ -65,6 +77,13 @@ async def broadcast_llm_stream():
     # would spin the reader.  Between lim sessions the fd is simply not
     # readable; the next lim's first write wakes it with real data.
     fd = os.open(FIFO_PATH, os.O_RDWR | os.O_NONBLOCK)
+    # Best effort (EPERM once aishare has re-owned the node to the sharing
+    # user): fix nodes created with a looser mode.  0660 = owner + group,
+    # no others.
+    try:
+        os.fchmod(fd, 0o660)
+    except PermissionError:
+        pass
     loop = asyncio.get_running_loop()
 
     def _on_fifo_readable():
@@ -110,17 +129,25 @@ async def broadcast_llm_stream():
     await asyncio.Event().wait()
 
 async def websocket_handler(request):
-    """Handles WebSocket connections for LLM streaming."""
-    # The server binds to loopback only, so every connection is local or
-    # arrives through an SSH tunnel.  Through the tunnel, however, JavaScript
-    # on any website the user has open could still reach us (WebSockets are
-    # not covered by CORS), so require the browser to identify itself as the
-    # viewer page.  Non-browser clients send no Origin header and are let
-    # through -- they can only arrive from the same host or the tunnel.
+    """Handles WebSocket connections for LLM streaming.
+
+    Two layers of authentication:
+    1. Origin check: browsers must present a matching Origin header.
+       (Non-browser clients are rejected -- they cannot know the token.)
+    2. Token check: the ?token= query parameter must match the server's
+       random token.  Only the viewer page served by this server knows it,
+       so other local users cannot connect (issue 8).
+    """
     origin = request.headers.get('Origin')
     if origin is not None and origin not in allowed_ws_origins():
         print(f"[WARNING] Rejected WebSocket connection from disallowed origin: {origin}")
         return web.Response(status=403, text="Origin not allowed")
+
+    # Require the token: only the viewer page (served with ?token=) knows it.
+    token = request.query.get('token', '')
+    if not token or token != WS_TOKEN:
+        print(f"[WARNING] Rejected WebSocket connection with missing/invalid token from {request.remote}")
+        return web.Response(status=403, text="Invalid or missing token")
 
     ws = web.WebSocketResponse(heartbeat=10)  # Enable ping/pong every 10 seconds to prevent timeout
     await ws.prepare(request)
@@ -203,6 +230,12 @@ async def serve_viewer_js(request):
         "var LIM_INLINE_LATEX_ENABLED = " + latex_val + ";",
     )
 
+    # Inject the WebSocket token so the viewer can authenticate to /ws.
+    content = content.replace(
+        'var LIM_WS_TOKEN = "";',
+        'var LIM_WS_TOKEN = "' + WS_TOKEN + '";',
+    )
+
     return web.Response(
         text=content,
         content_type='application/javascript',
@@ -229,9 +262,9 @@ async def main():
     await site.start()
 
     try:
-        with open("/tmp/lim.server_ready", 'w') as f:
+        with open(os.path.join(LIM_CONFIG_DIR, "lim.server_ready"), 'w') as f:
             f.write(str(LIM_PORT))
-        with open("/tmp/lim.server.pid", 'w') as f:
+        with open(os.path.join(LIM_CONFIG_DIR, "lim.server.pid"), 'w') as f:
             f.write(str(os.getpid()))
     except Exception:
         pass

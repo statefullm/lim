@@ -19,10 +19,22 @@
 using namespace std;
 
 // --- LIM Server Process Management ---
-static const char* INOTIFY_DIR = "/tmp";
-static const char* SERVER_READY_PATH = "/tmp/lim.server_ready";
-static const char* BROWSER_READY_PATH = "/tmp/lim.browser_ready";
-static const char* SERVER_PID_PATH = "/tmp/lim.server.pid";
+// All runtime files (FIFO, markers, PID) live in LIM_CONFIG_DIR (user-owned,
+// under the user's home) so other local users cannot pre-create them (issue 8).
+static bool g_runtime_paths_init = false;
+static string g_server_ready_path;
+static string g_browser_ready_path;
+static string g_server_pid_path;
+static string g_inotify_dir;
+
+static void init_runtime_paths() {
+  if (g_runtime_paths_init) return;
+  g_inotify_dir = LIM_CONFIG_DIR;
+  g_server_ready_path = LIM_CONFIG_DIR + "/lim.server_ready";
+  g_browser_ready_path = LIM_CONFIG_DIR + "/lim.browser_ready";
+  g_server_pid_path = LIM_CONFIG_DIR + "/lim.server.pid";
+  g_runtime_paths_init = true;
+}
 static bool marker_file_valid(const char* path) {
   FILE* fp = fopen(path, "r");
   if (!fp) return false;
@@ -121,7 +133,7 @@ static bool wait_for_file(const char* dir, const char* filename, bool check_exis
 
 // Read the server PID from the PID file. Returns 0 if unreadable or invalid.
 static pid_t read_server_pid() {
-  FILE* fp = fopen(SERVER_PID_PATH, "r");
+  FILE* fp = fopen(g_server_pid_path.c_str(), "r");
   if (!fp) return 0;
   char buf[32];
   pid_t pid = 0;
@@ -388,9 +400,10 @@ ServerStart start_lim_server_if_needed() {
     return ServerStart::Error;
   }
 
-  unlink(SERVER_READY_PATH);
-  unlink(BROWSER_READY_PATH);
-  unlink(SERVER_PID_PATH);
+  init_runtime_paths();
+  unlink(g_server_ready_path.c_str());
+  unlink(g_browser_ready_path.c_str());
+  unlink(g_server_pid_path.c_str());
   // The FIFO is deliberately NOT unlinked: it persists across sessions and the
   // persistent server keeps its fd open on this inode.
 
@@ -428,7 +441,8 @@ ServerStart start_lim_server_if_needed() {
 }
 
 bool wait_for_server_ready(long timeout_ms) {
-  return wait_for_file(INOTIFY_DIR, "lim.server_ready", true, timeout_ms);
+  init_runtime_paths();
+  return wait_for_file(g_inotify_dir.c_str(), "lim.server_ready", true, timeout_ms);
 }
 
 // --- Browser Connection Status Checking ---
@@ -499,6 +513,7 @@ void disable_browser_output() {
 }
 
 bool prompt_for_browser_connection() {
+  init_runtime_paths();
   message("Load this URL in your browser or reload");
   message(":\n");
   message("  \033[1;35m" + get_viewer_url() + "\033[0m\n");
@@ -507,7 +522,7 @@ bool prompt_for_browser_connection() {
   // (the server unlinks it on last disconnect), so an existing marker means
   // the browser connected in the window after the HTTP check above -- return
   // immediately instead of waiting for an event that will never come.
-  if (wait_for_file(INOTIFY_DIR, "lim.browser_ready", true)) {
+  if (wait_for_file(g_inotify_dir.c_str(), "lim.browser_ready", true)) {
     return true;
   }
 

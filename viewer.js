@@ -1855,7 +1855,7 @@
         function connect() {
             const pageHost = window.location.host;
             const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            let ws = new WebSocket(proto + '//' + pageHost + '/ws');
+            let ws = new WebSocket(proto + '//' + pageHost + '/ws?token=' + encodeURIComponent(LIM_WS_TOKEN));
 
             ws.onopen = () => {
                 statusDiv.textContent = speedInfo || 'Ready';
@@ -2067,12 +2067,17 @@
         }
 
 
+
         // LIM_INLINE_LATEX_ENABLED: overridden by limServer.py (via LIM_INLINE_LATEX env var).
         // 1 = default: inline $...$ renders when the candidate doesn't abut
         // whitespace (which leaves adjacent-env-var pairings like "$HOME $PATH"
         // literal), contains no backticks, and parses as math; 0 = never render
         // inline $...$.  Code regions are never treated as math in either mode.
         var LIM_INLINE_LATEX_ENABLED = 1;
+
+        // LIM_WS_TOKEN: overridden by limServer.py.  Required for the /ws
+        // upgrade so other local users cannot read the stream (issue 8).
+        var LIM_WS_TOKEN = "";
 
         // Wire the export button now that the page's script-src no longer
         // permits inline onclick="..." handlers.  The button is in the DOM
