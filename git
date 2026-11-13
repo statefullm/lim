@@ -14,6 +14,20 @@
 # git expects there -- a planted commondir or config.worktree, or a name no
 # specific protection covers.
 #
+# In a shared repo the wrapper also runs your git in a Landlock sandbox:
+# writes only under /home/$LIM_AI_USER (plus /dev/null and /dev/tty), no
+# new privileges (so sudo cannot run inside). The group-write window below
+# keeps the known plant names inert; the sandbox additionally confines any
+# code an unknown trick makes git run as you: it cannot write your files
+# or use your sudo (it can still read them and reach the network).
+# Default on; set LIM_GIT_SANDBOX=0 to disable. The full policy needs
+# kernel >= 6.7 and setpriv from util-linux >= 2.40; without them the
+# wrapper warns per invocation and runs git unsandboxed (the group-write
+# window still stops the known write-through class). Inside the sandbox,
+# git's own writes and those of its children (editor, pager, hooks,
+# credential helpers) to anything outside /home/$LIM_AI_USER -- global
+# config, editor history, credential caches -- fail; that is the point.
+#
 # A plain pass-through everywhere else -- in particular when run as
 # $LIM_AI_USER: same command, output, and exit code, and no sudo attempt
 # at all, so the LLM can never gain a chown path through it.
@@ -275,7 +289,39 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ]; then
     fi
 fi
 
-"$GIT_BIN" "$@"
+# Sandbox: when this invocation reaches a shared
+# gitdir, run git under Landlock so it can write only under
+# /home/$AI_USER (plus /dev/null and /dev/tty). Reads and execution stay
+# unrestricted; 'no new privileges' keeps sudo from running inside. The
+# group-write window above keeps the known plant names inert; the sandbox
+# confines any code an unknown trick makes git run as you. The policy is
+# probed per invocation with the same full access set W: setpriv refuses
+# an access the kernel's Landlock ABI lacks rather than dropping it, so
+# probing a subset would pass on an older kernel and fail before git
+# runs. W carries refer (git's lockfile+rename) and truncate (in-place
+# rewrites such as COMMIT_EDITMSG); interactive terminal output needs no
+# rule (Landlock does not restrict tty writes -- verified on this
+# kernel). Unavailable: warn, run unsandboxed. Default on;
+# LIM_GIT_SANDBOX=0 disables.
+if [ -n "$user" ] && [ "$user" != "$AI_USER" ] && [ -n "$gw_d1" ] && [ "${LIM_GIT_SANDBOX:-1}" != "0" ]; then
+    W=write-file,remove-dir,remove-file,make-char,make-dir,make-reg,make-sock,make-fifo,make-block,make-sym,refer,truncate
+    landlock_ok() {
+        setpriv --landlock-access "fs:$W" \
+            --landlock-rule path-beneath:write-file:/dev/null /usr/bin/true 2>/dev/null
+    }
+    if landlock_ok; then
+        setpriv --landlock-access "fs:$W" \
+            --landlock-rule "path-beneath:$W:/home/$AI_USER" \
+            --landlock-rule path-beneath:write-file:/dev/null \
+            --landlock-rule path-beneath:write-file:/dev/tty \
+            "$GIT_BIN" "$@"
+    else
+        echo "git: wrapper: WARNING: Landlock sandbox unavailable (needs kernel >= 6.7 and setpriv from util-linux >= 2.40): git runs unsandboxed -- the group-write window still stops writes through planted gitdir names, but code git runs is not confined to /home/$AI_USER. Set LIM_GIT_SANDBOX=0 to disable the sandbox and this warning" >&2
+        "$GIT_BIN" "$@"
+    fi
+else
+    "$GIT_BIN" "$@"
+fi
 rc=$?
 
 # The gitdir top-level state files git rewrites when committing (via
