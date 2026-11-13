@@ -1045,7 +1045,10 @@ TokenGenerator::Result TokenGenerator::generate() {
       }
 
       if (safe_len > print_pos_) {
-        unprinted_text_.append(generated_text_.data() + print_pos_, safe_len - print_pos_);
+        // unprinted_text_ is a display buffer, so strip terminal control
+        // characters once here (issue 9): it covers every stdout flush of it
+        // below (and the browser path, which is unaffected by the removal).
+        unprinted_text_ += terminal_safe(string(generated_text_.data() + print_pos_, safe_len - print_pos_));
         print_pos_ = safe_len;
       }
 
@@ -1095,7 +1098,8 @@ TokenGenerator::Result TokenGenerator::generate() {
       }
 
       if (safe_len > print_pos_) {
-        string think_output = generated_text_.substr(print_pos_, safe_len - print_pos_);
+        // Strip terminal control characters before display (issue 9).
+        string think_output = terminal_safe(generated_text_.substr(print_pos_, safe_len - print_pos_));
         if (think_buffering_) {
           _strip_think_and_tool_tags(think_output);
           bool found_content = false;

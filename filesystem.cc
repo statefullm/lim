@@ -782,6 +782,7 @@ void log_tool_diagnostic(const string& message, bool debugOnly /* = false */,
   if (!chat_log.is_open()) return;
 
   string final_message = tag.empty() ? message : tag + " " + message;
+  final_message = terminal_safe(final_message);  // issue 9: strip terminal control chars
 
   if (!debugOnly || is_debug) {
     // Write to chat_log
@@ -815,6 +816,7 @@ void log_diagnostic(const string& message, bool logOnly /* = false */, bool debu
 
   // Prepend tag if provided
   string final_message = tag.empty() ? message : tag + " " + message;
+  final_message = terminal_safe(final_message);  // issue 9: strip terminal control chars
 
   if (!logOnly) {
     if (!debugOnly || is_debug) {

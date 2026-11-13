@@ -89,6 +89,28 @@ static inline void consoleMarkNewline(bool ended_with_nl) {
   g_stdout_ended_with_newline = ended_with_nl;
 }
 
+// Strip terminal control characters (security issue 9). Model text and tool
+// output can carry C0 control bytes (from fetched web/file/exec content);
+// written to the terminal as-is, injected text could emit ANSI/OSC escape
+// sequences -- change the window title, add OSC 8 hyperlinks, hide text, or
+// set the clipboard on terminals that allow OSC 52. Keep '\n' and '\t'; drop
+// every other C0 byte (ESC in particular) and DEL. Bytes >= 0x80 are left
+// untouched so UTF-8 multibyte sequences survive (a C0 byte never occurs
+// inside one, so this is UTF-8 safe).
+inline std::string terminal_safe(const std::string& in) {
+  std::string out;
+  out.reserve(in.size());
+  for (unsigned char c : in) {
+    if (c < 0x20) {
+      if (c == '\n' || c == '\t') out.push_back(static_cast<char>(c));
+      // else: drop the other C0 controls, including ESC
+    } else if (c != 0x7f) {
+      out.push_back(static_cast<char>(c));
+    }
+  }
+  return out;
+}
+
 // --- Diagnostic Output ---
 void diag(const std::string& msg, const char* color);
 

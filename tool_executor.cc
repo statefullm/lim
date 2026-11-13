@@ -202,6 +202,9 @@ ToolExecutor::Result ToolExecutor::execute(
     if (is_debug) {
       console(operator_turn ? "\n\033[91m[Operator]\033[0m\n" : "\n\033[92m[Tool Result]\033[0m\n");
       string result_to_print = operator_turn ? tool_out.content : tool_out.display;
+      // Strip terminal control characters from tool output (issue 9) so
+      // injected content cannot emit ANSI/OSC sequences to the terminal.
+      result_to_print = terminal_safe(result_to_print);
       static constexpr size_t STDOUT_TRUNCATE_LIMIT = 500;
       if (should_output_to_stdout() && result_to_print.length() > STDOUT_TRUNCATE_LIMIT) {
         size_t original_len = result_to_print.length();
