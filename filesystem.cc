@@ -979,6 +979,14 @@ static int open_query_listener(uint64_t* ino, uint64_t* dev) {
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", kAishareQueryPath);
     if (bind(lfd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0) {
       if (listen(lfd, 4) < 0) { close(lfd); return -1; }
+      // CLOEXEC: forked children inherit this fd table.  limServer.py is
+      // persistent and execs without closing fds; without CLOEXEC it would
+      // keep this listener alive after lim's death, and the next lim's
+      // probe would see it as a live lim (connect succeeds) instead of a
+      // stale socket (ECONNREFUSED).  exec_shell scripts and the
+      // searxng/docling services exec too and are covered the same way.
+      fcntl(lfd, F_SETFD, FD_CLOEXEC);
+
       // The sharing user (a member of the LLM user's group) must connect;
       // the LLM owns the path and can open it too, but is rejected by the
       // uid check below, so the mode is not an auth boundary.
