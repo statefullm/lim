@@ -27,6 +27,11 @@
 # git's own writes and those of its children (editor, pager, hooks,
 # credential helpers) to anything outside /home/$LIM_AI_USER -- global
 # config, editor history, credential caches -- fail; that is the point.
+# git's temp area is redirected to /home/$LIM_AI_USER/.git-tmp (the
+# sandbox blocks /tmp) so subcommands that create scratch files
+# (difftool, ...) keep working; /dev/shm also stays writable (Python
+# multiprocessing hardwires it -- e.g. meld; world-writable tmpfs, so
+# nothing is gained that the LLM user lacks).
 #
 # A plain pass-through everywhere else -- in particular when run as
 # $LIM_AI_USER: same command, output, and exit code, and no sudo attempt
@@ -310,8 +315,24 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ] && [ -n "$gw_d1" ] && [ "${LIM_GI
             --landlock-rule path-beneath:write-file:/dev/null /usr/bin/true 2>/dev/null
     }
     if landlock_ok; then
+        # The sandbox blocks git's default temp area (/tmp): hand the
+        # sandboxed command its own scratch directory (difftool and
+        # friends create temp files via get_tempdir()). /dev/shm stays
+        # writable because Python multiprocessing (named semaphores,
+        # shared memory) hardwires it -- e.g. meld's diff workers; it
+        # is a world-writable tmpfs, so nothing is gained that the
+        # LLM user could not already do there. XDG data and cache homes
+        # are redirected under the scratch dir too (difftool's tools --
+        # meld and friends -- keep their state there); XDG_CONFIG_HOME
+        # is left alone: git reads it as the global config.
+        mkdir -m 1775 -p "/home/$AI_USER/.git-tmp" 2>/dev/null
+        mkdir -p "/home/$AI_USER/.git-tmp/xdg-data" "/home/$AI_USER/.git-tmp/xdg-cache" 2>/dev/null
+        TMPDIR="/home/$AI_USER/.git-tmp" \
+        XDG_DATA_HOME="/home/$AI_USER/.git-tmp/xdg-data" \
+        XDG_CACHE_HOME="/home/$AI_USER/.git-tmp/xdg-cache" \
         setpriv --landlock-access "fs:$W" \
             --landlock-rule "path-beneath:$W:/home/$AI_USER" \
+            --landlock-rule "path-beneath:$W:/dev/shm" \
             --landlock-rule path-beneath:write-file:/dev/null \
             --landlock-rule path-beneath:write-file:/dev/tty \
             "$GIT_BIN" "$@"
