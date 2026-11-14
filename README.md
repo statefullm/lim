@@ -56,7 +56,7 @@ LIM avoids this by design: it runs locally as a single persistent process where 
 3. A GGUF model file (e.g., Qwen, Llama, Mistral).
 4. Optional: [SearXNG](https://github.com/searxng/searxng) for web search and [Docling](https://github.com/DS4SD/docling) for PDF reading. LIM auto-starts them on demand; override the commands with `LIM_SEARXNG_CMD` / `LIM_DOCLING_CMD` (see **Web Search & PDF Setup** below).
 
-> **Note:** llama.cpp is bundled as a git subrepo with four patches applied in-tree: recurrent state checkpointing for instant `/undo` on hybrid models, UTF-8 robustness, MTP support (`LIM_MTP` on `qwen4exp`), and Q8_0 KV flash-attention. The matching `*.patch` files are kept as records so a future `git subrepo pull` can re-derive them.
+> **Note:** llama.cpp is bundled as a git subrepo with four in-tree patches (kept as `*.patch` files): recurrent state checkpointing for instant `/undo` on hybrid models, UTF-8 robustness, MTP support (`LIM_MTP` on `qwen4exp`), and Q8_0 KV flash-attention.
 
 ---
 
@@ -108,21 +108,16 @@ This installs:
 - Browser server files (`limServer.py`, `viewer.html`, `viewer.js`, `libs/`) to `~/.config/lim/`
 - VS Code extension (built, then installed into this user's VS Code via `code`)
 
-All LIM configuration files live under `~/.config/lim/` by default. Override with the `LIM_CONFIG_DIR` environment variable (set in `$LIM_AI_USER`'s `.bashrc`) to place them elsewhere:
-
-```bash
-# As $LIM_AI_USER
-export LIM_CONFIG_DIR=/opt/lim/config
-make install
-```
-
-The `LIM_CONFIG_DIR` is read at runtime, so no recompilation is needed.
+All LIM configuration files live under `$LIM_CONFIG_DIR`, which defaults
+to `~/.config/lim/`.
 
 ---
 
 ## User Setup
 
 The dedicated LLM user is controlled by the `LIM_AI_USER` environment variable (defaults to `ai`). All references below use `$LIM_AI_USER`. The group name always matches the user name.
+
+The minimum for a first session is step 1 (creating the user), step 3 (denying cron/at), and steps 5 and 6 (connecting, bashrc): LIM is fully usable inside the AI's home without any of the sharing setup. Steps 2 and 4 are only needed to point it at your own project directories.
 
 ### 1. Creating the AI User
 
@@ -151,7 +146,7 @@ Log out and back in (or run `newgrp $LIM_AI_USER`) for the group change to take 
 
 Git refuses to operate in a repository owned by a different user ("detected dubious ownership"). Shared repos need no `safe.directory` entry for your personal user: `aishare` leaves the checkout and its stored gitdir owned by you. The refusal is also a security layer -- it keeps a gitdir the LLM created or swapped inert -- so do not add a blanket entry (`directory = /home/$LIM_AI_USER`, `*`).
 
-The LLM account needs its own entry so LIM can run git in your user-owned repos (the check fires for the LLM too). In `$LIM_AI_USER`'s `~/.gitconfig`:
+The LLM account needs its own entry so LIM can run git in your user-owned repos; in `$LIM_AI_USER`'s `~/.gitconfig` add (replacing `$USER` with your own username):
 
 ```bash
 [safe]
@@ -161,14 +156,12 @@ The LLM account needs its own entry so LIM can run git in your user-owned repos 
 
 ### 3. Deny Cron and At
 
-The LLM must not be able to schedule delayed jobs (a cron job could fire during an `aishare` run and race its ownership changes, since its process is a child of `crond` and invisible to the sweep). Add the LLM user to the system deny lists:
+The LLM must not be able to schedule delayed jobs (they could fire during an `aishare` run and race its ownership changes). Add the LLM user to the system deny lists:
 
 ```bash
 echo $LIM_AI_USER | sudo tee /etc/cron.deny
 echo $LIM_AI_USER | sudo tee /etc/at.deny
 ```
-
-This is enforced by the `crontab`/`at` binaries themselves (root-owned files in `/etc`); the LLM cannot bypass it.
 
 ### 4. Directory Permissions
 
@@ -181,35 +174,16 @@ drwxrwsr-x. 42 $USER $LIM_AI_USER 4096 Jan  1 00:00 /home/$LIM_AI_USER/
 
 The setgid bit (`s`) ensures new files inherit the `$LIM_AI_USER` group.
 
-To set permissions in any project directory, copy `aishare` from this repository to your personal `/home/$USER/bin/`:
+**Copy the tools.** Copy `aishare` (grants a directory tree to the LLM) and the `git` wrapper (protects your git runs in shared repos) from this repository to your personal `/home/$USER/bin/`; the wrapper must come ahead of the real git in your `PATH` (check with `type git`):
 
 ```bash
 cp aishare /home/$USER/bin/
-```
-
-Also copy the `git` wrapper from this repository to `/home/$USER/bin/` (it must come ahead of the real git in your `PATH` -- check with `type git`). It locates the real git automatically -- the first *other* `git` in your `PATH`, each entry resolved physically so a `.` or a symlink pointing at its own directory is skipped and it never invokes itself -- and `LIM_GIT_BIN` forces a specific binary if needed:
-
-```bash
 cp git /home/$USER/bin/
 ```
 
-In a shared repo -- its gitdir under `/home/$LIM_AI_USER`, in the store or an in-place bare/custom-named gitdir, however git is pointed at it (your working directory, `git -C <dir>`, `--git-dir`, or `GIT_DIR` from anywhere) -- the wrapper temporarily removes group write from the gitdir and deletes any symlinks the LLM planted (git never creates symlinks there; a planted one would let git write through it to a file the LLM chose). Removing group write first means the LLM cannot re-plant a symlink between the removal and git's in-place write (reflogs, `MERGE_MSG`, ...). Group write is restored as soon as git exits -- except on the `config`, `config.worktree`, `commondir`, `gitdir` and `hooks` names that `aishare` keeps not group-writable, which stay protected -- so the LLM is only blocked for the duration of your command. The window is announced to the LLM with `/var/tmp/lim.gw.lock` (pid + starttime inside; the same mechanism as `aishare`'s lock -- created before the removal, removed after the restore, on every exit path): the LLM's git (the `git()` function in its `~/.bashrc`) waits on it, so a concurrent LLM git write no longer fails with `Permission denied` on a git lock file as if the share were broken; a stale lock (dead or reused pid), or one held by a process that is not a live wrapper of yours, is taken over, and only a lock naming a live wrapper of yours is joined -- so the run always proceeds protected, never unprotected. The wrapper then re-shares the gitdir's volatile state files (`index`, `HEAD`, ...) with `$LIM_AI_USER` (via the `aishare-helper` sudo rule below), so the LLM is never blocked waiting for an `aishare` re-run; elsewhere it is a plain pass-through -- as is every invocation by the LLM user (never sudo).
+The wrapper locates the real git automatically (the first *other* `git` in your `PATH`) unless `$LIM_GIT_BIN` forces a specific binary. In a shared repo it briefly protects the gitdir from the LLM for the duration of your command, runs your git in a Landlock sandbox (disable with `LIM_GIT_SANDBOX=0`), and re-shares the gitdir's state files afterwards, so neither side gets blocked.
 
-The wrapper also runs your git in a Landlock sandbox by default: when a command reaches a shared gitdir, git can write only under `/home/$LIM_AI_USER` (plus `/dev/null` and `/dev/tty`), with no new privileges, so code git is tricked into running cannot write your files or use your `sudo` (it can still read them and reach the network). Inside the sandbox, writes by git and its children (editor, pager, hooks, credential helpers) to anything outside `/home/$LIM_AI_USER` -- global config, editor history, credential caches -- fail; that is the point of the confinement. Set `LIM_GIT_SANDBOX=0` to disable the sandbox. The wrapper redirects the sandboxed git's temp area to `/home/$LIM_AI_USER/.git-tmp` (the sandbox blocks `/tmp`), so subcommands that create scratch files, such as `git difftool`, keep working. The sandbox needs kernel >= 6.7 and `setpriv` from util-linux >= 2.40; on older systems the wrapper warns per invocation and runs git unsandboxed (the group-write window above still stops the discovered write-through class).
-
-Then run it on any directory under `/home/$LIM_AI_USER` that you want the AI to access -- or with no argument, on the current directory:
-
-```bash
-aishare /home/$LIM_AI_USER/project
-```
-
-It sets ownership to `$USER:$LIM_AI_USER` (via `sudo`), grants group read/write and setgid, and clears the sticky bit. While running, it blocks the LLM's `exec_shell` (the LLM's other tools keep working) and suspends the LLM's `exec_shell` command trees -- in-flight and previously backgrounded -- resuming them when done, so the LLM cannot race the ownership changes. The block is a lock file, `/var/tmp/lim.aishare.lock`, created by `aishare` and removed in its exit trap: pure mutual exclusion between `aishare` runs (`lim` never reads it), and the sticky `/var/tmp` stops the LLM from removing or replacing it. An existing lock -- a concurrent `aishare`, or one left by an interrupted run -- aborts the run: wait for it to finish and re-run, or `rm /var/tmp/lim.aishare.lock` if no `aishare` is running.
-
-The suspension has two parts, each covering the other's one blind spot. **(1) The marker sweep.** Every process an `exec_shell` call started carries an open fd to that call's marker file (`/tmp/lim_execfd_*`, opened as the first line of the command script, before anything else runs): `aishare` asks the root helper to stop every `$LIM_AI_USER` process holding one (`aishare-helper sweep-stop`) and resumes them (SIGCONT) in its exit trap. The fd survives backgrounding, `setsid`, orphaning and `exec`, so the sweep catches in-flight and leftover trees alike -- including setsid'd members that left their process group -- and nothing outside an `exec_shell` command tree can carry the fd, so `lim` itself, your terminal, and the long-lived services keep running. Its one blind spot -- a process that explicitly closes the fd (a daemon that closes all fds) -- exists only once that process is orphaned, and while `lim` runs part (2) covers it. **(2) The LOCK.** With a live `lim`, `aishare` also sends `LOCK` over `lim`'s Unix socket (`/var/tmp/lim.query`): `lim` blocks new `exec_shell` calls at its in-memory gate (they wait, bounded by 15 minutes, after which they report the stale lock) and SIGSTOPs the `exec_shell` process groups it records in memory (idempotent), and the exit-trap `UNLOCK` reverses both. The record and the gate live in `lim`'s memory -- any file `lim` writes is writable by the LLM's own commands, so a file cannot be trusted -- and the exchange is authenticated both ways: `lim` accepts only a peer whose kernel-attested `SO_PEERCRED` uid is the sharing user's (the owner of `/home/$LIM_AI_USER`, which the LLM cannot chown), and `aishare` accepts only a peer whose pid and uid are `lim`'s and whose `/proc` starttime still matches the snapshot it took before locking -- a socket the LLM bound at the same path, or a recycled pid, cannot answer. Because the record and the gate are in `lim`'s memory, the run requires `kernel.yama.ptrace_scope` of 1-3 (check: `cat /proc/sys/kernel/yama/ptrace_scope`; set, persistently: `echo "kernel.yama.ptrace_scope = 1" | sudo tee /etc/sysctl.d/60-yama-ptrace.conf && sudo sysctl --system`): at `0` the LLM could ptrace `lim` and rewrite them, so `aishare` refuses to run while `lim` is active, and `lim` warns at startup. With no `lim` running there is nothing to lock: the sweep is the whole suspension, covering the trees a crashed `lim` left behind (its exit cleanup then did not run). When `lim` exits, its still-recorded `exec_shell` process groups are terminated (SIGTERM, so orphaned background jobs do not outlive the session) and it removes the socket. Recovery: if `aishare` is killed while locked, `rm /var/tmp/lim.aishare.lock` and re-run it -- its `LOCK` is idempotent, its exit `UNLOCK` releases the group stop, and its sweep-and-resume covers the processes the killed run stopped; if `lim` is killed or restarted while `aishare` runs, the `UNLOCK` fails and `aishare` warns -- the trees stay suspended until the next `aishare` run (while `lim` is running) or `sudo /usr/local/bin/aishare-helper cont <pids>`.
-
-Re-run `aishare` in a directory whenever you add new files or directories to it -- a new git repo included. New entries you create inherit the `$LIM_AI_USER` group (via setgid) but usually not the group-write bit (your umask), so the AI can read them but not write until `aishare` re-grants group read/write. For a new repo, the re-run is also what moves its gitdir into the store and applies the protection below.
-
-`aishare` and the wrapper need one passwordless `sudo` rule, added once to your sudoers (`sudo visudo`, or a drop-in file in `/etc/sudoers.d/`). It allows only a small root-owned helper, `aishare-helper` (in the LIM repo), which performs the operations below and re-validates every path itself: it refuses any path that leaves `/home/$LIM_AI_USER` lexically or has a symlink component -- a bare `chown ... /home/$LIM_AI_USER/*` rule cannot, because in sudoers `*` matches `/` and `..` -- and the chown identities it may set are fixed inside it. Install the helper before the first `aishare` run (mode 0700, root-owned, so the LLM user cannot modify its checks):
+**Install the sudo helper.** `aishare` and the wrapper need one passwordless `sudo` rule, added once to your sudoers (`sudo visudo`, or a drop-in in `/etc/sudoers.d/`). It allows only a small root-owned helper, `aishare-helper` (in the LIM repo), which re-validates every path itself and only the fixed chown identities (a bare `chown ... /home/$LIM_AI_USER/*` rule is not safe -- see [SECURITY.md](SECURITY.md)). Install it before the first `aishare` run (mode 0700, root-owned, so the LLM user cannot modify its checks):
 
 ```bash
 sudo install -m 0700 aishare-helper /usr/local/bin/aishare-helper
@@ -221,18 +195,23 @@ Substitute your username for `$USER`:
 $USER ALL=(root) NOPASSWD: /usr/local/bin/aishare-helper
 ```
 
-The helper performs the operations aishare and the wrapper need: setting ownership to `$USER:$LIM_AI_USER` (recursively over the shared trees, including any planted hook aishare re-owns before disabling it, and non-recursively over the home dir itself on a home-level run); handing each gitdir's state files (`HEAD`, `index`, ...) to `$LIM_AI_USER` with `chown -h`, so the `chown` acts on the name itself and cannot follow a symlink the LLM planted under one of those names; pinning and unpinning `.git` pointer files; and, during an aishare run, suspending the LLM's `exec_shell` command trees: `sweep-stop` stops every LLM-user process carrying an `exec_shell` marker fd (the mechanism above) and prints the pids for aishare to resume, while `stop`/`cont` suspend/resume given PIDs by hand (only PIDs owned by the LLM user are accepted).
+**Set `ptrace_scope`.** While `lim` is running, `aishare` requires `kernel.yama.ptrace_scope` of 1-3 (at `0` it refuses to run, and `lim` warns at startup). Check with `cat /proc/sys/kernel/yama/ptrace_scope`; to set it persistently:
 
-Since git runs code from a gitdir's `config` (core.hooksPath, credential.helper, core.sshCommand, ...) and from its `hooks`, the LLM must never be able to swap a repo's gitdir for one of its own. The git side of aishare:
+```bash
+echo "kernel.yama.ptrace_scope = 1" | sudo tee /etc/sysctl.d/60-yama-ptrace.conf && sudo sysctl --system
+```
 
-- **The gitdir is moved, the checkout is not.** Each checkout's `.git` directory is moved into a store at `/home/$LIM_AI_USER/.gitstore` (mirroring the path) and replaced with the `gitdir:` pointer file git itself uses for worktrees, pinned immutable (`sudo /usr/local/bin/aishare-helper chattr +i`). The store is group-traversable but not group-writable, so the stored gitdir cannot be renamed or deleted; the `.git` file looks exactly like git's own worktree pointer, so anything that goes through git is unaffected. If `chattr` is not available on the filesystem the pin fails and aishare warns.
-- **Before re-owning anything**, aishare checks that every `.git` pointer resolves to an existing gitdir owned by you, and it refuses to share (no chown, non-zero exit) if any gitdir it would re-own is not owned by you or the LLM and carries an executable hook or config directive -- a plant, left inert under git's ownership check until you remove it. A LLM-owned gitdir (e.g. a repo the LLM cloned) is shared, but its `config`, `config.worktree`, `commondir`, and `hooks/` are reset (unlinked and recreated with fresh inodes) after the chown so any plant the LLM left -- and any file descriptors it still holds open -- are invalidated; `remote.*` and `branch.*` settings are preserved (dropping `ext::` URLs, which run a command).
-- **Inside every gitdir**, `config` and `hooks` are owner-owned and not group-writable (pre-created if absent, so the LLM cannot create its own); the state files (`HEAD`, `index`, `packed-refs`, ...) are kept owned by `$LIM_AI_USER`, and the LLM can still create new files (lockfiles, loose objects) -- so its commits keep working. Two corollaries: LLM-side git commands that need to *write* the config (e.g. `git submodule init`) fail until you make the change yourself, and when you run a git command that rewrites the state files (commit, add, rebase, gc, fetch), the `git` wrapper above re-shares them automatically; if a rewrite bypassed the wrapper (your editor's own git, a script that calls the real git directly, ...), the next git command you run in the repo (even just `git status`) re-shares it.
-- **Two more files in each gitdir are locked down.** Besides `config` and `hooks`, git reads a gitdir's `commondir` and `config.worktree` files, and a file the LLM planted at either name would make your git run the LLM's config. aishare pre-creates both, owner-owned and not group-writable; if it finds a planted one it neutralizes it and warns you -- then remove the gitdir the `commondir` named, or re-add any legitimate per-worktree config. aishare and the git wrapper also report any top-level file in a stored gitdir that is not owned by you -- if you see such a report, review and remove the file.
-- **Planted hooks are disabled, not removed**: an executable, non-sample hook not owned by you is warned about, stripped of its executable bit, and frozen; if it is legitimate restore it with `chmod +x`. If aishare could not disable a hook, it reports that explicitly: the hook is still executable -- review it before your next commit. A symlink in a hooks dir that is not yours is flagged but left in place, since disabling it would act on whatever it points to, which might be your own script.
-- **Re-run `aishare`** after creating worktrees or submodules (new pointers are not yet pinned), and to re-pin after unpinning: a git operation that must rewrite or delete a pinned pointer (e.g. `git submodule deinit`, `git worktree remove`) fails until you unpin it (`sudo /usr/local/bin/aishare-helper chattr -i` on the `.git` file). Bare repos and custom-named gitdirs (`git init --separate-git-dir`) stay in place and get the in-place protection above; the `git` wrapper protects their gitdir like a stored one (symlink pre-check, state-file re-share) when you run git in them. Store entries left behind by a move can be deleted by hand.
+**Share a directory.** Run `aishare` on any directory under `/home/$LIM_AI_USER` you want the AI to access -- or with no argument, on the current directory:
 
-It refuses targets outside `/home/$LIM_AI_USER` and the store itself. When run on `/home/$LIM_AI_USER`, it fixes permissions on the home directory itself plus all top-level entries, skipping `.ssh` and `.gitstore`.
+```bash
+aishare /home/$LIM_AI_USER/project
+```
+
+It sets ownership to `$USER:$LIM_AI_USER` (via `sudo`), grants group read/write and setgid, and clears the sticky bit. While running, it blocks the LLM's `exec_shell` (its other tools keep working) and suspends the LLM's `exec_shell` command trees -- in-flight and previously backgrounded -- resuming them when done, so the LLM cannot race the ownership changes. A lock file, `/var/tmp/lim.aishare.lock`, provides mutual exclusion between `aishare` runs; an existing lock aborts the run -- wait for the other run to finish, or `rm /var/tmp/lim.aishare.lock` if no `aishare` is running.
+
+Re-run `aishare` in a directory whenever you add new files or directories to it -- a new git repo included. New entries you create inherit the `$LIM_AI_USER` group (via setgid) but usually not the group-write bit (your umask), so the AI can read them but not write until `aishare` re-grants group read/write. Also, `aishare` applies the git protections described in [SECURITY.md](SECURITY.md).
+
+`aishare` will not operate on target directories outside `/home/$LIM_AI_USER`.
 
 ### 5. Connecting and Running LIM
 
@@ -276,7 +255,7 @@ coder
 
 #### Core Pinning (taskset)
 
-LIM automatically detects P-cores and E-cores on hybrid CPUs (Intel Alder Lake, Raptor Lake, etc.) by comparing `thread_siblings_list` from sysfs. It pins background services accordingly:
+LIM automatically detects P-cores and E-cores on hybrid CPUs (Intel Alder Lake, Raptor Lake, etc.) and pins background services accordingly:
 
 | Workload | Default Cores | Description |
 |---|---|---|
@@ -364,13 +343,13 @@ export PATH="$HOME/bin:$PATH"
 
 LIM resolves relative paths -- in the file tools and in `exec_shell` -- against its current working directory. That directory starts as the launch directory; it changes only on an empty context via `/cd` or `/load`, and is given to the LLM in the system prompt: a `cd` inside an `exec_shell` command is local to that command. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
 
-Note: `relim` needs a patched `reptyr`: vanilla 0.10.0 can hang silently while attaching a multithreaded target, because it sends SIGCONT before reaping the attach stop, which can cancel that stop so the unbounded wait never returns. `reptyr-attach-retry.patch` (this repository) sends the SIGCONT only after the attach stop is reaped and bounds the wait (a real failure reports `Connection timed out` instead of hanging), making reattach reliable. Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
+Note: `relim` needs a patched `reptyr` -- vanilla 0.10.0 can hang silently when attaching a multithreaded target. `reptyr-attach-retry.patch` (this repository) fixes the hang and bounds the wait (a real failure reports `Connection timed out`). Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
 ### 7. The System Prompt
 
 The system prompt lives at `~/.config/lim/prompt`. A default `prompt` file ships with this repository and is installed to that location by `make install`. This file is read at startup and baked into the KV-cache (and re-read from disk on `/clear` and `/reincarnate`). It defines the LLM's behavior: available tools, editing workflow, formatting rules, etc. You can customize it for different use cases (coding assistant, writer, researcher, etc.). An optional directory-specific file `localprompt` (with a fallback to `$LIM_CONFIG_DIR/localprompt`) will be prepended to the system prompt.
 
-**Reasoning effort:** For models that support reasoning-effort steering, you can add a reasoning effort instructions to `localprompt`, matching how Qwen's own template places its reasoning instructions. The suggested Qwen 3.8 instructions are:
+**Reasoning effort:** For models that support reasoning-effort steering, add a reasoning-effort instruction to `localprompt`, matching how Qwen's own template places it. Suggested Qwen 3.8 instructions:
 
 - `Reasoning effort is set to xhigh. Please think carefully through the task, validate key assumptions, consider plausible alternatives, and prioritize correctness, consistency, and clarity in the final answer.`
 - `Reasoning effort is set to low. Keep your thinking brief and focused, moving directly to the conclusion without unnecessary elaboration.`
@@ -421,16 +400,16 @@ Set via `LIM_OUTPUT`:
 | Variable | Default | Description |
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
-| `LIM_GIT_SANDBOX` | `1` | `git` wrapper: run your git in a Landlock sandbox (writes only under `/home/$LIM_AI_USER`, no new privileges) when a command reaches a shared repo, confining code git is tricked into running. Set to `0` to disable; see **User Setup** for the requirements and consequences. |
+| `LIM_GIT_SANDBOX` | `1` | `git` wrapper: run your git in a Landlock sandbox when a command reaches a shared repo (writes only under `/home/$LIM_AI_USER`, no new privileges). Set to `0` to disable; see **User Setup** and [SECURITY.md](SECURITY.md). |
 | `LIM_CACHE_DIR` | `.cache` | Directory for fast restore KV-cache files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
-| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`). Runtime files are also created here: `lim.fifo`, `lim.server_ready`, `lim.browser_ready`, `lim.server.pid`, and `lim.viewer_url` (the tokenized viewer URL, mode 0640; see **Browser Output**). The C++ binary starts `python3 $LIM_CONFIG_DIR/limServer.py` on first need when browser output is enabled (the server then persists across sessions). Override to place everything elsewhere. |
+| `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`) and runtime files (`lim.fifo`, `lim.server_ready`, `lim.browser_ready`, `lim.server.pid`, `lim.viewer_url` -- the tokenized viewer URL, mode 0640; see **Browser Output**). The C++ binary starts the browser server from here on first need (it then persists across sessions). Override to place everything elsewhere. |
 | `LIM_LOG_DIR` | `log` | Directory for session logs, token traces, and autosave files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
 | `LIM_SAVE_DIR` | `.` | Directory prepended to relative paths in `/save`, `/load`, `/delete`, and the CLI restore argument. Absolute paths (starting with `/`) are unaffected. |
 | `LIM_HOST` | unset | Hostname or IP of your LIM server. Used for the SSH connection; the viewer is always reached via localhost (through the SSH port forward when remote). |
 | `LIM_PORT` | `8765` | Port for the browser WebSocket server (listens on `127.0.0.1` only; the SSH tunnel's remote side uses the same port) |
 | `LIM_OUTPUT` | `2` | Output mode: `0` = none, `1` = stdout only, `2` = browser only (default), `3` = both |
 | `LIM_VIEWER_URL` | *(auto: `http://localhost:<port>/viewer.html`)* | Override the base viewer URL, e.g. when the SSH tunnel's local side uses a different port. The connection token (see **Browser Output**) is appended automatically, and the `/ws` Origin check accepts this URL's origin |
-| `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content budget. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget. Set between `0.0` and `1.0` (0.0 means the default value of `0.75`). |
+| `LIM_WEB_CONTEXT_FRACTION` | `0.75` | Fraction of `LIM_CTX` reserved for fetched web content. The per-file limit (`LIM_WEB_FILE_MAX`) defaults to 25% of this budget. Set between `0.0` and `1.0`; `0.0` means the default `0.75`. |
 | `LIM_WEB_FILE_MAX` | *(auto)* | Max characters per fetched file before middle-drop truncation. Defaults to 25% of the session web budget. Set explicitly to override. |
 | `LIM_WEB_HTML_MAX` | `500000` | Max bytes to buffer when downloading HTML/text pages via curl |
 | `LIM_WEB_PDF_MAX` | `50000000` | Max bytes to buffer when downloading PDFs via curl (50 MB) |
@@ -442,16 +421,16 @@ Set via `LIM_OUTPUT`:
 | `LIM_SEARXNG_CMD` | `cd ~/searxng && exec python -m searx.webapp` | Command to start the SearxNG search service. Override if installed elsewhere. |
 | `LIM_DEBUG` | `0` | Set to `1` for verbose token-level logging in `$LIM_LOG_DIR/<N>.tokens` |
 | `LIM_LLAMA_DEBUG_LOG` | `0` | Only with `LIM_DEBUG=1`: set to `1` to also print DEBUG-level llama.cpp/ggml log lines (e.g. "CUDA Graph id N reused" on every decode). Default keeps INFO and above. |
-| `LIM_EOG_RESAMPLE_MAX` | `256` | Maximum resampling attempts when a spurious EOG is detected. When the model emits an EOG token but hasn't finished its response, LIM resamples up to this many times trying to recover a non-EOG token. Increase if you see premature turn endings. |
+| `LIM_EOG_RESAMPLE_MAX` | `256` | Maximum resampling attempts when the model emits a spurious EOG token before finishing its response. Increase if you see premature turn endings. |
 | `LIM_TOOL_IGNORE` | `100` | Maximum tokens allowed outside parameters while inside a tool call before attempting a tool correction. |
 | `LIM_GPU_LAYERS` | `-1` | Number of layers offloaded to GPU (`-1` = auto-fit all layers). When set explicitly, bypasses auto-fitting. For MoE models that exceed VRAM, auto-fit uses partial layer offloading (dense weights on GPU, sparse expert weights on CPU) for optimal throughput. |
-| `LIM_HONEST_SPEED` | `0` | Set to `1` for "honest" wall-clock speed diagnostic -- tokens / total generate() call time, including all CPU-side overhead (sampling, output rendering, tool-call detection). Default `0` reports generation time matching llama-cli's "Generation: X t/s" -- measured from first-token sample+sync to last-token sample+sync, covering N sampling operations and (N-1) decode cycles. |
+| `LIM_HONEST_SPEED` | `0` | Set to `1` for an "honest" wall-clock speed diagnostic: tokens / total generate() time, including all CPU-side overhead (sampling, output rendering, tool-call detection). Default `0` reports generation time matching llama-cli's "Generation: X t/s" (first-token to last-token sample+sync). |
 | `LIM_SPEED_INTERVAL` | `100` | Number of tokens between in-loop speed diagnostic updates. |
 | `LIM_USE_MLOCK` | `1` | Lock model in RAM to prevent swapping |
 | `LIM_USE_MMAP` | `0` | Use memory-mapped model loading (faster startup, more RAM pressure) |
 | `LIM_BATCH` | `2048` | Batch size for token feeding |
 | `LIM_CTX` | `262144` | Context window size (KV-cache token capacity) |
-| `LIM_MTP` | `0` | Set to `1` to enable MTP (multi-token-prediction) speculative decoding: a second context mirroring the main KV cache proposes up to `LIM_MTP_DRAFT` tokens per round, and the main model verifies them all in a single batch decode, so the mirror's quantization costs acceptance rate only, never output correctness. Speculation pauses when the mirror can't be kept in sync (a main decode truncated by KV exhaustion, or a fast-restore from a cache saved without MTP) or after sustained low acceptance (it auto-disables itself; `/clear` re-enables it). After a KV-exhaustion truncation, `/undo` re-enables speculation as well, provided the selected checkpoint is still covered by the mirror (it then self-heals on the next decode; no re-decode is needed). MTP is not implemented for benchmark chatbot modes 1 and 2. |
+| `LIM_MTP` | `0` | Set to `1` to enable MTP (multi-token-prediction) speculative decoding: a second context mirroring the main KV cache proposes up to `LIM_MTP_DRAFT` tokens per round, verified by the main model in a single batch decode. Speculation pauses when the mirror can't stay in sync (KV-exhaustion truncation, fast-restore from a cache saved without MTP) or after sustained low acceptance (auto-disables). Not implemented for benchmark chatbot modes 1 and 2. |
 | `LIM_MTP_BATCH` | `128` | Cap on the MTP draft context's batch size (1-512, only with `LIM_MTP=1`). Lowering it saves VRAM at the cost of a slightly slower one-time prefill mirror. The actual draft-context memory is printed at startup with `LIM_DEBUG=1`. |
 | `LIM_MTP_DRAFT` | `4` | Number of tokens proposed per MTP round (1-32, only with `LIM_MTP=1`); must not exceed the model's recurrent rollback window. The default was found to be the speed sweet spot for the Qwen3.8-27B class -- longer drafts cost more memory for diminishing acceptance gains. |
 | `LIM_MTP_SIDECAR` | *(empty)* | Path to a separate MTP-only GGUF file (only with `LIM_MTP=1`). When set, the MTP draft head is loaded from this file instead of the main model. Use this for models whose GGUF quantization omits the nextn tensors (e.g. some Qwen3.8-Flash-Next builds). The sidecar is a small GGUF containing only the MTP layer weights (~2 GB) with `nextn_predict_layers` in its metadata. |
@@ -459,14 +438,14 @@ Set via `LIM_OUTPUT`:
 | `LIM_THREADS_BATCH` | *(auto)* | Threads for batch processing (same default as `LIM_THREADS`) |
 | `LIM_UBATCH` | `512` | Unbatched size |
 | `LIM_MIN_P` | `0.0` | Minimum probability threshold: keep tokens where P >= min_p * P(top) |
-| `LIM_FREQUENCY_PENALTY` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency. Legacy name `LIM_PENALTY_FREQ` still accepted (new name wins if both set) |
-| `LIM_PRESENCE_PENALTY` | `1.5` | Presence penalty: discourages repeating previously used tokens. Legacy name `LIM_PENALTY_PRESENT` still accepted (new name wins if both set) |
-| `LIM_REPETITION_PENALTY` | `1.0` | Repetition penalty multiplier (1.0 = no penalty). Legacy name `LIM_PENALTY_REPEAT` still accepted (new name wins if both set) |
+| `LIM_FREQUENCY_PENALTY` | `0.0` | Frequency penalty: discourages overused tokens proportional to frequency |
+| `LIM_PRESENCE_PENALTY` | `1.5` | Presence penalty: discourages repeating previously used tokens |
+| `LIM_REPETITION_PENALTY` | `1.0` | Repetition penalty multiplier (1.0 = no penalty) |
 | `LIM_SEED` | *(auto)* | Random seed for reproducibility (default: random) |
-| `LIM_TEMPERATURE` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding). At `0` LIM also omits the wall-clock timestamp from the system prompt (the only session-varying prompt content), making runs byte-reproducible; the model does not know the current date/time in this mode -- pass it explicitly in the prompt if needed. Legacy name `LIM_TEMP` still accepted (new name wins if both set) |
+| `LIM_TEMPERATURE` | `0.7` | Sampling temperature (set to `0` for deterministic/greedy decoding). At `0` LIM also omits the wall-clock timestamp from the system prompt (the only session-varying prompt content), making runs byte-reproducible; the model does not know the current date/time in this mode -- pass it explicitly in the prompt if needed. |
 | `LIM_THINKING` | `1` | Set to `0` to suppress thinking blocks via a pre-filled stub for faster throughput. Not recommended for math or complex reasoning tasks, as it can cause incorrect answers by skipping intermediate steps. |
 | `LIM_DUMMY_THOUGHT` | *(built-in)* | Pre-filled stub used when `LIM_THINKING=0`. Leave unset to use the built-in default, set to an empty string to emit an empty thinking block (Qwen 3.8's "no thinking" signal), or set to any other string. |
-| `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt. The escape mechanism itself is always active; this only controls whether the LLM sees the explicit rules. Always skipped when the base prompt file is empty (the no-prompt benchmark setup). |
+| `LIM_ESCAPE_CONTRACT` | `0` | Set to `1` to include the reserved-token escape contract in the system prompt (the mechanism itself is always active; this only controls whether the LLM sees the explicit rules). Skipped when the base prompt file is empty. |
 | `LIM_INLINE_LATEX` | `1` | Set to `0` to disable inline KaTeX rendering in the browser viewer. In default mode, inline `$...$` candidates are validated before rendering: a math delimiter never abuts whitespace, backticks never appear in math, and the candidate must parse as KaTeX. Code spans / fenced blocks are never treated as math. Block-level `$$...$$` math always renders. |
 | `LIM_TOP_K` | `20` | Keep only the top_k most likely tokens (applied after the penalty sampler, before top_p / min_p / temperature) |
 | `LIM_TOP_P` | `0.8` | Nucleus sampling: consider tokens with cumulative probability <= top_p |
@@ -477,7 +456,7 @@ Set via `LIM_OUTPUT`:
 | `LIM_MAX_AUTO_CONTINUE` | `500` | Maximum depth of automatic tool-call chaining |
 | `LIM_TURN_TIMEOUT` | `3600` | Maximum seconds per generation turn before auto-abort |
 | `LIM_TASKSET` | *(auto)* | Format: `"P_CORES:E_CORES"` (e.g., `"0-15:16-23"`). Auto-detected on hybrid CPUs. Set to `"::"` to disable all pinning. |
-| `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command. On macOS (no `taskset`), install [numactl](https://formulae.brew.sh/formula/numactl) via Homebrew and set to `numactl --physcpubind`. If the command isn't on `$PATH`, pinning is silently skipped. |
+| `LIM_TASKSET_CMD` | `taskset -c` | Override the core-pinning command; on macOS (no `taskset`), `brew install numactl` and set to `numactl --physcpubind`. If the command isn't on `$PATH`, pinning is silently skipped. |
 
 ### Sampling Behavior
 
@@ -493,7 +472,9 @@ The practical consequences:
 
 - **File write access** is limited to directories where the `$LIM_AI_USER` group has write permission (read access is broader -- the LLM can read anything the user can). Use `aishare` to grant write access to new project directories and files. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment, and run in the directory where lim was launched (a `cd` inside a command is local to that command).
-- **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories. `aishare` moves each shared repo's gitdir into the `/home/$LIM_AI_USER/.gitstore` (a store the group can traverse but not restructure) behind an immutable `.git` pointer (so the AI cannot swap the repo's git for one of its own), and keeps the gitdir's `config` and `hooks` owner-owned, not group-writable, and sticky-protected, so planted hooks or rewritten local config cannot execute as you on your next commit.
+- **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories. Shared repos' gitdirs are moved into a pinned, protected store ([SECURITY.md](SECURITY.md)) so a planted hook or a rewritten local config cannot execute as you on your next commit.
+
+[SECURITY.md](SECURITY.md) documents the threat model and how each defense works -- the gitdir store, the git wrapper, the `aishare` suspension, and the sudo helper.
 
 ---
 
@@ -576,7 +557,7 @@ You can save a running session and restore it later with zero context loss:
 
 **Save:** Type `/save` at the `>>>` prompt to save to `$LIM_LOG_DIR/<N>.save` (overwrites any previous save for this session). Use `/save <path>` to create named checkpoints: e.g., `/save cats` saves to `cats.save`, and `/save /tmp/checkpoint` saves to `/tmp/checkpoint.save`. If the path already ends in `.save`, no extra extension is added. The save file contains only the conversation token sequence, keeping it small. Named saves also cache the full KV-cache for fast future restores.
 
-**Restore:** Pass a save file as the last argument to `coder`. The `.save` extension is added automatically if not already present, matching `/save` behavior. The CLI restore runs the exact same code path as in-session `/load` (it injects `/load <path>` as the first command after startup), so behavior is identical in both, including `--checkpoints`:
+**Restore:** Pass a save file as the last argument to `coder` (`.save` appended automatically if missing). The CLI restore runs the same code path as in-session `/load`, so behavior is identical in both, including `--checkpoints`:
 
 ```bash
 coder $LIM_LOG_DIR/5.save    # explicit extension
@@ -584,9 +565,9 @@ coder $LIM_LOG_DIR/5         # .save appended automatically
 coder cats                   # restores from cats.save
 ```
 
-This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. The LLM continues generating from where it left off. It also restores the working directory: save files record the directory they were made in, and a restore changes to it before decoding (the system prompt baked into the save claims it) and, on success, re-anchors the session there (logs, cache, history), as with `/quit; cd; coder`. If that directory no longer exists or is inaccessible, the restore is refused. Saves from older versions record no directory: they restore without changing directory, as before. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (but first auto-saves the restored state).
+This restores the session exactly as it was: the full conversation, KV-cache position, and generation state. It also restores the working directory: save files record the directory they were made in, and a restore changes to it and re-anchors the session there (logs, cache, history) before decoding; if the directory no longer exists or is inaccessible, the restore is refused. Typing `/clear` after a restore resets to a fresh system prompt with the current date and working directory (after first auto-saving the restored state).
 
-**In-session load:** You can also restore from within a running session using `/load <path>`. This must be used immediately after `/clear`; if any conversation tokens have been added since the clear, the command will fail. It uses the same path conventions as `/save` (`.save` appended automatically) and takes advantage of the fast cache when available. Typical workflow:
+**In-session load:** Restore from within a running session with `/load <path>`, immediately after `/clear` (it fails if any conversation tokens were added since). It uses the same path conventions as `/save` (`.save` appended automatically) and the fast cache when available. Typical workflow:
 
 ```
 >>> /clear
@@ -596,7 +577,7 @@ Restoring session from cats.save... (75432 tokens)
 Session #5 restored: 75432 tokens loaded (28%)
 ```
 
-**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn -- plus one at the 90% context point for turns that crossed it (see **Automatic 90% Context Checkpoint**) -- storing your prompt text and the token position. Whenever a restore can't use the fast cache (or with `--checkpoints`, CLI or `/load`), LIM offers a choice of checkpoints before decoding so you can select a good restore point. Use up/down arrow keys to navigate through your prompts (most recent first). Press Enter to confirm. If no checkpoint matches your input, all tokens are restored by default. Press Ctrl+C, Ctrl+D, or type `/quit` at the `Restore>` prompt to cancel; the session continues fresh from the system prompt. Restoring to a checkpoint replays tokens only up to the end of that turn -- as if you had just typed that prompt and received the response, and the session is ready for your next message. The available checkpoints accumulate across restore/save cycles: restoring from a save file carries over its checkpoints, and new turns add more.
+**Partial restore via checkpoints:** Save files record a checkpoint at the end of each conversation turn -- plus one at the 90% context point for turns that crossed it (see **Automatic 90% Context Checkpoint**) -- with your prompt text and the token position. Whenever a restore can't use the fast cache (or with `--checkpoints`), LIM offers checkpoint selection at a `Restore>` prompt before decoding: navigate with the arrow keys (most recent first), Enter to confirm (no match restores all tokens by default), or Ctrl+C / Ctrl+D / `/quit` to cancel and continue fresh. Restoring to a checkpoint replays tokens only up to the end of that turn, as if you had just received that response. Checkpoints accumulate across restore/save cycles.
 
 **Checkpoint restore:** Add `--checkpoints` to skip the fast-format cache, triggering the checkpoint selection prompt even when a fast cache exists. This also rebuilds recurrent-state checkpoints at each prompt boundary during decode, enabling instant `/undo` for all historical turns on hybrid models (Qwen3.5/3.6). The flag works on the command line (after the save file) and with the in-session `/load` command, so there is no need to exit and restart the model:
 
@@ -609,7 +590,7 @@ coder cats --checkpoints
 >>> /load cats --checkpoints
 ```
 
-**Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache. During this decode, recurrent-state checkpoints are regenerated at each prompt boundary so that /undo works instantly for hybrid models right after restore. The rebuilt cache is then automatically written to `$LIM_CACHE_DIR` so all subsequent restores from the same save file are fast; when MTP is enabled, the draft mirror KV is also stored in the cache file, so a fast restore keeps MTP active. Named saves (e.g., `/save cats`) also write the fast-format cache immediately for faster future restores. Unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip the fast cache to save disk space, relying on the automatic cache built on first restore. For fast cache restores, recurrent checkpoints build up naturally as new conversation turns complete, supporting instant /undo for each new turn. The `$LIM_CACHE_DIR/` directory is safe to delete at any time to reclaim space; it will be regenerated on the next restore.
+**Fast restore cache:** On first restore, tokens are decoded through the model to rebuild the KV-cache (regenerating recurrent-state checkpoints so `/undo` works instantly for hybrid models), and the rebuilt cache is written to `$LIM_CACHE_DIR` so all subsequent restores from the same save file are fast; with MTP enabled, the draft mirror KV is stored too, so a fast restore keeps MTP active. Named saves (e.g., `/save cats`) write the fast cache immediately; unnamed `/save` and auto-saves from `/quit`, `/clear`, and `/reincarnate` skip it to save space, relying on the cache built at first restore. Fast-cache restores build up recurrent checkpoints as new turns complete, supporting instant `/undo` for each new turn. `$LIM_CACHE_DIR/` is safe to delete at any time; it is regenerated on the next restore.
 
 **Auto-save on clear and quit:** Before clearing the context, LIM automatically saves the current state to `$LIM_LOG_DIR/<N>-clear.save`. Before exiting, it saves to `$LIM_LOG_DIR/<N>.save`. These use different filenames so neither clobbers the other: if you clear and then exit, both the pre-clear and post-clear states are preserved. To keep a permanent checkpoint at any point, use `/save <name>`.
 
@@ -619,9 +600,7 @@ Press **Ctrl+C** during generation to interrupt. The partial output is preserved
 
 ### Thinking-Simulation Recovery
 
-If the model starts *simulating* the conversation inside its thinking block -- emitting a second open think tag within its still-open thinking block, along with tool calls and fabricated tool results as literal text -- LIM aborts generation a few tokens into the simulation and automatically feeds a fresh "continue" user turn. The model reliably re-trips if the turn is resumed in place, but recovers from a fresh user turn. The aborted tokens stay in the context (the model already conditioned on them), retries are bounded by `LIM_MAX_AUTO_CONTINUE`, and the session ejects to the prompt when the budget is exhausted.
-
-Note that the tripwire fires on any nested open think tag it sees: if the model does emit one as deliberate content, the turn aborts a few tokens in and recovers via the "continue" turn -- wasteful, but never corrupting.
+If the model starts *simulating* the conversation inside its thinking block -- a second open think tag with tool calls and fabricated tool results as literal text -- LIM aborts generation a few tokens in and automatically feeds a fresh "continue" user turn. The aborted tokens stay in the context, retries are bounded by `LIM_MAX_AUTO_CONTINUE`, and the session ejects to the prompt when the budget is exhausted. The tripwire fires on any nested open think tag, so one emitted as deliberate content is recovered the same way.
 
 ### Terminal Disconnection (detached operation)
 
@@ -635,28 +614,28 @@ When a turn **crosses 90% of the context window**, LIM stores an extra mid-turn 
 
 ### Browser Output
 
-By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. The server listens on `127.0.0.1` only, so the viewer is reachable from the machine itself, or from another machine through an SSH tunnel.
+By default (`LIM_OUTPUT=2`), LIM streams output to a browser via WebSocket. The server listens on `127.0.0.1` only, so the viewer is reachable from the machine itself or through an SSH tunnel.
 
-The page requires a per-server-start connection token, so you load the tokenized URL that lim prints (also stored at `$LIM_CONFIG_DIR/lim.viewer_url`, mode 0640, readable only by you and `$LIM_AI_USER`):
+The page requires a per-server-start connection token, so load the tokenized URL lim prints (also stored at `$LIM_CONFIG_DIR/lim.viewer_url`, mode 0640, readable only by you and `$LIM_AI_USER`):
 
 ```
 http://localhost:8765/viewer.html#token=...
 ```
 
-whenever the server is running -- in your local browser when connected via `ssh -L 8765:localhost:8765 $LIM_AI_USER@$LIM_HOST` (the port follows `LIM_PORT`; if the tunnel's local side uses a different port, set `LIM_VIEWER_URL` and the printed URL already uses it). The token rides in the URL's `#` fragment, which the browser never sends to the server; the `/ws` handshake must present it together with a matching `Origin` (a missing `Origin` is accepted -- it only happens off a normal web page, and the token is the barrier there). A bare `viewer.html` cannot subscribe, and other local users -- who cannot read the 0640 URL file and never see the fragment -- cannot connect to the stream.
+while the server is running -- from your local browser over the tunnel when remote (the port follows `LIM_PORT`; if the tunnel's local side uses a different port, set `LIM_VIEWER_URL`). The token rides in the URL's `#` fragment, which the browser never sends to the server; the `/ws` handshake must present it with a matching `Origin`. A bare `viewer.html` cannot subscribe, and other local users cannot read the 0640 URL file.
 
-The token changes each time the server starts (machine reboot, `/reset`, or a FIFO-node mismatch that replaces it) -- that is the only time you load a fresh printed URL; an old page or an old token no longer connects. Only on the first session after a machine reboot (when the server does not exist yet) must you start lim first and then load the URL; on every later restart the server is already running, so the page can be loaded -- or left open -- before lim starts.
+The token changes each time the server starts (reboot, `/reset`, or a replaced FIFO node) -- an old page or token no longer connects. Only on the first session after a reboot (no server yet) must you start lim before loading the URL; afterwards the server is already running, so the page can be loaded -- or left open -- before lim starts.
 
-When lim starts and the viewer is not connected, lim prints the URL and waits before the first decode; the session proceeds as soon as the viewer loads the page. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables itself if the viewer connects later.
+If lim starts with the viewer not connected, it prints the URL and waits before the first decode; the session proceeds as soon as the page loads. Ctrl+C gives up the wait: with `LIM_OUTPUT=3` it proceeds with both outputs, otherwise browser output is disabled for the session and re-enables if the viewer connects later.
 
-The Python server (`limServer.py`) is a persistent service: it is started on first need by the first lim session (pinned to efficiency cores when a hybrid CPU is detected, unpinned on non-hybrid CPUs) and then outlives lim sessions. It reads from a named FIFO at `$LIM_CONFIG_DIR/lim.fifo` and broadcasts to all connected WebSocket clients. Because the server survives lim's exit and crashes, the browser tab stays connected across lim restarts -- no reload needed; each new session (restart or `/clear`) streams a dashed `-- Session N --` divider, and the previous session's output remains readable above it. The only reload is after a machine reboot or a closed tab: start lim first, then load the URL (as above). If the server stops -- or is left reading a deleted/replaced FIFO node -- a fresh server takes its place with a fresh token, so load the URL the new server's lim prints (or `cat $LIM_CONFIG_DIR/lim.viewer_url`).
+The Python server (`limServer.py`) is a persistent service: started on first need by the first lim session (pinned to efficiency cores on hybrid CPUs) and outliving lim sessions. It reads from a FIFO at `$LIM_CONFIG_DIR/lim.fifo` and broadcasts to all connected WebSocket clients, so the browser tab stays connected across lim restarts -- each new session (restart or `/clear`) streams a `-- Session N --` divider above the previous session's output. The only reload is after a reboot or a closed tab. If the server stops -- or is left reading a deleted/replaced FIFO node -- a fresh server takes its place with a fresh token; load the URL its lim prints (or `cat $LIM_CONFIG_DIR/lim.viewer_url`).
 
 ### VS Code Extension
 
 The LIM Workspace extension provides a convenient way to set up your workspace: it creates an integrated terminal and opens a browser viewer once the server is ready.
 
 The extension does two things:
-- **Opens a browser** at the tokenized viewer URL (see **Browser Output**). It locates the file `lim.viewer_url` in the server's `$LIM_CONFIG_DIR` -- resolved from its own environment, else the `LIM_CONFIG_DIR=...` line in `$LIM_AI_USER`'s `~/.bashrc`, else the default `~/.config/lim` -- and reads it directly from disk when local, over SSH when remote, after waiting for the server to respond. The server binds to loopback only, so it is reached directly on the machine and, when remote, through the tunnel below. If it cannot read the file, it opens the bare page, which tells you to load the URL lim printed.
+- **Opens a browser** at the tokenized viewer URL (see **Browser Output**): it reads `lim.viewer_url` from the server's `$LIM_CONFIG_DIR` (its own environment, else the `LIM_CONFIG_DIR=...` line in `$LIM_AI_USER`'s `~/.bashrc`, else the default `~/.config/lim`), directly from disk when local, over SSH when remote, after waiting for the server. If it cannot read the file, it opens the bare page, which tells you to load the URL lim printed.
 - **Creates a terminal** at `$HOME`. If `$LIM_HOST` is set and remote, it SSHs into that host as user `$LIM_AI_USER` with a port forward for the viewer (`ssh -L <port>:localhost:<port>`); otherwise it opens a local shell.
 
 You then run your `coder` alias in that terminal as usual.
@@ -699,9 +678,7 @@ LIM supports benchmarking modes controlled by `LIM_CHATBOT_MODE` to compare its 
 | `1` | Standard chatbot | Emulates a plain text-based chatbot: the conversation is held as text, so each turn re-tokenizes the full conversation text and re-decodes everything from scratch (no KV reuse). TPS includes re-tokenize + re-decode + generation. |
 | `2` | Cache-aware prefix match | Emulates llama-server behavior: KV-cache stays in memory, but each turn re-tokenizes the full conversation text and compares against the cached prefix to find where to resume decoding; if the re-tokenization drifts from the sampled tokens, it re-decodes from the last prompt checkpoint. |
 
-**Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`.** The TPS reported in logs includes the re-decode overhead. This ensures the benchmark numbers reflect the true wall-clock cost of each approach.
-
-*(See the cumulative-time benchmark figure at the top of this README.)*
+**Chatbot modes (1 and 2) automatically enforce `LIM_HONEST_SPEED=1`**, so the TPS in the logs includes re-decode overhead and reflects the true wall-clock cost of each approach.
 
 > **Note:** For fair comparisons, run benchmarks with an empty system prompt (remove `~/.config/lim/prompt`) to inhibit tool calls. In mode 1, previous tool calls would be both re-decoded **and re-executed** on every turn, causing massive slowdowns plus unwanted side effects.
 
