@@ -463,7 +463,10 @@ bool check_browser_connected() {
   }
 
   const char* request = "GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n";
-  write(sock, request, strlen(request));
+  if (write(sock, request, strlen(request)) < 0) {
+    close(sock);
+    return false;
+  }
 
   char buffer[512];
   bool connected = false;

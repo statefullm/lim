@@ -57,7 +57,7 @@ ifeq ($(GGML_HIPBLAS),on)
   GGML_HIPBLAS_FLAG := -DGGML_HIPBLAS=ON
 endif
 
-CXXFLAGS = -std=c++17 -O3 \
+CXXFLAGS = -std=c++17 -O3 -fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE \
 	-I$(LLAMA_DIR)/include \
 	-I$(LLAMA_DIR)/common \
 	-I$(LLAMA_DIR)/ggml/include \
@@ -70,6 +70,7 @@ LDFLAGS = -L$(LIM_LLAMA_BUILD_DIR)/bin \
 	-L$(CUDA_LIB_DIR) \
 	-Wl,-rpath,$(shell readlink -f $(LIM_LLAMA_BUILD_DIR)/bin) \
 	-Wl,-rpath,$(CUDA_LIB_DIR) \
+	-pie -Wl,-z,relro -Wl,-z,now \
 	-lllama -lggml-base -lggml -lggml-cpu -lggml-cuda \
 	-lcudart -l:libllama-common.so -lreadline -lcurl -lxml2 -lcrypto
 

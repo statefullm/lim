@@ -1158,7 +1158,17 @@ void start_query_listener(uid_t owner_uid) {
           int cfd = accept(lfd, nullptr, nullptr);
           if (cfd >= 0) handle_aishare_connection(cfd, owner_uid);
         } else if (fd == infd) {
-          read(infd, ibuf, sizeof(ibuf));  // consume
+          // Consume pending events; the path check below decides what to do.
+          // A spurious wakeup (EAGAIN/EINTR) is harmless: path_is_ours()
+          // re-evaluates the state anyway.  A real error means inotify is
+          // dead: stop watching the dir but keep serving connections.
+          if (read(infd, ibuf, sizeof(ibuf)) < 0 && errno != EAGAIN && errno != EINTR) {
+            epoll_ctl(ep, EPOLL_CTL_DEL, infd, nullptr);
+            if (iwd >= 0) inotify_rm_watch(infd, iwd);
+            close(infd);
+            infd = -1;
+            iwd = -1;
+          }
           if (!path_is_ours()) {
             unlink(kAishareQueryPath);
             int nfd = open_query_listener(&my_ino, &my_dev);

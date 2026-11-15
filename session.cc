@@ -34,6 +34,7 @@ extern std::string g_model_path;
 #include <sys/ioctl.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <cstring>
 #include <cerrno>
@@ -400,12 +401,17 @@ private:
   // so subsequent calls treat these entries as the new A.
   void flush_history(const char* history_file) {
     FILE* f = fopen(history_file, "r+");
+    bool truncated = false;
     if (f) {
-      ftruncate(fileno(f), history_file_size_at_startup_);
+      truncated = ftruncate(fileno(f), history_file_size_at_startup_) == 0;
       fclose(f);
     }
-    for (const auto& s : collect_recent_user_inputs()) {
-      save_history_safe(history_file, s);
+    // Re-append only when the truncate to baseline succeeded: appending to
+    // an untruncated file would duplicate the C entries already on disk.
+    if (truncated) {
+      for (const auto& s : collect_recent_user_inputs()) {
+        save_history_safe(history_file, s);
+      }
     }
     struct stat st;
     if (stat(history_file, &st) == 0) {
@@ -2961,7 +2967,11 @@ bool ChatSession::run() {
 
     if (last_cmd_ == Command::RESET) {
       NetworkTools().reset_search();
-      system("reset");
+      int reset_status = system("reset");
+      if (reset_status == -1 ||
+          (WIFEXITED(reset_status) && WEXITSTATUS(reset_status) != 0)) {
+        diag("Terminal reset failed: 'reset' could not run or exited non-zero.", "\033[33m");
+      }
       // (Re)start the browser server when it cannot deliver output: it
       // died (single-user: a free port means our persistent server is
       // gone), or it is alive but reading a deleted/replaced FIFO node

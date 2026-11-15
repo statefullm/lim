@@ -325,9 +325,12 @@ static void start_service(const string& name, const string& probe_url,
   pid_t child = fork();
   if (child == 0) {
     setpgid(0, 0);
-    freopen(log_path.c_str(), "w", stdout);
-    freopen(log_path.c_str(), "w", stderr);
-
+    // The service's output is only visible through the log file; if the
+    // redirect fails, the exec below is unlikely to succeed either -- die.
+    if (freopen(log_path.c_str(), "w", stdout) == nullptr ||
+        freopen(log_path.c_str(), "w", stderr) == nullptr) {
+      _exit(1);  // NOT exit(): would run lim's atexit handlers in the child.
+    }
     execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
     _exit(1);  // NOT exit(): would run lim's atexit handlers in the child.
   } else if (child > 0) {
