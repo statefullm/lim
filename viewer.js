@@ -2005,6 +2005,56 @@
             });
         }
 
+        // Compute a CSP sha256 hash (base64) of the given inline script text.
+        // Returns null when WebCrypto is unavailable (non-secure context).
+        async function cspSha256(text) {
+            try {
+                var buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+                var bytes = new Uint8Array(buf);
+                var bin = '';
+                for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+                return 'sha256-' + btoa(bin);
+            } catch (e) {
+                return null;
+            }
+        }
+
+        // Defense in depth for the exported document: the export's CSP
+        // (hash-only script-src, no 'unsafe-inline') is the primary boundary,
+        // but scrub the serialized body anyway so the file carries no
+        // executable content even if a downstream tool strips the meta CSP.
+        // Runs on the DOM clone, so it also catches payloads the renderer's
+        // scrubDangerousHtml never sees -- that scrub runs before code
+        // regions are restored in convertTextToHtml, so a <script> element
+        // or on* handler quoted inside a code fence reaches the live DOM
+        // inert (blocked by its CSP) and would otherwise be serialized into
+        // the export verbatim.  Removes: <script> elements, inline on* event
+        // handlers, srcdoc, and executable URL schemes (javascript:,
+        // vbscript:, data: except on <img src>, protocol-relative //) from
+        // href/src/xlink:href and object/embed data.
+        function scrubExportClone(clone) {
+            clone.querySelectorAll('script').forEach(function(s) { s.remove(); });
+            clone.querySelectorAll('*').forEach(function(el) {
+                var tag = el.tagName.toLowerCase();
+                for (var i = el.attributes.length - 1; i >= 0; i--) {
+                    var attr = el.attributes[i];
+                    var name = attr.name.toLowerCase();
+                    if ((name.indexOf('on') === 0 && name.length > 2) || name === 'srcdoc') {
+                        el.removeAttribute(attr.name);
+                    } else if (name === 'href' || name === 'src' || name === 'xlink:href' ||
+                               (name === 'data' && (tag === 'object' || tag === 'embed'))) {
+                        var val = attr.value.replace(/[\u0000-\u001F\u007F]+/g, '');
+                        var isImgSrc = name === 'src' && tag === 'img';
+                        if (/^(javascript|vbscript):/i.test(val) ||
+                            (!isImgSrc && /^data:/i.test(val)) ||
+                            val.indexOf('//') === 0) {
+                            el.removeAttribute(attr.name);
+                        }
+                    }
+                }
+            });
+        }
+
         async function exportHtml() {
             var now = new Date();
             var ts = now.getFullYear() + '-' +
@@ -2020,6 +2070,7 @@
             var outputDiv = document.getElementById('output');
             var clone = outputDiv.cloneNode(true);
             finishRawSegmentsInElement(clone);
+            scrubExportClone(clone);
 
             var bodyContent = clone.innerHTML;
 
@@ -2038,14 +2089,32 @@
 
             // Minimal inline script to keep think-block toggling and copy buttons working
             // in the exported file without needing the full viewer JS or WebSocket connection.
-            // (The export has a CSP that blocks remote images (issue 10), and the
-            // live viewer's delegated think-header listener is not serialized, so the
-            // headers are wired here.)
-            var exportScript = '<script>\n' +
+            // (The export's CSP blocks remote images (issue 10) and -- by hashing this
+            // script instead of granting 'unsafe-inline' -- any script or inline handler
+            // in the serialized body; the live viewer's delegated think-header listener
+            // is not serialized, so the headers are wired here.)
+            // exportScriptText is the exact source between the <script> tags; the CSP
+            // hash below is computed over these bytes, so keep it in one place.  It
+            // contains no HTML entities, so file bytes equal parsed text.
+            var exportScriptText = '\n' +
                 'function toggleThinkBlock(headerEl){var b=headerEl.nextElementSibling;var bl=headerEl.parentElement;var c=b.classList.toggle("hidden");headerEl.classList.toggle("collapsed",c);bl.setAttribute("data-think-collapsed",c?"1":"0")}\n' +
                 'document.querySelectorAll(".think-header").forEach(function(h){h.addEventListener("click",function(){toggleThinkBlock(h)})});\n' +
-                'document.querySelectorAll(".copy-btn").forEach(function(btn){btn.addEventListener("click",function(){var code=btn.parentElement.querySelector("code");if(navigator.clipboard){navigator.clipboard.writeText(code.textContent).then(function(){btn.textContent="Copied!";setTimeout(function(){btn.textContent="Copy"},1500)})}})});\n' +
-                '<' + '/script>';
+                'document.querySelectorAll(".copy-btn").forEach(function(btn){btn.addEventListener("click",function(){var code=btn.parentElement.querySelector("code");if(navigator.clipboard){navigator.clipboard.writeText(code.textContent).then(function(){btn.textContent="Copied!";setTimeout(function(){btn.textContent="Copy"},1500)})}})});\n';
+            // Hash-only script-src: per the CSP spec, 'unsafe-inline' also permits
+            // inline event handlers and javascript: URLs -- exactly the payloads
+            // scrubExportClone removes -- so it must not appear in the export.
+            // The one legitimate script is allowed by its SHA-256 hash.  When
+            // WebCrypto is unavailable (non-secure context -- the loopback/tunnel
+            // setups are secure, so this is a rare fallback), the script is
+            // dropped and script-src is 'none': the export stays safe, think-block
+            // toggling and copy buttons simply stop working.
+            var scriptSrc = "script-src 'none'";
+            var exportScript = '';
+            var scriptHash = await cspSha256(exportScriptText);
+            if (scriptHash) {
+                scriptSrc = "script-src '" + scriptHash + "'";
+                exportScript = '<script>' + exportScriptText + '<' + '/script>';
+            }
 
             // Build a standalone HTML document.  KaTeX CSS (with fonts embedded as
             // data URIs) is inlined above so that pre-rendered KaTeX spans display
@@ -2054,7 +2123,7 @@
                 '<html lang="en">\n<head>\n' +
                 '  <meta charset="UTF-8">\n' +
                 '  <meta name="viewport" content="width=device-width, initial-scale=1.0">\n' +
-                "  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;\">\n" +
+                "  <meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; " + scriptSrc + "; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;\">\n" +
                 '  <title>LIM Session Export</title>\n' +
                 '  <style>\n' + cssText + '\n  </style>\n' +
                 '</head>\n<body>\n' +
