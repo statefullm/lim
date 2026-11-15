@@ -102,6 +102,8 @@ make install
 
 This installs:
 - `lim` binary to `~/bin/lim` (ensure `~/bin` is in your PATH via `.bashrc`)
+- LLM-side git guard `llm/git` to `~/bin/git`
+- `relim` to `~/bin/relim`
 - System prompt to `~/.config/lim/prompt`
 - Reincarnate instructions to `~/.config/lim/reincarnate`
 - Search cache directory at `~/.config/lim/searchCache`
@@ -146,7 +148,7 @@ Log out and back in (or run `newgrp $LIM_AI_USER`) for the group change to take 
 
 Git refuses to operate in a repository owned by a different user ("detected dubious ownership"). Shared repos need no `safe.directory` entry for your personal user: `aishare` leaves the checkout and its stored gitdir owned by you. The refusal is also a security layer -- it keeps a gitdir the LLM created or swapped inert -- so do not add a blanket entry (`directory = /home/$LIM_AI_USER`, `*`).
 
-The LLM account needs its own entry so LIM can run git in your user-owned repos; in `$LIM_AI_USER`'s `~/.gitconfig` add (replacing `$USER` with your own username):
+The LLM account needs its own entry so LIM can run git in your user-owned repos; in `$LIM_AI_USER`'s `~/.gitconfig` add (substituting your username for `$USER`):
 
 ```bash
 [safe]
@@ -177,11 +179,11 @@ The setgid bit (`s`) ensures new files inherit the `$LIM_AI_USER` group.
 **Copy the tools.** Copy `aishare` (grants a directory tree to the LLM) and the `git` wrapper (protects your git runs in shared repos) from this repository to your personal `/home/$USER/bin/`; the wrapper must come ahead of the real git in your `PATH` (check with `type git`):
 
 ```bash
-cp aishare /home/$USER/bin/
-cp git /home/$USER/bin/
+cp user/aishare /home/$USER/bin/
+cp user/git /home/$USER/bin/
 ```
 
-The wrapper locates the real git automatically (the first *other* `git` in your `PATH`) unless `$LIM_GIT_BIN` forces a specific binary. In a shared repo it briefly protects the gitdir from the LLM for the duration of your command, runs your git in a Landlock sandbox (disable with `LIM_GIT_SANDBOX=0`), and re-shares the gitdir's state files afterwards, so neither side gets blocked.
+The wrapper locates the real git automatically (or `$LIM_GIT_BIN` if set). In a shared repo it briefly protects the gitdir from the LLM for the duration of your command, runs your git in a Landlock sandbox (disable with `LIM_GIT_SANDBOX=0`), and re-shares the gitdir's state files afterwards, so neither side gets blocked.
 
 **Install the sudo helper.** `aishare` and the wrapper need one passwordless `sudo` rule, added once to your sudoers (`sudo visudo`, or a drop-in in `/etc/sudoers.d/`). It allows only a small root-owned helper, `aishare-helper` (in the LIM repo), which re-validates every path itself and only the fixed chown identities (a bare `chown ... /home/$LIM_AI_USER/*` rule is not safe -- see [SECURITY.md](SECURITY.md)). Install it before the first `aishare` run (mode 0700, root-owned, so the LLM user cannot modify its checks):
 
@@ -293,57 +295,9 @@ The detected topology and pinning status are logged to stderr at startup when `L
 Add these lines to `/home/$LIM_AI_USER/.bashrc`:
 
 ```bash
-# --- /home/$LIM_AI_USER/.bashrc ---
-
 umask 0002                    # Group-writable files by default
-
-# Block git add -A / --all and git add . to prevent the LLM from staging untracked files
-git() {
-    if [ "$1" = "add" ]; then
-        for arg in "$@"; do
-            if [ "$arg" = "-A" ] || [ "$arg" = "--all" ] || [[ "$arg" =~ ^-[a-zA-Z]*A[a-zA-Z]*$ ]] || [ "$arg" = "." ]; then
-                echo "ERROR: git add -A / --all / . is disabled: use git commit -a or specify files explicitly" >&2
-                return 1
-            fi
-        done
-    fi
-    # Wait for the git wrapper's group-write-removed window (its /var/tmp/lim.gw.lock) to close before running git, so a concurrent LLM write doesn't fail on a git lock file.
-    while [ -e /var/tmp/lim.gw.lock ]; do
-        gw_h=$(cat /var/tmp/lim.gw.lock 2>/dev/null)
-        gw_pid=${gw_h%% *}
-        gw_st=${gw_h#* }
-        case $gw_pid in ''|*[!0-9]*) break ;; esac
-        [ "$gw_st" != "$gw_h" ] || break
-        [ -e "/proc/$gw_pid" ] || break
-        gw_my_st=$(gw_s=$(cat "/proc/$gw_pid/stat" 2>/dev/null) || exit 1
-            gw_s=${gw_s##*) }
-            set -- $gw_s
-            [ $# -ge 20 ] || exit 1
-            printf '%s' "${20}")
-        [ "$gw_my_st" = "$gw_st" ] || break
-        sleep 0.2
-    done
-    command git "$@"
-}
-
-# Reattach a detached lim (terminal disconnected, session still alive).
-relim() {
-    local p rp s
-    p=$(pgrep -u "$USER" -x lim | head -1)
-    if [ -z "$p" ]; then echo "no lim process found"; return 1; fi
-    rp=$(command -v reptyr) || { echo "reptyr not found" >&2; return 1; }
-    s=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null); [ -n "$s" ] || s=0
-    [ "$s" = 0 ] || su -c "echo 0 | tee /proc/sys/kernel/yama/ptrace_scope; ( sleep 3; echo $s > /proc/sys/kernel/yama/ptrace_scope ) &"
-    "$rp" -s "$p"
-}
-
-# Optional: add custom paths
 export PATH="$HOME/bin:$PATH"
 ```
-
-LIM resolves relative paths -- in the file tools and in `exec_shell` -- against its current working directory. That directory starts as the launch directory; it changes only on an empty context via `/cd` or `/load`, and is given to the LLM in the system prompt: a `cd` inside an `exec_shell` command is local to that command. The `umask 0002` ensures files created by `$LIM_AI_USER` are group-readable/writable.
-
-Note: `relim` needs a patched `reptyr` -- vanilla 0.10.0 can hang silently when attaching a multithreaded target. `reptyr-attach-retry.patch` (this repository) fixes the hang and bounds the wait (a real failure reports `Connection timed out`). Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
 ### 7. The System Prompt
 
@@ -400,6 +354,7 @@ Set via `LIM_OUTPUT`:
 | Variable | Default | Description |
 |---|---|---|
 | `LIM_AI_USER` | `ai` | Username that LIM must run as. Used by the binary for the user check, and by the VS Code extension for SSH. |
+| `LIM_GIT_BIN` | *(auto)* | Path to the real git binary, used by both the user-side `git` wrapper and the LLM-side guard. Both auto-detect it as the first other `git` in PATH. |
 | `LIM_GIT_SANDBOX` | `1` | `git` wrapper: run your git in a Landlock sandbox when a command reaches a shared repo (writes only under `/home/$LIM_AI_USER`, no new privileges). Set to `0` to disable; see **User Setup** and [SECURITY.md](SECURITY.md). |
 | `LIM_CACHE_DIR` | `.cache` | Directory for fast restore KV-cache files. A relative value follows the working directory: `/cd` and `/load` re-anchor it to the new location, as with a relaunch. |
 | `LIM_CONFIG_DIR` | `~/.config/lim` | Directory for LIM config and server files (`prompt`, `reincarnate`, `userprompt`, `searchCache`, `limServer.py`, `viewer.html`, `viewer.js`, `libs/`) and runtime files (`lim.fifo`, `lim.server_ready`, `lim.browser_ready`, `lim.server.pid`, `lim.viewer_url` -- the tokenized viewer URL, mode 0640; see **Browser Output**). The C++ binary starts the browser server from here on first need (it then persists across sessions). Override to place everything elsewhere. |
@@ -607,6 +562,8 @@ If the model starts *simulating* the conversation inside its thinking block -- a
 LIM survives terminal disconnection. When your SSH connection drops, the pty sends SIGHUP to the session, which LIM ignores. The session, KV-cache, and any in-flight generation continue; the browser keeps streaming (default `LIM_OUTPUT=2`).
 
 To reconnect, open a new terminal on the host and run `relim`. If lim does not respond as soon as reptyr takes the terminal, press Ctrl+C: it is forwarded to lim and wakes it, and the terminal reinitializes automatically on the first input. A detached lim auto-saves when stopped with `kill`.
+
+Note: `relim` needs a patched `reptyr` -- vanilla 0.10.0 can hang silently when attaching a multithreaded target. `reptyr-attach-retry.patch` fixes the hang. Build it from the [official source](https://github.com/nelhage/reptyr) (tag `reptyr-0.10.0`) with the patch, and install the binary ahead of any packaged `reptyr` in PATH.
 
 ### Automatic 90% Context Checkpoint
 

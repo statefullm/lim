@@ -1,0 +1,22 @@
+#!/bin/bash
+# relim -- Reattach a detached lim (terminal disconnected, session still alive).
+#
+# Find the lim process, temporarily relax ptrace_scope if needed, and
+# use reptyr to steal the terminal. Needs a patched reptyr (see
+# reptyr-attach-retry.patch in this repository) -- vanilla 0.10.0 can
+# hang silently when attaching a multithreaded target.
+#
+# Install to ~/bin/relim for $LIM_AI_USER (make install does this).
+
+p=$(pgrep -u "$USER" -x lim | head -1)
+if [ -z "$p" ]; then
+    echo "no lim process found"
+    exit 1
+fi
+rp=$(command -v reptyr) || { echo "reptyr not found" >&2; exit 1; }
+s=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null); [ -n "$s" ] || s=0
+if [ "$s" != "0" ]; then
+    su -c "echo 0 | tee /proc/sys/kernel/yama/ptrace_scope; ( sleep 3; echo $s > /proc/sys/kernel/yama/ptrace_scope ) &"
+fi
+exec "$rp" -s "$p"
+

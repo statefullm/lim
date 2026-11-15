@@ -135,6 +135,8 @@ LIBS_FILES = auto-render.min.js katex-standalone.css katex.min.css katex.min.js 
 install: $(TARGET) vscode
 	mkdir -p ~/bin
 	cp $(TARGET) ~/bin/
+	cp llm/git ~/bin/git
+	cp relim ~/bin/relim
 	mkdir -p $(LIM_CONFIG_DIR)
 	cp $(CONFIG_FILES) $(LIM_CONFIG_DIR)/
 	mkdir -p $(LIM_CONFIG_DIR)/searchCache
@@ -167,7 +169,7 @@ uninstall: FORCE
 		rmdir "$$cfg"/libs 2>/dev/null || true; \
 		rmdir "$$cfg" 2>/dev/null || true;; \
 	esac; \
-	rm -f ~/bin/lim
+	rm -f ~/bin/lim ~/bin/git ~/bin/relim
 
 uninstall-all: uninstall uninstall-vscode
 

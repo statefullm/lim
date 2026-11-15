@@ -1,0 +1,138 @@
+#!/bin/bash
+# git -- LLM-side git guard. Shipped as llm/git; installed to ~/bin/git for $LIM_AI_USER.
+#
+# Two responsibilities:
+#
+# 1. Block dangerous subcommands (git add -A / --all / . / ./ / :/, git clean)
+#    that could destroy the user's untracked files.
+#
+# 2. Coordinate with the user-side git wrapper (the `git` script in the
+#    user's ~/bin). When the user is running git in a shared repo, the
+#    wrapper removes group write from the gitdir for the duration of the
+#    run (announced via /var/tmp/lim.gw.lock with pid + starttime). A git
+#    that must write to the gitdir during that window would fail with
+#    Permission denied. While the window is active:
+#      - known read-only commands proceed (GIT_OPTIONAL_LOCKS=0 also
+#        suppresses status' opportunistic index refresh),
+#      - everything else is probed: run under Landlock with writes allowed
+#        only to $TMPDIR and /dev. If the probe completes, the command
+#        needed no repo writes and is done -- that was the real run; if it
+#        fails, the command writes, so wait for the window to close and run
+#        for real,
+#      - without Landlock (no setpriv) unlisted commands simply wait.
+#    The probe fails safe: over-restriction only costs a wait.
+
+# The real git binary. Override with LIM_GIT_BIN; otherwise auto-detect:
+# the first git in PATH whose directory is not this script's own.
+find_real_git() {
+    case $0 in
+        */*) self=$0 ;;
+        *)   self=$(command -v git 2>/dev/null) || self=$0 ;;
+    esac
+    self_dir=$(CDPATH= cd -- "${self%/*}" 2>/dev/null && pwd -P)
+    [ -n "$self_dir" ] || return 1
+    (
+        IFS=:
+        for d in $PATH; do
+            [ -n "$d" ] || continue
+            case $d in /*) ;; *) continue ;; esac
+            nd=$(CDPATH= cd -- "$d" 2>/dev/null && pwd -P) || continue
+            [ "$nd" = "$self_dir" ] && continue
+            [ -x "$nd/git" ] || continue
+            # Skip shell scripts (e.g. the user-side wrapper shipped in this repo)
+            IFS= read -r -n 2 _magic < "$nd/git" 2>/dev/null
+            [ "$_magic" = "#!" ] && continue
+            printf '%s' "$nd/git"; exit 0
+        done
+        exit 1
+    )
+}
+GIT_BIN=${LIM_GIT_BIN:-}
+[ -n "$GIT_BIN" ] || GIT_BIN=$(find_real_git)
+if [ -z "$GIT_BIN" ] || [ ! -x "$GIT_BIN" ]; then
+    echo "git: could not locate the real git in PATH -- set LIM_GIT_BIN to its path" >&2
+    exit 127
+fi
+
+# --- 1. Block dangerous subcommands ---
+if [ "$1" = "add" ]; then
+    for arg in "$@"; do
+        if [ "$arg" = "-A" ] || [ "$arg" = "--all" ] || [[ "$arg" =~ ^-[a-zA-Z]*A[a-zA-Z]*$ ]] || [ "$arg" = "." ] || [ "$arg" = "./" ] || [ "$arg" = ":/" ]; then
+            echo "ERROR: git add -A / --all / . / ./ / :/ is disabled (bulk add): use git commit -a or specify files explicitly" >&2
+            exit 1
+        fi
+    done
+elif [ "$1" = "clean" ]; then
+    echo "ERROR: git clean is disabled: it can delete untracked files you need" >&2
+    exit 1
+fi
+
+# --- 2. Coordinate with the user-side wrapper window ---
+if [ -e /var/tmp/lim.gw.lock ]; then
+    case "${1:-}" in
+        status|log|whatchanged|diff|show|blame|describe|rev-parse|rev-list|ls-files|grep|shortlog|cat-file|name-rev|merge-base|count-objects|verify-pack|verify-tag|show-ref|var|help)
+            GIT_OPTIONAL_LOCKS=0 exec "$GIT_BIN" "$@"
+            ;;
+    esac
+    # Only repos under /home/$USER can be under a window (the wrapper
+    # protects gitdirs there only). -C / --git-dir / GIT_DIR name a repo
+    # that cannot be resolved here, so assume it may be shared.
+    gw_targeted=no
+    [ -n "${GIT_DIR}${GIT_COMMON_DIR}" ] && gw_targeted=yes
+    for gw_a in "$@"; do
+        case "$gw_a" in -C|--git-dir|--git-dir=*|--work-tree|--work-tree=*|--git-common-dir|--git-common-dir=*) gw_targeted=yes ;; esac
+    done
+    if [ "$gw_targeted" = no ]; then
+        gw_gd=$("$GIT_BIN" rev-parse --absolute-git-dir 2>/dev/null)
+        case "$gw_gd" in
+            "$HOME"/*) : ;;
+            *) exec "$GIT_BIN" "$@" ;;
+        esac
+    fi
+    # Probe: writes allowed only to the scratch dir and /dev, so a
+    # completing probe made no repo writes. Skip it (fall through to the
+    # wait) if the scratch overlaps the repo, or setpriv / Landlock is
+    # unavailable.
+    gw_w=write-file,remove-dir,remove-file,make-char,make-dir,make-reg,make-sock,make-fifo,make-block,make-sym,refer,truncate
+    gw_scratch=${TMPDIR:-/tmp}
+    case $gw_scratch in /*) ;; *) gw_scratch=/tmp ;; esac
+    if setpriv --landlock-access "fs:$gw_w" --landlock-rule path-beneath:write-file:/dev/null true 2>/dev/null; then
+        case "$gw_gd" in
+            "$gw_scratch"|"$gw_scratch"/*) : ;;
+            *)
+                gw_err=$(mktemp "$gw_scratch/.gitprobe.XXXXXX" 2>/dev/null) || gw_err=/dev/null
+                if setpriv --landlock-access "fs:$gw_w" \
+                        --landlock-rule "path-beneath:$gw_w:$gw_scratch" \
+                        --landlock-rule path-beneath:write-file:/dev/null \
+                        --landlock-rule path-beneath:write-file:/dev/tty \
+                        "$GIT_BIN" "$@" 2>"$gw_err"; then
+                    [ "$gw_err" = /dev/null ] || { cat "$gw_err" >&2; rm -f "$gw_err"; }
+                    exit 0
+                fi
+                [ "$gw_err" = /dev/null ] || rm -f "$gw_err"
+                ;;
+        esac
+    fi
+fi
+# Wait for the git wrapper's group-write-removed window (its
+# /var/tmp/lim.gw.lock) to close, then run for real.
+if [ -e /var/tmp/lim.gw.lock ]; then
+    echo "git: waiting for user's git operation to finish..." >&2
+fi
+while [ -e /var/tmp/lim.gw.lock ]; do
+    gw_h=$(cat /var/tmp/lim.gw.lock 2>/dev/null)
+    gw_pid=${gw_h%% *}
+    gw_st=${gw_h#* }
+    case $gw_pid in ''|*[!0-9]*) break ;; esac
+    [ "$gw_st" != "$gw_h" ] || break
+    [ -e "/proc/$gw_pid" ] || break
+    gw_my_st=$(gw_s=$(cat "/proc/$gw_pid/stat" 2>/dev/null) || exit 1
+        gw_s=${gw_s##*) }
+        set -- $gw_s
+        [ $# -ge 20 ] || exit 1
+        printf '%s' "${20}")
+    [ "$gw_my_st" = "$gw_st" ] || break
+    sleep 0.2
+done
+exec "$GIT_BIN" "$@"
+

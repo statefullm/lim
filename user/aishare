@@ -1,5 +1,6 @@
 #!/bin/sh
-# aishare -- make project files accessible to both the user and LIM_AI_USER
+# aishare -- user-side: make project files accessible to both the user and
+# LIM_AI_USER. Shipped as user/aishare; installed to /home/$USER/bin/aishare.
 # Usage: aishare [directory]   (defaults to current directory)
 
 owner="${USER:-$(whoami)}"

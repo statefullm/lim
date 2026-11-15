@@ -1,5 +1,6 @@
 #!/bin/sh
-# git -- re-share wrapper for shared (aishare'd) repos.
+# git -- user-side re-share wrapper for shared (aishare'd) repos. Shipped as
+# user/git; installed to /home/$USER/bin/git.
 #
 # After every git command you run in a shared repo (a repo whose gitdir is
 # under /home/$LIM_AI_USER -- the store, or an in-place bare or custom-
@@ -86,17 +87,18 @@ user=$(id -un 2>/dev/null)
 #
 # The removed-group-write window is announced to the LLM with
 # /var/tmp/lim.gw.lock (pid + starttime inside; the same mechanism as
-# aishare's /var/tmp/lim.aishare.lock): the LLM's git (the git() function
-# in the LLM user's ~/.bashrc) waits on it, so a concurrent LLM git write
-# no longer meets the removed group write with "Permission denied" on a git
-# lock file (which used to look like a broken share that needed an aishare
-# re-run). The lock is created before the removal and removed after the
-# restore, on every exit path (HUP/QUIT are trapped too, so an interrupted
-# run still restores and releases). Sticky /var/tmp keeps the LLM from
-# removing our lock; it can only pre-create the file, which the holder
-# check handles: a live holder owned by this user is a concurrent wrapper
-# (join its window), a stale holder (dead or reused pid) is taken over, and
-# any other holder aborts the run rather than run unprotected.
+# aishare's /var/tmp/lim.aishare.lock): /home/$LIM_AI_USER/bin/git (the
+# LLM-side git guard, installed by make install) waits on it, so a
+# concurrent LLM git write no longer meets the removed group write with
+# "Permission denied" on a git lock file (which used to look like a broken
+# share that needed an aishare re-run). The lock is created before the
+# removal and removed after the restore, on every exit path (HUP/QUIT
+# are trapped too, so an interrupted run still restores and
+# releases). Sticky /var/tmp keeps the LLM from removing our lock; it
+# can only pre-create the file, which the holder check handles: a live
+# holder owned by this user is a concurrent wrapper (join its window),
+# a stale holder (dead or reused pid) is taken over, and any other
+# holder aborts the run rather than run unprotected.
 #
 # Which gitdirs can the invocation reach? Git is steered to a repo by the
 # working directory, -C <dir> (a chdir before the subcommand), --git-dir
@@ -403,4 +405,3 @@ if [ -n "$user" ] && [ "$user" != "$AI_USER" ] && [ -n "$gw_d1" ]; then
     done
 fi
 exit $rc
-
