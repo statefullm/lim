@@ -3,7 +3,17 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:;">
+    <!-- connect-src: 'self' covers same-origin fetches (e.g., the KaTeX CSS fetch
+         in exportHtml).  The /ws WebSocket always connects to window.location.host
+         (viewer.js), i.e. the page's own host:port -- localhost/127.0.0.1 both
+         directly and through an ssh -L tunnel.  The explicit host sources (wildcard
+         port, so any LIM_PORT and any tunnel local port) are listed rather than
+         relying on 'self' resolving for ws:/wss:, which MDN notes "does not resolve
+         to websocket schemes in all browsers"; per the CSP spec a ws:// host source
+         also matches wss:// URLs.  Bare ws:/wss: scheme sources are deliberately
+         absent: they would allow connections to ANY host. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*;">
+    <link rel="icon" type="image/png" href="/favicon.png">
     <title>LIM Viewer</title>
 
     <script src="libs/marked.min.js"></script>

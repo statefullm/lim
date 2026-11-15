@@ -256,12 +256,23 @@ async def serve_viewer_js(request):
         headers={'Cache-Control': 'no-store'},
     )
 
+async def serve_icon(request):
+    """Serve the favicon from the config dir.  Both /favicon.png (referenced
+    by viewer.html's <link> tag) and /favicon.ico (the browser's default
+    probe) return the same file; browsers accept a PNG at the .ico path."""
+    icon_path = Path(__file__).resolve().parent / 'favicon.png'
+    if not icon_path.exists():
+        return web.Response(status=404, text="favicon.png not found")
+    return web.FileResponse(str(icon_path), headers={'Cache-Control': 'no-store'})
+
 async def main():
     # Single aiohttp server handling both HTTP and WebSocket
     app = web.Application()
     script_path = Path(__file__).resolve()
     app.router.add_get('/viewer.html', serve_viewer)
     app.router.add_get('/viewer.js', serve_viewer_js)
+    app.router.add_get('/favicon.png', serve_icon)
+    app.router.add_get('/favicon.ico', serve_icon)
     app.router.add_static('/libs/', str(script_path.parent / 'libs'))
     app.router.add_get('/status', status_handler)
     app.router.add_get('/ws', websocket_handler)
