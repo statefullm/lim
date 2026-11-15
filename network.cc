@@ -581,7 +581,7 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
   curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 
   long http_code = 0;
-  CURLcode res = curl_easy_perform(curl);
+  curl_easy_perform(curl);
 
   // Check for interrupt after completion
   if (stop_generation) {

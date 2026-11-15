@@ -6,7 +6,9 @@
 #include "network.h"  // For LIM_LOG_DIR
 #include "model.h"    // handle_llama_decode_error (MTP mirror hook)
 #include <cstdio>
+#include <fcntl.h>
 #include <fstream>
+#include <unistd.h>
 #include <iomanip>
 #include <string>
 #include <vector>
@@ -53,13 +55,24 @@ int next_free_log_index(int from) {
   }
 }
 
+// Session logs hold the full conversation (file contents, shell output,
+// possibly secrets): create them readable only by the owner and the sharing
+// group (0660, never others).  Existing files are left untouched.
+static void secure_session_log(const string& path) {
+  int fd = open(path.c_str(), O_WRONLY | O_CREAT, 0660);
+  if (fd < 0) return;  // open_session_logs will report the failure
+  close(fd);
+}
+
 bool open_session_logs(int idx) {
   string log_file_name = LIM_LOG_DIR + "/" + to_string(idx);
+  secure_session_log(log_file_name);
   chat_log.open(log_file_name, ios::app);
   if (!chat_log.is_open()) return false;
 
   if (is_debug) {
     string token_log_name = LIM_LOG_DIR + "/" + to_string(idx) + ".tokens";
+    secure_session_log(token_log_name);
     token_log.open(token_log_name, ios::trunc);
     if (token_log.is_open()) {
       token_log << "# Token Log - Session #" << idx << "\n";
@@ -70,6 +83,7 @@ bool open_session_logs(int idx) {
   }
 
   string tps_log_name = LIM_LOG_DIR + "/" + to_string(idx) + ".tps";
+  secure_session_log(tps_log_name);
   tps_log.open(tps_log_name, ios::trunc);
   if (tps_log.is_open()) {
     tps_log << "# TPS Log - Session #" << idx << "\n";

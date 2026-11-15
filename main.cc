@@ -421,7 +421,6 @@ int main(int argc, char ** argv) {
   // Benchmark chatbot modes 1/2 are excluded.
   bool mtp_enabled = false;
   bool mtp_use_sidecar = false;
-  bool mtp_sidecar_shared = false;
   int mtp_draft_len = 4;
   int mtp_draft_batch = 128;
   {
@@ -457,8 +456,6 @@ int main(int argc, char ** argv) {
           if (has_mtp && sidecar_set) {
             mtp_enabled = true;
             mtp_use_sidecar = true;
-            // Detect shared-head sidecars (no own tok_embd; borrows from main).
-            mtp_sidecar_shared = gguf_find_tensor(gc, "token_embd.weight") < 0;
           } else if (has_mtp) {
             mtp_enabled = true;
             mparams.load_mtp = true;
@@ -841,11 +838,11 @@ int main(int argc, char ** argv) {
   }
 
   // --- Run the main chat session loop ---
-  bool result = run_chat_session(
+  run_chat_session(
     ctx, vocab, smpl, batch, n_past, cparams,
     system_tokens, system_prompt, use_dummy_thought,
     state
-    );
+  );
 
   // Cleanup (free the MTP draft context before the model it shares;
   // sidecar model is freed after the draft ctx but before the main model)

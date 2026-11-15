@@ -108,7 +108,7 @@ MtpSpeculator* MtpSpeculator::create(llama_context* ctx_main, llama_model* model
     const int32_t n_head_kv = llama_model_n_head_kv(model);
     int64_t head_k = -1, head_v = -1;
     {
-      char key_buf[128], val_buf[32];
+      char key_buf[128];
       const int32_t n_meta = llama_model_meta_count(model);
       for (int32_t i = 0; i < n_meta; i++) {
         if (llama_model_meta_key_by_index(model, i, key_buf, sizeof(key_buf)) <= 0) continue;

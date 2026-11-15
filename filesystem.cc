@@ -1246,13 +1246,6 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
       return "Error: aishare has been re-sharing files for 15 minutes without finishing -- it was probably interrupted. Ask the user to remove /var/tmp/lim.aishare.lock and re-run aishare (it will resume the suspended trees), then retry this command.";
   }
 
-  string safe_cmd = command;
-  size_t pos = 0;
-  while ((pos = safe_cmd.find("'", pos)) != string::npos) {
-    safe_cmd.replace(pos, 1, "'\\''");
-    pos += 4;
-  }
-
   // Capture exit code in a temp file to avoid collision with command output.
   // Mixing exit-code markers into stdout/stderr breaks when commands produce
   // text containing the marker (e.g., nested bash -c wrappers).
@@ -1279,8 +1272,9 @@ string FileSystemTools::exec_shell(const string& command, function<void()> on_op
     log_diagnostic("WARNING: could not create the exec_shell marker file; aishare's sweep cannot identify this command's processes", true /* logOnly */);
   }
 
-  // Write the user command to a temp script to avoid shell-escaping issues
-  // with parentheses, dollar signs, backticks, etc. inside bash -c '...'.
+  // Write the user command to a temp script (run as `bash <script>`) to
+  // avoid shell-escaping issues with parentheses, dollar signs, backticks,
+  // etc. that a quoted bash -c argument would require.
   string script_path = "/tmp/lim_cmd_XXXXXX";
   int sfd = mkstemps(const_cast<char*>(script_path.c_str()), 0);
   auto cleanup_exec_files = [&] {
