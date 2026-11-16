@@ -1987,7 +1987,6 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
   string content = buffer.str();
   in_file.close();
 
-  size_t pos = 0;
   int changes_count = 0;
 
   if (unescaped_old.empty()) {
@@ -1998,10 +1997,26 @@ map<string, string> FileSystemTools::edit_file(const string& path, const string&
     return result;
   }
 
-  while ((pos = content.find(unescaped_old, pos)) != string::npos) {
-    content.replace(pos, unescaped_old.length(), unescaped_new);
-    pos += unescaped_new.length();
+  // Single forward pass: append each unmatched gap and the replacement text
+  // to a reserved buffer as matches are found, so the file is copied once
+  // instead of an O(n) memmove per occurrence.  The scan resumes in the
+  // untouched suffix after each match -- the replacement text itself is
+  // never rescanned -- the same boundary the replace loop's cursor landed
+  // on, so the match set, order, and changes_count are unchanged.
+  string replaced;
+  replaced.reserve(content.size());
+  size_t i = 0;
+  while (i < content.size()) {
+    size_t m = content.find(unescaped_old, i);
+    if (m == string::npos) break;
+    replaced.append(content, i, m - i);
+    replaced += unescaped_new;
     changes_count++;
+    i = m + unescaped_old.size();
+  }
+  if (changes_count > 0) {
+    replaced.append(content, i, content.size() - i);
+    content = std::move(replaced);
   }
 
   if (changes_count == 0) {

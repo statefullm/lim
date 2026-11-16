@@ -131,34 +131,107 @@ void pipe_write(const char* data, size_t len) {
   }
 }
 
-// --- HTML Escape Contract (uses the shared escape_tag from parsers.cc) ---
+// --- HTML Escape Contract (sentinel tokens the viewer un-escapes) ---
 // Sentinel-based escape: unlike the plain html_escape in session_utils.cc,
 // this converts < > & into the sentinel tokens the viewer un-escapes.
-static string html_escape_sentinel(const string& input) {
-  string result = input;
-  // Step 1: Recursively escape pre-existing sentinel tokens.
-  { string sentinel_lt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_lt += "lt"; sentinel_lt += Tokens::HTML_SENTINEL_CHAR; escape_tag(result, sentinel_lt, Tokens::HTML_ESCAPE_CHAR); }
-  { string sentinel_gt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_gt += "gt"; sentinel_gt += Tokens::HTML_SENTINEL_CHAR; escape_tag(result, sentinel_gt, Tokens::HTML_ESCAPE_CHAR); }
-  // Step 2: Replace raw characters with sentinel tokens.
-  // Note: backtick is NOT escaped -- only special in markdown (handled by marked), not HTML.
-  { size_t pos = 0; while ((pos = result.find('&', pos)) != string::npos) { result.replace(pos, 1, "&amp;"); pos += 5; } }
-  { string sentinel_lt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_lt += "lt"; sentinel_lt += Tokens::HTML_SENTINEL_CHAR; size_t pos = 0; while ((pos = result.find('<', pos)) != string::npos) { result.replace(pos, 1, sentinel_lt); pos += sentinel_lt.size(); } }
-  { string sentinel_gt(1, Tokens::HTML_SENTINEL_CHAR); sentinel_gt += "gt"; sentinel_gt += Tokens::HTML_SENTINEL_CHAR; size_t pos = 0; while ((pos = result.find('>', pos)) != string::npos) { result.replace(pos, 1, sentinel_gt); pos += sentinel_gt.size(); } }
-  return result;
+// Note: backtick is NOT escaped -- only special in markdown (handled by
+// marked), not HTML.
+static string html_sentinel(const char* body) {
+  return string(1, Tokens::HTML_SENTINEL_CHAR) + body + string(1, Tokens::HTML_SENTINEL_CHAR);
+}
+
+// One left-to-right pass building a reserved output, O(n) no matter how many
+// specials the text has.  The recursive pre-existing-sentinel escape (the two
+// escape_tag passes over the %lt% / %gt% tokens) is folded into the pass: at
+// each '%' the sentinel body is checked after the HTML_ESCAPE_CHAR run and a
+// match emits one more escape char.  Each escape pass is a fresh left-to-right
+// scan that skips only the trailing '%' of its own matches (its resume point
+// is past the token), so a sentinel's trailing '%' -- shared with the next
+// occurrence's opening -- is still a candidate for the other pass, and the
+// walk continues past it with that pass's verdict pending until some '%' no
+// longer matches.  With 'remove_div_close', literal </div> is dropped first
+// in its own pass (the reference's find+erase loop cost O(n) per removal):
+// the drop happens before the sentinel checks because it joins the text
+// across the removed span.
+static string html_escape_sentinel(const string& input, bool remove_div_close) {
+  const string sentinel_lt = html_sentinel("lt");
+  const string sentinel_gt = html_sentinel("gt");
+  const char sent = Tokens::HTML_SENTINEL_CHAR;
+  const char esc = Tokens::HTML_ESCAPE_CHAR;
+
+  string cleaned;
+  const string* src = &input;
+  if (remove_div_close) {
+    cleaned.reserve(input.size());
+    size_t i = 0;
+    while (i < input.size()) {
+      if (input.compare(i, 6, "</div>") == 0) { i += 6; continue; }
+      cleaned += input[i++];
+    }
+    src = &cleaned;
+  }
+  const string& text = *src;
+  const size_t n = text.size();
+
+  auto lt_at = [&](size_t k) {
+    return k + 3 <= n && text[k] == 'l' && text[k + 1] == 't' && text[k + 2] == sent;
+  };
+  auto gt_at = [&](size_t k) {
+    return k + 3 <= n && text[k] == 'g' && text[k + 1] == 't' && text[k + 2] == sent;
+  };
+  auto esc_run = [&](size_t k) {
+    size_t e = 0;
+    while (k + e < n && text[k + e] == esc) e++;
+    return e;
+  };
+
+  string out;
+  out.reserve(n * 2 + 32);
+  size_t i = 0;
+  while (i < n) {
+    const char c = text[i];
+    if (c != sent && c != '&' && c != '<' && c != '>') { out += c; i++; continue; }
+    if (c == '&') { out += "&amp;"; i++; continue; }
+    if (c == '<') { out += sentinel_lt; i++; continue; }
+    if (c == '>') { out += sentinel_gt; i++; continue; }
+    // c == sent, reached by the main scan: a candidate for both passes.
+    out += c;
+    size_t e = esc_run(i + 1);
+    size_t j = i + 1 + e;
+    bool skip_lt_pass = false, skip_gt_pass = false;
+    while (true) {
+      const bool lt_match = !skip_lt_pass && lt_at(j);
+      const bool gt_match = !skip_gt_pass && gt_at(j);
+      if (lt_match || gt_match) {
+        out.append(e + 1, esc);
+        out += lt_match ? "lt" : "gt";
+        out += sent;  // the sentinel's trailing '%'
+        // A match consumes its trailing '%' for its own pass, but the other
+        // escape pass is a fresh scan over every '%' and still sees it (each
+        // pass only skips the trailing of its own matches), so the walk
+        // continues with the other pass's verdict pending.
+        skip_lt_pass = lt_match;
+        skip_gt_pass = gt_match;
+        i = j + 2;
+        e = esc_run(i + 1);
+        j = i + 1 + e;
+      } else {
+        i++;  // this '%' stays unescaped; the main scan resumes
+        break;
+      }
+    }
+  }
+  return out;
 }
 
 void stream(const string& raw_token) {
   if (!should_output_to_browser()) return;
 
-  string filtered = raw_token;
-  size_t pos = 0;
-  while ((pos = filtered.find("</div>", pos)) != string::npos) {
-    filtered.erase(pos, 6);
-  }
-
-  // HTML-escape <, >, & so they render as text in the browser.
-  // Uses sentinel-based recursive escape contract (mirrors parsers.cc).
-  string escaped = html_escape_sentinel(filtered);
+  // HTML-escape <, >, & so they render as text in the browser (the
+  // sentinel-based recursive escape contract, mirroring parsers.cc),
+  // dropping any literal closing div tag so model text cannot close the
+  // output box.
+  string escaped = html_escape_sentinel(raw_token, true);
 
   // Combine prefix + content into a single pipe_write to prevent the
   // Python FIFO reader from splitting them across separate WebSocket
@@ -183,7 +256,7 @@ void stream_speed(const string& speed_text) {
 
 void stream_think(const string& text) {
   if (!should_output_to_browser() || text.empty()) return;
-  string escaped = html_escape_sentinel(text);
+  string escaped = html_escape_sentinel(text, false);
   string payload(1, SEG_THINK);
   payload += escaped;
   pipe_write(payload.c_str(), payload.length());

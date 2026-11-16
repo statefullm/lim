@@ -15,6 +15,12 @@ void unescape_parameter_tags(std::string& str);
 void escape_turn_tags(std::string& str);
 void unescape_turn_tags(std::string& str);
 
+// Strip surrounding matching quotes (single or double) from a string, with
+// any whitespace around the quoted content; strings without surrounding
+// quotes are returned unchanged (exact whitespace preserved).  Shared by
+// the value extractors and the tools edge-newline note.
+std::string strip_quotes(const std::string& s);
+
 // Strip quote characters and surrounding whitespace from a string (used for
 // forgiving tag-name matching: PARAM_START paths> -> paths).
 std::string strip_quotes_from_name(const std::string& s);
@@ -31,12 +37,19 @@ std::string extract_path_arg(const std::string& tool_call);
 
 // Generic escape: insert one copy of 'esc_char' after the first char of every
 // occurrence of 'token'.  Handles recursive escaping: if already escaped, adds
-// another esc_char.  (Shared by parsers.cc and output.cc.)
+// another esc_char.  Single pass.  (Used by the parameter and turn
+// escape/unescape wrappers below.)
 void escape_tag(std::string& str, const std::string& token, char esc_char);
 
-// Linear-time parsers - O(n) time complexity with general data robustness
-// No artificial limits on string length or array size
-// Handles arbitrary-length tool calls safely
+// Generic unescape: remove one copy of 'esc_char' after the first char of
+// every occurrence of 'token' (a raw, unescaped token is left alone).
+// Single pass; the mirror of escape_tag.  Shared by the parameter and turn
+// unescapers below.
+void unescape_one_token(std::string& str, const std::string& token, char esc_char);
+
+// Single-pass (O(n)) parsers: a call is scanned once per extraction,
+// regardless of how many markers its content contains.
+// No artificial limits on string length or array size.
 std::string extract_string_arg_bounded(const std::string& tool_call, const std::string& arg_name);
 
 // Raw variant: parameter block between the opening and closing parameter

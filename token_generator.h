@@ -10,10 +10,9 @@
 // Helper to escape token piece strings for token log
 std::string escape_token_piece(const std::string& s);
 
-// Helper functions for tool call detection (shared between session.cc and token_generator.cc)
-size_t find_tool_end_robust(const std::string& text, size_t from_pos, bool* out_in_parameter = nullptr);
-void repair_malformed_tool_end(std::string& text, size_t pos);
 void _strip_think_and_tool_tags(std::string& str);
+
+#include "tool_end.h"  // find_tool_end_robust, repair_malformed_tool_end, ToolEndScanner
 
 class TokenGenerator {
 public:
@@ -121,6 +120,10 @@ private:
   size_t tool_end_;
   bool trigger_tool_execution_;
   size_t func_search_pos_;
+  // Incremental tool-end scanner (see tool_end.h): the per-token hot path.
+  // Started at the call's FUNC_START (tool_start_) or at 0 for a
+  // mid-tool-call resume.
+  ToolEndScanner tool_end_scan_;
   bool context_warned_this_turn_;
   bool in_thinking_block_;
   size_t think_start_;

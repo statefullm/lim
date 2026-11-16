@@ -100,16 +100,23 @@ async def broadcast_llm_stream():
 
     def _on_fifo_readable():
         """Called by the event loop whenever the FIFO has data."""
+        # Drain everything currently buffered in the pipe; collect the
+        # chunks in a list and join once (bytes += per chunk would copy
+        # the whole buffer each read, O(total^2/chunk) per wakeup).  The
+        # drain ends on EAGAIN, which is the NORMAL stop condition and can
+        # follow successful reads -- so the exception handler must not
+        # discard the chunks already collected.
+        chunks = []
         try:
-            # Drain everything currently buffered in the pipe.
-            buf = b""
             while True:
                 chunk = os.read(fd, 65536)
                 if not chunk:
                     break
-                buf += chunk
+                chunks.append(chunk)
         except BlockingIOError:
             pass  # No more data right now
+
+        buf = b"".join(chunks)
 
         if buf:
             text = buf.decode('utf-8', errors='ignore')

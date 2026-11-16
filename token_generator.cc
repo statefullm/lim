@@ -50,148 +50,6 @@ string escape_token_piece(const string& s) {
   return out;
 }
 
-// Find tool call end robustly, handling malformed closing tags, nested FUNC_START in content,
-// and FUNC_START/FUNC_END embedded within parameter values (ignored via in_parameter guard).
-// A parameter region opens with PARAM_START or the bare <name> alias
-// (PARAM_NAMES); PARAM_END is the only exit.
-size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_parameter) {
-  string fe_str(FUNC_END);
-  string fs_str(FUNC_START);
-  string ps_str(PARAM_START);
-  string pe_str(PARAM_END);
-  int depth = 1;
-  bool in_parameter = false;
-  size_t pos = from_pos;
-  // Skip the FUNC_START at from_pos -- caller already knows it's there (depth starts at 1).
-  if (text.compare(pos, fs_str.length(), fs_str) == 0) {
-    pos += fs_str.length();
-  }
-  while (pos != string::npos && pos < text.length()) {
-    size_t next_start = text.find(fs_str, pos);
-    size_t next_end = text.find(fe_str, pos);
-    size_t next_ps = text.find(ps_str, pos);
-    size_t next_pe = in_parameter ? text.find(pe_str, pos) : string::npos;
-    // The bare <name> alias opens a parameter region too.  Only searched
-    // outside a parameter: values may legitimately contain bare tags.
-    size_t bare_len = 0;
-    size_t next_bare = in_parameter ? string::npos : find_bare_param_open(text, pos, bare_len);
-
-    // Determine the earliest event
-    size_t events[5] = {next_start, next_end, next_ps, next_pe, next_bare};
-    int type = -1; // 0=start, 1=end, 2=param_start, 3=param_end, 4=bare_param_start
-    for (int i = 0; i < 5; i++) {
-      if (events[i] == string::npos) continue;
-      if (type == -1 || events[i] < events[type]) type = i;
-    }
-    if (type == -1) break;
-
-    if (type == 2) {
-      // Entered a parameter region
-      in_parameter = true;
-      pos = next_ps + ps_str.length();
-      continue;
-    }
-    if (type == 3) {
-      // Exited a parameter region
-      in_parameter = false;
-      pos = next_pe + pe_str.length();
-      continue;
-    }
-    if (type == 4) {
-      // Entered a parameter region via the bare <name> alias.
-      in_parameter = true;
-      pos = next_bare + bare_len;
-      continue;
-    }
-    if (in_parameter) {
-      // FUNC_START or FUNC_END inside parameter value -- ignore
-      pos = events[type] + (type == 0 ? fs_str.length() : fe_str.length());
-      continue;
-    }
-    if (type == 0) {
-      depth++;
-      pos = next_start + fs_str.length();
-    } else {
-      depth--;
-      if (depth == 0) {
-        if (out_in_parameter) *out_in_parameter = in_parameter;
-        return next_end;
-      }
-      pos = next_end + fe_str.length();
-    }
-  }
-  // Partial-match fallback: look for an incomplete FUNC_END (e.g., split across tokens).
-  // Partial-match fallback: single forward pass from pos, O(n).
-  string partial = fe_str.substr(0, fe_str.length() - 1);
-  while (pos < text.length()) {
-    size_t ps = text.find(ps_str, pos);
-    size_t pe = in_parameter ? text.find(pe_str, pos) : string::npos;
-    size_t pp = text.find(partial, pos);
-
-    // Find earliest event
-    size_t bare_len = 0;
-    size_t pb = in_parameter ? string::npos : find_bare_param_open(text, pos, bare_len);
-    if (ps != string::npos && (pe == string::npos || ps < pe) && (pp == string::npos || ps < pp) && (pb == string::npos || ps < pb)) {
-      in_parameter = true;
-      pos = ps + ps_str.length();
-      continue;
-    }
-    if (pe != string::npos && (pp == string::npos || pe < pp) && (pb == string::npos || pe < pb)) {
-      in_parameter = false;
-      pos = pe + pe_str.length();
-      continue;
-    }
-    if (pb != string::npos && (pp == string::npos || pb < pp)) {
-      // Entered a parameter region via the bare <name> alias.
-      in_parameter = true;
-      pos = pb + bare_len;
-      continue;
-    }
-    if (pp == string::npos) break;
-
-    // Found partial FUNC_END match at pp.
-    if (in_parameter) {
-      pos = pp + partial.length();
-      continue;
-    }
-    if (pp + partial.length() < text.length()) {
-      char next_c = text[pp + partial.length()];
-      if (next_c == '>') {
-        if (out_in_parameter) *out_in_parameter = in_parameter;
-        return pp;
-      }
-      size_t garbage_end = text.find('>', pp + partial.length());
-      if (garbage_end != string::npos) {
-        if (out_in_parameter) *out_in_parameter = in_parameter;
-        return pp + partial.length();
-      }
-      // Partial match with no '>' after it -- the model clearly intended to
-      // close the tag but produced garbage instead.  Accept as completed so
-      // the caller can repair the missing '>' and break out of the loop.
-      if (out_in_parameter) *out_in_parameter = in_parameter;
-      return pp + partial.length();
-    }
-    // Partial match at end of text -- accept as completed.
-    if (out_in_parameter) *out_in_parameter = in_parameter;
-    return pp + partial.length();
-  }
-  if (out_in_parameter) *out_in_parameter = in_parameter;
-  return string::npos;
-}
-
-// Repair malformed closing tag at position returned by find_tool_end_robust.
-void repair_malformed_tool_end(string& text, size_t pos) {
-  if (pos >= text.length()) return;
-  char next_c = text[pos];
-  if (next_c == '>') return;
-  size_t garbage_end = text.find('>', pos);
-  if (garbage_end == string::npos) {
-    text.insert(pos, ">");
-    return;
-  }
-  text.replace(pos, garbage_end + 1 - pos, ">");
-}
-
 // --- Helper to strip thinking and tool-call XML tags from a string ---
 void _strip_think_and_tool_tags(string& str) {
   static const vector<string> all_tags = {
@@ -256,6 +114,13 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
 {
   generated_text_.reserve(32768);
   unprinted_text_.reserve(1024);
+  if (was_mid_tool_call) {
+    // Resuming mid-tool-call: the call's own FUNC_START was fed before the
+    // interrupt and is not in generated_text_, so the tool-end scan starts
+    // at 0 (the first tokens may complete a leading FUNC_START, which is
+    // then skipped, matching the reference's search_from 0).
+    tool_end_scan_.begin(0);
+  }
 }
 
 TokenGenerator::Result TokenGenerator::generate() {
@@ -925,6 +790,9 @@ TokenGenerator::Result TokenGenerator::generate() {
           continue;
         }
         tool_start_ = found;
+        // Start the incremental tool-end scan at the call's own FUNC_START
+        // (same from_pos the reference re-scan used: tool_start_).
+        tool_end_scan_.begin(tool_start_);
         // FUNC_START just became fully present: schedule the hook for
         // after this token is fed (see end of iteration).
         tool_start_hook_pending = true;
@@ -935,9 +803,15 @@ TokenGenerator::Result TokenGenerator::generate() {
       }
     }
     if (tool_start_ != string::npos && tool_end_ == string::npos) {
-      size_t search_from = was_mid_tool_call_ ? 0 : tool_start_;
-      tool_end_ = find_tool_end_robust(generated_text_, search_from, &in_parameter_);
-      if (tool_end_ != string::npos) {
+      // Incremental tool-end scan: processes only the tail appended since
+      // the previous token (O(tail) per call instead of O(text)), and is
+      // byte-identical at every prefix to the full re-scan
+      // find_tool_end_robust (differentially tested in test_tool_end.cc).
+      tool_end_scan_.scan(generated_text_);
+      in_parameter_ = tool_end_scan_.in_parameter();
+      if (tool_end_scan_.tool_end() != string::npos) {
+        tool_end_ = tool_end_scan_.tool_end();
+        size_t search_from = was_mid_tool_call_ ? 0 : tool_start_;
         size_t exact_pos = generated_text_.find(FUNC_END, search_from);
         if (exact_pos == string::npos) {
           repair_malformed_tool_end(generated_text_, tool_end_);

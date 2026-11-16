@@ -39,13 +39,19 @@ std::string html_escape(const std::string& s) {
 }
 
 std::string html_escape_for_browser(const std::string& s) {
-  std::string escaped = html_escape(s);
-  size_t pos = 0;
-  while ((pos = escaped.find('\n', pos)) != std::string::npos) {
-    escaped.replace(pos, 1, "<br>");
-    pos += 3;
+  // Single pass: html_escape plus newline -> <br> (html_escape neither
+  // produces nor consumes newlines, so the two fold into one scan).
+  std::string out;
+  out.reserve(s.size() + s.size() / 16 + 16);
+  for (char c : s) {
+    if (c == '&') out += "&amp;";
+    else if (c == '<') out += "&lt;";
+    else if (c == '>') out += "&gt;";
+    else if (c == '"') out += "&quot;";
+    else if (c == '\n') out += "<br>";
+    else out += c;
   }
-  return escaped;
+  return out;
 }
 int next_free_log_index(int from) {
   if (from < 1) from = 1;
@@ -102,10 +108,27 @@ void log_tokens(const std::string& label, const std::vector<llama_token>& toks, 
 
 void strip_tags(std::string& str, const std::vector<std::string>& tags) {
   for (const auto& tag : tags) {
-    size_t p;
-    while ((p = str.find(tag)) != string::npos) {
-      str.erase(p, tag.length());
+    // No occurrence: a single find, the old loop's first step, and done.
+    if (tag.empty() || str.find(tag) == string::npos) continue;
+    // Occurrences present: reduce left-to-right with a stack, O(n) instead
+    // of an O(n) erase per occurrence.  The old loop is
+    // leftmost-erase-to-fixpoint -- erasing can re-form the tag across the
+    // join (tag "ab" over "aabb" yields "ab", then "") -- and the stack
+    // catches that re-formation, because the join re-tests on every push
+    // and the stack never contains the tag between pushes; a plain forward
+    // scan would stop at the first fixpoint and miss it.  The suffix check
+    // is gated on the tag's last char, which a match requires.
+    const size_t tl = tag.size();
+    const char last_c = tag.back();
+    string st;
+    st.reserve(str.size());
+    for (char c : str) {
+      st += c;
+      if (c == last_c && st.size() >= tl && st.compare(st.size() - tl, tl, tag) == 0) {
+        st.resize(st.size() - tl);
+      }
     }
+    str = std::move(st);
   }
 }
 

@@ -76,7 +76,7 @@ LDFLAGS = -L$(LIM_LLAMA_BUILD_DIR)/bin \
 
 MAKEDEPEND = $(CXXFLAGS) -O0 -M -MG -DDEPEND
 
-FILES = main output server tools filesystem network parsers signals model session token_generator tool_executor session_utils mtp
+FILES = main output server tools filesystem network parsers tool_end signals model session token_generator tool_executor session_utils mtp
 
 TARGET = lim
 

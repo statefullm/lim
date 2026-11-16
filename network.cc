@@ -514,22 +514,28 @@ static pair<CURLcode, long> curl_fetch_buffer(const string& url, FetchState& sta
 // --- Strip Base64 Images from Text ---
 // Removes data:image/*;base64,... patterns to prevent cache corruption
 string NetworkTools::strip_base64_images(const string& text) {
-  string result = text;
-
   // Pattern: ![Image](data:image/...;base64,.......)
-  size_t pos = 0;
-  while ((pos = result.find("![Image](data:image/", pos)) != string::npos) {
-    size_t end_pos = result.find(")", pos);
-    if (end_pos != string::npos) {
-      // Replace with placeholder instead of removing entirely to preserve structure
-      result.replace(pos, end_pos - pos + 1, "[IMAGE OMITTED]");
-      pos += strlen("[IMAGE OMITTED]");
-    } else {
-      break;
-    }
+  // Single forward pass into a reserved buffer: one O(n) copy total instead
+  // of an O(n) replace per image.  The scan resumes in the untouched suffix
+  // after each match (the placeholder is never rescanned) -- the same
+  // boundary the replace loop's cursor landed on -- so the replaced spans
+  // are unchanged.
+  const string marker = "![Image](data:image/";
+  const string placeholder = "[IMAGE OMITTED]";  // placeholder, not removal, to preserve structure
+  string out;
+  out.reserve(text.size());
+  size_t i = 0;
+  while (i < text.size()) {
+    size_t m = text.find(marker, i);
+    if (m == string::npos) break;
+    size_t close = text.find(')', m + marker.size());  // the marker contains no ')'
+    if (close == string::npos) break;  // unterminated: leave the rest as-is
+    out.append(text, i, m - i);
+    out += placeholder;
+    i = close + 1;
   }
-
-  return result;
+  out.append(text, i, text.size() - i);
+  return out;
 }
 
 string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
@@ -1144,6 +1150,11 @@ string NetworkTools::fetch_and_clean_html(const string& url) {
     string lower_buf = decoded_html;
     transform(lower_buf.begin(), lower_buf.end(), lower_buf.begin(), [](unsigned char c){ return std::tolower(c); });
 
+    // Leftmost-erase-to-fixpoint: after each erase the scan restarts at 0,
+    // because erasing can re-form a marker across the join ("<scr" + block +
+    // "ipt"), which a forward cursor would miss.  Cost is O(blocks * n);
+    // acceptable here since this is only the rare libxml2-failure fallback
+    // (normal fetches take the tree path above).
     size_t pos = 0;
     while (true) {
       size_t script_start = lower_buf.find("<script", pos);

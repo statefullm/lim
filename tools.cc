@@ -92,9 +92,11 @@ static string edge_newline_warning(const string& value, const char* param_name, 
 // or passed through as-is (command/query): the call already ran, so this is
 // informational, not a retry imperative. Prepend it to 'result' (LLM-facing
 // only, not the browser display, matching the text/old warnings). No-op if
-// the emitted value had no edge newline.
-static void prepend_edge_newline_note(string& result, const string& tool_call, const char* param_name, EdgeHandling handling) {
-  string note = edge_newline_warning(extract_string_arg_bounded(tool_call, param_name), param_name, handling);
+// the emitted value had no edge newline.  'value' is the parameter value
+// the branch already extracted (quote-stripped, untrimmed): passing it in
+// keeps the note from re-parsing the call for every parameter.
+static void prepend_edge_newline_note(string& result, const string& value, const char* param_name, EdgeHandling handling) {
+  string note = edge_newline_warning(value, param_name, handling);
   if (!note.empty()) result = note + "\n\n" + result;
 }
 
@@ -292,7 +294,8 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     // paths are comma-separated on one line); a parameter tag in the
     // trimmed value likewise signals a missing closing tag.  Route it
     // through the correction cycle instead of silently splitting it.
-    if (path_value_malformed(trim_chars(extract_raw_arg_bounded(tool_call, "paths"), " \t\r\n"))) {
+    string paths_raw = extract_raw_arg_bounded(tool_call, "paths");
+    if (path_value_malformed(trim_chars(paths_raw, " \t\r\n"))) {
       out.content = PATHS_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out;
     }
     vector<string> paths = extract_array_arg_bounded(tool_call, "paths");
@@ -301,7 +304,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       FileSystemTools fs;
       NetworkTools net;
       result = "Files content:\n";
-      prepend_edge_newline_note(result, tool_call, "paths", EdgeHandling::Trimmed);
+      prepend_edge_newline_note(result, strip_quotes(paths_raw), "paths", EdgeHandling::Trimmed);
 
       vector<string> local_paths_to_read;
 
@@ -371,7 +374,8 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       result = "Error: No paths provided to read_files";
     }
   } else if (tool_name == "search_file") {
-    string path = extract_path_arg(tool_call);
+    string path_raw = extract_string_arg_bounded(tool_call, "path");
+    string path = trim_chars(path_raw, " \t\r\n");
     if (path_value_malformed(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string text = extract_string_arg_bounded(tool_call, "text");
     // Numeric args: all whitespace is trimmable (strtol would skip it
@@ -429,12 +433,13 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       }
 
       display_result = r_display;
-      prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
+      prepend_edge_newline_note(result, path_raw, "path", EdgeHandling::Trimmed);
     } else {
       result = "Error: path is required for search_file";
     }
   } else if (tool_name == "write_file") {
-    string path = extract_path_arg(tool_call);
+    string path_raw = extract_string_arg_bounded(tool_call, "path");
+    string path = trim_chars(path_raw, " \t\r\n");
     if (path_value_malformed(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
     string content = extract_string_arg_bounded(tool_call, "content");
     state.file_cache.erase(path);
@@ -459,13 +464,14 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
           display_result += " (created directories)";
         }
       }
-      prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
-      prepend_edge_newline_note(result, tool_call, "content", EdgeHandling::Passed);
+      prepend_edge_newline_note(result, path_raw, "path", EdgeHandling::Trimmed);
+      prepend_edge_newline_note(result, content, "content", EdgeHandling::Passed);
     } else {
       result = "Error: No path provided to write_file";
     }
   } else if (tool_name == "edit_file") {
-    string path = extract_path_arg(tool_call);
+    string path_raw = extract_string_arg_bounded(tool_call, "path");
+    string path = trim_chars(path_raw, " \t\r\n");
     if (path_value_malformed(path)) { out.content = PATH_NEWLINE_ERROR; out.is_error = true; out.malformed_xml = true; return out; }
 
     string old_str = extract_string_arg_bounded(tool_call, "old");
@@ -508,8 +514,8 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         }
         result = error_line;
       }
-      prepend_edge_newline_note(result, tool_call, "path", EdgeHandling::Trimmed);
-      prepend_edge_newline_note(result, tool_call, "new", EdgeHandling::Passed);
+      prepend_edge_newline_note(result, path_raw, "path", EdgeHandling::Trimmed);
+      prepend_edge_newline_note(result, new_str, "new", EdgeHandling::Passed);
     } else {
       result = "Error: No path provided to edit_file";
     }
@@ -553,7 +559,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       // Warn (informational note) if a spurious edge newline was passed
       // through as-is; the command still ran. LLM-facing only, like
       // path/paths.
-      prepend_edge_newline_note(result, tool_call, "command", EdgeHandling::Passed);
+      prepend_edge_newline_note(result, command, "command", EdgeHandling::Passed);
       // Don't show a separate summary box -- output is already streamed inside the green box above.
       display_result = "";
     } else {
@@ -574,7 +580,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
       // Warn (informational note) if a spurious edge newline was passed
       // through as-is; the search still ran. LLM-facing only, like
       // path/paths.
-      prepend_edge_newline_note(result, tool_call, "query", EdgeHandling::Passed);
+      prepend_edge_newline_note(result, query, "query", EdgeHandling::Passed);
       display_result = "Web search: \"" + query + "\"";
       // Count results
       int n_results = 0;
