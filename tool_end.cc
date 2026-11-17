@@ -87,8 +87,8 @@ size_t find_tool_end_robust(const string& text, size_t from_pos, bool* out_in_pa
       pos = next_end + fe_str.length();
     }
   }
-  // Partial-match fallback: look for an incomplete FUNC_END (e.g., split across tokens).
-  // Partial-match fallback: single forward pass from pos, O(n).
+  // Partial-match fallback: single forward pass from pos, O(n) -- look for
+  // an incomplete FUNC_END (e.g., split across tokens).
   string partial = fe_str.substr(0, fe_str.length() - 1);
   while (pos < text.length()) {
     size_t ps = text.find(ps_str, pos);

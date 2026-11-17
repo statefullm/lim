@@ -213,29 +213,23 @@
         // render commits completed pieces from the tail to base, so the tail
         // stays small); a copy of a whole segment happens only on the rare
         // speed-blocked coalesce merge and on whole-segment re-renders.
+        //
+        // Per-segment render state lives ON the segment object, not in
+        // parallel index-keyed arrays: coalesceSegments() and the speed
+        // filter splice the array, so anything keyed by index would drift
+        // out of alignment with the segments behind the splice point.
+        //   seg.wrapper      the segment's wrapper div (undefined until
+        //                    render() creates it; coalesceSegments removes
+        //                    a merged segment's wrapper from the DOM).
+        //   seg.renderedLen  the total content length (base + tail) last
+        //                    rendered into the wrapper; a shorter total
+        //                    (undo/restore) triggers a full re-render.
+        // The wrapper's data-seg attribute mirrors the segment's current
+        // index (resynced after splices by resyncSegAttrs) and
+        // data-rendered-len mirrors the committed base; both are kept for
+        // external inspection (the export zips wrappers positionally and
+        // the rest of the viewer never reads them).
         let segments = [];
-
-        // Track the total content length (base + tail) last rendered for
-        // each segment index.  Used to skip re-rendering unchanged segments
-        // (incremental rendering); a shorter total (undo/restore) triggers a
-        // full re-render.
-        let segRenderedLen = [];
-
-        // The wrapper div for each segment index -- a parallel cache to
-        // `segments` so per-message / per-segment lookups are O(1) instead
-        // of a querySelector over the whole conversation.  SPARSE: an index
-        // can lack an entry when the wrapper's render/append threw (the
-        // stale segRenderedLen entry then keeps the segment in the changed
-        // branch forever, rendering nothing -- the lookup must come up
-        // empty exactly like a per-index querySelector would).  Entries are
-        // appended in segment-index order and only removed from the end
-        // (the trim loop), so segWrappers[i] is segments[i]'s wrapper.
-        let segWrappers = [];
-
-        // The think-block wrappers (the SEG_THINK subset of segWrappers, in
-        // the same order): iterating this keeps the auto-collapse scans off
-        // outputDiv.querySelectorAll('.think-block').
-        let thinkBlocks = [];
 
         // Attach one escaped payload to the segment stream: type is the
         // pending prefix for it, or null for untagged text.  A payload that
@@ -342,17 +336,16 @@
                 collapseThinkBlock(wrapperDiv);
             }
 
-            segRenderedLen[segIndex] = seg.base.length + seg.tail.length;
+            seg.renderedLen = seg.base.length + seg.tail.length;
         }
 
         function finishAllRawSegments() {
-            var didRender = false;
             for (var i = 0; i < segments.length; i++) {
-                var wrapperDiv = segWrappers[i];
+                var seg = segments[i];
+                var wrapperDiv = seg.wrapper;
                 if (!wrapperDiv) continue;
                 if (!wrapperDiv.hasAttribute('data-raw')) continue;
                 renderRawTail(wrapperDiv, i);
-                didRender = true;
             }
 
             // The one full-page copy-button sweep (turn end): the safety net
@@ -481,8 +474,7 @@
                 return pos < seg.base.length ? seg.base[pos] : seg.tail[pos - seg.base.length];
             }
 
-            // How much has already been rendered: the committed prefix (the
-            // data-rendered-len attribute mirrors it).
+            // How much has already been rendered: the committed prefix.
             var renderedPrefixLen = seg.base.length;
 
             // Resume point: furthest offset examined so far.  data-scan-hwm only
@@ -1603,6 +1595,14 @@
                     segments[i].base.length + segments[i].tail.length > 0) {
                     segments[i - 1].tail +=
                         segments[i].base + segments[i].tail;
+                    // The merged segment's wrapper (already showing the
+                    // committed part of its content) is removed from the DOM
+                    // in place: its content re-renders through the surviving
+                    // segment's wrapper from the merged tail.  Removing it
+                    // here -- not in the end trim -- keeps the wrappers of
+                    // the segments AFTER the merge point, which the splice
+                    // shifts.
+                    removeSegmentWrapper(segments[i]);
                     segments.splice(i, 1);
                 } else {
                     i++;
@@ -1610,13 +1610,39 @@
             }
         }
 
+        // Detach a segment's wrapper from the DOM (no-op when it has none).
+        // The segment object itself is discarded by the caller's splice.
+        function removeSegmentWrapper(seg) {
+            if (!seg.wrapper) return;
+            if (seg.wrapper.parentNode === outputDiv)
+                outputDiv.removeChild(seg.wrapper);
+            seg.wrapper = undefined;
+            seg._segAttr = undefined;
+        }
+
+        // The coalesce merge and the speed filter splice the segment array,
+        // shifting the index of every segment after the splice point: make
+        // the wrappers' data-seg attributes track the current index.  The
+        // _segAttr cache skips the setAttribute when the value is current.
+        function resyncSegAttrs() {
+            for (let i = 0; i < segments.length; i++) {
+                const seg = segments[i];
+                if (seg.wrapper && seg._segAttr !== i) {
+                    seg._segAttr = i;
+                    seg.wrapper.setAttribute('data-seg', String(i));
+                }
+            }
+        }
+
         // Auto-collapse think blocks when a non-THINK segment appears.
         function autoCollapseThinkBlocks() {
-            thinkBlocks.forEach(function (block) {
-                if (!block.hasAttribute('data-think-collapsed')) {
-                    collapseThinkBlock(block, 'auto');
+            for (let i = 0; i < segments.length; i++) {
+                const seg = segments[i];
+                if (seg.type !== SEG_THINK || !seg.wrapper) continue;
+                if (!seg.wrapper.hasAttribute('data-think-collapsed')) {
+                    collapseThinkBlock(seg.wrapper, 'auto');
                 }
-            });
+            }
         }
         /* ------------------------------------------------------------------ */
         /*  Incremental render helpers                                        */
@@ -1969,68 +1995,67 @@
             let hasChanges = false;
 
             for (let i = 0; i < segments.length; i++) {
-                if (i < segRenderedLen.length) {
-                    if (segments[i].base.length + segments[i].tail.length !== segRenderedLen[i]) {
+                const seg = segments[i];
+                const total = seg.base.length + seg.tail.length;
+                if (seg.wrapper) {
+                    if (total !== seg.renderedLen) {
                         hasChanges = true;
 
-                        const wrapperDiv = segWrappers[i];
-                        if (wrapperDiv) {
-                            // Streaming text/think segment in raw mode: the tail already
-                            // holds the new content (onmessage appended it); commit
-                            // whatever is now renderable.
-                            if (wrapperDiv.hasAttribute('data-raw')) {
-                                var total = segments[i].base.length + segments[i].tail.length;
-                                if (total > segRenderedLen[i]) {
-                                    appendRawText(wrapperDiv, i);
-                                } else {
-                                    // Content shrank (undo/restore): materialize
-                                    // base + tail, full re-render, leave raw mode.
-                                    wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
-                                    wrapperDiv.removeAttribute('data-raw');
-                                    wrapperDiv.__openFenceCode = null;   // DOM replaced
-                                    wrapperDiv.__fencePending = null;
-                                    wrapperDiv.__fenceHeldLine = null;
-                                    wrapperDiv.__mathPending = null;
-                                    injectCopyButtons(wrapperDiv);
-                                    renderMathInDiv(wrapperDiv);
-                                }
-                                segRenderedLen[i] = total;
+                        const wrapperDiv = seg.wrapper;
+                        // Streaming text/think segment in raw mode: the tail already
+                        // holds the new content (onmessage appended it); commit
+                        // whatever is now renderable.
+                        if (wrapperDiv.hasAttribute('data-raw')) {
+                            if (total > seg.renderedLen) {
+                                appendRawText(wrapperDiv, i);
                             } else {
-                                // Non-streaming segment changed -- full re-render.
-                                // Preserve collapsed state of think blocks across re-renders.
-                                var wasThinkCollapsed = wrapperDiv.getAttribute('data-think-collapsed') === '1';
-
-                                // Before replacing innerHTML, check whether each <pre>
-                                // inside this segment was scrolled to the bottom.  We'll
-                                // restore that state after re-rendering so that streaming
-                                // code blocks (e.g., exec_shell output) always stay at the
-                                // bottom like a terminal, unless the user scrolled up.
-                                const preWasAtBottom = [];
-                                wrapperDiv.querySelectorAll('pre').forEach(function(pre) {
-                                    const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
-                                    preWasAtBottom.push(nearBottom);
-                                });
-
-                                wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                                // Content shrank (undo/restore): materialize
+                                // base + tail, full re-render, leave raw mode.
+                                wrapperDiv.innerHTML = unescapeMth(segToHtml(seg));
+                                wrapperDiv.removeAttribute('data-raw');
                                 wrapperDiv.__openFenceCode = null;   // DOM replaced
                                 wrapperDiv.__fencePending = null;
                                 wrapperDiv.__fenceHeldLine = null;
                                 wrapperDiv.__mathPending = null;
                                 injectCopyButtons(wrapperDiv);
                                 renderMathInDiv(wrapperDiv);
-
-                                const pres = wrapperDiv.querySelectorAll('pre');
-                                for (let p = 0; p < pres.length && p < preWasAtBottom.length; p++) {
-                                    if (preWasAtBottom[p]) {
-                                        pres[p].scrollTop = pres[p].scrollHeight;
-                                    }
-                                }
-
-                                // Restore collapsed state of think blocks.
-                                if (wasThinkCollapsed) collapseThinkBlock(wrapperDiv);
-
-                                segRenderedLen[i] = segments[i].base.length + segments[i].tail.length;
                             }
+                            seg.renderedLen = total;
+                        } else {
+                            // Non-streaming segment changed -- full re-render.
+                            // Preserve collapsed state of think blocks across re-renders.
+                            var wasThinkCollapsed = wrapperDiv.getAttribute('data-think-collapsed') === '1';
+
+                            // Before replacing innerHTML, check whether each <pre>
+                            // inside this segment was scrolled to the bottom.  We'll
+                            // restore that state after re-rendering so that streaming
+                            // code blocks (e.g., exec_shell output) always stay at the
+                            // bottom like a terminal, unless the user scrolled up.
+                            const preWasAtBottom = [];
+                            wrapperDiv.querySelectorAll('pre').forEach(function(pre) {
+                                const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 8;
+                                preWasAtBottom.push(nearBottom);
+                            });
+
+                            wrapperDiv.innerHTML = unescapeMth(segToHtml(seg));
+                            wrapperDiv.__openFenceCode = null;   // DOM replaced
+                            wrapperDiv.__fencePending = null;
+                            wrapperDiv.__fenceHeldLine = null;
+                            wrapperDiv.__mathPending = null;
+                            injectCopyButtons(wrapperDiv);
+                            renderMathInDiv(wrapperDiv);
+
+                            const pres = wrapperDiv.querySelectorAll('pre');
+                            for (let p = 0; p < pres.length && p < preWasAtBottom.length; p++) {
+                                if (preWasAtBottom[p]) {
+                                    pres[p].scrollTop = pres[p].scrollHeight;
+                                }
+                            }
+
+                            // Restore collapsed state of think blocks.
+                            if (wasThinkCollapsed) collapseThinkBlock(wrapperDiv);
+
+                            seg.renderedLen = total;
                         }
                     }
                 } else {
@@ -2039,17 +2064,17 @@
                     // so that incoming tokens are O(1) appends.  Progressive rendering
                     // converts completed paragraphs to markdown/KaTeX as they appear.
                     hasChanges = true;
-                    segRenderedLen[i] = 0;
 
                     const wrapperDiv = document.createElement('div');
                     wrapperDiv.setAttribute('data-seg', String(i));
+                    seg._segAttr = i;
 
-                    if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
+                    if (seg.type === SEG_LLM_TEXT || seg.type === SEG_THINK) {
                         wrapperDiv.setAttribute('data-raw', '1');
                         wrapperDiv.setAttribute('data-rendered-len', '0');
                         wrapperDiv.setAttribute('data-scan-hwm', '0');
 
-                        if (segments[i].type === SEG_THINK) {
+                        if (seg.type === SEG_THINK) {
                             // Think block: create the collapsible structure immediately,
                             // but put raw text inside .think-body.
                             wrapperDiv.className = 'think-block';
@@ -2068,23 +2093,22 @@
                         }
                         // for LLM text, .think-body for think blocks).
                         progressiveRender(wrapperDiv, i);
-                        segRenderedLen[i] = segments[i].base.length + segments[i].tail.length;
+                        seg.renderedLen = seg.base.length + seg.tail.length;
+                        // Attach only after the append: a progressiveRender
+                        // throw leaves the wrapper detached and unattached,
+                        // so the next frame retries the new-segment path.
                         outputDiv.appendChild(wrapperDiv);
-                        // Cache only after the append: a progressiveRender
-                        // throw leaves the wrapper detached and uncached, so
-                        // every later lookup for this index comes up empty
-                        // exactly like a per-index querySelector would.
-                        segWrappers[i] = wrapperDiv;
-                        if (segments[i].type === SEG_THINK) thinkBlocks.push(wrapperDiv);
+                        seg.wrapper = wrapperDiv;
                     } else {
-                        wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                        wrapperDiv.innerHTML = unescapeMth(segToHtml(seg));
                         outputDiv.appendChild(wrapperDiv);
-                        // In the DOM from here on: cache before the render
-                        // passes, so a throw there still leaves the wrapper
-                        // findable by later lookups (as a querySelector would).
-                        segWrappers[i] = wrapperDiv;
+                        seg.wrapper = wrapperDiv;
+                        // renderedLen only once the render passes survive: a
+                        // throw there leaves it unset, so the next frame's
+                        // changed branch re-renders and retries them.
                         injectCopyButtons(wrapperDiv);
                         renderMathInDiv(wrapperDiv);
+                        seg.renderedLen = total;
                     }
                 }
             }
@@ -2094,27 +2118,28 @@
             // finished reasoning -- render any remaining raw tails, then collapse.
             if (segments.length > 0 && segments[segments.length - 1].type !== SEG_THINK) {
                 var autoCollapsed = false;
-                thinkBlocks.forEach(function(block) {
+                for (let i = 0; i < segments.length; i++) {
+                    const seg = segments[i];
+                    if (seg.type !== SEG_THINK || !seg.wrapper) continue;
+                    const block = seg.wrapper;
                     if (block.hasAttribute('data-raw')) {
-                        var segIdx = parseInt(block.getAttribute('data-seg'));
-                        renderRawTail(block, segIdx);
+                        renderRawTail(block, i);
                     }
                     if (!block.hasAttribute('data-think-collapsed')) {
                         collapseThinkBlock(block, 'auto');
                         autoCollapsed = true;
                     }
-                });
+                }
                 if (autoCollapsed) hasChanges = true;
             }
 
+            // Defensive: wrappers are created 1:1 with segments and removed
+            // with their segment (the coalesce merge), so this normally
+            // never fires.  If it does, the removed child's segment keeps a
+            // stale seg.wrapper pointing at the detached node and silently
+            // renders into the void until the segment is discarded.
             while (outputDiv.children.length > segments.length) {
-                var removed = outputDiv.lastChild;
-                outputDiv.removeChild(removed);
-                delete segWrappers[parseInt(removed.getAttribute('data-seg'), 10)];
-                if (thinkBlocks.length > 0 &&
-                    thinkBlocks[thinkBlocks.length - 1] === removed) {
-                    thinkBlocks.pop();
-                }
+                outputDiv.removeChild(outputDiv.lastChild);
             }
             // Auto-scroll only when the user was near the bottom before the new
             // content was rendered.  This lets the user scroll back to read earlier
@@ -2202,8 +2227,10 @@
 
                 // Extract speed/context diagnostics and update the status bar, then
                 // remove speed segments BEFORE any index-dependent logic (render,
-                // finishAllRawSegments) so that segment indices remain stable relative
-                // to segRenderedLen and DOM wrapper divs.
+                // finishAllRawSegments) so the array is in its final layout when
+                // render() walks it.  The coalesce merge and this filter both
+                // shift the index of the segments after the splice point, so
+                // re-point the wrappers' data-seg attributes afterwards.
                 for (const seg of segments) {
                     if (seg.type === SEG_SPEED && seg.content.length > 0) {
                         speedInfo = seg.content;
@@ -2212,6 +2239,7 @@
                     }
                 }
                 segments = segments.filter(seg => seg.type !== SEG_SPEED);
+                resyncSegAttrs();
 
                 // Capture scroll state once, before any DOM mutations (think-block
                 // collapse can shrink the page and make wasAtBottom true even when
@@ -2252,16 +2280,19 @@
         // Like finishAllRawSegments() but operates on an arbitrary parent
         // (e.g., a DOM clone) rather than the live outputDiv.
         function finishRawSegmentsInElement(container) {
-            for (var i = 0; i < segments.length; i++) {
-                var wrapperDiv = container.querySelector('[data-seg="' + i + '"]');
-                if (!wrapperDiv) continue;
+            // The clone's children are the live wrappers, one per segment in
+            // order (the trim invariant), so zip by position.  The unrendered
+            // part of each segment is exactly its tail (the committed base is
+            // what the wrapper already shows).
+            var children = container.children;
+            for (var i = 0; i < segments.length && i < children.length; i++) {
+                var seg = segments[i];
+                var wrapperDiv = children[i];
                 if (!wrapperDiv.hasAttribute('data-raw')) continue;
-                // The wrapper's data-rendered-len mirrors the committed base, so
-                // the unrendered part is exactly the segment's tail.
-                var tail = segments[i].tail;
+                var tail = seg.tail;
                 if (tail.length === 0) { wrapperDiv.removeAttribute('data-raw'); continue; }
-                var html = rawTextToHtml(tail, segments[i].type, wrapperDiv);
-                var target = (segments[i].type === SEG_THINK) ?
+                var html = rawTextToHtml(tail, seg.type, wrapperDiv);
+                var target = (seg.type === SEG_THINK) ?
                     wrapperDiv.querySelector('.think-body') : wrapperDiv;
                 if (target) target.innerHTML += html;
                 wrapperDiv.removeAttribute('data-raw');
