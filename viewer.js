@@ -120,7 +120,7 @@
         // Escaped: |\lt| -> literal text |lt|
         // Raw:     |lt|  -> HTML entity &lt;
         function htmlUnescapeSentinels(str) {
-            var result = '';
+            var pieces = [];
             var i = 0;
             while (i < str.length) {
                 if (str[i] === HTML_SENTINEL_CHAR) {
@@ -131,23 +131,22 @@
                         var s3 = str.substring(j, j + 3);
                         var sentinel_end = HTML_SENTINEL_CHAR;
                         if (s3 === 'lt' + sentinel_end) {
-                            if (bs > 0) { result += HTML_SENTINEL_CHAR; for (var b = 0; b < bs - 1; b++) result += HTML_ESCAPE_CHAR; result += 'lt' + sentinel_end; }
-                            else { result += '&lt;'; }
+                            if (bs > 0) { pieces.push(HTML_SENTINEL_CHAR); for (var b = 0; b < bs - 1; b++) pieces.push(HTML_ESCAPE_CHAR); pieces.push('lt' + sentinel_end); }
+                            else { pieces.push('&lt;'); }
                             i = j + 3; continue;
                         }
                         if (s3 === 'gt' + sentinel_end) {
-                            if (bs > 0) { result += HTML_SENTINEL_CHAR; for (var b = 0; b < bs - 1; b++) result += HTML_ESCAPE_CHAR; result += 'gt' + sentinel_end; }
-                            else { result += '&gt;'; }
+                            if (bs > 0) { pieces.push(HTML_SENTINEL_CHAR); for (var b = 0; b < bs - 1; b++) pieces.push(HTML_ESCAPE_CHAR); pieces.push('gt' + sentinel_end); }
+                            else { pieces.push('&gt;'); }
                             i = j + 3; continue;
                         }
                     }
                 }
-                result += str[i++];
+                pieces.push(str[i++]);
             }
             // Fix marked's double-escaping of & inside <code> blocks.
             // C++ sends & -> &amp;, but marked escapes &amp; -> &amp;amp; inside code.
-            result = result.replace(/&amp;amp;/g, '&amp;');
-            return result;
+            return pieces.join('').replace(/&amp;amp;/g, '&amp;');
         }
 
         // Unescape sentinels in math tex content before passing to KaTeX.
@@ -206,12 +205,65 @@
             }, 1500);
         }
 
-        // Segments: array of { type, content }
+        // Segments: array of { type, base, tail } -- base is the committed
+        // (already rendered) prefix, tail the unrendered suffix.  SEG_SPEED
+        // keeps { type, content }: speed payloads are push-only and filtered
+        // out before any index-dependent logic.  onmessage extends the tail
+        // with one small append per chunk (O(tail), not O(S): progressive-
+        // render commits completed pieces from the tail to base, so the tail
+        // stays small); a copy of a whole segment happens only on the rare
+        // speed-blocked coalesce merge and on whole-segment re-renders.
         let segments = [];
 
-        // Track what content was last rendered for each segment index.
-        // Used to skip re-rendering unchanged segments (incremental rendering).
-        let segRenderedContent = [];
+        // Track the total content length (base + tail) last rendered for
+        // each segment index.  Used to skip re-rendering unchanged segments
+        // (incremental rendering); a shorter total (undo/restore) triggers a
+        // full re-render.
+        let segRenderedLen = [];
+
+        // The wrapper div for each segment index -- a parallel cache to
+        // `segments` so per-message / per-segment lookups are O(1) instead
+        // of a querySelector over the whole conversation.  SPARSE: an index
+        // can lack an entry when the wrapper's render/append threw (the
+        // stale segRenderedLen entry then keeps the segment in the changed
+        // branch forever, rendering nothing -- the lookup must come up
+        // empty exactly like a per-index querySelector would).  Entries are
+        // appended in segment-index order and only removed from the end
+        // (the trim loop), so segWrappers[i] is segments[i]'s wrapper.
+        let segWrappers = [];
+
+        // The think-block wrappers (the SEG_THINK subset of segWrappers, in
+        // the same order): iterating this keeps the auto-collapse scans off
+        // outputDiv.querySelectorAll('.think-block').
+        let thinkBlocks = [];
+
+        // Attach one escaped payload to the segment stream: type is the
+        // pending prefix for it, or null for untagged text.  A payload that
+        // continues the last segment (same type, any type except SEG_SPEED,
+        // which is push-only) extends its tail with one small append instead
+        // of starting a new segment -- the wire can carry several same-type
+        // prefix+payload units in one frame.  Everything else starts a new
+        // segment.  (Same-type pairs that a speed segment blocks are merged
+        // by coalesceSegments() on the next frame.)
+        function attachPayload(type, payload) {
+            if (type === null) {
+                // Untagged text (no prefix before it): append to whatever
+                // the last segment is, or start LLM text.
+                if (segments.length > 0) {
+                    var last = segments[segments.length - 1];
+                    if (last.type === SEG_SPEED) last.content += payload;
+                    else last.tail += payload;
+                } else {
+                    segments.push({ type: SEG_LLM_TEXT, base: '', tail: payload });
+                }
+            } else if (type === SEG_SPEED) {
+                segments.push({ type: SEG_SPEED, content: payload });
+            } else if (segments.length > 0 && segments[segments.length - 1].type === type) {
+                segments[segments.length - 1].tail += payload;
+            } else {
+                segments.push({ type: type, base: '', tail: payload });
+            }
+        }
 
         // Track whether the user manually scrolled away from the bottom during
         // the current generation turn.  If so, skip the auto-scroll at turn end.
@@ -225,15 +277,16 @@
         /* ------------------------------------------------------------------ */
 
         // Render the raw tail of a single segment.  Called by progressiveRender()
-        // when a paragraph boundary is found, and by finishAllRawSegments() on stream end.
-        // Only parses the new delta -- never re-parses already-rendered content.
+        // on a mid-stream force commit, and by finishAllRawSegments() (and the
+        // turn-end sweep) on finish.  Only renders the tail -- the committed
+        // base is never re-parsed.
         function renderRawTail(wrapperDiv, segIndex, finish, commitEnd) {
             if (finish === undefined) finish = true;
-            var fullText = segments[segIndex].content;
-            var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
+            var seg = segments[segIndex];
+            var renderedPrefixLen = seg.base.length;
 
-            var end = (commitEnd === undefined) ? fullText.length : commitEnd;
-            var tail = fullText.substring(renderedPrefixLen, end);
+            var tail = (commitEnd === undefined) ? seg.tail
+                : seg.tail.substring(0, commitEnd - renderedPrefixLen);
             if (tail.length === 0) {
                 if (finish) wrapperDiv.removeAttribute('data-raw');
                 return;
@@ -247,10 +300,6 @@
             var firstInserted = inserted.firstInserted;
             var lastInserted = inserted.lastInserted;
 
-            // Insertion target (for the math pass below): .think-body for
-            // think blocks, otherwise the wrapper itself.
-            var target = (segments[segIndex].type === SEG_THINK) ?
-                wrapperDiv.querySelector('.think-body') : wrapperDiv;
             if (finish) {
                 wrapperDiv.removeAttribute('data-raw');
             } else {
@@ -258,59 +307,79 @@
                 // incrementally instead of triggering a full O(n) re-render.
                 // commitEnd trims a pending would-be-fence-opener run off the
                 // tail (progressiveRender passes it); the full length otherwise.
-                wrapperDiv.setAttribute('data-rendered-len', String(end));
+                wrapperDiv.setAttribute('data-rendered-len', String(commitEnd));
             }
 
-            // Render KaTeX and copy buttons ONLY on the newly inserted nodes.
+            // Commit the rendered tail to base: each byte moves from tail to
+            // base exactly once.
+            seg.base += tail;
+            seg.tail = seg.tail.substring(tail.length);
+
+            // Math: the old full-target renderMathInDiv, decomposed --
+            // convert the raw math pieces this commit inserted plus every
+            // piece earlier commits recorded, in auto-render's exact scope
+            // and structure.  Each raw piece is rendered exactly once; the
+            // committed base is never rescanned.
+            //
+            // Copy buttons: O(new content) -- the range pass covers every
+            // new code block (a delta without ``` can still create a <pre>:
+            // the mask's synthetic fence or a 4-space indented code block);
+            // fence continuation only appends to an existing <pre>.
+            // finishAllRawSegments() runs the one full-page sweep at turn
+            // end as the safety net.
             if (firstInserted) {
-                renderMathInDiv(target);
-                if (tail.includes('```')) {
-                    var anchor = firstInserted.previousSibling || firstInserted;
-                    injectCopyButtonsInRange(anchor, lastInserted);
-                }
+                finishMathInInserted(firstInserted, lastInserted);
+                convertPendingMathSites(wrapperDiv);
+                // Null anchor covers a fence that is the segment's first
+                // inserted node (see progressiveRender).
+                injectCopyButtonsInRange(firstInserted.previousSibling, lastInserted);
             }
-
-            // Fallback: scan the entire wrapper for any <pre> blocks missed by
-            // the range-based pass.  The copy-btn-host guard ensures each <pre>
-            // is processed at most once, so this is O(missed), not O(n).
-            injectCopyButtons(wrapperDiv);
 
             // Only collapse a THINK segment when it is truly finishing (turn end, or
             // a non-think segment has followed).  A mid-stream force-render must NOT
             // collapse -- thinking is still in progress and the user needs to see it.
-            if (segments[segIndex].type === SEG_THINK && finish) {
+            if (seg.type === SEG_THINK && finish) {
                 collapseThinkBlock(wrapperDiv);
             }
 
-            segRenderedContent[segIndex] = segments[segIndex].content;
+            segRenderedLen[segIndex] = seg.base.length + seg.tail.length;
         }
 
         function finishAllRawSegments() {
             var didRender = false;
             for (var i = 0; i < segments.length; i++) {
-                var wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
+                var wrapperDiv = segWrappers[i];
                 if (!wrapperDiv) continue;
                 if (!wrapperDiv.hasAttribute('data-raw')) continue;
                 renderRawTail(wrapperDiv, i);
                 didRender = true;
             }
 
+            // The one full-page copy-button sweep (turn end): the safety net
+            // for any <pre> the per-step range pass missed.  It is O(page)
+            // when it runs, but it runs once per turn end -- not per chunk --
+            // so it is amortized O(1) per chunk; the per-step cost is the
+            // range-only injectCopyButtonsInRange.  The copy-btn-host guard
+            // keeps the sweep idempotent (no double-hosting).
+            injectCopyButtons(outputDiv);
+
             // Auto-collapse think blocks when thinking is done.
             autoCollapseThinkBlocks();
         }
 
-        // True if the ``` at tail[i] begins a fenced code block.  Per CommonMark a
+        // True if the ``` at c(i) begins a fenced code block.  Per CommonMark a
         // fence only starts at the beginning of a line (up to 3 leading spaces); a
         // ``` in the middle of a line (e.g., prose that mentions backticks, or an LLM
         // reasoning about markdown) is literal text, NOT a fence.  Treating it as one
         // corrupts the fence counter, which stalls progressive rendering and can
-        // force-collapse a still-active thinking block.
-        function isFenceMarker(tail, i) {
+        // force-collapse a still-active thinking block.  c is the segment's char
+        // accessor (it crosses the base/tail boundary).
+        function isFenceMarker(c, i) {
             var spaces = 0;
             var k = i;
-            while (k > 0 && tail[k - 1] === ' ') { spaces++; k--; }
+            while (k > 0 && c(k - 1) === ' ') { spaces++; k--; }
             if (spaces > 3) return false;
-            return k === 0 || tail[k - 1] === '\n';
+            return k === 0 || c(k - 1) === '\n';
         }
 
         // Whitespace test that matches JS regex \s exactly -- it must agree with
@@ -324,11 +393,12 @@
 
         // True if the # run starting at p0Pos has length 1..6 and ends exactly at
         // L (the ($) end-of-text case of #{1,6}(\s|$)).  Bounded work: a run
-        // longer than six stops matching immediately.
-        function endHeadingAt(fullText, p0Pos, L) {
+        // longer than six stops matching immediately.  c is the segment's char
+        // accessor.
+        function endHeadingAt(c, p0Pos, L) {
             if (p0Pos < 0) return false;
             var h = p0Pos + 1;
-            while (h < L && fullText[h] === '#') h++;
+            while (h < L && c(h) === '#') h++;
             return h - p0Pos <= 6 && h === L;
         }
 
@@ -346,7 +416,7 @@
         //                     bounded number of times (total O(N)); it may briefly
         //                     trail rendered-len by <=2 after a mid-stream force-
         //                     render outruns a deferred lookahead.
-        //   data-in-fence     fence parity over fullText[0 .. data-scan-hwm) -- the
+        //   data-in-fence     fence parity over [0 .. data-scan-hwm) -- the
         //                     exact state to resume from (closed when absent).
         //   data-last-break   furthest \n\n found OUTSIDE a fence this episode
         //                     (absolute index of the first \n); -1 if none yet.
@@ -385,25 +455,35 @@
         // is a real fence (the continuation protocol handles it); a mid-line
         // run can never become a fence; a run followed by a non-backtick next
         // delta is judged literal when that delta renders it.
-        function forceCommitEnd(fullText, from) {
-            var L2 = fullText.length;
+        // c is the segment's char accessor; L2 the virtual text length.
+        function forceCommitEnd(c, L2, from) {
             if (L2 <= from) return L2;
             var p = L2 - 1, n = 0;
-            while (p >= 0 && fullText[p] === '`') { n++; p--; }
+            while (p >= 0 && c(p) === '`') { n++; p--; }
             if (n < 1 || n > 2) return L2;
             if (p + 1 < from) return L2;   // run crosses the render boundary (shouldn't)
             var q = p, sp = 0;
-            while (q >= 0 && fullText[q] === ' ' && sp < 3) { sp++; q--; }
-            if (sp === 3 && q >= 0 && fullText[q] === ' ') return L2;  // 4+ leading spaces
-            if (q >= 0 && fullText[q] !== '\n') return L2;             // mid-line run
+            while (q >= 0 && c(q) === ' ' && sp < 3) { sp++; q--; }
+            if (sp === 3 && q >= 0 && c(q) === ' ') return L2;  // 4+ leading spaces
+            if (q >= 0 && c(q) !== '\n') return L2;             // mid-line run
             return p + 1;   // the run's start
         }
         function progressiveRender(wrapperDiv, segIndex) {
-            var fullText = segments[segIndex].content;
-            var L = fullText.length;
+            var seg = segments[segIndex];
+            // Virtual full text: the committed base plus the unrendered tail.
+            // at(pos) reads either half, so the scan's bounded lookbehind
+            // (m-1, isFenceMarker's <=4-char backscan, forceCommitEnd's
+            // trailing run) works across the base/tail boundary: after a
+            // mid-stream force commit, data-scan-hwm can lag the new base by
+            // <=2 held positions.
+            var L = seg.base.length + seg.tail.length;
+            function at(pos) {
+                return pos < seg.base.length ? seg.base[pos] : seg.tail[pos - seg.base.length];
+            }
 
-            // How much has already been rendered (tracked via data attribute, not DOM text).
-            var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
+            // How much has already been rendered: the committed prefix (the
+            // data-rendered-len attribute mirrors it).
+            var renderedPrefixLen = seg.base.length;
 
             // Resume point: furthest offset examined so far.  data-scan-hwm only
             // ever increases over the segment's lifetime (a commit does not reset
@@ -414,7 +494,7 @@
             var hwm = scanIntAttr(wrapperDiv, 'data-scan-hwm', -1);
             if (hwm < 0) hwm = 0;
 
-            // Fence parity over fullText[0 .. hwm) -- the state to resume with.
+            // Fence parity over [0 .. hwm) -- the state to resume with.
             var inFence    = wrapperDiv.getAttribute('data-in-fence') === '1';
             var lastBreak  = scanIntAttr(wrapperDiv, 'data-last-break', -1);
             var breakFence = scanIntAttr(wrapperDiv, 'data-break-fence', 0);
@@ -434,13 +514,13 @@
             // call re-runs it once the missing characters have arrived.
             var deferredPos = -1;
             for (var m = hwm; m < L; ) {
-                var c = fullText[m];
+                var c = at(m);
 
                 if (!inFence && c === '\n' && m === L - 1) {
                     deferredPos = m;   // pair (m, m+1) cannot be decided yet
                     break;
                 }
-                if (c === '`' && (m === L - 1 || (m === L - 2 && fullText[m + 1] === '`'))) {
+                if (c === '`' && (m === L - 1 || (m === L - 2 && at(m + 1) === '`'))) {
                     deferredPos = m;   // a ``` triple starting at m can still complete
                     break;
                 }
@@ -466,15 +546,15 @@
                 // Line-start marker recording (fence-blind, like the old whole-tail
                 // regexes).  Only the MAX position is kept: the guards ask whether
                 // ANY such marker sits at/after renderEnd, and positions only grow.
-                if ((m === 0 || fullText[m - 1] === '\n')) {
+                if ((m === 0 || at(m - 1) === '\n')) {
                     if (c === '-' || c === '*' || c === '+') {
                         maxList = m;
                     } else if (c >= '0' && c <= '9') {
                         var d = m + 1;
-                        while (d < L && fullText[d] >= '0' && fullText[d] <= '9') d++;
-                        if (d < L && (fullText[d] === '.' || fullText[d] === ')')) {
+                        while (d < L && at(d) >= '0' && at(d) <= '9') d++;
+                        if (d < L && (at(d) === '.' || at(d) === ')')) {
                             if (d + 1 < L) {
-                                if (WS_RE.test(fullText[d + 1])) maxList = m;
+                                if (WS_RE.test(at(d + 1))) maxList = m;
                             } else {
                                 pendLine = m;      // the \s may arrive next token
                                 pendPhase = 'a';
@@ -487,10 +567,10 @@
                         }
                     } else if (c === '#') {
                         var h2 = m + 1;
-                        while (h2 < L && fullText[h2] === '#') h2++;
+                        while (h2 < L && at(h2) === '#') h2++;
                         if (h2 - m <= 6) {         // run is >= 1 since c === '#'
                             if (h2 < L) {
-                                if (WS_RE.test(fullText[h2])) maxHead = m;
+                                if (WS_RE.test(at(h2))) maxHead = m;
                             } else {
                                 pendHead = m;      // (\s|$): $ holds while run ends text
                             }
@@ -518,7 +598,7 @@
                         p0State = WS_RE.test(c) ? 'l' : 'r';   // \d+[.)]\s / \d+-\s
                     } else if (p0State === 't') {              // # run; bounded re-scan
                         var h3 = p0Pos + 1;
-                        while (h3 < L && fullText[h3] === '#') h3++;
+                        while (h3 < L && at(h3) === '#') h3++;
                         if (c === '#') {
                             if (h3 - p0Pos > 6) p0State = 'r'; // too many #: not a header
                             // else stay 't' -- (\s|$) still undecided at end of text
@@ -534,8 +614,8 @@
                 // which can never affect break or marker detection; the head position
                 // itself ran all checks above first (a p0 search that meets a fence
                 // must see its leading backtick, exactly like the trimmed-regex).
-                if (c === '`' && fullText[m + 1] === '`' && fullText[m + 2] === '`' &&
-                    isFenceMarker(fullText, m)) {
+                if (c === '`' && at(m + 1) === '`' && at(m + 2) === '`' &&
+                    isFenceMarker(at, m)) {
                     inFence = !inFence;
                     m += 3;
                     continue;
@@ -545,7 +625,7 @@
                 // (net +2) exactly like the original scan, so "\n\n\n" registers a
                 // single break at the first position and delta boundaries are
                 // unchanged from before.
-                if (!inFence && c === '\n' && fullText[m + 1] === '\n') {
+                if (!inFence && c === '\n' && at(m + 1) === '\n') {
                     lastBreak = m;
                     breakFence = inFence ? 1 : 0;   // == parity up to m + 2 (render end)
                     p0State = 'p';                  // restart first-non-whitespace search
@@ -588,14 +668,6 @@
                 // means no risk of breaking code fences or lists.
                 var tailLen = L - renderedPrefixLen;
                 if (tailLen > 2000) {
-                    if (segments[segIndex].type === SEG_THINK && inFence) {
-                        // A think block sitting inside an unclosed fence: rendering now
-                        // would commit a broken (open) code block, and we must not
-                        // collapse it.  Wait for the fence to close or a break to
-                        // appear; the next call resumes from data-scan-hwm above, so
-                        // each waited-on character is examined only once.
-                        return;
-                    }
                     // Mid-stream: render but keep the segment in raw mode
                     // (finish=false) so the next delta commits incrementally
                     // instead of leaving raw mode and paying a full O(n)
@@ -612,7 +684,7 @@
                     // the fence could never form.  data-scan-hwm is already
                     // parked at the run, so the next call re-judges the
                     // COMPLETED run at the same position (bounded re-scan).
-                    var forceEnd = forceCommitEnd(fullText, renderedPrefixLen);
+                    var forceEnd = forceCommitEnd(at, L, renderedPrefixLen);
                     if (forceEnd === renderedPrefixLen) {
                         // The whole unrendered tail is the pending run (and/or
                         // its leading spaces): wait for the deciding character.
@@ -635,11 +707,11 @@
             // past its # run.
             if (pendHead >= 0) {
                 var dh = pendHead + 1;
-                while (dh < L && fullText[dh] === '#') dh++;
+                while (dh < L && at(dh) === '#') dh++;
                 var hrun = dh - pendHead;
                 if (dh < L) {
                     // $ no longer applies once text continues past the run.
-                    if (hrun <= 6 && WS_RE.test(fullText[dh])) maxHead = Math.max(maxHead, pendHead);
+                    if (hrun <= 6 && WS_RE.test(at(dh))) maxHead = Math.max(maxHead, pendHead);
                     wrapperDiv.setAttribute('data-pend-head', '-1');
                     pendHead = -1;
                 } else if (hrun > 6) {
@@ -648,7 +720,7 @@
                 }
             }
 
-            // --- Tail guards (tailAfter = fullText[renderEnd .. L)); all O(1): ---
+            // --- Tail guards (tailAfter = [renderEnd .. L)); all O(1): ---
 
             // First non-whitespace char of the tail is a list item (old trim+regex);
             // if so, this break splits a list in half -- skip it and wait.
@@ -660,13 +732,13 @@
 
             // First non-whitespace char of the tail is an ATX block header ($ case
             // included); if so, this break would render content before its heading.
-            if (p0State === 'h' || (p0State === 't' && endHeadingAt(fullText, p0Pos, L))) return;
+            if (p0State === 'h' || (p0State === 't' && endHeadingAt(at, p0Pos, L))) return;
 
             // Any line-start block header in the tail ($ case included via pendHead);
             // a heading mid-tail must not be rendered after its own content.
             if (maxHead >= renderEnd || pendHead >= renderEnd) return;
 
-            var deltaText = fullText.substring(renderedPrefixLen, renderEnd);
+            var deltaText = seg.tail.substring(0, renderEnd - seg.base.length);
 
             // Render + insert (handles fence continuation: when the delta
             // starts inside a fence a previous commit left open, the fence
@@ -675,6 +747,11 @@
             var inserted = commitDeltaHtml(wrapperDiv, segIndex, deltaText);
             var firstInserted = inserted.firstInserted;
             var lastInserted = inserted.lastInserted;
+
+            // Commit the rendered delta from tail to base: each byte moves
+            // exactly once.
+            seg.base += deltaText;
+            seg.tail = seg.tail.substring(deltaText.length);
 
             // Advance the rendered prefix.  The scan state is position-based, so it
             // carries over instead of resetting: data-scan-hwm keeps advancing (no
@@ -713,19 +790,22 @@
             wrapperDiv.removeAttribute('data-p0-pos');
 
             // Render KaTeX and copy buttons ONLY on the newly inserted nodes --
-            // O(1) per step, not O(n) rescanning of already-rendered content.
+            // O(inserted) per step, not O(n) rescanning of already-rendered
+            // content.  The copy pass runs on every commit (no backtick gate):
+            // a delta without ``` can still create a <pre> (the mask's
+            // synthetic fence when a re-stashed continuation renders, or a
+            // 4-space indented code block), and the old per-step scan hosted
+            // it on this same commit.
             if (firstInserted) {
                 var anchor = firstInserted.previousSibling || firstInserted;
                 renderMathInRange(anchor, lastInserted);
-                if (deltaText.includes('```')) {
-                    injectCopyButtonsInRange(anchor, lastInserted);
-                }
+                recordMathSites(wrapperDiv, firstInserted, lastInserted);
+                // Null anchor when firstInserted has no previous sibling:
+                // the range then starts at the parent's first child, so a
+                // fence opening a segment's first commit gets its button
+                // here, not only from the turn-end sweep.
+                injectCopyButtonsInRange(firstInserted.previousSibling, lastInserted);
             }
-
-            // Fallback: scan the entire wrapper for any <pre> blocks missed by
-            // the range-based pass.  The copy-btn-host guard ensures each <pre>
-            // is processed at most once, so this is O(missed), not O(n).
-            injectCopyButtons(wrapperDiv);
         }
         /* ------------------------------------------------------------------ */
         /*  Code region masking (O(N))                                        */
@@ -739,9 +819,10 @@
         /*  Complexity: one forward scan -- the index only moves forward.     */
         /*  Inline spans are handled per line: all backtick runs on the line  */
         /*  are gathered in a single pass and matched to same-length closers  */
-        /*  with monotonically advancing per-length pointers, so every run is */
-        /*  visited a bounded number of times even when many backticks are    */
-        /*  unpaired -- strictly O(N) over the whole text.                    */
+        /*  with monotonically advancing per-length pointers -- the matching  */
+        /*  is O(runs x distinct run lengths) per line, i.e. O(line) for the  */
+        /*  bounded run-length variety of real text, even with many unpaired  */
+        /*  backticks.                                                        */
         /*                                                                     */
         /*  Streaming: a delta can start inside a fence opened by an earlier  */
         /*  delta (forced mid-fence render), so the caller passes the fence   */
@@ -754,9 +835,8 @@
             var inFence = !!startInFence;
             var fenceRunLen = 3;          // opener run length (unknown if startInFence)
             var fenceIndent = 0;          // opener's leading spaces (sentinel alignment)
-            var fenceBuf = '';            // pending fence content lines
+            var fenceLines = [];          // pending fence content lines
             var heldLine = '';            // final candidate closer line, held for next delta
-            var lineStart = 0;            // start of the current line
 
             // If the text itself contains %code_N% tokens (LLM output), use a
             // different placeholder family to avoid a restore collision (same
@@ -768,9 +848,22 @@
                 i = pos;
             }
 
+            // The fence content with the legacy fenceBuf ternary's quirk
+            // preserved (the byte-identical contract): an empty line arriving
+            // while the content is still empty was discarded (the ternary
+            // reset to that line instead of appending it), so leading blank
+            // lines never reach the <pre>, and a fence whose lines are all
+            // blank has no content at all (no sentinel is emitted).
+            function fenceContent() {
+                var k = 0;
+                while (k < fenceLines.length && fenceLines[k] === '') k++;
+                return k === fenceLines.length ? '' : fenceLines.slice(k).join('\n');
+            }
+
             function flushFence(withNewline) {
-                if (fenceBuf !== '') {
-                    codeContents.push(fenceBuf);
+                var content = fenceContent();
+                if (content !== '') {
+                    codeContents.push(content);
                     // Emit the sentinel at the fence opener's indent: a
                     // column-0 sentinel is shallower than an indented fence's
                     // enclosing list item, which would make marked close the
@@ -780,16 +873,17 @@
                              HTML_SENTINEL_CHAR + prefix + (codeContents.length - 1) +
                              HTML_SENTINEL_CHAR + (withNewline ? '\n' : ''));
                 }
-                fenceBuf = '';
+                fenceLines.length = 0;
             }
 
             // Inline code spans for one line, in one pass.  i sits at the
             // line's first backtick (not a fence).  All backtick runs on the
             // line are gathered in a single forward scan, then each opener is
             // matched to the next same-length run (the closer) using a
-            // monotonically advancing pointer per run length -- each run is
-            // visited a bounded number of times, so this is O(line length)
-            // even with many unpaired backticks.  Spans are same-line only
+            // monotonically advancing pointer per run length -- the matching
+            // is O(runs x distinct run lengths), i.e. O(line length) for the
+            // bounded run-length variety of real text, even with many
+            // unpaired backticks.  Spans are same-line only
             // (cross-line spans are pathological in LLM output; the
             // restriction keeps line structure intact).  Different-length
             // runs inside a span are content.
@@ -837,7 +931,6 @@
                 if (lineEnd > emit) out.push(text.substring(emit, lineEnd));
                 if (lineEnd < L) out.push('\n');   // preserve line structure
                 i = (lineEnd < L) ? lineEnd + 1 : L;
-                lineStart = i;
             }
 
             // If we start inside a fence opened by an earlier delta, the
@@ -863,7 +956,6 @@
                         out.push(line + (ce === -1 ? '' : '\n'));
                         i = (ce === -1 ? L : ce) + 1;
                         inFence = false;
-                        lineStart = i;
                         continue;
                     }
                     if (ce === -1) {
@@ -877,14 +969,13 @@
                         if (/^ {0,3}`*$/.test(line)) {
                             heldLine = line;
                         } else {
-                            fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
+                            fenceLines.push(line);
                         }
                         i = L;
                         break;
                     }
-                    fenceBuf = fenceBuf === '' ? line : fenceBuf + '\n' + line;
+                    fenceLines.push(line);
                     i = ce + 1;
-                    lineStart = i;
                     continue;
                 }
 
@@ -893,8 +984,6 @@
                     var nb = text.indexOf('`', i);
                     var stop = nb === -1 ? L : nb;
                     var seg = text.substring(i, stop);
-                    var nl = seg.lastIndexOf('\n');
-                    if (nl !== -1) lineStart = i + nl + 1;
                     out.push(seg);
                     i = stop;
                     continue;
@@ -918,7 +1007,6 @@
                     inFence = true;
                     fenceRunLen = n;
                     fenceIndent = sp;
-                    lineStart = i;
                     continue;
                 }
 
@@ -927,7 +1015,7 @@
             }
             pushTo(L);
             var fenceOpen = inFence;
-            var bufAtEnd = fenceBuf;            // capture before flushFence clears it
+            var bufAtEnd = fenceContent();          // capture before flushFence clears it
             if (fenceOpen) flushFence(false);   // unclosed fence at end of delta
             return { text: out.join(''), codeContents: codeContents,
                      prefix: prefix, endParity: fenceOpen ? 1 : 0,
@@ -1228,6 +1316,13 @@
             // Render math blocks directly with KaTeX -- no raw delimiters in DOM.
             html = html.replace(new RegExp(HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&') + 'mth_(\\d+)' + HTML_SENTINEL_CHAR.replace(/[|\\{}()[\]^$+*?.]/g, '\\$&'), 'g'), function(_, idx) {
                 var block = mathBlocks[parseInt(idx)];
+                // A token this call's extraction never created: a literal
+                // %mth_N% from the stream text that escaped escapeMth when
+                // split across input chunks (the per-chunk escape sees no
+                // closing % on the first side).  Emit it back as literal
+                // text -- the same way unescapeMth leaves raw tokens alone --
+                // instead of crashing the render loop mid-iteration.
+                if (!block) return _;
                 var tex = unescapeMathTex(block.tex);
                 if (!block.display) {
                     // Inline $...$ validation (LIM_INLINE_LATEX=1): the same
@@ -1399,7 +1494,7 @@
                 var pendNow = wrapperDiv.__fencePending || '';
                 // An empty stashed fence (no content line committed yet) whose
                 // opener line was committed WITHOUT its newline: the mask's
-                // fenceBuf is empty, so endMidLine was false even though the
+                // fenceLines is empty, so endMidLine was false even though the
                 // text ended mid-line on the opener run.  The next delta then
                 // starts with the opener's missing terminator \n -- not
                 // content: consume it, or the box gains a spurious leading
@@ -1484,33 +1579,30 @@
             return template.content;
         }
 
-        // Append raw text to a segment's in-memory buffer.
-        // O(1) -- no markdown parsing, no DOM scan.  After appending, tries
-        // progressive paragraph-boundary rendering.
-        function appendRawText(wrapperDiv, delta, segIndex) {
-            // Try progressive render after each append.
+        // Try progressive paragraph-boundary rendering of the segment's
+        // tail (the chunk was already appended there by attachPayload).
+        function appendRawText(wrapperDiv, segIndex) {
             progressiveRender(wrapperDiv, segIndex);
         }
 
-        // Auto-collapse think blocks when a non-THINK segment appears.
-        function autoCollapseThinkBlocks() {
-            outputDiv.querySelectorAll('.think-block').forEach(function (block) {
-                if (!block.hasAttribute('data-think-collapsed')) {
-                    collapseThinkBlock(block, 'auto');
-                }
-            });
-        }
-
-        // Merge adjacent segments of the same type into one.
-        // Critical: C++ sends \x02 before every small token; without this, each token
-        // becomes its own segment and gets independently rendered through marked.parse(),
-        // producing broken-up output with excessive block-level wrappers.
+        // Merge adjacent same-type segments into one.  attachPayload's eager
+        // same-type append handles the common case with one small tail
+        // append; this pass catches the residual: a pair that became
+        // adjacent only after the speed segment sitting between them was
+        // filtered out on a previous frame.  Speed is filtered AFTER this pass, so a
+        // speed-blocked pair merges on the next frame -- even if that frame
+        // carries only a speed payload.  The merged segment keeps the first
+        // segment's base (the rendered prefix is unchanged) and takes the
+        // second segment whole into its tail, so the full text order stays
+        // base + tail1 + base2 + tail2.
         function coalesceSegments() {
             let i = 1;
             while (i < segments.length) {
                 if (segments[i].type !== SEG_SPEED &&
-                    segments[i].type === segments[i - 1].type && segments[i].content.length > 0) {
-                    segments[i - 1].content += segments[i].content;
+                    segments[i].type === segments[i - 1].type &&
+                    segments[i].base.length + segments[i].tail.length > 0) {
+                    segments[i - 1].tail +=
+                        segments[i].base + segments[i].tail;
                     segments.splice(i, 1);
                 } else {
                     i++;
@@ -1518,21 +1610,35 @@
             }
         }
 
+        // Auto-collapse think blocks when a non-THINK segment appears.
+        function autoCollapseThinkBlocks() {
+            thinkBlocks.forEach(function (block) {
+                if (!block.hasAttribute('data-think-collapsed')) {
+                    collapseThinkBlock(block, 'auto');
+                }
+            });
+        }
         /* ------------------------------------------------------------------ */
         /*  Incremental render helpers                                        */
         /* ------------------------------------------------------------------ */
 
+        // Materialize a segment's full text (base + tail), O(S) once: used
+        // only by whole-segment re-renders (the non-raw and shrink paths).
+        function segToText(seg) {
+            return seg.base + seg.tail;
+        }
+
         function segToHtml(seg) {
             if (seg.type === SEG_LLM_TEXT) {
-                return convertTextToHtml(seg.content).html;
+                return convertTextToHtml(segToText(seg)).html;
             } else if (seg.type === SEG_THINK) {
-                var html = convertTextToHtml(seg.content).html;
+                var html = convertTextToHtml(segToText(seg)).html;
                 return '<div class="think-header">' +
                     '<span class="arrow">&#9660;</span> Thinking' +
                     '</div>' +
                     '<div class="think-body">' + html + '</div>';
             } else {
-                return seg.content;
+                return segToText(seg);
             }
         }
 
@@ -1573,12 +1679,14 @@
         }
 
         // Inject copy buttons only into <pre><code> blocks within the nodes between
-        // startNode (exclusive) and endNode (inclusive).  Avoids O(n^2) rescanning
-        // of already-processed code blocks on every progressive-render step.
+        // startNode (exclusive) and endNode (inclusive); a null startNode starts
+        // at the parent's first child (covering the range's first node).  Avoids
+        // O(n^2) rescanning of already-processed code blocks on every
+        // progressive-render step.
         function injectCopyButtonsInRange(startNode, endNode) {
-            var parent = startNode.parentNode;
+            var parent = (startNode || endNode).parentNode;
             var nodes = [];
-            var node = startNode.nextSibling;
+            var node = startNode ? startNode.nextSibling : parent.firstChild;
             while (node && node !== endNode) {
                 nodes.push(node);
                 node = node.nextSibling;
@@ -1593,11 +1701,13 @@
             // Move nodes back into the real DOM, preserving order.
             // Each insertBefore must target the node AFTER the last-inserted one,
             // otherwise all nodes end up in reverse order (each new insert goes
-            // before the previous one at startNode.nextSibling).
+            // before the previous one at startNode.nextSibling).  With a null
+            // start the first node goes back before the first remaining child.
             var ref = startNode;
             while (tmp.firstChild) {
-                parent.insertBefore(tmp.firstChild, ref.nextSibling);
-                ref = ref.nextSibling;  // advance past the node we just inserted
+                var n = tmp.firstChild;
+                parent.insertBefore(n, ref ? ref.nextSibling : parent.firstChild);
+                ref = n;
             }
         }
 
@@ -1695,38 +1805,196 @@
             });
         }
 
+        /*  Incremental auto-render (the force/finish math pass).            */
+        /*  The old force/finish path ran renderMathInDiv (KaTeX             */
+        /*  auto-render) over the whole target on every force/finish: its    */
+        /*  only non-idempotent effect was converting raw math delimiters    */
+        /*  the pipeline left in the DOM (display math whose KaTeX render    */
+        /*  failed, and literal \( \[ delimiters) -- raw $$ pairs in prose   */
+        /*  are pipeline failures, so they always become katex-error spans.  */
+        /*  That effect is reproduced incrementally: commits record the      */
+        /*  raw math pieces they insert (DOM-invisible); the force/finish    */
+        /*  pass converts the newly inserted pieces plus every recorded      */
+        /*  piece, in auto-render's exact element scope and output structure */
+        /*  (one <span> per piece, katex-error span on failure, pre/code/    */
+        /*  script/style/textarea/noscript/option and .tool-label skipped).  */
+        /*  Each raw piece is rendered exactly once; base is never           */
+        /*  rescanned.                                                       */
+        var MATH_DELIMS = [
+            { left: '$$',  right: '$$',  display: true  },
+            { left: '\\(', right: '\\)', display: false },
+            { left: '\\[', right: '\\]', display: true  }
+        ];
+        // auto-render's ignoredTags plus the viewer's ignoredClasses.
+        var MATH_IGNORED_TAGS = { pre: 1, code: 1, script: 1, style: 1,
+                                  textarea: 1, noscript: 1, option: 1 };
+        var MATH_LEFT_RE = new RegExp('(' + MATH_DELIMS.map(function (d) {
+            return d.left.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+        }).join('|') + ')');
+
+        // auto-render's right-delimiter search: first occurrence of `right`
+        // with a backslash-escaped character skipped and { } depth tracked.
+        function findDelimRight(right, s, start) {
+            for (var n = start, depth = 0; n < s.length; ) {
+                var o = s[n];
+                if (depth <= 0 && s.slice(n, n + right.length) === right) return n;
+                if (o === '\\') n++;
+                else if (o === '{') depth++;
+                else if (o === '}') depth--;
+                n++;
+            }
+            return -1;
+        }
+
+        // auto-render's delimiter parse (its piece splitter): first left
+        // delimiter, then the balanced right delimiter; an incomplete piece
+        // ends the scan (the rest is text).  Pieces cover the whole string:
+        // text pieces carry the raw data, math pieces the raw delimiters and
+        // the tex (auto-render passes the whole rawData through when it
+        // starts with \begin{).
+        function mathPieces(str) {
+            var pieces = [];
+            var e = str;
+            var m;
+            while ((m = e.search(MATH_LEFT_RE)) !== -1) {
+                if (m > 0) pieces.push({ type: 'text', data: e.slice(0, m) });
+                e = e.slice(m);
+                var d = MATH_DELIMS[0];
+                for (var i = 1; i < MATH_DELIMS.length; i++)
+                    if (e.indexOf(MATH_DELIMS[i].left, 0) === 0) { d = MATH_DELIMS[i]; break; }
+                var n = findDelimRight(d.right, e, d.left.length);
+                if (n === -1) break;
+                var raw = e.slice(0, n + d.right.length);
+                pieces.push({ type: 'math',
+                              raw: raw,
+                              tex: /^\\begin{/.test(raw) ? raw : raw.slice(d.left.length, n),
+                              display: d.display });
+                e = e.slice(n + d.right.length);
+            }
+            if (e !== '') pieces.push({ type: 'text', data: e });
+            return pieces;
+        }
+
+        function mathIgnoredEl(el) {
+            return !!MATH_IGNORED_TAGS[el.nodeName.toLowerCase()] ||
+                (' ' + el.className + ' ').indexOf(' tool-label ') !== -1;
+        }
+
+        // auto-render's element walk: text nodes outside the ignored scope,
+        // recursing only into non-ignored elements.
+        function walkMathTextNodes(el, cb) {
+            for (var i = 0; i < el.childNodes.length; i++) {
+                var c = el.childNodes[i];
+                if (c.nodeType === 3) cb(c);
+                else if (c.nodeType === 1 && !mathIgnoredEl(c)) walkMathTextNodes(c, cb);
+            }
+        }
+
+        // The text nodes of the inserted range firstNode..lastNode (both
+        // inclusive, siblings), in auto-render's element scope.
+        function mathTextNodesInRange(firstNode, lastNode, cb) {
+            var node = firstNode;
+            while (node) {
+                if (node.nodeType === 3) cb(node);
+                else if (node.nodeType === 1 && !mathIgnoredEl(node))
+                    walkMathTextNodes(node, cb);
+                if (node === lastNode) break;
+                node = node.nextSibling;
+            }
+        }
+
+        // auto-render's per-text-node render (its piece renderer): text
+        // pieces stay text nodes; each math piece renders into its own
+        // <span> via katex.render (throwOnError:false: a parse failure is a
+        // katex-error span inside the <span>, exactly as auto-render).
+        function renderMathNodeAuto(textNode) {
+            var pieces = mathPieces(textNode.nodeValue);
+            var hasMath = false;
+            for (var i = 0; i < pieces.length; i++)
+                if (pieces[i].type === 'math') { hasMath = true; break; }
+            if (!hasMath) return;
+            var frag = document.createDocumentFragment();
+            pieces.forEach(function (p) {
+                if (p.type === 'text') {
+                    frag.appendChild(document.createTextNode(p.data));
+                } else {
+                    var span = document.createElement('span');
+                    katex.render(p.tex, span, { displayMode: p.display, throwOnError: false });
+                    frag.appendChild(span);
+                }
+            });
+            textNode.parentNode.replaceChild(frag, textNode);
+        }
+
+        // Progressive commits: record the raw math pieces this commit
+        // inserted (auto-render scope) on the wrapper for the force/finish
+        // conversion.  DOM-invisible; same gate as the old force/finish
+        // renderMathInDiv (which ran regardless of LIM_INLINE_LATEX_ENABLED).
+        function recordMathSites(wrapperDiv, firstNode, lastNode) {
+            if (typeof renderMathInElement !== 'function') return;
+            var pending = wrapperDiv.__mathPending ||
+                (wrapperDiv.__mathPending = []);
+            mathTextNodesInRange(firstNode, lastNode, function (tn) {
+                var pieces = mathPieces(tn.nodeValue);
+                for (var i = 0; i < pieces.length; i++)
+                    if (pieces[i].type === 'math' && pending.indexOf(tn) === -1) {
+                        pending.push(tn);
+                        break;
+                    }
+            });
+        }
+
+        // Force/finish: convert the raw math pieces in this commit's
+        // inserted nodes, in auto-render's structure.
+        function finishMathInInserted(firstNode, lastNode) {
+            if (typeof renderMathInElement !== 'function') return;
+            mathTextNodesInRange(firstNode, lastNode, renderMathNodeAuto);
+        }
+
+        // Force/finish: convert every raw math piece earlier commits
+        // recorded.  A recorded node may be detached (a later whole-segment
+        // re-render): skip it; its replacement already ran its own
+        // full-target auto-render (renderMathInDiv) and cleared the list.
+        function convertPendingMathSites(wrapperDiv) {
+            var pending = wrapperDiv.__mathPending;
+            wrapperDiv.__mathPending = null;
+            if (!pending) return;
+            if (typeof renderMathInElement !== 'function') return;
+            pending.forEach(function (tn) {
+                if (tn.parentNode) renderMathNodeAuto(tn);
+            });
+        }
+
         function render(wasAtBottom) {
             let hasChanges = false;
 
             for (let i = 0; i < segments.length; i++) {
-                if (i < segRenderedContent.length) {
-                    if (segments[i].content !== segRenderedContent[i]) {
+                if (i < segRenderedLen.length) {
+                    if (segments[i].base.length + segments[i].tail.length !== segRenderedLen[i]) {
                         hasChanges = true;
 
-                        const wrapperDiv = outputDiv.querySelector('[data-seg="' + i + '"]');
+                        const wrapperDiv = segWrappers[i];
                         if (wrapperDiv) {
-                            // Streaming text/think segment in raw mode: O(1) append + progressive render.
+                            // Streaming text/think segment in raw mode: the tail already
+                            // holds the new content (onmessage appended it); commit
+                            // whatever is now renderable.
                             if (wrapperDiv.hasAttribute('data-raw')) {
-                                var oldContent = segRenderedContent[i];
-                                var newContent = segments[i].content;
-                                var delta = '';
-                                if (newContent.length >= oldContent.length) {
-                                    delta = newContent.substring(oldContent.length);
+                                var total = segments[i].base.length + segments[i].tail.length;
+                                if (total > segRenderedLen[i]) {
+                                    appendRawText(wrapperDiv, i);
                                 } else {
-                                    // Content shrank (shouldn't happen normally, but handle it).
-                        wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
+                                    // Content shrank (undo/restore): materialize
+                                    // base + tail, full re-render, leave raw mode.
+                                    wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
                                     wrapperDiv.removeAttribute('data-raw');
                                     wrapperDiv.__openFenceCode = null;   // DOM replaced
                                     wrapperDiv.__fencePending = null;
                                     wrapperDiv.__fenceHeldLine = null;
+                                    wrapperDiv.__mathPending = null;
                                     injectCopyButtons(wrapperDiv);
                                     renderMathInDiv(wrapperDiv);
-                                    segRenderedContent[i] = segments[i].content;
                                 }
-                                if (delta.length > 0) {
-                                    appendRawText(wrapperDiv, delta, i);
-                                    segRenderedContent[i] = segments[i].content;
-                                }
+                                segRenderedLen[i] = total;
                             } else {
                                 // Non-streaming segment changed -- full re-render.
                                 // Preserve collapsed state of think blocks across re-renders.
@@ -1747,6 +2015,7 @@
                                 wrapperDiv.__openFenceCode = null;   // DOM replaced
                                 wrapperDiv.__fencePending = null;
                                 wrapperDiv.__fenceHeldLine = null;
+                                wrapperDiv.__mathPending = null;
                                 injectCopyButtons(wrapperDiv);
                                 renderMathInDiv(wrapperDiv);
 
@@ -1760,7 +2029,7 @@
                                 // Restore collapsed state of think blocks.
                                 if (wasThinkCollapsed) collapseThinkBlock(wrapperDiv);
 
-                                segRenderedContent[i] = segments[i].content;
+                                segRenderedLen[i] = segments[i].base.length + segments[i].tail.length;
                             }
                         }
                     }
@@ -1770,7 +2039,7 @@
                     // so that incoming tokens are O(1) appends.  Progressive rendering
                     // converts completed paragraphs to markdown/KaTeX as they appear.
                     hasChanges = true;
-                    segRenderedContent[i] = '';
+                    segRenderedLen[i] = 0;
 
                     const wrapperDiv = document.createElement('div');
                     wrapperDiv.setAttribute('data-seg', String(i));
@@ -1799,16 +2068,23 @@
                         }
                         // for LLM text, .think-body for think blocks).
                         progressiveRender(wrapperDiv, i);
-                        segRenderedContent[i] = segments[i].content;
+                        segRenderedLen[i] = segments[i].base.length + segments[i].tail.length;
+                        outputDiv.appendChild(wrapperDiv);
+                        // Cache only after the append: a progressiveRender
+                        // throw leaves the wrapper detached and uncached, so
+                        // every later lookup for this index comes up empty
+                        // exactly like a per-index querySelector would.
+                        segWrappers[i] = wrapperDiv;
+                        if (segments[i].type === SEG_THINK) thinkBlocks.push(wrapperDiv);
                     } else {
                         wrapperDiv.innerHTML = unescapeMth(segToHtml(segments[i]));
                         outputDiv.appendChild(wrapperDiv);
+                        // In the DOM from here on: cache before the render
+                        // passes, so a throw there still leaves the wrapper
+                        // findable by later lookups (as a querySelector would).
+                        segWrappers[i] = wrapperDiv;
                         injectCopyButtons(wrapperDiv);
                         renderMathInDiv(wrapperDiv);
-                    }
-
-                    if (segments[i].type === SEG_LLM_TEXT || segments[i].type === SEG_THINK) {
-                        outputDiv.appendChild(wrapperDiv);
                     }
                 }
             }
@@ -1818,7 +2094,7 @@
             // finished reasoning -- render any remaining raw tails, then collapse.
             if (segments.length > 0 && segments[segments.length - 1].type !== SEG_THINK) {
                 var autoCollapsed = false;
-                outputDiv.querySelectorAll('.think-block').forEach(function(block) {
+                thinkBlocks.forEach(function(block) {
                     if (block.hasAttribute('data-raw')) {
                         var segIdx = parseInt(block.getAttribute('data-seg'));
                         renderRawTail(block, segIdx);
@@ -1832,7 +2108,13 @@
             }
 
             while (outputDiv.children.length > segments.length) {
-                outputDiv.removeChild(outputDiv.lastChild);
+                var removed = outputDiv.lastChild;
+                outputDiv.removeChild(removed);
+                delete segWrappers[parseInt(removed.getAttribute('data-seg'), 10)];
+                if (thinkBlocks.length > 0 &&
+                    thinkBlocks[thinkBlocks.length - 1] === removed) {
+                    thinkBlocks.pop();
+                }
             }
             // Auto-scroll only when the user was near the bottom before the new
             // content was rendered.  This lets the user scroll back to read earlier
@@ -1874,12 +2156,15 @@
                 let data = event.data;
 
                 let lastIdx = 0;
-                // Track a prefix that appeared at the end of the data with no content
-                // after it.  The next message's plain text (or the next prefix's
-                // payload) will be associated with this pending type.  This prevents
-                // empty segments from being created, which would cause DOM elements to
-                // be destroyed and recreated on every chunk (the root cause of the
-                // post-generation CPU spike).
+                // The pending segment type, scoped to this message: content
+                // that follows a prefix (up to the next prefix or the end of
+                // the message) is attached with that prefix's type.  Segments
+                // are created lazily by attachPayload, so a bare prefix at the
+                // end of the message creates no empty segment (empty segments
+                // would be destroyed and recreated on every chunk -- the root
+                // cause of the post-generation CPU spike).  Untagged text at
+                // a message start (no pending type) is appended to the last
+                // segment, or treated as LLM text when there is none.
                 let pendingType = null;
                 // Flag: set when SEG_TURN_END (\x07) is seen in this frame.
                 // Survives subsequent prefix overwrites so we can act on it after coalescing.
@@ -1894,16 +2179,8 @@
                         // stream_html() calls read together), the content of each
                         // segment sits between its own prefix and the next prefix.
                         if (i > lastIdx) {
-                            var payload = escapeMth(data.substring(lastIdx, i));
-                            if (pendingType !== null) {
-                                segments.push({ type: pendingType, content: payload });
-                                pendingType = null;
-                            } else if (segments.length > 0) {
-                                segments[segments.length - 1].content += payload;
-                            } else {
-                                // Untagged text with no prior segment - treat as LLM text
-                                segments.push({ type: SEG_LLM_TEXT, content: payload });
-                            }
+                            attachPayload(pendingType, escapeMth(data.substring(lastIdx, i)));
+                            pendingType = null;
                         }
                         // Remember this prefix; create the segment lazily when content arrives.
                         // SEG_TURN_END is a control signal, not a content type -- set a
@@ -1919,23 +2196,14 @@
                 }
 
                 if (lastIdx < data.length) {
-                    var payload = escapeMth(data.substring(lastIdx));
-                    if (pendingType !== null) {
-                        segments.push({ type: pendingType, content: payload });
-                        pendingType = null;
-                    } else if (segments.length > 0) {
-                        segments[segments.length - 1].content += payload;
-                    } else {
-                        // Untagged trailing text with no prior segment - treat as LLM text
-                        segments.push({ type: SEG_LLM_TEXT, content: payload });
-                    }
+                    attachPayload(pendingType, escapeMth(data.substring(lastIdx)));
                 }
                 coalesceSegments();
 
                 // Extract speed/context diagnostics and update the status bar, then
                 // remove speed segments BEFORE any index-dependent logic (render,
                 // finishAllRawSegments) so that segment indices remain stable relative
-                // to segRenderedContent and DOM wrapper divs.
+                // to segRenderedLen and DOM wrapper divs.
                 for (const seg of segments) {
                     if (seg.type === SEG_SPEED && seg.content.length > 0) {
                         speedInfo = seg.content;
@@ -1988,9 +2256,9 @@
                 var wrapperDiv = container.querySelector('[data-seg="' + i + '"]');
                 if (!wrapperDiv) continue;
                 if (!wrapperDiv.hasAttribute('data-raw')) continue;
-                var fullText = segments[i].content;
-                var renderedPrefixLen = parseInt(wrapperDiv.getAttribute('data-rendered-len')) || 0;
-                var tail = fullText.substring(renderedPrefixLen);
+                // The wrapper's data-rendered-len mirrors the committed base, so
+                // the unrendered part is exactly the segment's tail.
+                var tail = segments[i].tail;
                 if (tail.length === 0) { wrapperDiv.removeAttribute('data-raw'); continue; }
                 var html = rawTextToHtml(tail, segments[i].type, wrapperDiv);
                 var target = (segments[i].type === SEG_THINK) ?

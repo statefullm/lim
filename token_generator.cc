@@ -81,6 +81,7 @@ TokenGenerator::TokenGenerator(llama_context* ctx, const llama_vocab* vocab,
 : ctx_(ctx), vocab_(vocab), smpl_(smpl), batch_(batch), n_past_(n_past),
   last_context_(last_context),
   cparams_(cparams), turn_timeout_sec_(turn_timeout_sec), feed_time_(feed_time),
+  think_stream_(stream_think),
   print_pos_(0),
   in_tool_call_stream_(was_mid_tool_call),
   in_parameter_(false),
@@ -146,6 +147,12 @@ TokenGenerator::Result TokenGenerator::generate() {
   // degenerate loop still hits the cap and ends the turn.
   int think_eog_count = 0;
 
+  // Edge detector for the think-stream flush: in_thinking_block_ is
+  // recomputed every iteration, and a true->false edge (think end,
+  // spurious-EOG recovery, or anything else that closed the block)
+  // flushes the buffered think text before any non-think output of
+  // this iteration reaches the browser.
+  bool prev_in_thinking_block = in_thinking_block_;
   // Set when FUNC_START just became fully present in generated_text_ this
   // iteration; the on_tool_start_ hook is then fired after the end-of-iteration
   // feed so n_past lands exactly right after FUNC_START.  Fires at most once
@@ -182,6 +189,9 @@ TokenGenerator::Result TokenGenerator::generate() {
         break;
       }
       diag("Task Interrupted by User", "\033[31m");
+      // Flush any pending think chunk before the interrupt notice so
+      // the browser shows the thinking content first.
+      think_stream_.flush();
       stream("\n\n[Task Interrupted by User]\n\n");
       stop_generation = 0;
       g_was_interrupted = 0;
@@ -212,6 +222,9 @@ TokenGenerator::Result TokenGenerator::generate() {
         double elapsed_turn = chrono::duration<double>(now - start).count();
         if (elapsed_turn >= turn_timeout_sec_) {
           diag("System: Turn timeout reached (" + std::to_string((int)elapsed_turn) + "s/" + std::to_string((int)turn_timeout_sec_) + "s). Pausing generation.", "\033[1;33m");
+          // Flush any pending think chunk before the timeout notice so
+          // the browser shows the thinking content first.
+          think_stream_.flush();
           stream("\n\n[Turn Timeout Reached]\n\n");
           stop_generation = 0;
           g_was_interrupted = 0;
@@ -683,6 +696,10 @@ TokenGenerator::Result TokenGenerator::generate() {
       if (think_start_ == string::npos) {
         think_start_ = generated_text_.find(g_model_tokens.think_start);
         if (think_start_ != string::npos) {
+          // A new block starts with an empty think buffer; flush
+          // defensively (normally already empty after the block-end
+          // edge flush above).
+          think_stream_.flush();
           // Depth 1 = the outer opening tag; scanning resumes just past it.
           think_depth_ = 1;
           think_scan_pos_ = think_start_ + g_model_tokens.think_start.length();
@@ -737,6 +754,13 @@ TokenGenerator::Result TokenGenerator::generate() {
       }
     }
     in_thinking_block_ = (think_start_ != string::npos && think_end_ == string::npos);
+    if (prev_in_thinking_block && !in_thinking_block_) {
+      // Left the thinking block (think end, spurious-EOG recovery, or
+      // anything else that closed it): flush the buffered think text
+      // before this iteration's text/tool output can reach the browser.
+      think_stream_.flush();
+    }
+    prev_in_thinking_block = in_thinking_block_;
 
     if (thinking_sim_abort) {
       // The break below skips the feed: every piece appended before this
@@ -754,6 +778,9 @@ TokenGenerator::Result TokenGenerator::generate() {
       // against the user's Ctrl+C.  g_was_interrupted is consumed here.
       if (stop_generation) {
         diag("Task Interrupted by User", "\033[31m");
+        // Flush any pending think chunk before the interrupt notice so
+        // the browser shows the thinking content first.
+        think_stream_.flush();
         stream("\n\n[Task Interrupted by User]\n\n");
         stop_generation = 0;
         g_was_interrupted = 0;
@@ -871,8 +898,10 @@ TokenGenerator::Result TokenGenerator::generate() {
     // --- OUTPUT RENDERING ---
     // Canary probe: suppress all output (no stdout, no browser pipe, no
     // unprinted_text_ growth).  This branch just advances print_pos_ so
-    // the trailing else's flush stays a no-op.
+    // the trailing else's flush stays a no-op, and discards any pending
+    // think chunk (the probe never appends, so normally empty).
     if (canary_silent_) {
+      think_stream_.discard();
       print_pos_ = generated_text_.length();
     } else if (!in_tool_call_stream_ && !in_thinking_block_) {
       size_t safe_len = generated_text_.length();
@@ -996,7 +1025,9 @@ TokenGenerator::Result TokenGenerator::generate() {
             }
             console_think(think_output.c_str());
             consoleThinkFlush();
-            stream_think(think_output);
+            // Buffered (line/1 KB chunks); the stdout path above is
+            // unchanged and stays per-token.
+            think_stream_.append(think_output);
             if (!think_output.empty()) g_stdout_ended_with_newline = (think_output.back() == '\n');
             think_buffering_ = false;
           }
@@ -1005,13 +1036,19 @@ TokenGenerator::Result TokenGenerator::generate() {
           if (!think_output.empty()) {
             console_think(think_output.c_str());
             consoleThinkFlush();
-            stream_think(think_output);
+            // Buffered (line/1 KB chunks); the stdout path above is
+            // unchanged and stays per-token.
+            think_stream_.append(think_output);
             g_stdout_ended_with_newline = (think_output.back() == '\n');
           }
         }
         print_pos_ = safe_len;
       }
     } else {
+      // Entered the tool region: the think buffer should already be
+      // empty (flushed at the think-end edge); flush defensively so a
+      // stale chunk can never interleave after tool output.
+      think_stream_.flush();
       if (!unprinted_text_.empty()) {
         console(unprinted_text_.c_str());
         consoleFlush();
@@ -1316,6 +1353,14 @@ TokenGenerator::Result TokenGenerator::generate() {
   if (!honest_speed && t_count_ > 0) {
     gen_wall_time = chrono::duration<double>(t_gen_end - t_gen_start).count();
   }
+
+  // Flush the pending think chunk before the unprinted text: a
+  // non-empty think buffer means the block was still open at turn end
+  // (tripwire, in-block EOG cap, 90% force-end, exhaustion), and the
+  // old per-token streaming reached the browser before the text flushed
+  // here.  Canary probe: the buffer is never appended to, so skip the
+  // flush entirely (all browser output is suppressed).
+  if (!canary_silent_) think_stream_.flush();
 
   // Flush remaining unprinted text
   if (!unprinted_text_.empty()) {

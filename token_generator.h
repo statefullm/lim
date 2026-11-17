@@ -3,6 +3,7 @@
 
 #include "llama.h"
 #include "common.h"
+#include "think_stream.h"
 #include <functional>
 #include <string>
 #include <vector>
@@ -113,6 +114,11 @@ private:
   // Internal state
   std::string generated_text_;
   std::string unprinted_text_;
+  // Browser think-stream buffer (see think_stream.h): batches the
+  // per-token stream_think() calls into line/1 KB chunks; flushed at
+  // every region transition and the turn end, discarded under canary
+  // silence.  Writer is stream_think (output.cc).
+  ThinkStream think_stream_;
   size_t print_pos_;
   bool in_tool_call_stream_;
   bool in_parameter_;
