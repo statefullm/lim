@@ -52,20 +52,26 @@ static bool path_value_malformed(const string& s) {
 //   Passed  -- value used as-is, newline included, call succeeded
 //              (command/query: the shell / search engine tolerates it):
 //              warns to teach the model, without claiming any removal.
+// allowed_trailing: number of trailing newlines the value may end with
+// without a warning (default 0: any one warns).  write_file content
+// passes 1: for full-file content a single trailing newline is the POSIX
+// end-of-file terminator, not an artifact; two or more still means a
+// stray newline before the closing tag (or a blank line at EOF).
 enum class EdgeHandling { Retry, Trimmed, Passed };
-static string edge_newline_warning(const string& value, const char* param_name, EdgeHandling handling = EdgeHandling::Retry) {
-  auto remedy = [&](const string& core) {
+static string edge_newline_warning(const string& value, const char* param_name, EdgeHandling handling = EdgeHandling::Retry, size_t allowed_trailing = 0) {
+  auto remedy = [&](const string& core, bool plural = false) {
     switch (handling) {
       case EdgeHandling::Retry:   return "Put " + core + " and retry.\n";
       case EdgeHandling::Trimmed: return EDGE_TRIM_NOTE + " Keep " + core + ".\n";
-      case EdgeHandling::Passed:  return "It was used as-is, newline included. Keep " + core + ".\n";
+      case EdgeHandling::Passed:  return "It was used as-is, newline" + string(plural ? "s" : "") + " included. Keep " + core + ".\n";
     }
     return string();
   };
   string warning;
   bool past = handling != EdgeHandling::Retry;
   bool leading_nl = value.size() > 1 && value.front() == '\n';
-  bool trailing_nl = value.size() > 1 && value.back() == '\n';
+  size_t trailing_nl = 0;
+  while (trailing_nl < value.size() && value[value.size() - 1 - trailing_nl] == '\n') ++trailing_nl;
   if (leading_nl) {
     string head = value.substr(1);
     if (head.size() > 10) head = head.substr(0, 10) + "...";
@@ -76,13 +82,16 @@ static string edge_newline_warning(const string& value, const char* param_name, 
     warning += remedy(core);
     warning += "Your call began with: \"" + open_tag + "\n" + head + "\"";
   }
-  if (trailing_nl) {
+  if (value.size() > 1 && trailing_nl > allowed_trailing) {
+    bool plural = trailing_nl > 1;
     string tail = value.substr(0, value.size() - 1);
     if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
     string core = string(PARAM_END) + " immediately after the last character of the value";
+    string verb = past ? (plural ? "were" : "was") : (plural ? "are" : "is");
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value " + (past ? "ended" : "ends") + " with a trailing newline: " + string(PARAM_END) + " was on a separate line, so the newline " + (past ? "was" : "is") + " part of the value.\n";
-    warning += remedy(core);
+    string count_word = plural ? to_string(trailing_nl) + " trailing newlines" : string("a trailing newline");
+    warning += "Your " + string(param_name) + " value " + (past ? "ended" : "ends") + " with " + count_word + ": " + string(PARAM_END) + " was on a separate line, so the newline" + (plural ? "s " : " ") + verb + " part of the value.\n";
+    warning += remedy(core, plural);
     warning += "Your call ended with: \"" + tail + "\n" + string(PARAM_END) + "\"";
   }
   return warning;
@@ -95,8 +104,8 @@ static string edge_newline_warning(const string& value, const char* param_name, 
 // the emitted value had no edge newline.  'value' is the parameter value
 // the branch already extracted (quote-stripped, untrimmed): passing it in
 // keeps the note from re-parsing the call for every parameter.
-static void prepend_edge_newline_note(string& result, const string& value, const char* param_name, EdgeHandling handling) {
-  string note = edge_newline_warning(value, param_name, handling);
+static void prepend_edge_newline_note(string& result, const string& value, const char* param_name, EdgeHandling handling, size_t allowed_trailing = 0) {
+  string note = edge_newline_warning(value, param_name, handling, allowed_trailing);
   if (!note.empty()) result = note + "\n\n" + result;
 }
 
@@ -465,7 +474,9 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         }
       }
       prepend_edge_newline_note(result, path_raw, "path", EdgeHandling::Trimmed);
-      prepend_edge_newline_note(result, content, "content", EdgeHandling::Passed);
+      // allowed_trailing=1: a single trailing newline is the file's POSIX
+      // EOF terminator, not an artifact; two or more still warns.
+      prepend_edge_newline_note(result, content, "content", EdgeHandling::Passed, 1);
     } else {
       result = "Error: No path provided to write_file";
     }
