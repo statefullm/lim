@@ -79,11 +79,11 @@ static string edge_newline_warning(const string& value, const char* param_name, 
   if (trailing_nl) {
     string tail = value.substr(0, value.size() - 1);
     if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
-    string core = "PARAM_END immediately after the last character of the value";
+    string core = string(PARAM_END) + " immediately after the last character of the value";
     if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value " + (past ? "ended" : "ends") + " with a trailing newline: PARAM_END was on a separate line, so the newline " + (past ? "was" : "is") + " part of the value.\n";
+    warning += "Your " + string(param_name) + " value " + (past ? "ended" : "ends") + " with a trailing newline: " + string(PARAM_END) + " was on a separate line, so the newline " + (past ? "was" : "is") + " part of the value.\n";
     warning += remedy(core);
-    warning += "Your call ended with: \"" + tail + "\nPARAM_END\"";
+    warning += "Your call ended with: \"" + tail + "\n" + string(PARAM_END) + "\"";
   }
   return warning;
 }
@@ -280,7 +280,7 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
     // the tool, the missing parameter(s), and the tool's full required set
     // -- plus the PARAM_END hint -- covers both causes without inviting wild
     // theories (escaping, truncation, FS bugs).
-    out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + "). Did you forget a closing parameter tag (PARAM_END) in your tool call?";
+    out.content = "Error: Missing required parameter(s) for " + tool_name + ": " + missing_list + ". Re-issue the call with all required parameters (" + required_params_list(tool_name) + "). Did you forget " + string(PARAM_END) + " in your tool call?";
     out.display = "Missing parameter(s) for " + tool_name + ": " + missing_list;
     out.is_error = true;
     return out;
