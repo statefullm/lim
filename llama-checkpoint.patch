@@ -1,8 +1,8 @@
 diff --git a/llama/include/llama.h b/llama/include/llama.h
-index 3ab935939..b6ef9658a 100644
+index 3ab935939c6d183e5862aba93f346691e658403b..6e2910efb1cc830ba9c131558c82c6119f392a38 100644
 --- a/llama/include/llama.h
 +++ b/llama/include/llama.h
-@@ -804,6 +804,41 @@ extern "C" {
+@@ -804,6 +804,45 @@ extern "C" {
      // Check if the memory supports shifting
      LLAMA_API bool llama_memory_can_shift(llama_memory_t mem);
  
@@ -22,9 +22,13 @@ index 3ab935939..b6ef9658a 100644
 +              llama_seq_id seq_id,
 +                     uint32_t checkpoint_idx);
 +
-+    // Restore from a specific stack index (0 = first saved).
-+    // After restore, llama_memory_seq_rm will succeed on the recurrent cache
-+    // even for large rollback distances, since plane 0 already holds correct state.
++    // Restore from a specific stack index (0 = first saved).  Arms a single
++    // full-distance rollback on the recurrent cache: the next
++    // llama_memory_seq_rm to exactly the restored position succeeds beyond
++    // the n_rs_seq snapshot window (plane 0 already holds the correct state).
++    // The arming expires if a decode advances the sequence first (the
++    // restored state is then consumed); any other rollback target must fail
++    // and let the caller re-decode.
 +    LLAMA_API void llama_memory_rs_checkpoint_restore(
 +            llama_memory_t mem,
 +              llama_seq_id seq_id,
@@ -45,7 +49,7 @@ index 3ab935939..b6ef9658a 100644
      // State / sessions
      //
 diff --git a/llama/src/llama-context.cpp b/llama/src/llama-context.cpp
-index 6334f3cca..c20e8cfa5 100644
+index 6334f3ccab304749bbf7b51362dee7c9348771d7..c20e8cfa5409501a15a04e92df1e1b909aacb239 100644
 --- a/llama/src/llama-context.cpp
 +++ b/llama/src/llama-context.cpp
 @@ -4116,6 +4116,28 @@ bool llama_memory_can_shift(llama_memory_t mem) {
@@ -78,7 +82,7 @@ index 6334f3cca..c20e8cfa5 100644
  
  // deprecated
 diff --git a/llama/src/llama-kv-cache-dsa-iswa.h b/llama/src/llama-kv-cache-dsa-iswa.h
-index 28cf95bf0..eb29df073 100644
+index 28cf95bf05182174fe27e312ab146d8123f79ca0..eb29df07355dfcae5c8a09bcdd889a4d48d48a53 100644
 --- a/llama/src/llama-kv-cache-dsa-iswa.h
 +++ b/llama/src/llama-kv-cache-dsa-iswa.h
 @@ -63,6 +63,13 @@ public:
@@ -96,7 +100,7 @@ index 28cf95bf0..eb29df073 100644
      // llama_kv_cache_dsa_iswa specific API
      //
 diff --git a/llama/src/llama-kv-cache-dsa.h b/llama/src/llama-kv-cache-dsa.h
-index e74fc4d91..18cbb8d6a 100644
+index e74fc4d9100fd5799178d813adf74ec3a61953a4..18cbb8d6aa495c472abd9465ea2b3680e7227958 100644
 --- a/llama/src/llama-kv-cache-dsa.h
 +++ b/llama/src/llama-kv-cache-dsa.h
 @@ -65,6 +65,13 @@ public:
@@ -114,7 +118,7 @@ index e74fc4d91..18cbb8d6a 100644
      // llama_kv_cache_dsa specific API
      //
 diff --git a/llama/src/llama-kv-cache-dsv4.h b/llama/src/llama-kv-cache-dsv4.h
-index ce39867c0..cde8bd941 100644
+index ce39867c03427575930c3bdfdbca89523c0514a3..cde8bd9413c6c5558c5ebebf97fd63f5d157d946 100644
 --- a/llama/src/llama-kv-cache-dsv4.h
 +++ b/llama/src/llama-kv-cache-dsv4.h
 @@ -136,6 +136,13 @@ public:
@@ -132,7 +136,7 @@ index ce39867c0..cde8bd941 100644
      // llama_kv_cache_dsv4 specific API
      //
 diff --git a/llama/src/llama-kv-cache-iswa.h b/llama/src/llama-kv-cache-iswa.h
-index 7dab6eaa8..afc5244fb 100644
+index 7dab6eaa82c8f631f44e87956f5be95d86d3713f..afc5244fb470d31f7ec760771476cda4b064b93e 100644
 --- a/llama/src/llama-kv-cache-iswa.h
 +++ b/llama/src/llama-kv-cache-iswa.h
 @@ -83,6 +83,13 @@ public:
@@ -150,7 +154,7 @@ index 7dab6eaa8..afc5244fb 100644
      // llama_kv_cache_iswa specific API
      //
 diff --git a/llama/src/llama-kv-cache-msa.h b/llama/src/llama-kv-cache-msa.h
-index f09b6d32b..7da6cd214 100644
+index f09b6d32b044010faa3b6752be5da77f4a7886f2..7da6cd214a6a326bb5ed25835fdf4e11d58a5006 100644
 --- a/llama/src/llama-kv-cache-msa.h
 +++ b/llama/src/llama-kv-cache-msa.h
 @@ -62,6 +62,13 @@ public:
@@ -168,7 +172,7 @@ index f09b6d32b..7da6cd214 100644
  
      llama_kv_cache * get_base() const;
 diff --git a/llama/src/llama-kv-cache.h b/llama/src/llama-kv-cache.h
-index c4d8699de..8a1ad3c2e 100644
+index c4d8699def1216170b3d7d00ba2f8712070ebfcf..8a1ad3c2e5ce0a32eec753a657362338e93204de 100644
 --- a/llama/src/llama-kv-cache.h
 +++ b/llama/src/llama-kv-cache.h
 @@ -151,6 +151,13 @@ public:
@@ -186,7 +190,7 @@ index c4d8699de..8a1ad3c2e 100644
      // llama_kv_cache specific API
      //
 diff --git a/llama/src/llama-memory-hybrid-iswa.h b/llama/src/llama-memory-hybrid-iswa.h
-index c9d3f9f57..a05a586d2 100644
+index c9d3f9f57c50489202052f170f30a1a2a6f60c0b..a05a586d2a8ef77d0bb0ad072e765b317f7ecdca 100644
 --- a/llama/src/llama-memory-hybrid-iswa.h
 +++ b/llama/src/llama-memory-hybrid-iswa.h
 @@ -76,6 +76,13 @@ public:
@@ -204,7 +208,7 @@ index c9d3f9f57..a05a586d2 100644
      // llama_memory_hybrid_iswa specific API
      //
 diff --git a/llama/src/llama-memory-hybrid.h b/llama/src/llama-memory-hybrid.h
-index 484eafb74..63871dc67 100644
+index 484eafb749910567b8c50ec36d46bdb678c75426..63871dc676cf4f0836412a159fb85bec6dcf6c09 100644
 --- a/llama/src/llama-memory-hybrid.h
 +++ b/llama/src/llama-memory-hybrid.h
 @@ -76,6 +76,13 @@ public:
@@ -222,36 +226,45 @@ index 484eafb74..63871dc67 100644
      // llama_memory_hybrid specific API
      //
 diff --git a/llama/src/llama-memory-recurrent.cpp b/llama/src/llama-memory-recurrent.cpp
-index 57919accf..95e856475 100644
+index 57919accf09569e129ab35b5b2bd4dab7dbe8a3a..d3ab2b627ac857691d6c9d0448a3a99964560e50 100644
 --- a/llama/src/llama-memory-recurrent.cpp
 +++ b/llama/src/llama-memory-recurrent.cpp
-@@ -35,6 +35,10 @@ llama_memory_recurrent::llama_memory_recurrent(
+@@ -35,6 +35,12 @@ llama_memory_recurrent::llama_memory_recurrent(
      this->n_rs_seq = n_rs_seq;
      rs_idx.assign(n_seq_max, 0);
  
-+    // Recurrent state checkpoint stacks and restore flags
++    // Recurrent state checkpoint stacks and position-tagged restore arming
 +    rs_checkpoint_stacks.resize(n_seq_max);
 +    rs_restored.assign(n_seq_max, false);
++    rs_restored_pos.assign(n_seq_max, -1);
++    rs_restored_at.assign(n_seq_max, -1);
 +
      cells.clear();
      cells.resize(mem_size);
  
-@@ -156,6 +160,8 @@ void llama_memory_recurrent::clear(bool data) {
+@@ -156,6 +162,10 @@ void llama_memory_recurrent::clear(bool data) {
      }
  
      std::fill(rs_idx.begin(), rs_idx.end(), 0);
 +    std::fill(rs_restored.begin(), rs_restored.end(), false);
++    std::fill(rs_restored_pos.begin(), rs_restored_pos.end(), -1);
++    std::fill(rs_restored_at.begin(), rs_restored_at.end(), -1);
 +    for (auto & stack : rs_checkpoint_stacks) stack.clear();
  }
  
  bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) {
-@@ -200,6 +206,14 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
+@@ -200,6 +210,19 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                      cell.pos = p0 - 1;
                      return true;
                  }
 +                // If state was externally restored via rs_checkpoint_restore,
-+                // plane 0 already holds the correct state for the rollback target.
-+                if (rs_restored[seq_id]) {
++                // plane 0 holds the correct state only for the restored
++                // position, and only until the tail moves: accept exactly when
++                // the request lands on the restored position (p0 - 1) and the
++                // tail has not moved since the restore (a decode would have
++                // advanced plane 0, consuming the restored state).  Any other
++                // target must fail here so the caller re-decodes.
++                if (rs_restored[seq_id] && rs_restored_pos[seq_id] == p0 - 1 && cell.pos == rs_restored_at[seq_id]) {
 +                    set_rs_idx(seq_id, 0);
 +                    rs_restored[seq_id] = false;
 +                    cell.pos = p0 - 1;
@@ -260,7 +273,7 @@ index 57919accf..95e856475 100644
                  return false;
              }
              // invalidate tails which will be cleared
-@@ -417,6 +431,144 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
+@@ -417,6 +440,153 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
      rs_idx[seq_id] = idx;
  }
  
@@ -306,6 +319,9 @@ index 57919accf..95e856475 100644
 +        }
 +    }
 +
++    // Record the tail position the R/S data represents (arming tag used by
++    // rs_checkpoint_restore).
++    cp.pos = cells[tail_id].pos;
 +    rs_checkpoint_stacks[seq_id].push_back(std::move(cp));
 +}
 +
@@ -318,6 +334,8 @@ index 57919accf..95e856475 100644
 +
 +    const int32_t n_layer = hparams.n_layer();
 +    auto & cp = stack[checkpoint_idx];
++    // The slot is re-used at the current tail position: update the tag.
++    cp.pos = cells[tail_id].pos;
 +
 +    // Overwrite R data in-place (reuses existing allocation)
 +    size_t total_r = 0;
@@ -384,9 +402,13 @@ index 57919accf..95e856475 100644
 +        }
 +    }
 +
-+    // Reset rollback index and mark state as externally restored
++    // Reset rollback index and arm the position-tagged rollback: plane 0
++    // now holds the state for cp.pos, valid only until a decode moves the
++    // tail (consuming the restored state) or a state_read replaces it.
 +    set_rs_idx(seq_id, 0);
 +    rs_restored[seq_id] = true;
++    rs_restored_pos[seq_id] = cp.pos;
++    rs_restored_at[seq_id] = cells[tail_id].pos;
 +}
 +
 +void llama_memory_recurrent::rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) {
@@ -405,8 +427,26 @@ index 57919accf..95e856475 100644
  std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {
      std::map<ggml_backend_buffer_type_t, size_t> ret;
      for (const auto & [_, buf] : ctxs_bufs) {
+@@ -873,6 +1043,17 @@ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_i
+     if (n_rs_seq != 0) {
+         set_rs_idx(seq_id, 0);
+     }
++
++    // A successful load replaces the recurrent state, so any
++    // position-tagged arming from a prior rs_checkpoint_restore is stale:
++    // disarm it.  The seq_id < 0 (whole cache) case was already disarmed by
++    // the clear(true) in state_read_meta; the vectors must never be indexed
++    // with a negative seq_id.
++    if (seq_id >= 0) {
++        rs_restored[seq_id] = false;
++        rs_restored_pos[seq_id] = -1;
++        rs_restored_at[seq_id] = -1;
++    }
+ }
+ 
+ void llama_memory_recurrent::state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id) const {
 diff --git a/llama/src/llama-memory-recurrent.h b/llama/src/llama-memory-recurrent.h
-index 4abb3f5cf..c714bd350 100644
+index 4abb3f5cf5c09611844dff5361ca36e51ff9c07f..b8cd5bfbc0a2202e34e14ddc3d5452545c99bc40 100644
 --- a/llama/src/llama-memory-recurrent.h
 +++ b/llama/src/llama-memory-recurrent.h
 @@ -66,6 +66,15 @@ public:
@@ -425,7 +465,7 @@ index 4abb3f5cf..c714bd350 100644
      uint32_t head = 0; // the location where the batch will be placed in the cache (see find_slot())
      uint32_t size = 0; // total number of cells, shared across all sequences
      uint32_t used = 0; // used cells (i.e. at least one seq_id)
-@@ -78,6 +87,17 @@ public:
+@@ -78,6 +87,25 @@ public:
  
      void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
  
@@ -433,18 +473,26 @@ index 4abb3f5cf..c714bd350 100644
 +    struct rs_checkpoint {
 +        std::vector<uint8_t> r_data; // R tensor row data for all layers
 +        std::vector<uint8_t> s_data; // S tensor row data for all layers
++        llama_pos pos = -1; // tail position the R/S data represents
 +    };
 +
 +    // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
 +    std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
-+    // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
++    // Position-tagged arming, set by rs_checkpoint_restore and cleared when
++    // the armed seq_rm succeeds or a state_read replaces the state:
++    //   rs_restored:     arming flag
++    //   rs_restored_pos: position the armed state represents (cp.pos)
++    //   rs_restored_at:  tail position at restore time (a decode advances the
++    //                    tail and consumes the armed state)
 +    std::vector<bool> rs_restored;
++    std::vector<llama_pos> rs_restored_pos;
++    std::vector<llama_pos> rs_restored_at;
 +
      // computed before each graph build
      uint32_t n = 0;
  
 diff --git a/llama/src/llama-memory.h b/llama/src/llama-memory.h
-index db8253966..5887d851d 100644
+index db825396645e61c94213ca1e94b78d71d1538d67..5887d851dde457bc708d67119d069afacd6d504f 100644
 --- a/llama/src/llama-memory.h
 +++ b/llama/src/llama-memory.h
 @@ -124,6 +124,18 @@ struct llama_memory_i {

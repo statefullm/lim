@@ -1955,6 +1955,18 @@ static bool save_session_with_header(const vector<llama_token>& tokens, const st
 void ChatSession::roll_back_canary(int restore_point) {
   llama_memory_t mem = llama_get_memory(ctx_);
   llama_memory_rs_checkpoint_restore(mem, 0, (uint32_t)restore_point_ckpt_idx_);
+  // The restore just consumed the entry (seq_rm below needs only the
+  // arming flag, not the stack).  When the save holds no prompt
+  // checkpoints the entry is orphaned: no prompt_checkpoint maps to it
+  // and the offset bookkeeping (0) does not account for it -- the first
+  // tool turn's slot would push at index 1 while the hook records index
+  // 0, and a correction fast-rollback would restore the orphan (wrong
+  // position) with a falsely accepted seq_rm.  With checkpoints present
+  // the entry is the mapped live slot for the last checkpoint and must
+  // stay.  No-op for pure attention models.
+  if (state_.prompt_checkpoints.empty()) {
+    llama_memory_rs_checkpoint_pop(mem, 0);
+  }
   if (!llama_memory_seq_rm(mem, 0, (llama_pos)restore_point, -1)) {
     // Should be unreachable (rs_restored makes the recurrent plane accept
     // the rollback; the attention plane always truncates).  Leave the

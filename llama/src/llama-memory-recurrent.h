@@ -91,12 +91,20 @@ public:
     struct rs_checkpoint {
         std::vector<uint8_t> r_data; // R tensor row data for all layers
         std::vector<uint8_t> s_data; // S tensor row data for all layers
+        llama_pos pos = -1; // tail position the R/S data represents
     };
 
     // Per-seq stack of checkpoints (pushed by rs_checkpoint_save)
     std::vector<std::vector<rs_checkpoint>> rs_checkpoint_stacks;
-    // Flag: set true after rs_checkpoint_restore, cleared after seq_rm succeeds
+    // Position-tagged arming, set by rs_checkpoint_restore and cleared when
+    // the armed seq_rm succeeds or a state_read replaces the state:
+    //   rs_restored:     arming flag
+    //   rs_restored_pos: position the armed state represents (cp.pos)
+    //   rs_restored_at:  tail position at restore time (a decode advances the
+    //                    tail and consumes the armed state)
     std::vector<bool> rs_restored;
+    std::vector<llama_pos> rs_restored_pos;
+    std::vector<llama_pos> rs_restored_at;
 
     // computed before each graph build
     uint32_t n = 0;

@@ -35,9 +35,11 @@ llama_memory_recurrent::llama_memory_recurrent(
     this->n_rs_seq = n_rs_seq;
     rs_idx.assign(n_seq_max, 0);
 
-    // Recurrent state checkpoint stacks and restore flags
+    // Recurrent state checkpoint stacks and position-tagged restore arming
     rs_checkpoint_stacks.resize(n_seq_max);
     rs_restored.assign(n_seq_max, false);
+    rs_restored_pos.assign(n_seq_max, -1);
+    rs_restored_at.assign(n_seq_max, -1);
 
     cells.clear();
     cells.resize(mem_size);
@@ -161,6 +163,8 @@ void llama_memory_recurrent::clear(bool data) {
 
     std::fill(rs_idx.begin(), rs_idx.end(), 0);
     std::fill(rs_restored.begin(), rs_restored.end(), false);
+    std::fill(rs_restored_pos.begin(), rs_restored_pos.end(), -1);
+    std::fill(rs_restored_at.begin(), rs_restored_at.end(), -1);
     for (auto & stack : rs_checkpoint_stacks) stack.clear();
 }
 
@@ -207,8 +211,13 @@ bool llama_memory_recurrent::seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos
                     return true;
                 }
                 // If state was externally restored via rs_checkpoint_restore,
-                // plane 0 already holds the correct state for the rollback target.
-                if (rs_restored[seq_id]) {
+                // plane 0 holds the correct state only for the restored
+                // position, and only until the tail moves: accept exactly when
+                // the request lands on the restored position (p0 - 1) and the
+                // tail has not moved since the restore (a decode would have
+                // advanced plane 0, consuming the restored state).  Any other
+                // target must fail here so the caller re-decodes.
+                if (rs_restored[seq_id] && rs_restored_pos[seq_id] == p0 - 1 && cell.pos == rs_restored_at[seq_id]) {
                     set_rs_idx(seq_id, 0);
                     rs_restored[seq_id] = false;
                     cell.pos = p0 - 1;
@@ -473,6 +482,9 @@ void llama_memory_recurrent::rs_checkpoint_save(llama_seq_id seq_id) {
         }
     }
 
+    // Record the tail position the R/S data represents (arming tag used by
+    // rs_checkpoint_restore).
+    cp.pos = cells[tail_id].pos;
     rs_checkpoint_stacks[seq_id].push_back(std::move(cp));
 }
 
@@ -485,6 +497,8 @@ void llama_memory_recurrent::rs_checkpoint_overwrite(llama_seq_id seq_id, uint32
 
     const int32_t n_layer = hparams.n_layer();
     auto & cp = stack[checkpoint_idx];
+    // The slot is re-used at the current tail position: update the tag.
+    cp.pos = cells[tail_id].pos;
 
     // Overwrite R data in-place (reuses existing allocation)
     size_t total_r = 0;
@@ -551,9 +565,13 @@ void llama_memory_recurrent::rs_checkpoint_restore(llama_seq_id seq_id, uint32_t
         }
     }
 
-    // Reset rollback index and mark state as externally restored
+    // Reset rollback index and arm the position-tagged rollback: plane 0
+    // now holds the state for cp.pos, valid only until a decode moves the
+    // tail (consuming the restored state) or a state_read replaces it.
     set_rs_idx(seq_id, 0);
     rs_restored[seq_id] = true;
+    rs_restored_pos[seq_id] = cp.pos;
+    rs_restored_at[seq_id] = cells[tail_id].pos;
 }
 
 void llama_memory_recurrent::rs_checkpoint_prune(llama_seq_id seq_id, uint32_t keep_idx) {
@@ -1024,6 +1042,17 @@ void llama_memory_recurrent::state_read(llama_io_read_i & io, llama_seq_id seq_i
 
     if (n_rs_seq != 0) {
         set_rs_idx(seq_id, 0);
+    }
+
+    // A successful load replaces the recurrent state, so any
+    // position-tagged arming from a prior rs_checkpoint_restore is stale:
+    // disarm it.  The seq_id < 0 (whole cache) case was already disarmed by
+    // the clear(true) in state_read_meta; the vectors must never be indexed
+    // with a negative seq_id.
+    if (seq_id >= 0) {
+        rs_restored[seq_id] = false;
+        rs_restored_pos[seq_id] = -1;
+        rs_restored_at[seq_id] = -1;
     }
 }
 

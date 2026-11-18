@@ -820,9 +820,13 @@ extern "C" {
               llama_seq_id seq_id,
                      uint32_t checkpoint_idx);
 
-    // Restore from a specific stack index (0 = first saved).
-    // After restore, llama_memory_seq_rm will succeed on the recurrent cache
-    // even for large rollback distances, since plane 0 already holds correct state.
+    // Restore from a specific stack index (0 = first saved).  Arms a single
+    // full-distance rollback on the recurrent cache: the next
+    // llama_memory_seq_rm to exactly the restored position succeeds beyond
+    // the n_rs_seq snapshot window (plane 0 already holds the correct state).
+    // The arming expires if a decode advances the sequence first (the
+    // restored state is then consumed); any other rollback target must fail
+    // and let the caller re-decode.
     LLAMA_API void llama_memory_rs_checkpoint_restore(
             llama_memory_t mem,
               llama_seq_id seq_id,
