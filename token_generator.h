@@ -32,6 +32,11 @@ public:
     bool ctx_limit_interrupt = false;
     int token_count = 0;
     bool early_exit = false;  // context exhaustion or decode error (not normal EOG)
+    // True when the MTP rollback-failure fallback (spec_rollback_redecode)
+    // cleared the main memory and re-decoded the committed prefix: the
+    // caller's recurrent-checkpoint bookkeeping (offset/slot flags) is
+    // invalidated and must be reset.
+    bool prefix_redecoded = false;
     double decode_time = 0.0;  // Sum of per-token decode intervals (seconds)
     // True when the silent-loop detector aborted generation inside a tool call
     // (FUNC_START present, FUNC_END never completed). The caller should run the
@@ -181,6 +186,11 @@ private:
   int spec_verify_rows_ = 0;            // V row count (k - 1)
   int spec_draft_idx_ = 0;              // 1-based draft idx of current comparison
   int spec_committed_verify_ = 0;       // verify rows committed so far
+  // Latch set by spec_rollback_redecode() when the main memory was cleared
+  // and the committed prefix re-decoded: the recurrent-checkpoint bookkeeping
+  // the caller holds is invalidated.  One TokenGenerator serves one generate
+  // call and the flag is latch-only (a second re-decode keeps it true).
+  bool prefix_redecoded_ = false;
 
   // --- Canary mode (pre-turn MTP-mirror validation of a fast restore) ---
   // canary_max_tokens_ > 0: generation is a silent probe capped at N

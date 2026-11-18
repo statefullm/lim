@@ -1388,6 +1388,7 @@ TokenGenerator::Result TokenGenerator::generate() {
   result.was_interrupted = was_interrupted;
   result.ctx_limit_interrupt = ctx_limit_interrupt;
   result.early_exit = early_exit;
+  result.prefix_redecoded = prefix_redecoded_;
   result.stuck_in_tool_call = stuck_in_tool_call;
   result.thinking_sim_abort = thinking_sim_abort;
   result.unfed_tail_len = unfed_tail_len;
@@ -1427,5 +1428,11 @@ bool TokenGenerator::spec_rollback_redecode() {
     }
     batch_.n_tokens = 0;
   }
-  return n_past_ == (int)n;
+  const bool ok = (n_past_ == (int)n);
+  // Success path only: the prefix was fully rebuilt, so the caller's
+  // recurrent-checkpoint bookkeeping (which described the pre-clear stack)
+  // is now stale and must be reset.  On failure we eject (caller) and the
+  // flag stays false -- nothing was rebuilt.
+  if (ok) prefix_redecoded_ = true;
+  return ok;
 }

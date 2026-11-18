@@ -1590,6 +1590,20 @@ TokenGenerator::Result ChatSession::generate_response(bool is_correction_gen) {
                     was_mid_thinking_block);
   gen_result_ = tg.generate();
 
+  if (gen_result_.prefix_redecoded) {
+    // spec_rollback_redecode cleared the main memory: the live R/S
+    // checkpoint stack is gone.  Reset the bookkeeping exactly as the
+    // /undo re-decode fallback does -- all historical checkpoints are
+    // non-live (offset = size), no slot, no provisional interrupt
+    // checkpoint.  The end-of-turn block pushes the turn's entry at
+    // live slot 0, restoring the one-entry-per-checkpoint invariant.
+    state_.checkpoint_stack_offset = (int)state_.prompt_checkpoints.size();
+    state_.tool_correction_checkpoint_idx = -1;
+    state_.rs_checkpoint_saved_this_turn = false;
+    state_.interrupted_checkpoint_idx = -1;
+    state_.has_tool_correction_checkpoint = false;
+  }
+
   // Signal the viewer that generation is complete so it can render
   // remaining raw tails (no arbitrary timeout needed).  Skipped on the
   // 90% force-end: the mid-turn checkpoint must be totally transparent
