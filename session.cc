@@ -2078,6 +2078,15 @@ bool ChatSession::handle_reincarnate_completion() {
 
   diag("Clearing context and starting reincarnated session...", "\033[35m");
   clear_context();
+  // Reset checkpoint tracking before the early-return paths (context
+  // limit, feed failure): clear_context() wiped the stack and the
+  // checkpoint list, so the bookkeeping must already claim no live
+  // entries.  The success path's push below starts the new session's
+  // single entry at live slot 0.
+  state_.checkpoint_stack_offset = 0;
+  state_.tool_correction_checkpoint_idx = -1;
+  state_.interrupted_checkpoint_idx = -1;
+  state_.rs_checkpoint_saved_this_turn = false;
   flush_history(".lim_history");
   int new_log_index = bump_session();
   announce_new_session(new_log_index);
@@ -2118,12 +2127,6 @@ bool ChatSession::handle_reincarnate_completion() {
   state_.prompt_checkpoints.push_back({n_past_, follow_prompt});
   // Save recurrent state for instant undo on hybrid models.
   llama_memory_rs_checkpoint_save(llama_get_memory(ctx_), 0);
-
-  // Reset checkpoint tracking after context clear + new checkpoint.
-  state_.checkpoint_stack_offset = 0;
-  state_.tool_correction_checkpoint_idx = -1;
-  state_.interrupted_checkpoint_idx = -1;
-  state_.rs_checkpoint_saved_this_turn = false;
 
   state_.auto_continue = true;
   state_.reincarnate_first_turn = true;
