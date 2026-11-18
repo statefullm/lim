@@ -140,17 +140,14 @@ static long g_web_timeout_seconds = []() -> long {
   return 600;
 }();
 
+// LIM_BRAVE_API_KEY is read once and intentionally left in the environment
+// (like GH_TOKEN): the dedicated $LIM_AI_USER can already read it from its own
+// files, so there is no isolation to enforce, and the key only raises the
+// web-search quota.
 static string g_brave_api_key = []() -> string {
   const char* env = getenv("LIM_BRAVE_API_KEY");
   return (env && env[0]) ? string(env) : "";
 }();
-
-// Remove the Brave API key from the environment so exec_shell commands
-// cannot exfiltrate it (e.g. via prompt injection). GH_TOKEN stays in the
-// environment: the model needs it for `gh` CLI and authenticated git.
-static struct TokenUnset { TokenUnset() {
-  unsetenv("LIM_BRAVE_API_KEY");
-} } g_tokenUnset;
 
 // Session web-content budget: LIM_CTX * LIM_WEB_CONTEXT_FRACTION * 4 bytes/token.
 static size_t compute_session_max_chars() {
