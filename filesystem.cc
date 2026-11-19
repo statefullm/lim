@@ -74,6 +74,21 @@ static constexpr int HDR_CWD           = 4;
 // cwd is last and its value runs to the end of the line (absolute paths may
 // contain spaces); it is absent in save files written before it existed.
 
+// The largest token count a save file may name: the context window (the
+// KV-cache capacity a restore decodes the saved tokens into). A save naming
+// more tokens than the context can hold can never be restored, so reject it --
+// this also bounds the token/checkpoint allocation on load so a crafted header
+// cannot force a multi-terabyte resize/reserve (bad_alloc).  Reads LIM_CTX
+// like main.cc, falling back to the default.
+static size_t max_save_tokens() {
+  long n_ctx = LIM_DEFAULT_CTX;
+  if (const char* env = getenv("LIM_CTX")) {
+    long v = atol(env);
+    if (v > 0) n_ctx = v;
+  }
+  return static_cast<size_t>(n_ctx);
+}
+
 // Parse a V3 header line. Returns false if format is invalid.
 // On success, fills *out_n_tokens and optionally *out_n_checkpoints,
 // *out_session, and *out_cwd.
@@ -149,9 +164,19 @@ bool read_token_save(const string& save_path, vector<llama_token>& tokens) {
   if (!read_header_line(fp, header_str)) { fclose(fp); return false; }
 
   size_t num_tokens = 0;
-  if (!parse_v3_header(header_str, &num_tokens)) { fclose(fp); return false; }
+  bool parsed;
+  try {
+    parsed = parse_v3_header(header_str, &num_tokens);
+  } catch (...) {
+    parsed = false;  // Malformed numeric field -- treat as invalid format.
+  }
+  // A save naming more tokens than the context can hold is corrupt/crafted:
+  // reject it (it could never restore) before the resize below.
+  if (!parsed || num_tokens > max_save_tokens()) { fclose(fp); return false; }
 
-  tokens.resize(num_tokens);
+  try {
+    tokens.resize(num_tokens);
+  } catch (...) { tokens.clear(); fclose(fp); return false; }
   if (num_tokens > 0) {
     // The cursor sits right after the header line: the tokens follow it.
     size_t n_read = fread(tokens.data(), sizeof(llama_token), num_tokens, fp);
@@ -244,6 +269,10 @@ bool read_save_file(const string& save_path, SaveFile& sf) {
     parsed = false;  // Malformed numeric field -- treat as invalid format.
   }
   if (!parsed) { fclose(fp); return false; }
+  // A save naming more tokens (or checkpoints) than the context can hold is
+  // corrupt/crafted: reject it before the resize/reserve below (which would
+  // otherwise throw bad_alloc on a crafted count).
+  if (num_tokens > max_save_tokens() || num_checkpoints > max_save_tokens()) { fclose(fp); return false; }
 
   // git_sha is the first header field (parse_v3_header only validates the
   // magic); absent or empty for saves written without it.
@@ -257,7 +286,9 @@ bool read_save_file(const string& save_path, SaveFile& sf) {
   sf.cwd = std::move(cwd);
 
   // The cursor sits right after the header line: the token block follows.
-  sf.tokens.resize(num_tokens);
+  try {
+    sf.tokens.resize(num_tokens);
+  } catch (...) { fclose(fp); sf.tokens.clear(); return false; }
   if (num_tokens > 0 &&
       fread(sf.tokens.data(), sizeof(llama_token), num_tokens, fp) != num_tokens) {
     fclose(fp);
@@ -266,7 +297,9 @@ bool read_save_file(const string& save_path, SaveFile& sf) {
   }
 
   // Checkpoint entries: <n_past as int32_le><prompt_len as uint16_le><prompt_bytes>
-  sf.checkpoints.reserve(num_checkpoints);
+  try {
+    sf.checkpoints.reserve(num_checkpoints);
+  } catch (...) { fclose(fp); sf.checkpoints.clear(); return false; }
   for (size_t i = 0; i < num_checkpoints; i++) {
     int32_t pos32;
     uint16_t plen;
