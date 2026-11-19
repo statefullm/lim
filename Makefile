@@ -89,8 +89,11 @@ $(LIM_LLAMA_BUILD_DIR):
 	mkdir -p $@
 
 ifeq ($(IN_TREE_BUILD),1)
-# In-tree: auto-build llama.cpp from the subrepo (LIM_LLAMA_BUILD_DIR is ./llama/build)
-$(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so: $(LLAMA_DIR)/CMakeLists.txt | $(LIM_LLAMA_BUILD_DIR)
+# In-tree: auto-build llama.cpp from the subrepo (LIM_LLAMA_BUILD_DIR is ./llama/build).
+# One recipe builds both libs, so it is tracked by a single stamp file.
+LLAMA_BUILD_STAMP := $(LIM_LLAMA_BUILD_DIR)/.lim-llama-built
+
+$(LLAMA_BUILD_STAMP): $(LLAMA_DIR)/CMakeLists.txt | $(LIM_LLAMA_BUILD_DIR)
 	@if [ -z "$(CUDA_ARCH_FLAGS)" ]; then echo "Error: No GPU detected and CUDA_ARCH_FLAGS not set. Set it manually or build with GGML_CUDA=off for CPU-only." >&2; exit 1; fi
 	@echo "[llama.cpp] Configuring with CUDA architectures: $(CUDA_ARCH_FLAGS)"
 	cd $(LLAMA_DIR) && cmake -B $(abspath $(LIM_LLAMA_BUILD_DIR)) \
@@ -100,8 +103,10 @@ $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-commo
 		$(LIM_LLAMA_CMAKE_FLAGS)
 	@echo "[llama.cpp] Building..."
 	cd $(LLAMA_DIR) && cmake --build $(abspath $(LIM_LLAMA_BUILD_DIR)) --target llama --target llama-common
+	@test -f $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so && test -f $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so
+	@touch $@
 
-$(TARGET): $(FILES:=.o) | $(LIM_LLAMA_BUILD_DIR)/bin/libllama.so $(LIM_LLAMA_BUILD_DIR)/bin/libllama-common.so
+$(TARGET): $(FILES:=.o) $(LLAMA_BUILD_STAMP)
 	$(CXX) $(CXXFLAGS) $(FILES:=.o) -o $(TARGET) $(LDFLAGS)
 else
 # Use pre-built llama.cpp from external directory
