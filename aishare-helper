@@ -199,7 +199,6 @@ case "$op" in
         for sp_d in /proc/[0-9]*; do
             sp_p=${sp_d#/proc/}
             [ "$(stat -c %U "$sp_d" 2>/dev/null)" = "$GROUP" ] || continue
-            [ "$(cat "$sp_d/comm" 2>/dev/null)" = "lim" ] && continue
             sp_line=$(cat "$sp_d/stat" 2>/dev/null) || continue
             sp_state=${sp_line##*) }
             [ "${sp_state%% *}" = Z ] && continue   # zombie: nothing to stop
