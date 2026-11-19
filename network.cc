@@ -609,45 +609,60 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
   return "[Docling Error " + to_string(http_code) + "]";
 }
 
-// --- Recursive visible-text extraction from an XML node tree ---
+// --- Iterative visible-text extraction from an XML node tree ---
 // Skips script, style, noscript, template, svg, canvas, and hidden elements.
-static void extract_visible_text(xmlNodePtr node, string& out) {
-  if (!node) return;
+// Pre-order DFS with an explicit stack (bounded by node count, not nesting
+// depth) so a malicious page with deeply nested elements cannot overflow the
+// C stack -- the input is untrusted web content.
+static void extract_visible_text(xmlNodePtr root, string& out) {
+  if (!root) return;
 
-  if (node->type == XML_ELEMENT_NODE && node->name) {
+  // True if the element's whole subtree should be skipped (no text taken from
+  // it or its descendants), mirroring the old early returns.
+  auto should_skip = [](xmlNodePtr node) -> bool {
+    if (node->type != XML_ELEMENT_NODE || !node->name) return false;
     string tag((const char*)node->name);
     if (tag == "script" || tag == "style" || tag == "noscript" ||
         tag == "template" || tag == "svg" || tag == "canvas" ||
         tag == "iframe" || tag == "object") {
-      return;
+      return true;
     }
 
     // Check for hidden attribute
     xmlChar* hidden_attr = xmlGetProp(node, (const xmlChar*)"hidden");
-    if (hidden_attr) { xmlFree(hidden_attr); return; }
+    if (hidden_attr) { xmlFree(hidden_attr); return true; }
 
     // Check for display:none / visibility:hidden in style attribute
     xmlChar* style_attr = xmlGetProp(node, (const xmlChar*)"style");
     if (style_attr) {
       string s((const char*)style_attr);
       transform(s.begin(), s.end(), s.begin(), [](unsigned char c){ return std::tolower(c); });
-      if (s.find("display:none") != string::npos ||
-          s.find("display: none") != string::npos ||
-          s.find("visibility:hidden") != string::npos ||
-          s.find("visibility: hidden") != string::npos) {
-        xmlFree(style_attr);
-        return;
-      }
+      bool hidden = s.find("display:none") != string::npos ||
+                    s.find("display: none") != string::npos ||
+                    s.find("visibility:hidden") != string::npos ||
+                    s.find("visibility: hidden") != string::npos;
       xmlFree(style_attr);
+      return hidden;
     }
-  }
+    return false;
+  };
 
-  if (node->type == XML_TEXT_NODE || node->type == XML_CDATA_SECTION_NODE) {
-    if (node->content) out += (const char*)node->content;
-  }
+  vector<xmlNodePtr> stack;
+  stack.push_back(root);
+  while (!stack.empty()) {
+    xmlNodePtr node = stack.back();
+    stack.pop_back();
 
-  for (xmlNodePtr child = node->children; child; child = child->next) {
-    extract_visible_text(child, out);
+    if (should_skip(node)) continue;  // drop this element and its subtree
+
+    if (node->type == XML_TEXT_NODE || node->type == XML_CDATA_SECTION_NODE) {
+      if (node->content) out += (const char*)node->content;
+    }
+
+    // Push children in reverse (walk last -> first) so the first child sits on
+    // top and is popped first, preserving document order.
+    for (xmlNodePtr child = node->last; child; child = child->prev)
+      stack.push_back(child);
   }
 }
 
@@ -711,28 +726,33 @@ static pair<string, string> extract_page_metadata(xmlDocPtr doc) {
 static xmlNodePtr find_body_element(xmlDocPtr doc) {
   if (!doc || !doc->children) return nullptr;
 
-  function<xmlNodePtr(xmlNodePtr)> dfs = [&](xmlNodePtr node) -> xmlNodePtr {
-    if (!node) return nullptr;
-    if (node->type == XML_ELEMENT_NODE && node->name) {
-      string tag((const char*)node->name);
-      if (tag == "body") return node;
-    }
-    for (xmlNodePtr child = node->children; child; child = child->next) {
-      xmlNodePtr found = dfs(child);
-      if (found) return found;
-    }
-    return nullptr;
-  };
-
-  // Walk EVERY top-level element child, not just doc->children: a
+  // Collect EVERY top-level element child, not just doc->children: a
   // <!DOCTYPE html> declaration surfaces as an XML_DTD_NODE that precedes
   // the real <html> root, and searching only the first child would miss
   // the rest of the document.
-  xmlNodePtr found = nullptr;
-  for (xmlNodePtr top = doc->children; top && !found; top = top->next) {
-    if (top->type == XML_ELEMENT_NODE) found = dfs(top);
+  vector<xmlNodePtr> tops;
+  for (xmlNodePtr top = doc->children; top; top = top->next)
+    if (top->type == XML_ELEMENT_NODE) tops.push_back(top);
+
+  // Iterative pre-order DFS (explicit stack, bounded by node count, not
+  // nesting depth): a deeply nested page cannot overflow the C stack.
+  // Seed with the top-level elements in reverse so the first is popped first
+  // and its subtree fully explored before the next, matching the original
+  // per-top DFS order.
+  vector<xmlNodePtr> stack;
+  for (auto it = tops.rbegin(); it != tops.rend(); ++it) stack.push_back(*it);
+  while (!stack.empty()) {
+    xmlNodePtr node = stack.back();
+    stack.pop_back();
+    if (node->type == XML_ELEMENT_NODE && node->name &&
+        string((const char*)node->name) == "body") {
+      return node;
+    }
+    // Push children in reverse (walk last -> first) so the first child pops first.
+    for (xmlNodePtr child = node->last; child; child = child->prev)
+      stack.push_back(child);
   }
-  return found;
+  return nullptr;
 }
 
 // --- Return API endpoint hints for known SPA sites ---
