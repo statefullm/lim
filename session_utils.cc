@@ -6,6 +6,8 @@
 #include "network.h"  // For LIM_LOG_DIR
 #include "model.h"    // handle_llama_decode_error (MTP mirror hook)
 #include <cstdio>
+#include <cstdlib>   // realpath
+#include <limits.h>  // PATH_MAX
 #include <fcntl.h>
 #include <fstream>
 #include <unistd.h>
@@ -53,6 +55,20 @@ std::string html_escape_for_browser(const std::string& s) {
   }
   return out;
 }
+// Canonical home directory of $LIM_AI_USER (set at startup in main.cc from
+// the account's passwd entry). lim's working directory must stay within it.
+std::string g_home_dir;
+
+// See session_utils.h.
+bool path_within_home(const std::string& path) {
+  if (g_home_dir.empty()) return false;  // fail closed before startup sets it
+  char home_canon[PATH_MAX], target_canon[PATH_MAX];
+  if (!realpath(g_home_dir.c_str(), home_canon)) return false;
+  if (!realpath(path.c_str(), target_canon)) return false;
+  const string h(home_canon), t(target_canon);
+  return t == h || t.rfind(h + "/", 0) == 0;
+}
+
 int next_free_log_index(int from) {
   if (from < 1) from = 1;
   for (int idx = from; ; idx++) {

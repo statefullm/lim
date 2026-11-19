@@ -150,6 +150,22 @@ int main(int argc, char ** argv) {
     return 1;
   }
 
+  // Canonical home of $LIM_AI_USER, taken from the same passwd entry the check
+  // above trusted for the username. This is the root lim's working directory
+  // must stay within: the launch dir is verified here, and every /cd and /load
+  // chdir enforces the same bound (path_within_home).
+  {
+    char home_canon[PATH_MAX];
+    g_home_dir = realpath(pw->pw_dir, home_canon) ? home_canon : pw->pw_dir;
+    char launch_cwd[PATH_MAX];
+    string cwd = getcwd(launch_cwd, sizeof(launch_cwd)) ? launch_cwd : string();
+    if (!path_within_home(cwd)) {
+      cerr << "Error: launch directory " << cwd << " is outside " << g_home_dir
+           << ". lim must start from within the " << required_user << " home." << endl;
+      return 1;
+    }
+  }
+
   // HOME is initialized at global scope via g_homeInit
 
   umask(0002);

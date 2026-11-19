@@ -428,6 +428,7 @@ The practical consequences:
 - **File write access** is limited to directories where the `$LIM_AI_USER` group has write permission (read access is broader -- the LLM can read anything the user can). Use `aishare` to grant write access to new project directories and files. Files created by the LLM are owned by `$LIM_AI_USER:$LIM_AI_USER` with group read/write permissions (via `umask 0002`), so your personal user can access them directly since it is a member of the `$LIM_AI_USER` group.
 - **Shell commands** executed via the `exec_shell` tool run as user `$LIM_AI_USER`. They inherit that user's PATH and environment, and run in the directory where lim was launched (a `cd` inside a command is local to that command).
 - **Git integration**: The AI can clone public repos and commit locally, but should not be given the authentication needed to push changes back to remote repositories. Shared repos' gitdirs are moved into a pinned, protected store ([SECURITY.md](SECURITY.md)) so a planted hook or a rewritten local config cannot execute as you on your next commit.
+- **Working directory** is confined to the `$LIM_AI_USER` home: lim refuses to start from, or to `/cd` or `/load` into, a directory outside it.
 
 [SECURITY.md](SECURITY.md) documents the threat model and how each defense works -- the gitdir store, the git wrapper, the `aishare` suspension, and the sudo helper.
 

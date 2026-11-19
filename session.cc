@@ -2331,6 +2331,15 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
   // in the KV, so the process cwd must go back with it.
   string orig_cwd;
   if (!saved_cwd.empty()) {
+    // A save file is a shared, semi-trusted artifact (aishare). Do not let the
+    // cwd it records steer the process outside the $LIM_AI_USER home: that
+    // would redirect lim's log/.cache writes and seed the operator's >>>
+    // history from an untrusted directory.
+    if (!path_within_home(saved_cwd)) {
+      diag("Restore failed: the save's working directory " + saved_cwd +
+           " is not within " + g_home_dir + ". Restore aborted.", "\033[1;31m");
+      return RestoreStatus::Failed;
+    }
     char cur_cwd_buf[PATH_MAX];
     string cur_cwd = getcwd(cur_cwd_buf, sizeof(cur_cwd_buf)) ? cur_cwd_buf : string();
     if (cur_cwd != saved_cwd && chdir(saved_cwd.c_str()) != 0) {
@@ -2343,6 +2352,13 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
       diag("Working directory restored: " + saved_cwd, "\033[35m");
     }
   } else if (!g_launch_dir.empty()) {
+    // Uniformly gate the launch-dir fallback too (a no-op in practice:
+    // g_launch_dir is lim's own startup cwd, always under the home).
+    if (!path_within_home(g_launch_dir)) {
+      diag("Restore failed: the launch directory " + g_launch_dir +
+           " is not within " + g_home_dir + ". Restore aborted.", "\033[1;31m");
+      return RestoreStatus::Failed;
+    }
     char cur_cwd_buf[PATH_MAX];
     string cur_cwd = getcwd(cur_cwd_buf, sizeof(cur_cwd_buf)) ? cur_cwd_buf : string();
     if (cur_cwd != g_launch_dir && chdir(g_launch_dir.c_str()) != 0) {
@@ -2919,6 +2935,13 @@ bool ChatSession::run() {
         diag("/cd failed: " + cd_path_ + " is not an accessible directory", "\033[31m");
         continue;
       }
+      // Confinement: lim's working directory stays within the $LIM_AI_USER
+      // home (checked at startup; enforced on every chdir).  Checked before
+      // the history flush so a refused /cd has no side effects.
+      if (!path_within_home(cd_path_)) {
+        diag("/cd failed: " + cd_path_ + " is outside " + g_home_dir, "\033[31m");
+        continue;
+      }
       // /quit part: persist the C entries to the current directory's
       // history file before the switch.
       flush_history(history_file);
@@ -3300,7 +3323,7 @@ bool ChatSession::run() {
       }
       stringstream reincarnate_buffer;
       reincarnate_buffer << "Use the write_file tool to write a new prompt to "
-                         << LIM_CONFIG_DIR << "/userprompt. Read the following instructions and compose an appropriate prompt, deferring further detailed thinking to the next session. Then write it and return without further comment. Do not resume your task. "
+                         << LIM_CONFIG_DIR << "/userprompt. Read the following instructions and compose an appropriate prompt, deferring further detailed thinking to the next session. Do not dither: write it and return without further comment. Spurious leading and trailing newlines in the handoff instructions are fine. Do not resume your task. "
                          << reincarnate_file.rdbuf();
       string reincarnate_text = reincarnate_buffer.str();
       reincarnate_file.close();

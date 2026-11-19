@@ -32,6 +32,20 @@ int next_free_log_index(int from);
 // Returns false if the chat log could not be opened.
 bool open_session_logs(int idx);
 
+// Canonical home directory of $LIM_AI_USER, set once at startup (main.cc)
+// from the account's passwd entry (getpwuid(getuid())->pw_dir). This is the
+// root lim's working directory must stay within: enforced at startup and on
+// every /cd and /load chdir.
+extern std::string g_home_dir;
+
+// Returns true iff 'path' canonicalizes (via realpath, so symlinks and
+// relative forms resolve) to g_home_dir or a subdirectory of it. Both sides
+// are canonicalized so a symlinked home, or a symlink under the home that
+// points outside it, cannot fool the check. Fails closed: a path that cannot
+// be canonicalized (missing dir, broken symlink), or an unset g_home_dir, is
+// rejected.
+bool path_within_home(const std::string& path);
+
 // Strip all occurrences of given tags from a string
 void strip_tags(std::string& str, const std::vector<std::string>& tags);
 
