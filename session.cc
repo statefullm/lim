@@ -3232,7 +3232,7 @@ bool ChatSession::run() {
 
     if (last_cmd_ == Command::RESET) {
       NetworkTools().reset_search();
-      int reset_status = system("reset");
+      int reset_status = system("/usr/bin/reset");
       if (reset_status == -1 ||
           (WIFEXITED(reset_status) && WEXITSTATUS(reset_status) != 0)) {
         diag("Terminal reset failed: 'reset' could not run or exited non-zero.", "\033[33m");
