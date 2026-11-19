@@ -1315,7 +1315,13 @@
                 // text -- the same way unescapeMth leaves raw tokens alone --
                 // instead of crashing the render loop mid-iteration.
                 if (!block) return _;
+                // tex: raw, for KaTeX input only.  srcHtml: the HTML-entity
+                // form of the candidate, used by every non-render fallback --
+                // a sentinel-unescaped < or > would be parsed as a real tag by
+                // the later innerHTML, so the fallback must emit entities (the
+                // way the main text path does), not raw characters.
                 var tex = unescapeMathTex(block.tex);
+                var srcHtml = htmlUnescapeSentinels(block.srcEsc);
                 if (!block.display) {
                     // Inline $...$ validation (LIM_INLINE_LATEX=1): the same
                     // byte sequence in prose is usually a shell/env reference,
@@ -1332,19 +1338,19 @@
                     // only a parse failure (or mode 0) leaves them literal.
                     // $ pairs in code regions never reach here (masked above
                     // by maskCodeRegions).  Fallback is the exact original
-                    // text (srcEsc is the untrimmed capture, unescaped).
-                    if (!LIM_INLINE_LATEX_ENABLED) return '$' + unescapeMathTex(block.srcEsc) + '$';
+                    // text (srcEsc is the untrimmed capture), HTML-escaped.
+                    if (!LIM_INLINE_LATEX_ENABLED) return '$' + srcHtml + '$';
                     var src = block.srcEsc;
                     if (/\s/.test(src.charAt(0)) || /\s/.test(src.charAt(src.length - 1))) {
-                        return '$' + unescapeMathTex(src) + '$';
+                        return '$' + srcHtml + '$';
                     }
-                    if (src.indexOf('`') !== -1) return '$' + unescapeMathTex(src) + '$';
+                    if (src.indexOf('`') !== -1) return '$' + srcHtml + '$';
                     if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
                         try {
                             return katex.renderToString(tex, { displayMode: false, throwOnError: true });
                         } catch(e) {}
                     }
-                    return '$' + unescapeMathTex(src) + '$';
+                    return '$' + srcHtml + '$';
                 }
                 // Display $$...$$: intentional block math -- render as before.
                 if (typeof katex !== 'undefined' && typeof katex.renderToString === 'function') {
@@ -1353,7 +1359,7 @@
                         if (!result.includes('katex-error')) return result;
                     } catch(e) {}
                 }
-                return '$$' + unescapeMathTex(block.srcEsc) + '$$';
+                return '$$' + srcHtml + '$$';
             });
 
             return { html: html, endParity: masked.endParity,
