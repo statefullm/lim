@@ -1,6 +1,4 @@
 #include "signals.h"
-#include "output.h"
-#include <iostream>
 #include <pthread.h>
 
 using namespace std;
@@ -15,9 +13,12 @@ volatile sig_atomic_t g_quit_requested = 0;   // SIGTERM: graceful quit with aut
 void sigint_handler(int sig) {
   stop_generation = 1;
   g_was_interrupted = 1;  // Track that we were interrupted (persists across loop iterations)
-  // Reset terminal color state
-  message("\033[0m\n");
-  cout.flush();
+  // Async-signal-safe: set flags only.  The terminal color reset that used to
+  // live here (message()/cout) is not async-signal-safe -- iostream re-entry
+  // from a signal handler can deadlock or corrupt state if another thread is
+  // already inside it -- so it is done on the main thread where the interrupt
+  // is handled (TokenGenerator::generate), which also owns the notice it
+  // precedes.
 }
 
 // SIGTERM: graceful quit -- stop any in-flight generation, then exit through

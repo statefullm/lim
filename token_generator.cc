@@ -188,6 +188,11 @@ TokenGenerator::Result TokenGenerator::generate() {
         g_was_interrupted = 0;
         break;
       }
+      // Reset terminal color state (moved out of the SIGINT handler: iostream
+      // is not async-signal-safe).  LLM text streams in default color, so this
+      // is a safety net against a stray color before the interrupt notice.
+      console("\033[0m");
+      consoleFlush();
       diag("Task Interrupted by User", "\033[31m");
       // Flush any pending think chunk before the interrupt notice so
       // the browser shows the thinking content first.
@@ -777,6 +782,11 @@ TokenGenerator::Result TokenGenerator::generate() {
       // session's recovery loop would feed "continue" and auto-continue
       // against the user's Ctrl+C.  g_was_interrupted is consumed here.
       if (stop_generation) {
+        // Reset terminal color state (moved out of the SIGINT handler:
+        // iostream is not async-signal-safe).  Safety net against a stray
+        // color before the interrupt notice below.
+        console("\033[0m");
+        consoleFlush();
         diag("Task Interrupted by User", "\033[31m");
         // Flush any pending think chunk before the interrupt notice so
         // the browser shows the thinking content first.
