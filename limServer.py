@@ -19,6 +19,13 @@ FIFO_PATH = os.path.join(LIM_CONFIG_DIR, "lim.fifo")
 # Configurable port via environment variable (default: 8765)
 LIM_PORT = int(os.environ.get('LIM_PORT', '8765'))
 
+# Viewer inline-LaTeX flag, normalized once to a literal '0'/'1': disabled only
+# when LIM_INLINE_LATEX is exactly '0', enabled otherwise (including unset).
+# One value shared by serve_viewer (HTML) and serve_viewer_js (JS) so the two
+# agree, and safe to splice into viewer.js (it can never be anything but
+# '0' or '1', so no script can be injected through it).
+LIM_INLINE_LATEX = '0' if os.environ.get('LIM_INLINE_LATEX', '1') == '0' else '1'
+
 # Random token: delivered in the page URL's fragment (#token=...), which the
 # browser never sends to the server, and required for the /ws upgrade.  It is
 # written to LIM_CONFIG_DIR/lim.viewer_url (mode 0640, readable only by lim
@@ -220,7 +227,7 @@ async def serve_viewer(request):
         content = f.read()
 
     # When LaTeX is disabled, remove auto-render so it doesn't mangle $HOME etc.
-    if os.environ.get('LIM_INLINE_LATEX', '1') == '0':
+    if LIM_INLINE_LATEX == '0':
         content = content.replace(
             '    <script defer src="libs/auto-render.min.js"></script>\n',
             '',
@@ -250,11 +257,10 @@ async def serve_viewer_js(request):
     with open(viewer_js_path, 'r') as f:
         content = f.read()
 
-    # Override the default LIM_INLINE_LATEX_ENABLED value based on the env var.
-    latex_val = os.environ.get('LIM_INLINE_LATEX', '1')
+    # Override the default LIM_INLINE_LATEX_ENABLED value (module-level '0'/'1').
     content = content.replace(
         "var LIM_INLINE_LATEX_ENABLED = 1;",
-        "var LIM_INLINE_LATEX_ENABLED = " + latex_val + ";",
+        "var LIM_INLINE_LATEX_ENABLED = " + LIM_INLINE_LATEX + ";",
     )
 
     return web.Response(
