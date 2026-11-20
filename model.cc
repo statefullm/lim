@@ -523,12 +523,24 @@ vector<llama_token> build_system_prompt_tokens(llama_context *ctx, const string 
 }
 
 vector<llama_token> build_user_assistant_turn(llama_context *ctx, const string &user_content) {
-  string msg = build_user_assistant_turn_text(user_content);
-  return common_tokenize(ctx, msg, false, true);
+  // Typed operator input is content, not model output: escape its reserved
+  // tokens and tokenize the content with parse_special=false (the safe path)
+  // so reserved tokens the operator typed (turn markers, tool-XML) are not
+  // interpreted structurally -- the same treatment tool results receive.
+  string escaped = user_content;
+  escape_parameter_tags(escaped);
+  escape_turn_tags(escaped);
+  return build_user_turn_safe(ctx, escaped, false);
 }
 
 string build_user_assistant_turn_text(const string &user_content) {
-  string msg = g_model_tokens.user_turn_start.text + user_content;
+  // Text form of build_user_assistant_turn: escape the content identically so
+  // benchmark modes 1/2 (which re-tokenize this text with parse_special=true)
+  // stay in lockstep with the mode-0 token stream.
+  string escaped = user_content;
+  escape_parameter_tags(escaped);
+  escape_turn_tags(escaped);
+  string msg = g_model_tokens.user_turn_start.text + escaped;
   if (g_model_tokens.has_explicit_turn_end())
     msg += g_model_tokens.turn_end.text;
   msg += g_model_tokens.assistant_turn_start.text;
