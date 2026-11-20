@@ -1075,6 +1075,26 @@ private:
   // the tracker, and reset the sampler so the user's turn starts fresh.
   void roll_back_canary(int restore_point);
 
+  // Regenerate the browser transcript from the restored token sequence (called
+  // from perform_restore's common tail): re-segment the detokenized
+  // conversation and re-emit it so the browser view matches the restored
+  // session.  A pure function of the tracker -- no model decode, no tool
+  // re-execution (the tool output is read straight from the tokens).  No-op
+  // when browser output is disabled or the session holds only the system
+  // prompt.
+  void replay_browser_transcript();
+  // Re-emit one assistant response, routing thinking blocks (think_start..
+  // think_end) to the think stream and the rest to the LLM-text stream --
+  // the same routing the live generator uses, so the restored view matches.
+  void replay_assistant_content(const string& text);
+  // Re-emit a user/tool turn: a "[Tool Result]"-prefixed turn becomes a green
+  // result box, anything else a blue user-input box.  The result box shows a
+  // concise summary rebuilt from the tool call in prev_assistant (the
+  // preceding response) rather than the full token content: the live display
+  // string is not persisted in saves, and the raw content would flood the
+  // transcript with, e.g., the entire read_files output.
+  void replay_user_or_tool(const string& content, const string& prev_assistant);
+
   // --- Member variables ---
   llama_context* ctx_;
   const llama_vocab* vocab_;
@@ -2248,6 +2268,193 @@ void ChatSession::roll_back_canary(int restore_point) {
   llama_sampler_reset(smpl_);
 }
 
+// --- replay_browser_transcript: regenerate the browser view on restore ---
+// The browser transcript is a pure function of the conversation held in the
+// tracker: user prompts, the assistant's generated text (thinking + prose +
+// tool calls), and the tool results fed back.  After a restore the model is
+// not re-run and tools are not re-executed, so the only faithful way to
+// rebuild the browser view is to re-segment the detokenized tokens and re-emit
+// them.  The token layout (build_user_turn_safe / build_tool_result_turn) is a
+// strict repetition of
+//   user_turn_start C (turn_end assistant_turn_start) A
+// where C is a user prompt or a "[Tool Result]" and A is the assistant's
+// response ending on the EOG (== turn_end).  No-op when browser output is off
+// or the session holds only the system prompt.
+void ChatSession::replay_browser_transcript() {
+  if (!should_output_to_browser() || pipe_fd < 0) return;
+  const vector<llama_token>& all = state_.all_context_tokens;
+  if (all.empty()) return;
+
+  const ModelTokens& mt = g_model_tokens;
+  const string us = mt.user_turn_start.text;
+  const string as = mt.assistant_turn_start.text;
+  if (us.empty() || as.empty()) return;  // template without explicit markers
+  const string te = mt.turn_end.text;
+  const string delim = te + as;          // turn_end + assistant prefill
+  // The generated turn ends on the bare EOG token (e.g. ""), whose
+  // piece carries NO trailing newline -- unlike turn_end.text, which includes
+  // the template's separator between turns.  Match the token's own piece to
+  // trim each response (the same value the canonical text appends on
+  // ended_on_eog); matching turn_end.text would miss the newline and leak the
+  // marker into the browser.
+  const string eog_piece = common_token_to_piece(vocab_, llama_vocab_eot(vocab_), true);
+
+  // Detokenize the full context (system prompt included) and locate the
+  // conversation at the first user_turn_start -- not by slicing off the
+  // system prompt.  After a restore the tracker holds the ORIGINAL system
+  // prompt (baked into the save: cwd/timestamp/localprompt from save time),
+  // not the fresh system_tokens_ rebuilt at /clear/startup, and the two
+  // lengths can differ (a cross-directory restore, a timestamp change, or a
+  // cwd-specific localprompt), so a size-based slice would mis-frame the
+  // first turn.  The system turn uses system_turn_start, not user_turn_start,
+  // so the first user_turn_start in the text is the first user turn; the
+  // system prompt before it is simply skipped by the find() below.  A
+  // system-prompt-only session has no user_turn_start, so the walk emits
+  // nothing.
+  string text = detokenize_tracker_to_text(all);
+
+  // Walk the conversation block by block.  prev_assistant holds the previous
+  // block's response so a tool-result box can be summarized from the tool
+  // call that produced it (that call lives in the response right before the
+  // result turn).
+  string prev_assistant;
+  size_t pos = 0;
+  while (pos < text.length()) {
+    size_t u = text.find(us, pos);
+    if (u == string::npos) break;
+    size_t next_u = text.find(us, u + us.length());
+    size_t block_end = (next_u == string::npos) ? text.length() : next_u;
+    size_t c_start = u + us.length();
+    size_t di = text.find(delim, c_start);
+    if (di != string::npos && di < block_end) {
+      string C = text.substr(c_start, di - c_start);
+      size_t a_start = di + delim.length();
+      string A = text.substr(a_start, block_end - a_start);
+      // Trim the trailing EOG (the bare generated token) from the response.
+      if (!eog_piece.empty() && A.length() >= eog_piece.length() &&
+          A.compare(A.length() - eog_piece.length(), eog_piece.length(), eog_piece) == 0) {
+        A.erase(A.length() - eog_piece.length());
+      }
+      replay_user_or_tool(C, prev_assistant);
+      // Stream the response with the executed tool call removed: the live view
+      // skips the call and shows the green result box instead, so streaming it
+      // would leak raw markup.  A call ends the turn only as the final content,
+      // so truncate at the last FUNC_START iff that call runs to the very end of
+      // A (a call merely discussed in the prose/thinking does not, and stays).
+      string A_display = A;
+      {
+        size_t fc = A_display.rfind(FUNC_START);
+        size_t fe = (fc != string::npos) ? A_display.find(FUNC_END, fc) : string::npos;
+        if (fc != string::npos && fe != string::npos &&
+            fe + strlen(FUNC_END) == A_display.length()) {
+          A_display.erase(fc);
+        }
+      }
+      if (!A_display.empty()) replay_assistant_content(A_display);
+      prev_assistant = A;
+    } else {
+      // No assistant prefill in this block: a trailing user/tool prompt with
+      // no response yet.
+      replay_user_or_tool(text.substr(c_start, block_end - c_start), prev_assistant);
+    }
+    pos = block_end;
+  }
+}
+
+void ChatSession::replay_assistant_content(const string& text) {
+  const ModelTokens& mt = g_model_tokens;
+  if (mt.think_start.empty() || mt.think_end.empty()) {
+    stream(text);  // no thinking blocks: the whole response is LLM text
+    return;
+  }
+  size_t pos = 0;
+  while (pos < text.length()) {
+    size_t ts = text.find(mt.think_start, pos);
+    if (ts == string::npos) {
+      stream(text.substr(pos));
+      break;
+    }
+    if (ts > pos) stream(text.substr(pos, ts - pos));  // prose before the think
+    size_t te = text.find(mt.think_end, ts + mt.think_start.length());
+    string think;
+    if (te == string::npos) {
+      think = text.substr(ts + mt.think_start.length());  // unclosed think
+      _strip_think_and_tool_tags(think);  // match the live think stream
+      stream_think(think);
+      break;
+    }
+    think = text.substr(ts + mt.think_start.length(),
+                        te - (ts + mt.think_start.length()));
+    _strip_think_and_tool_tags(think);  // match the live think stream
+    stream_think(think);
+    pos = te + mt.think_end.length();
+  }
+}
+
+// Extract a concise summary from the tool call embedded in an assistant
+// response (detokenized text): the tool name, and -- in first_param -- a
+// compact "key=value" for its first parameter (value capped so a large param
+// can't bloat the box).  Searches from the LAST <function=...> so a tool call
+// merely discussed inside a thinking block (which precedes the real one in
+// the prose) is not picked up.  Returns "" if no tool call is present.
+static string summarize_tool_call(const string& response, string& first_param) {
+  first_param.clear();
+  size_t f = response.rfind(FUNC_START);
+  if (f == string::npos) return "";
+  size_t call_end = response.find(FUNC_END, f);
+  if (call_end == string::npos) call_end = response.length();
+  size_t name_end = response.find('>', f);
+  if (name_end == string::npos || name_end > call_end) return "";
+  string name = trim_chars(
+      response.substr(f + strlen(FUNC_START), name_end - (f + strlen(FUNC_START))),
+      " \t\r\n");
+  size_t p = response.find(PARAM_START, f);
+  if (p != string::npos && p < call_end) {
+    size_t key_end = response.find('>', p);
+    size_t val_end = (key_end != string::npos) ? response.find(PARAM_END, key_end) : string::npos;
+    if (key_end != string::npos && val_end != string::npos && val_end <= call_end) {
+      string key = trim_chars(
+          response.substr(p + strlen(PARAM_START), key_end - (p + strlen(PARAM_START))), " \t\r\n");
+      string val = trim_chars(response.substr(key_end + 1, val_end - (key_end + 1)), " \t\r\n");
+      const size_t CAP = 80;
+      if (val.length() > CAP) val = val.substr(0, CAP) + "...";
+      first_param = key + "=" + val;
+    }
+  }
+  return name;
+}
+
+void ChatSession::replay_user_or_tool(const string& content, const string& prev_assistant) {
+  static const string TOOL_PREFIX = "[Tool Result]\n";
+  if (content.compare(0, TOOL_PREFIX.length(), TOOL_PREFIX) == 0) {
+    // The tool output (the feedback that was fed to the model) is read
+    // straight from the tokens -- not re-executed.  Show a concise summary
+    // rebuilt from the tool call in the preceding response rather than the
+    // full content: the live box shows the short display summary, which is
+    // not persisted in saves, so the full content (e.g. an entire file from
+    // read_files) would flood the restored transcript.
+    string result = content.substr(TOOL_PREFIX.length());
+    string first_param;
+    string name = summarize_tool_call(prev_assistant, first_param);
+    string box;
+    if (name == "exec_shell") {
+      // exec_shell's live box IS the command output, and the result read from
+      // the tokens is exactly what the model saw: exec_shell already bounded
+      // it to exec_truncation_limit (LIM_EXEC_TRUNCATION) at run time, so no
+      // re-truncation is needed here -- showing it verbatim matches the live box.
+      box = result;
+    } else {
+      box = name.empty() ? string("[Tool Result]") : name;
+      if (!first_param.empty()) box += "  " + first_param;
+    }
+    string result_html = "\n\n<div class='tool-result'><pre><code>" +
+                         html_escape(box) + "</code></pre></div>\n\n";
+    stream_html(result_html);
+  } else {
+    stream_user_input_html(content);
+  }
+}
+
 // --- perform_restore: consolidated /load restore ---
 // Fast path (V1 cache) with the pre-turn canary and bounded retry, slow
 // re-decode fallback, and the common tail (git check, sampler reset, history,
@@ -2756,6 +2963,13 @@ RestoreStatus ChatSession::perform_restore(const string& rpath_in) {
   // the save), while one restored below the line still gets the checkpoint
   // when a later turn crosses.
   last_context_ = n_past_;
+
+  // Rebuild the browser transcript from the restored tokens (no model decode,
+  // no tool re-execution).  Covers both the fast (V1 cache) and slow
+  // (re-decode) paths, and a partial restore shows exactly the restored
+  // prefix.  Runs before the git check so the mismatch note (injected as a
+  // user turn) does not appear in the transcript as a fake user prompt.
+  replay_browser_transcript();
 
   // Check git HEAD against the saved session (git_sha came with the
   // single header read above; empty for saves written without it).
