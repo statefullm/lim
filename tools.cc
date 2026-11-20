@@ -58,7 +58,19 @@ static bool path_value_malformed(const string& s) {
 // end-of-file terminator, not an artifact; two or more still means a
 // stray newline before the closing tag (or a blank line at EOF).
 enum class EdgeHandling { Retry, Trimmed, Passed };
-static string edge_newline_warning(const string& value, const char* param_name, EdgeHandling handling = EdgeHandling::Retry, size_t allowed_trailing = 0) {
+// Leading / trailing newline counts, shared by the edge-newline note and by
+// the edit_file caller, which compares old's and new's edge counts.
+static size_t count_leading_newlines(const string& s) {
+  size_t n = 0;
+  while (n < s.size() && s[n] == '\n') ++n;
+  return n;
+}
+static size_t count_trailing_newlines(const string& s) {
+  size_t n = 0;
+  while (n < s.size() && s[s.size() - 1 - n] == '\n') ++n;
+  return n;
+}
+static string edge_newline_warning(const string& value, const char* param_name, EdgeHandling handling = EdgeHandling::Retry, size_t allowed_trailing = 0, size_t allowed_leading = 0) {
   auto remedy = [&](const string& core, bool plural = false) {
     switch (handling) {
       case EdgeHandling::Retry:   return "Put " + core + " and retry.\n";
@@ -69,30 +81,34 @@ static string edge_newline_warning(const string& value, const char* param_name, 
   };
   string warning;
   bool past = handling != EdgeHandling::Retry;
-  bool leading_nl = value.size() > 1 && value.front() == '\n';
-  size_t trailing_nl = 0;
-  while (trailing_nl < value.size() && value[value.size() - 1 - trailing_nl] == '\n') ++trailing_nl;
-  if (leading_nl) {
-    string head = value.substr(1);
-    if (head.size() > 10) head = head.substr(0, 10) + "...";
-    string open_tag = string(PARAM_START) + param_name + ">";
-    string core = "the value on the same line as " + open_tag;
-    if (!warning.empty()) warning += "\n";
-    warning += "Your " + string(param_name) + " value " + (past ? "began" : "begins") + " with a leading newline: " + open_tag + " was on a separate line, so the newline " + (past ? "was" : "is") + " part of the value.\n";
-    warning += remedy(core);
-    warning += "Your call began with: \"" + open_tag + "\n" + head + "\"";
-  }
-  if (value.size() > 1 && trailing_nl > allowed_trailing) {
-    bool plural = trailing_nl > 1;
-    string tail = value.substr(0, value.size() - 1);
-    if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
-    string core = string(PARAM_END) + " immediately after the last character of the value";
+  size_t leading_nl = count_leading_newlines(value);
+  size_t trailing_nl = count_trailing_newlines(value);
+  // One note template for both edges; each block supplies only its own
+  // truncation and the call snippet that shows the offending edge bytes.
+  auto edge_note = [&](const char* pos_past, const char* pos_pres, const char* edge, size_t n, const string& tag, const string& core, const string& snippet) {
+    bool plural = n > 1;
     string verb = past ? (plural ? "were" : "was") : (plural ? "are" : "is");
     if (!warning.empty()) warning += "\n";
-    string count_word = plural ? to_string(trailing_nl) + " trailing newlines" : string("a trailing newline");
-    warning += "Your " + string(param_name) + " value " + (past ? "ended" : "ends") + " with " + count_word + ": " + string(PARAM_END) + " was on a separate line, so the newline" + (plural ? "s " : " ") + verb + " part of the value.\n";
+    warning += "Your " + string(param_name) + " value " + (past ? pos_past : pos_pres) + " with "
+               + (plural ? to_string(n) + " " + edge + " newlines" : string("a ") + edge + " newline")
+               + ": " + tag + " " + (past ? "was" : "is") + " on a separate line, so the newline" + (plural ? "s " : " ") + verb + " part of the value.\n";
     warning += remedy(core, plural);
-    warning += "Your call ended with: \"" + tail + "\n" + string(PARAM_END) + "\"";
+    warning += string("Your call ") + (past ? pos_past : pos_pres) + " with: \"" + snippet + "\"";
+  };
+  if (value.size() > 1 && leading_nl > allowed_leading) {
+    string head = value.substr(leading_nl);
+    if (head.size() > 10) head = head.substr(0, 10) + "...";
+    string open_tag = string(PARAM_START) + param_name + ">";
+    edge_note("began", "begins", "leading", leading_nl, open_tag,
+              "the value on the same line as " + open_tag,
+              open_tag + string(leading_nl, '\n') + head);
+  }
+  if (value.size() > 1 && trailing_nl > allowed_trailing) {
+    string tail = value.substr(0, value.size() - 1);
+    if (tail.size() > 10) tail = "..." + tail.substr(tail.size() - 10);
+    edge_note("ended", "ends", "trailing", trailing_nl, PARAM_END,
+              string(PARAM_END) + " immediately after the last character of the value",
+              tail + "\n" + PARAM_END);
   }
   return warning;
 }
@@ -104,8 +120,8 @@ static string edge_newline_warning(const string& value, const char* param_name, 
 // the emitted value had no edge newline.  'value' is the parameter value
 // the branch already extracted (quote-stripped, untrimmed): passing it in
 // keeps the note from re-parsing the call for every parameter.
-static void prepend_edge_newline_note(string& result, const string& value, const char* param_name, EdgeHandling handling, size_t allowed_trailing = 0) {
-  string note = edge_newline_warning(value, param_name, handling, allowed_trailing);
+static void prepend_edge_newline_note(string& result, const string& value, const char* param_name, EdgeHandling handling, size_t allowed_trailing = 0, size_t allowed_leading = 0) {
+  string note = edge_newline_warning(value, param_name, handling, allowed_trailing, allowed_leading);
   if (!note.empty()) result = note + "\n\n" + result;
 }
 
@@ -526,7 +542,29 @@ ToolResult execute_tool_call(const string& tool_call_in, SessionState& state) {
         result = error_line;
       }
       prepend_edge_newline_note(result, path_raw, "path", EdgeHandling::Trimmed);
-      prepend_edge_newline_note(result, new_str, "new", EdgeHandling::Passed);
+      // On an edge where old carries the same newline count as new, the note
+      // is suppressed: equal old/new edge counts are the symmetric signature
+      // of the model not gluing the tag to the content (harmless once the edit
+      // matched), not a real defect.  Unequal counts mean new adds or drops a
+      // line break relative to old, which still warrants the note.
+      size_t old_lead = count_leading_newlines(old_str);
+      size_t new_lead = count_leading_newlines(new_str);
+      size_t old_trail = count_trailing_newlines(old_str);
+      size_t new_trail = count_trailing_newlines(new_str);
+      prepend_edge_newline_note(result, new_str, "new", EdgeHandling::Passed,
+                                new_trail == old_trail ? new_trail : 0,
+                                new_lead == old_lead ? new_lead : 0);
+      if (r_error.empty()) {
+        // The reverse asymmetry the `new` note cannot see: old carries more
+        // edge newlines than new, so the replacement consumed line breaks
+        // (lines merge).
+        auto drop_note = [&result](const char* verb, const char* edge, size_t old_n, size_t new_n) {
+          if (old_n > new_n)
+            result += string("\n\nNote: old ") + verb + " with " + to_string(old_n) + " " + edge + " newline" + (old_n == 1 ? "" : "s") + ", new with fewer: the replacement consumed the difference.";
+        };
+        drop_note("began", "leading", old_lead, new_lead);
+        drop_note("ended", "trailing", old_trail, new_trail);
+      }
     } else {
       result = "Error: No path provided to edit_file";
     }
