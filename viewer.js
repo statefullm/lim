@@ -1240,6 +1240,17 @@
             });
         }
 
+        // Open every anchor in a new tab so clicking a URL (in LLM text or a
+        // think block) never navigates the viewer away from the session.  Runs
+        // over the marked output as a string, like the sanitize/scrub passes
+        // above; adds the attributes only when absent.
+        function forceLinksNewTab(html) {
+            return html.replace(/<a\b([^>]*)>/gi, function(m, attrs) {
+                if (/\btarget\s*=/i.test(attrs)) return m;
+                return '<a target="_blank" rel="noopener noreferrer"' + attrs + '>';
+            });
+        }
+
         // Second-layer defense, applied to the marked output (before code
         // regions are restored, so it never sees fence content):
         //   1. Remove <script>...</script> element pairs entirely.
@@ -1291,6 +1302,7 @@
                 html = html.replace(/\x00\x00/g, '\\\\');
                 html = sanitizeMarkdownHtml(html);
                 html = scrubDangerousHtml(html);
+                html = forceLinksNewTab(html);
             } else {
                 var esc = content.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
                 html = '<pre style="white-space:pre-wrap;">' + esc + '</pre>';
