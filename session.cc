@@ -2391,14 +2391,31 @@ void ChatSession::replay_assistant_content(const string& text) {
   }
 }
 
-// Extract a concise summary from the tool call embedded in an assistant
-// response (detokenized text): the tool name, and -- in first_param -- a
-// compact "key=value" for its first parameter (value capped so a large param
-// can't bloat the box).  Searches from the LAST <function=...> so a tool call
-// merely discussed inside a thinking block (which precedes the real one in
-// the prose) is not picked up.  Returns "" if no tool call is present.
-static string summarize_tool_call(const string& response, string& first_param) {
-  first_param.clear();
+// Map a raw tool name to the live green-box display label (the prefix the
+// tool executor builds in tools.cc), e.g. "read_files" -> "Read files:".
+// Empty for exec_shell, whose live box is the streamed command output rather
+// than a label -- the caller shows the result verbatim in that case.
+static string tool_display_label(const string& name) {
+  if (name == "read_files")  return "Read files:";
+  if (name == "search_file") return "Search file:";
+  if (name == "edit_file")   return "Edit file:";
+  if (name == "write_file")  return "Write file:";
+  if (name == "web_search")  return "Web search:";
+  return "";
+}
+
+// Rebuild the live green-box display string from the tool call embedded in an
+// assistant response (detokenized text): the display label followed by the
+// call's first parameter value (the path for the file tools, the quoted query
+// for web_search).  This mirrors the format the live tool executor shows, minus
+// the runtime-only suffix (byte, match, change, or result counts), which is not
+// persisted in saves.  Searches from the LAST <function=...> so a tool call
+// merely discussed inside a thinking block (which precedes the real one in the
+// prose) is not picked up.  Returns the raw tool name and sets `display` to the
+// box text ("" when no tool call is present, or for exec_shell, whose box is the
+// command output).
+static string summarize_tool_call(const string& response, string& display) {
+  display.clear();
   size_t f = response.rfind(FUNC_START);
   if (f == string::npos) return "";
   size_t call_end = response.find(FUNC_END, f);
@@ -2408,19 +2425,25 @@ static string summarize_tool_call(const string& response, string& first_param) {
   string name = trim_chars(
       response.substr(f + strlen(FUNC_START), name_end - (f + strlen(FUNC_START))),
       " \t\r\n");
+  string label = tool_display_label(name);
+  if (label.empty()) return name;  // exec_shell (box = output) or unknown tool
+  // First parameter value: the path (file tools) or the query (web_search).
   size_t p = response.find(PARAM_START, f);
-  if (p != string::npos && p < call_end) {
-    size_t key_end = response.find('>', p);
-    size_t val_end = (key_end != string::npos) ? response.find(PARAM_END, key_end) : string::npos;
-    if (key_end != string::npos && val_end != string::npos && val_end <= call_end) {
-      string key = trim_chars(
-          response.substr(p + strlen(PARAM_START), key_end - (p + strlen(PARAM_START))), " \t\r\n");
-      string val = trim_chars(response.substr(key_end + 1, val_end - (key_end + 1)), " \t\r\n");
-      const size_t CAP = 80;
-      if (val.length() > CAP) val = val.substr(0, CAP) + "...";
-      first_param = key + "=" + val;
-    }
+  size_t key_end = (p != string::npos && p < call_end) ? response.find('>', p) : string::npos;
+  size_t val_end = (key_end != string::npos) ? response.find(PARAM_END, key_end) : string::npos;
+  if (key_end == string::npos || val_end == string::npos || val_end > call_end) {
+    display = label;  // no first parameter: show the label alone
+    return name;
   }
+  string val = trim_chars(response.substr(key_end + 1, val_end - (key_end + 1)), " \t\r\n");
+  if (val.empty()) {
+    display = label;
+    return name;
+  }
+  const size_t CAP = 80;
+  if (val.length() > CAP) val = val.substr(0, CAP) + "...";
+  if (name == "web_search") val = "\"" + val + "\"";  // the live box quotes the query
+  display = label + " " + val;
   return name;
 }
 
@@ -2434,8 +2457,8 @@ void ChatSession::replay_user_or_tool(const string& content, const string& prev_
     // not persisted in saves, so the full content (e.g. an entire file from
     // read_files) would flood the restored transcript.
     string result = content.substr(TOOL_PREFIX.length());
-    string first_param;
-    string name = summarize_tool_call(prev_assistant, first_param);
+    string display;
+    string name = summarize_tool_call(prev_assistant, display);
     string box;
     if (name == "exec_shell") {
       // exec_shell's live box IS the command output, and the result read from
@@ -2443,9 +2466,10 @@ void ChatSession::replay_user_or_tool(const string& content, const string& prev_
       // it to exec_truncation_limit (LIM_EXEC_TRUNCATION) at run time, so no
       // re-truncation is needed here -- showing it verbatim matches the live box.
       box = result;
+    } else if (!display.empty()) {
+      box = display;
     } else {
       box = name.empty() ? string("[Tool Result]") : name;
-      if (!first_param.empty()) box += "  " + first_param;
     }
     string result_html = "\n\n<div class='tool-result'><pre><code>" +
                          html_escape(box) + "</code></pre></div>\n\n";
