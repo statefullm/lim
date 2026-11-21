@@ -2313,6 +2313,22 @@ void ChatSession::replay_browser_transcript() {
   // nothing.
   string text = detokenize_tracker_to_text(all);
 
+  // A system-prompt-only context has no user turn, so there is nothing to
+  // replay -- leave the viewer untouched (a reload signal with no follow-on
+  // content would blank it).
+  if (text.find(us) == string::npos) return;
+
+  // Reload the browser before re-emitting: after a /load the persistent
+  // browser may still be showing the previous session, and replaying on top of
+  // it would show two copies of the transcript.  The SOH (0x01) reload signal
+  // is stripped by the viewer and the rest of the frame (the replay below) is
+  // kept, so the restored transcript is the only thing shown.  This is the
+  // only place the viewer is reloaded: /clear does not clear the browser.
+  {
+    const char soh = 0x01;
+    pipe_write(&soh, 1);
+  }
+
   // Walk the conversation block by block.  prev_assistant holds the previous
   // block's response so a tool-result box can be summarized from the tool
   // call that produced it (that call lives in the response right before the

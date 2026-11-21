@@ -2198,6 +2198,19 @@
                 try {
                 let data = event.data;
 
+                // Reload command (SOH control char 0x01): wipes the transcript
+                // (segments + DOM) but does NOT discard the rest of the frame
+                // (the replay that follows the reload on /load).  Strip the
+                // marker and continue parsing.  Fired only by the replay path;
+                // /clear never reloads the browser.
+                if (data.includes('\x01')) {
+                    segments = [];
+                    outputDiv.innerHTML = '';
+                    userScrolledAway = false;
+                    data = data.replace(/\x01/g, '');
+                    if (data.length === 0) return;
+                }
+
                 let lastIdx = 0;
                 // The pending segment type, scoped to this message: content
                 // that follows a prefix (up to the next prefix or the end of
