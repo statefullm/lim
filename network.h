@@ -62,4 +62,13 @@ extern std::string g_launch_dir;
 // made elsewhere), so they follow the working directory as with a relaunch.
 void lim_reanchor_session_dirs();
 
+// SIGINT/SIGTERM entry point (async-signal-safe).  A Docling PDF conversion
+// runs synchronously and blocks Docling's own event loop, so Docling ignores
+// SIGINT/SIGTERM and SIGHUP while a conversion is in flight -- no graceful
+// signal aborts it.  This SIGKILLs Docling instead, dropping the in-flight
+// TCP connection and unblocking the blocked curl read in
+// process_pdf_with_docling(), which then reaps Docling.  Docling is a
+// background service and is re-launched on the next PDF read.
+void lim_abort_docling_conversion();
+
 #endif // NETWORK_H

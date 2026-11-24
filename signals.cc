@@ -1,4 +1,5 @@
 #include "signals.h"
+#include "network.h"
 #include <pthread.h>
 
 using namespace std;
@@ -13,6 +14,9 @@ volatile sig_atomic_t g_quit_requested = 0;   // SIGTERM: graceful quit with aut
 void sigint_handler(int sig) {
   stop_generation = 1;
   g_was_interrupted = 1;  // Track that we were interrupted (persists across loop iterations)
+  // Abort an in-flight Docling PDF conversion (it ignores graceful signals),
+  // dropping its connection so the blocked curl read unblocks.
+  lim_abort_docling_conversion();
   // Async-signal-safe: set flags only.  The terminal color reset that used to
   // live here (message()/cout) is not async-signal-safe -- iostream re-entry
   // from a signal handler can deadlock or corrupt state if another thread is
@@ -27,6 +31,9 @@ void sigint_handler(int sig) {
 void sigterm_handler(int) {
   stop_generation = 1;
   g_quit_requested = 1;
+  // As with SIGINT: abort an in-flight Docling conversion so a detached lim
+  // can quit through the normal path instead of blocking on the curl read.
+  lim_abort_docling_conversion();
 }
 
 // SIGUSR1 ("poke"): deliberately empty.  Its only effect is to interrupt a

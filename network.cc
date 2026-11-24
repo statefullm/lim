@@ -22,6 +22,7 @@
 #include <libxml/tree.h>
 #include <libxml/HTMLparser.h>
 #include <cstring>  // For strlen
+#include <cerrno>
 
 using json = nlohmann::json;
 using namespace std;
@@ -110,10 +111,24 @@ extern volatile sig_atomic_t stop_generation;  // Forward declaration for interr
 
 static pid_t g_searxng_pid = -1;
 static pid_t g_docling_pid = -1;
+// Set only while process_pdf_with_docling() blocks on a Docling conversion, so
+// the SIGINT/SIGTERM handler knows a conversion is in flight and can abort it.
+// (Killing an idle Docling would force a slow restart on the next PDF read.)
+static volatile sig_atomic_t g_docling_conversion_active = 0;
 static bool g_searxng_disabled = false;
 static int g_consecutive_empty_searches = 0;
 
 static chrono::steady_clock::time_point g_last_network_request = chrono::steady_clock::now() - chrono::seconds(3);
+
+// SIGINT/SIGTERM entry point (async-signal-safe: reads two flags, calls
+// kill()).  A Docling PDF conversion blocks Docling's event loop, so it
+// ignores graceful signals; a hard kill drops the in-flight TCP connection,
+// which unblocks the blocking curl read in process_pdf_with_docling().  That
+// function reaps Docling, and the next PDF read re-launches it.
+void lim_abort_docling_conversion() {
+  if (g_docling_conversion_active && g_docling_pid > 0)
+    kill(-g_docling_pid, SIGKILL);
+}
 
 // --- Configurable web/network limits (all overridable via LIM_* env vars) ---
 static int g_search_cooldown_seconds = []() -> int {
@@ -387,6 +402,21 @@ void NetworkTools::start_searxng_if_needed(const string& base_url) {
 }
 
 void NetworkTools::start_docling_if_needed() {
+  // Drop a stale Docling pid before trusting that it is running.  An
+  // interrupted conversion SIGKILLs Docling, but the socket can drop before
+  // the killed process is a reaped zombie, so g_docling_pid may still point
+  // at a dead process.  If so, reap the zombie (or detect the process is gone)
+  // and fall through to launch a fresh instance instead of posting the next
+  // conversion to a closed port.
+  if (g_docling_pid > 0) {
+    int status;
+    bool gone = (waitpid(g_docling_pid, &status, WNOHANG) == g_docling_pid);
+    if (!gone) {
+      errno = 0;
+      gone = (kill(g_docling_pid, 0) == -1 && errno == ESRCH);
+    }
+    if (gone) g_docling_pid = -1;
+  }
   if (g_docling_pid != -1) return;
   string docling_cmd = getenvOrDefault("LIM_DOCLING_CMD", HOME+"/venv/bin/docling-serve run --enable-ui --host 127.0.0.1");
   string cmd = "UVICORN_LOG_LEVEL=error CUDA_VISIBLE_DEVICES=\"\" OMP_NUM_THREADS=8 exec "+Taskset::p_core_taskset()+docling_cmd;
@@ -584,7 +614,21 @@ string NetworkTools::process_pdf_with_docling(const string& pdf_binary) {
   curl_easy_setopt(curl, CURLOPT_XFERINFODATA, NULL);
 
   long http_code = 0;
+  // Mark the conversion in flight so the SIGINT/SIGTERM handler can abort it.
+  // A blocking curl_easy_perform is not itself interruptible here: the
+  // XFERINFOFUNCTION only fires while bytes move, not during the long "server
+  // is converting" gap, and the graceful signals are ignored by Docling.  So
+  // the handler SIGKILLs Docling, dropping this connection and unblocking the
+  // perform() below; the waitpid() after it reaps Docling and clears the pid
+  // so the next PDF read re-launches the service.
+  g_docling_conversion_active = 1;
   curl_easy_perform(curl);
+  g_docling_conversion_active = 0;
+
+  // If an interrupt SIGKILLed Docling, g_docling_pid now points at a dead
+  // process; the next start_docling_if_needed() reaps it and relaunches.  We
+  // do not reap here: the socket may drop before the killed process is a
+  // reaped zombie, so a reap at this exact moment is not reliable.
 
   // Check for interrupt after completion
   if (stop_generation) {
