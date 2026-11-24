@@ -320,7 +320,7 @@ Create `/home/$LIM_AI_USER/.lim_aliases` to define shorthand expansions at the `
 # ~/.lim_aliases: one key=value per line; # comments are ignored
 # Keys must start with / to distinguish them from regular messages
 
-/test=Test the filesystem tools and clean up any new files you created.
+/test=Test all of the filesystem and web search tools using absolute paths in a new directory that you should remove when done.
 /message=Show me a 1-sentence concise git commit message relative to HEAD.
 /commit=commit
 /make=run make
