@@ -74,6 +74,13 @@ ToolExecutor::Result ToolExecutor::execute(
   // Also strip individual base tokens (<|im_end|>, <|eot_id|>, etc.) that can
   // appear as spurious EOGs embedded inside XML tags and attributes.
   collect_base_turn_tokens(strip_tags_vec);
+  // A turn token is a structural marker, never whitespace: some templates
+  // (e.g. Mistral) use a bare space as the assistant-turn-start (the
+  // generation prompt), and stripping " " would delete every space in the
+  // command.  Drop whitespace-only tokens so only real markers are stripped.
+  strip_tags_vec.erase(std::remove_if(strip_tags_vec.begin(), strip_tags_vec.end(),
+    [](const string& t) { return trim_chars(t, " \t\r\n").empty(); }),
+    strip_tags_vec.end());
   strip_tags(tool_call, strip_tags_vec);
 
   // Strip thinking blocks (think_start...think_end) that can leak into tool calls.
